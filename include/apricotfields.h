@@ -10,6 +10,7 @@
 #include "render/aprendpipeline.h"
 #include "render/aprendcommands.h"
 #include "render/aprendswapchain.h"
+#include "render/aprendtransient.h"
 
 /*
 #if __cplusplus

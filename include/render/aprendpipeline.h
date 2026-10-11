@@ -647,6 +647,47 @@ aprend_binding_set aprend_binding_set_create(
     uint32_t entry_count);
 
 /**
+ * @brief Points some of a binding set's slots at other resources.
+ *
+ * Every array element @p entries names is given the resource the entry
+ * holds; every other element keeps what it has. The handle stays the same,
+ * so command lists that record it need no change.
+ *
+ * A submission already made that binds @p set is safe, and still reads what
+ * the set held: the set is given new descriptor sets, and its old ones go
+ * back to the layout when that work has finished (aprendcontext.h,
+ * "Destroying"). So an update costs what creating a set does, and is for a
+ * slot that changes now and then, not for data that changes every frame,
+ * which is a buffer set's job (aprendbuffers.h).
+ *
+ * @warning A command list compiled before the update and not yet submitted
+ * still binds what the set held. Compile it again before submitting it:
+ * nothing checks.
+ *
+ * Every resource the set holds must still be alive, the ones not named here
+ * as well: they are all written again.
+ *
+ * @note Not safe from two threads at once, for sets of one layout or of
+ * different ones: see "Threads" at the top of this header.
+ *
+ * @param[in] set         Set to change.
+ * @param[in] entries     The elements to change, each at most once. Only
+ *                        read during the call.
+ * @param[in] entry_count Number of elements in @p entries. From 1 to the
+ *                        number of array elements the layout declares.
+ *
+ * @return false, leaving @p set as it was, if @p set or @p entries is NULL,
+ *         @p entry_count is 0 or more than the set has elements, an entry
+ *         names an element the layout doesn't declare or one another entry
+ *         names, fails any check aprend_binding_set_create() makes of an
+ *         entry, or the new descriptor sets can't be allocated.
+ */
+bool aprend_binding_set_update(
+    aprend_binding_set set,
+    const aprend_binding_set_entry *entries,
+    uint32_t entry_count);
+
+/**
  * @brief Destroys a binding set.
  *
  * The resources it holds are the caller's and are not destroyed.

@@ -3,6 +3,8 @@
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
 #include <spudfiles.h>
+#include <cstring>
+#include <utility>
 
 // Maps an Aprend vertex-attribute element type onto the SpudGPU format used
 // to describe it in a vertex_attribute_desc.
@@ -51,6 +53,7 @@ aprend_binding_layout_t::~aprend_binding_layout_t() {
 	spudgpu_destroy_descriptor_set_layout(this->layout);
 }
 aprend_binding_set_t::~aprend_binding_set_t() {
+	free(this->entries);
 	free(this->image_uses);
 	free(this->storage_stores);
 	// A set that failed to create gives back what it got as far as acquiring.
@@ -151,26 +154,26 @@ static bool aprend_binding_range_valid(uint64_t offset, uint64_t range, uint64_t
 
 // Whether entry [index] of a set holds what its _type reads. The type has
 // already been checked against the layout's.
-static bool aprend_binding_set_entry_resource_valid(aprend_instance instance, const aprend_binding_set_entry &entry, uint32_t index) {
+static bool aprend_binding_set_entry_resource_valid(const char *who, aprend_instance instance, const aprend_binding_set_entry &entry, uint32_t index) {
 	switch (entry._type) {
 	case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER: {
 		const auto &r = entry._resource._uniform;
 		if (!r._buffer && !r._set) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no uniform buffer and no uniform buffer set\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has no uniform buffer and no uniform buffer set\n", who, index, entry._binding);
 			return false;
 		}
 		if (r._buffer && r._set) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has both a uniform buffer and a uniform buffer set\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has both a uniform buffer and a uniform buffer set\n", who, index, entry._binding);
 			return false;
 		}
 		if (r._set && r._set->instance != instance) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has a uniform buffer set of another instance\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has a uniform buffer set of another instance\n", who, index, entry._binding);
 			return false;
 		}
 		// Every copy of a set is the same size.
 		const aprend_uniform_buffer buffer = r._set ? r._set->buffers[0] : r._buffer;
 		if (!aprend_binding_range_valid(r._offset, r._range, buffer->total_size)) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has an _offset and _range outside its buffer\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has an _offset and _range outside its buffer\n", who, index, entry._binding);
 			return false;
 		}
 		return true;
@@ -178,20 +181,20 @@ static bool aprend_binding_set_entry_resource_valid(aprend_instance instance, co
 	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
 		const auto &r = entry._resource._storage;
 		if (!r._buffer && !r._set) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no storage buffer and no storage buffer set\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has no storage buffer and no storage buffer set\n", who, index, entry._binding);
 			return false;
 		}
 		if (r._buffer && r._set) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has both a storage buffer and a storage buffer set\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has both a storage buffer and a storage buffer set\n", who, index, entry._binding);
 			return false;
 		}
 		if (r._set && r._set->instance != instance) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has a storage buffer set of another instance\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has a storage buffer set of another instance\n", who, index, entry._binding);
 			return false;
 		}
 		const aprend_storage_buffer buffer = r._set ? r._set->buffers[0] : r._buffer;
 		if (!aprend_binding_range_valid(r._offset, r._range, buffer->size)) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has an _offset and _range outside its buffer\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has an _offset and _range outside its buffer\n", who, index, entry._binding);
 			return false;
 		}
 		return true;
@@ -203,21 +206,21 @@ static bool aprend_binding_set_entry_resource_valid(aprend_instance instance, co
 	const auto &r = entry._resource._image;
 	if (aprend_descriptor_type_reads_view(entry._type)) {
 		if (!r._view) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no texture view\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has no texture view\n", who, index, entry._binding);
 			return false;
 		}
 		const APREND_TEXTURE_VIEW_TYPE wanted = entry._type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE
 		                                            ? APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS
 		                                            : APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 		if (r._view->view_type != wanted) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has a view of type %u, its slot takes %u\n", index, entry._binding,
+			printf("apricot: %s: entry %u (binding %u) has a view of type %u, its slot takes %u\n", who, index, entry._binding,
 			       (unsigned)r._view->view_type, (unsigned)wanted);
 			return false;
 		}
 	}
 	if (aprend_descriptor_type_reads_sampler(entry._type)) {
 		if (!r._sampler) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no sampler\n", index, entry._binding);
+			printf("apricot: %s: entry %u (binding %u) has no sampler\n", who, index, entry._binding);
 			return false;
 		}
 	}
@@ -875,7 +878,7 @@ aprend_binding_set aprend_binding_set_create(
 				return nullptr;
 			}
 		}
-		if (!aprend_binding_set_entry_resource_valid(layout->instance, entry, i))
+		if (!aprend_binding_set_entry_resource_valid("aprend_binding_set_create", layout->instance, entry, i))
 			return nullptr;
 		if (aprend_descriptor_type_reads_view(entry._type))
 			++image_use_count;
@@ -911,6 +914,18 @@ aprend_binding_set aprend_binding_set_create(
 	APREND_CONSTRUCT__T(result, aprend_binding_set_t);
 	result->layout   = layout;
 	result->instance = layout->instance;
+
+	// What the set was built from, for aprend_binding_set_update to change
+	// part of. entry_count is never 0: a layout has at least one binding.
+	result->entries = (aprend_binding_set_entry *)malloc(sizeof(aprend_binding_set_entry) * entry_count);
+	if (!result->entries) {
+		APREND_DESTRUCT__T(result, aprend_binding_set_t);
+		free(writes);
+		free(infos);
+		return nullptr;
+	}
+	memcpy(result->entries, entries, sizeof(aprend_binding_set_entry) * entry_count);
+	result->entry_count = entry_count;
 
 	if (image_use_count > 0) {
 		result->image_uses = (aprend_binding_set_t::image_use *)calloc(image_use_count, sizeof(aprend_binding_set_t::image_use));
@@ -1006,6 +1021,87 @@ aprend_binding_set aprend_binding_set_create(
 	free(writes);
 	free(infos);
 	return result;
+}
+bool aprend_binding_set_update(
+    aprend_binding_set set,
+    const aprend_binding_set_entry *entries,
+    uint32_t entry_count) {
+	static const char *who = "aprend_binding_set_update";
+	if (!set) {
+		printf("apricot: %s: set is NULL\n", who);
+		return false;
+	}
+	if (!entries) {
+		printf("apricot: %s: entries is NULL\n", who);
+		return false;
+	}
+	if (entry_count == 0) {
+		printf("apricot: %s: entry_count is 0\n", who);
+		return false;
+	}
+	if (entry_count > set->entry_count) {
+		printf("apricot: %s: %u entries, and the set has %u\n", who, entry_count, set->entry_count);
+		return false;
+	}
+	aprend_binding_layout layout = set->layout;
+	// Each entry names an array element the layout declares, once, and holds
+	// what its slot takes: the checks aprend_binding_set_create makes.
+	for (uint32_t i = 0; i < entry_count; ++i) {
+		const aprend_binding_set_entry &entry = entries[i];
+		const aprend_binding_desc *binding    = aprend_binding_layout_find(layout, entry._binding);
+		if (!binding) {
+			printf("apricot: %s: entry %u names binding %u, which the layout doesn't declare\n", who, i, entry._binding);
+			return false;
+		}
+		if (entry._array_element >= binding->_count) {
+			printf("apricot: %s: entry %u (binding %u) has _array_element %u of %u\n", who, i, entry._binding, entry._array_element, binding->_count);
+			return false;
+		}
+		if (entry._type != binding->_type) {
+			printf("apricot: %s: entry %u (binding %u) has _type %u, the layout declares %u\n", who, i, entry._binding, (unsigned)entry._type,
+			       (unsigned)binding->_type);
+			return false;
+		}
+		for (uint32_t j = 0; j < i; ++j) {
+			if (entries[j]._binding == entry._binding && entries[j]._array_element == entry._array_element) {
+				printf("apricot: %s: entries %u and %u both fill binding %u element %u\n", who, j, i, entry._binding, entry._array_element);
+				return false;
+			}
+		}
+		if (!aprend_binding_set_entry_resource_valid(who, layout->instance, entry, i))
+			return false;
+	}
+
+	// The set as it will be: what it was built from, with the given entries
+	// in place of the ones that fill the same elements.
+	aprend_binding_set_entry *merged = (aprend_binding_set_entry *)malloc(sizeof(aprend_binding_set_entry) * set->entry_count);
+	if (!merged)
+		return false;
+	memcpy(merged, set->entries, sizeof(aprend_binding_set_entry) * set->entry_count);
+	for (uint32_t i = 0; i < entry_count; ++i)
+		for (uint32_t j = 0; j < set->entry_count; ++j)
+			if (merged[j]._binding == entries[i]._binding && merged[j]._array_element == entries[i]._array_element)
+				merged[j] = entries[i];
+
+	// Descriptor sets a submitted frame may be reading are never rewritten.
+	// A whole new set is built, the handle takes what it holds, and the new
+	// handle leaves with the old descriptor sets, which the release queue
+	// gives back to the layout once the GPU has finished with them.
+	aprend_binding_set fresh = aprend_binding_set_create(layout, merged, set->entry_count);
+	free(merged);
+	if (!fresh)
+		return false;
+	std::swap(set->sets, fresh->sets);
+	std::swap(set->frame_set_count, fresh->frame_set_count);
+	std::swap(set->entries, fresh->entries);
+	std::swap(set->entry_count, fresh->entry_count);
+	std::swap(set->image_uses, fresh->image_uses);
+	std::swap(set->image_use_count, fresh->image_use_count);
+	std::swap(set->storage_stores, fresh->storage_stores);
+	std::swap(set->storage_store_capacity, fresh->storage_store_capacity);
+	std::swap(set->storage_store_counts, fresh->storage_store_counts);
+	aprend_binding_set_destroy(fresh);
+	return true;
 }
 void aprend_binding_set_destroy(aprend_binding_set set) {
 	if (!set)

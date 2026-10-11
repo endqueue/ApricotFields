@@ -4,6 +4,7 @@
 
 #include "aprendcontext.h"
 #include "aprendimages.h"
+#include "aprendtransient.h"
 
 #if __cplusplus
 extern "C" {
@@ -142,6 +143,20 @@ enum {
 	 * its binding sets in place. The draw commands above are refused with a
 	 * mesh shader pipeline, and this one with any other. */
 	APREND_COMMAND_DISPATCH_MESH          = 19,
+	/* Puts a span of transient memory (aprendtransient.h) in vertex buffer
+	 * slot _slot for the following draws, as SET_VERTEX_BUFFERS puts a
+	 * buffer there, until either puts something else. _stride is the size
+	 * of one vertex, not 0, and has to be the stride of the pipeline's
+	 * binding at that slot at each draw. The span was taken in the frame the
+	 * list is compiled in, and its bytes are written before the list is
+	 * submitted, in any order with recording and compiling. */
+	APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER = 20,
+	/* Makes a span of transient memory the index buffer of the following
+	 * indexed draws, as SET_INDEX_BUFFER does a buffer. _index_size is the
+	 * size of one index, 2 or 4, and the span was allocated with an
+	 * alignment of at least that. The rest is as
+	 * SET_TRANSIENT_VERTEX_BUFFER. */
+	APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER  = 21,
 };
 
 typedef struct APREND_COMMAND {
@@ -239,6 +254,15 @@ typedef struct APREND_COMMAND {
 			uint32_t _group_count_y;
 			uint32_t _group_count_z;
 		} _dispatch_mesh;
+		struct {
+			aprend_transient_span _span;
+			uint32_t _slot;
+			uint32_t _stride;
+		} _set_transient_vertex_buffer;
+		struct {
+			aprend_transient_span _span;
+			uint32_t _index_size;
+		} _set_transient_index_buffer;
 	} _params;
 } APREND_COMMAND;
 
@@ -273,7 +297,9 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  * _buffer and _set, a _set of another instance, a buffer created without
  * APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS, a _draw_count of 0, an _offset or _stride that is not a multiple of 4, a
  * _stride smaller than one entry, or entries that run past the end of the
- * buffer. */
+ * buffer; a SET_TRANSIENT_VERTEX_BUFFER with a _slot at or above
+ * APREND_MAX_VERTEX_BINDINGS or a _stride of 0; a SET_TRANSIENT_INDEX_BUFFER
+ * with an _index_size that is not 2 or 4. */
 void aprend_send_command(
     aprend_command_list cmd_list,
     APREND_COMMAND cmd);

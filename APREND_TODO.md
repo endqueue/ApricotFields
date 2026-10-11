@@ -32,8 +32,16 @@ unfinished in it.
     layered pass. Nothing checked the release queue for an early release
     beyond the picture being right.
   - The repo's headless tests pass, and none of them touches Aprend.
-  - Not compiled with MSVC or GCC, and SpudGPU's D3D12 and Vulkan backends
-    are not compiled at all.
+  - Not compiled with GCC, and nothing has been built or run on Linux.
+- **Compiled and run on Windows on 2026-10-11.** Everything in this section
+  down to "View aspects and stencil sampling" built there, with the SpudGPU
+  it depends on, and one application ran on it and exited with code 0. That
+  is the first build of this code outside macOS and the first of a SpudGPU
+  backend other than Metal. Which backend, D3D12 or Vulkan, is not recorded
+  here, and the other is still not compiled. As on macOS, it exercises what
+  that application uses and no more (the list above); whether the device
+  had memory of its own, which is what would have run the staged path, is
+  not recorded either.
 - **The changes of 2026-10-09 are compiled on macOS only**:
   - `aprend_index_buffer_get_stride`, `aprend_buffer_element_type_get_size` and
     `aprend_buffer_layout_get_element_index` defined (the header declared them
@@ -269,6 +277,36 @@ unfinished in it.
     rendered to and sampled, color or depth, was not correctly sampled on
     D3D12 before; that backend has never been built or run.
   - No stencil has been sampled on any backend.
+- **`aprend_binding_set_update`, written 2026-10-11 and not compiled** on
+  any platform (item 9): points some of a set's slots at other resources
+  and keeps the handle. The set keeps a copy of the entries it was built
+  from; an update merges the given ones in, builds a whole new set, swaps
+  its contents into the handle, and destroys the new handle, which carries
+  the old descriptor sets onto the release queue. Never run.
+- **Transient memory, written 2026-10-11 and not compiled** on any platform
+  (`aprendtransient.h`, new; items 13 and 23):
+  - `aprend_transient_allocate` hands out a span of mapped upload memory
+    for the current frame; the caller writes vertices or indices into it and
+    binds it with `APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER` (20) or
+    `_INDEX_BUFFER` (21). The GPU reads the bytes where they were written.
+  - The arena is on the instance (`aprendtransient_internal.hpp`,
+    `aprendtransient.cpp`): a run of chunks for each frame index, bump
+    allocated. `aprend_instance_next_frame` rewinds the run of the index it
+    moves to, after its wait for that frame's submissions. Nothing is
+    tracked for a span.
+  - `aprend_instance_desc` gains `transient_chunk_size` (0 is an instance
+    with no transient memory) and `transient_memory_limit` (0 is no limit).
+    A span larger than a chunk gets one of its own, destroyed at the rewind.
+  - Every submission flushes what the frame's spans hold. A compile refuses
+    a span of another frame or of an earlier turn of this one, and a submit
+    refuses a list that binds spans in any frame but the one it was compiled
+    in.
+  - The compile now tracks a stride for each vertex slot and whether an
+    index buffer is set, in place of the buffer handles, so a slot may hold
+    either kind. That touches the draw checks of every list, transient or
+    not.
+  - Never run. No span has been bound on any backend, and drawing from
+    upload memory through a view at an offset is untested on all three.
 - **No tests.** There is no `tests/aprend_tests.*`: the repo's tests are
   headless with no GPU, and nothing in Aprend runs without a device.
 
@@ -356,15 +394,14 @@ exposes what the item needs.
 Binding sets cover every descriptor type and set slot (see "State of the
 code"). Left over:
 
-- **A set can't be changed after it is created.** Pointing a slot at another
-  resource means a new set. What stood in the way is gone: a set can be
-  given new descriptor sets and its old ones retired on the release queue
-  (item 12), which is not a race with a submitted frame. Not built: it is an
-  update call that shares the entry checks and the writes of
-  `aprend_binding_set_create`.
-- **A sampled view covers every mip and layer** and takes its aspect from
-  `aprend_texture2d_view_aspect_mask`, which hasn't been checked for sampling
-  a depth-stencil format (item 16).
+- **Changing a set costs a set.** `aprend_binding_set_update` (see "State
+  of the code") builds new descriptor sets from every entry, changed or not,
+  and retires the old ones. Writing only the changed slots needs SpudGPU to
+  copy descriptors from one set to another, which it doesn't offer.
+- **Nothing tells a compiled list its set was updated.** A list compiled
+  before the update and submitted after binds descriptor sets that may have
+  gone back to the layout. The header says to compile again; nothing checks
+  (item 32 has the same gap for textures).
 - **A layout has no debug name**: `aprend_binding_layout_create` takes no desc.
 - Nothing checks a layout against the SPIR-V (item 18).
 - **A combined image sampler slot doesn't work on SpudGPU's Metal backend**,
@@ -479,6 +516,13 @@ Hazel: `UniformBufferSet`, `StorageBufferSet`, `Renderer::SubmitResourceFree`,
 Vertex, index and storage buffers follow the device's memory (see "State of
 the code"). Left over:
 
+- **Staged writes don't use the transient arena yet.** Its chunks are made
+  as copy sources for this, and it is the per-frame half of the shared
+  upload path: a write whose copy is submitted in the same frame could take
+  a span and record an exact copy. What it can't hold is a write whose copy
+  is submitted in a later frame (a buffer written and not drawn yet), since
+  the frame's spans are taken back at the next turn. That needs spans that
+  are counted, or the staging buffer kept for those.
 - **A staged buffer keeps its staging copy for life**, so on a device with
   its own memory a buffer written once costs its size twice. The release
   queue (item 12) can now free a staging buffer once its copy has run, and
@@ -721,6 +765,11 @@ caller, is undecided. Hazel: `VulkanShaderCompiler`, `ShaderPreprocessor`,
 Hazel: `Renderer2D` (batched quads, lines, circles, MSDF text), `DebugRenderer`.
 Needs items 9 and 12.
 
+The memory for it is there: transient spans (`aprendtransient.h`, see "State
+of the code") are what a batch of quads or glyphs is written into each
+frame. Not there: the batcher, the shaders, a font atlas, and uniform data
+from transient memory (a binding set reads a buffer, not a span).
+
 ### 24. No lit pipeline
 
 No lighting, shadows or post-processing of any kind; a pipeline today outputs
@@ -848,12 +897,12 @@ and 5 are closed and their numbers are not reused.
    macOS as of 2026-10-10 (see "State of the code"); left of this step:
    - Run it: nothing since 2026-10-09 has drawn a frame, in Aprend or in the
      SpudGPU changes it now depends on.
-   - Compile it on Windows and Linux, which is also the first build of
-     SpudGPU's D3D12 and Vulkan fence changes.
+   - Compile it on Linux, and on Windows with the backend that hasn't been
+     built there (see "State of the code").
    - Run it on a device with its own memory as well, for the staged path.
 2. What the release queue made possible and isn't built: freeing staging
-   copies and a shared upload path (items 13 and 6), and rewriting a binding
-   set in place (item 9).
+   copies and a shared upload path (items 13 and 6). Rewriting a binding
+   set in place (item 9) is written.
 3. The rest of item 32: what the command list still gets wrong about
    texture layouts.
 4. Item 18, which settles item 1 and unblocks 19.

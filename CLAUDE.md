@@ -35,7 +35,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
 
-`apricotfields.h` is not a full umbrella: it includes Aprend's seven headers and
+`apricotfields.h` is not a full umbrella: it includes Aprend's eight headers and
 nothing of the other modules. Callers include the module header they need.
 
 Each module that has unfinished work keeps it in `AP<MODULE>_TODO.md` at the repo

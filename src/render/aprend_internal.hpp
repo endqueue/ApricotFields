@@ -11,6 +11,9 @@
 #include "render/aprendcontext.h"
 #include "render/aprendpipeline.h"
 #include "render/aprendswapchain.h"
+#include "render/aprendtransient.h"
+
+#include "aprendtransient_internal.hpp"
 
 #include <spudgpu.h>
 
@@ -94,6 +97,9 @@ typedef struct aprend_instance_t {
 	/* Which copy of every buffer set is current: 0 to
 	 * desc.frames_in_flight - 1. */
 	uint32_t frame_index{0};
+	/* Transient memory (render/aprendtransient.h): a run of chunks for each
+	 * frame index, empty until the first aprend_transient_allocate. */
+	aprend_transient_arena transient{};
 	/* Paces frames. Every aprend_command_list_submit signals it to the next
 	 * submit_serial, and frame_last_serial[i] is the serial of the last
 	 * submission made while frame index i was current: what
@@ -290,6 +296,9 @@ typedef struct aprend_command_list_t {
 	 * is still the one it was compiled in. */
 	uint32_t compiled_frame{0};
 	bool uses_frame_sets{false};
+	/* Whether the list binds a transient span, which is memory of the frame
+	 * it was compiled in and no other. */
+	bool uses_transient{false};
 	std::vector<APREND_COMMAND> commands{};
 	/* Owned copies of each BEGIN_RENDERING's color target array, so recorded
 	 * commands never point at caller memory. Each inner vector's buffer stays
@@ -528,6 +537,12 @@ typedef struct aprend_binding_set_t {
 	 * copy f of every buffer set and at the same single resources. */
 	spudgpu_descriptor_set sets[APREND_MAX_FRAMES_IN_FLIGHT]{};
 	uint32_t frame_set_count{0};
+	/* A copy of the entries the set was built from, one for every array
+	 * element of every binding: aprend_binding_set_update replaces some and
+	 * builds the set again from all of them. The handles in it are the
+	 * caller's. */
+	aprend_binding_set_entry *entries{nullptr};
+	uint32_t entry_count{0};
 	/* Every texture view the set holds and the layout its slot reads the
 	 * texture in, for a command list to move the texture there before a pass
 	 * that binds the set. */

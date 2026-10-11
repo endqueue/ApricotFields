@@ -94,6 +94,18 @@ typedef struct aprend_instance_desc {
 	 * is still reading. 1 is a caller that waits for each frame to finish
 	 * before starting the next. */
 	uint32_t frames_in_flight;
+	/* Bytes in one chunk of the instance's transient memory
+	 * (aprendtransient.h), which grows a chunk at a time. 0 is an instance
+	 * with no transient memory: aprend_transient_allocate fails on it, and
+	 * transient_memory_limit must be 0 too. A span larger than this gets a
+	 * chunk of its own for the frame, so this is the size of the usual frame's
+	 * worth, not of the largest span. No memory is taken until the first
+	 * span is. */
+	uint64_t transient_chunk_size;
+	/* The most bytes the instance's transient memory may hold, over every
+	 * frame in flight; aprend_transient_allocate fails when a chunk more
+	 * would pass it. 0 is no limit. If not 0, at least transient_chunk_size. */
+	uint64_t transient_memory_limit;
 } aprend_instance_desc;
 
 typedef struct aprend_instance_t *aprend_instance;

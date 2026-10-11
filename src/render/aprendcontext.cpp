@@ -24,6 +24,8 @@ aprend_instance_t::~aprend_instance_t() {
 		}
 		entry.release(entry.object);
 	}
+	// Nothing reads a transient span any more.
+	aprend_transient_arena_destroy(this);
 	// An instance that failed to create may have neither.
 	if (this->frame_fence)
 		spudgpu_destroy_fence(this->frame_fence);
@@ -46,6 +48,12 @@ SPUDRESULT aprend_instance_submit(
 		printf("apricot: submission refused: this instance submits on one queue, and this is not the queue of its first submission\n");
 		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
 	}
+	// What was written into the frame's transient spans, which the lists
+	// may read. A failed flush fails the submission: the GPU would read
+	// bytes that may not have reached it.
+	SPUDRESULT flushed = aprend_transient_arena_flush(instance);
+	if (SPUDFAIL(flushed))
+		return flushed;
 	const uint64_t serial = instance->submit_serial.load() + 1;
 	spudgpu_submit_desc submit{};
 	submit.cmd_lists          = lists;
@@ -149,6 +157,14 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 		printf("apricot: aprend_instance_create: frames_in_flight %u is above APREND_MAX_FRAMES_IN_FLIGHT\n", desc->frames_in_flight);
 		return nullptr;
 	}
+	if (desc->transient_chunk_size == 0 && desc->transient_memory_limit != 0) {
+		printf("apricot: aprend_instance_create: transient_memory_limit is set and transient_chunk_size is 0\n");
+		return nullptr;
+	}
+	if (desc->transient_memory_limit != 0 && desc->transient_memory_limit < desc->transient_chunk_size) {
+		printf("apricot: aprend_instance_create: transient_memory_limit is below transient_chunk_size\n");
+		return nullptr;
+	}
 	aprend_instance_t *result = (aprend_instance_t *)malloc(sizeof(aprend_instance_t));
 	if (!result)
 		return nullptr;
@@ -210,6 +226,11 @@ uint32_t aprend_instance_next_frame(aprend_instance instance) {
 	aprend_instance_collect(instance);
 	if (SPUDFAIL(sr))
 		printf("apricot: aprend_instance_next_frame: waiting for frame %u failed: %s\n", instance->frame_index, spudresult_str(sr));
+	// The transient spans taken the last time this index was current are
+	// read by nothing now. After a failed wait that isn't known, and the
+	// memory is left as it is: the frame's spans go on from where they were.
+	if (!SPUDFAIL(sr))
+		aprend_transient_arena_begin_frame(instance);
 	return instance->frame_index;
 }
 uint32_t aprend_instance_get_frame_index(aprend_instance instance) { return instance ? instance->frame_index : 0; }

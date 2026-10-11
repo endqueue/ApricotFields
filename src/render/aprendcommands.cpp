@@ -180,6 +180,29 @@ void aprend_send_command(
 		}
 	}
 
+	if (cmd._type == APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER) {
+		const auto &p = cmd._params._set_transient_vertex_buffer;
+		if (p._slot >= APREND_MAX_VERTEX_BINDINGS) {
+			printf("aprend: SET_TRANSIENT_VERTEX_BUFFER with _slot %u, at or above APREND_MAX_VERTEX_BINDINGS\n", p._slot);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._stride == 0) {
+			printf("aprend: SET_TRANSIENT_VERTEX_BUFFER with a _stride of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER) {
+		const auto &p = cmd._params._set_transient_index_buffer;
+		if (p._index_size != 2 && p._index_size != 4) {
+			printf("aprend: SET_TRANSIENT_INDEX_BUFFER with an _index_size of %u, which is not 2 or 4\n", p._index_size);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+
 	if (cmd._type == APREND_COMMAND_SET_VIEWPORTS) {
 		auto &p = cmd._params._set_viewports;
 		if (p._viewport_count > 0 && !p._viewports) {
@@ -882,20 +905,20 @@ static bool aprend_cmd_prepare_dispatch(
 /* Before a draw: binds the set in each slot [pipeline] declares, where it
  * isn't the one already bound there. False if a slot holds no set, or one of
  * another layout. */
-/* Before a draw: every vertex buffer slot [pipeline] reads holds a buffer of
- * the stride its binding has. */
+/* Before a draw: every vertex buffer slot [pipeline] reads holds a buffer or
+ * a transient span of the stride its binding has. [strides] is the stride
+ * of what each slot holds, 0 for an empty one. */
 static bool aprend_cmd_vertex_buffers_valid(
     aprend_graphics_pipeline pipeline,
-    const aprend_vertex_buffer *slots) {
+    const uint32_t *strides) {
 	for (uint32_t slot = 0; slot < pipeline->desc._vertex_binding_count; ++slot) {
-		aprend_vertex_buffer buffer = slots[slot];
-		if (!buffer) {
-			printf("aprend: draw with a pipeline that reads vertex buffer slot %u, but no SET_VERTEX_BUFFERS has put a buffer there\n", slot);
+		if (strides[slot] == 0) {
+			printf("aprend: draw with a pipeline that reads vertex buffer slot %u, and nothing has been put there\n", slot);
 			return false;
 		}
-		if (buffer->vertex_stride != pipeline->vertex_strides[slot]) {
-			printf("aprend: draw with a vertex buffer of stride %u at slot %u, where the pipeline's binding has stride %u\n",
-			       buffer->vertex_stride, slot, pipeline->vertex_strides[slot]);
+		if (strides[slot] != pipeline->vertex_strides[slot]) {
+			printf("aprend: draw with vertices of stride %u at slot %u, where the pipeline's binding has stride %u\n", strides[slot], slot,
+			       pipeline->vertex_strides[slot]);
 			return false;
 		}
 	}
@@ -939,6 +962,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	// Every buffer set this compile reads is read at this frame's copy.
 	cmd_list->compiled_frame  = cmd_list->instance->frame_index;
 	cmd_list->uses_frame_sets = false;
+	cmd_list->uses_transient  = false;
 	if (cmd_list->recording_error)
 		return false;
 
@@ -950,10 +974,11 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	bool ok      = true;
 	/* The pipeline bound in the open pass; none until the pass sets one. */
 	aprend_graphics_pipeline bound_pipeline = nullptr;
-	/* The buffer SET_VERTEX_BUFFERS last put in each vertex buffer slot. */
-	aprend_vertex_buffer slot_vertex_buffers[APREND_MAX_VERTEX_BINDINGS]{};
-	/* The buffer SET_INDEX_BUFFER last set; none until one is. */
-	aprend_index_buffer bound_index_buffer = nullptr;
+	/* The stride of the buffer or transient span last put in each vertex
+	 * buffer slot; 0 for a slot nothing has been put in. */
+	uint32_t slot_vertex_strides[APREND_MAX_VERTEX_BINDINGS]{};
+	/* Whether an index buffer or a transient index span has been set. */
+	bool index_buffer_bound = false;
 	/* The set SET_BINDING_SET last put in each slot, and the one actually
 	 * bound there for the bound pipeline in the open pass. A draw binds
 	 * whatever differs. */
@@ -988,12 +1013,12 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			} else if (!bound_pipeline->is_mesh && command._type == APREND_COMMAND_DISPATCH_MESH) {
 				printf("aprend: DISPATCH_MESH with a pipeline that has no mesh shader\n");
 				ok = false;
-			} else if (!aprend_cmd_vertex_buffers_valid(bound_pipeline, slot_vertex_buffers)) {
+			} else if (!aprend_cmd_vertex_buffers_valid(bound_pipeline, slot_vertex_strides)) {
 				ok = false;
-			} else if (!bound_index_buffer && (command._type == APREND_COMMAND_DRAW_INDEXED ||
+			} else if (!index_buffer_bound && (command._type == APREND_COMMAND_DRAW_INDEXED ||
 			                                   command._type == APREND_COMMAND_DRAW_INSTANCED_INDEXED ||
 			                                   command._type == APREND_COMMAND_DRAW_INDEXED_INDIRECT)) {
-				printf("aprend: indexed draw with no SET_INDEX_BUFFER before it\n");
+				printf("aprend: indexed draw with no SET_INDEX_BUFFER or SET_TRANSIENT_INDEX_BUFFER before it\n");
 				ok = false;
 			} else {
 				ok = aprend_cmd_apply_binding_sets(cmd, bound_pipeline, slot_sets, applied_sets, cmd_list->compiled_frame);
@@ -1013,7 +1038,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			for (uint32_t i = 0; i < p._vertex_buffer_count; ++i) {
 				vertex_buffer_views.push_back(p._vertex_buffers[i]->buffer_view);
 				// aprend_send_command refused a command that runs past the last slot.
-				slot_vertex_buffers[p._start_slot + i] = p._vertex_buffers[i];
+				slot_vertex_strides[p._start_slot + i] = p._vertex_buffers[i]->vertex_stride;
 				aprend_cmd_use_store(cmd_list, &p._vertex_buffers[i]->store);
 			}
 			spudgpu_cmd_set_vertex_buffers(cmd, p._start_slot, p._vertex_buffer_count, vertex_buffer_views.data());
@@ -1027,8 +1052,51 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				break;
 			}
 			spudgpu_cmd_set_index_buffer(cmd, p._index_buffer->buffer_view);
-			bound_index_buffer = p._index_buffer;
+			index_buffer_bound = true;
 			aprend_cmd_use_store(cmd_list, &p._index_buffer->store);
+			break;
+		}
+		case APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER: {
+			const auto &p = command._params._set_transient_vertex_buffer;
+			if (!aprend_transient_span_valid(cmd_list->instance, &p._span, "SET_TRANSIENT_VERTEX_BUFFER")) {
+				ok = false;
+				break;
+			}
+			spudgpu_buffer_view view = nullptr;
+			SPUDRESULT sr            = aprend_transient_span_view(cmd_list->instance, &p._span, p._stride, &view);
+			if (SPUDFAIL(sr)) {
+				printf("aprend: SET_TRANSIENT_VERTEX_BUFFER: a view of the span can't be created: %s\n", spudresult_str(sr));
+				ok = false;
+				break;
+			}
+			spudgpu_cmd_set_vertex_buffers(cmd, p._slot, 1, &view);
+			// aprend_send_command refused a slot past the last.
+			slot_vertex_strides[p._slot] = p._stride;
+			cmd_list->uses_transient     = true;
+			break;
+		}
+		case APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER: {
+			const auto &p = command._params._set_transient_index_buffer;
+			if (!aprend_transient_span_valid(cmd_list->instance, &p._span, "SET_TRANSIENT_INDEX_BUFFER")) {
+				ok = false;
+				break;
+			}
+			if (p._span._offset % p._index_size != 0) {
+				printf("aprend: SET_TRANSIENT_INDEX_BUFFER with a span not aligned to its _index_size of %u; allocate it with that alignment\n",
+				       p._index_size);
+				ok = false;
+				break;
+			}
+			spudgpu_buffer_view view = nullptr;
+			SPUDRESULT sr            = aprend_transient_span_view(cmd_list->instance, &p._span, p._index_size, &view);
+			if (SPUDFAIL(sr)) {
+				printf("aprend: SET_TRANSIENT_INDEX_BUFFER: a view of the span can't be created: %s\n", spudresult_str(sr));
+				ok = false;
+				break;
+			}
+			spudgpu_cmd_set_index_buffer(cmd, view);
+			index_buffer_bound       = true;
+			cmd_list->uses_transient = true;
 			break;
 		}
 		case APREND_COMMAND_SET_SHADER_PIPELINE: {
@@ -1318,6 +1386,12 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 
 	// A list that binds a per-frame set reads the copies of the frame it
 	// was compiled in; in any other frame those are another frame's.
+	// The same for transient spans: the memory is the compiled frame's.
+	if (cmd_list->uses_transient && cmd_list->instance->frame_index != cmd_list->compiled_frame) {
+		printf("aprend: submit refused: the list reads transient spans and was compiled in frame %u, and the frame is now %u\n",
+		       cmd_list->compiled_frame, cmd_list->instance->frame_index);
+		return false;
+	}
 	if (cmd_list->uses_frame_sets && cmd_list->instance->frame_index != cmd_list->compiled_frame) {
 		printf("aprend: submit refused: the list reads buffer sets and was compiled in frame %u, and the frame is now %u; recompile it\n",
 		       cmd_list->compiled_frame, cmd_list->instance->frame_index);
