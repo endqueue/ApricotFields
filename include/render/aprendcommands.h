@@ -49,7 +49,14 @@ enum {
 	APREND_COMMAND_SET_SCISSOR_RECTS      = 9,
 	/* Pass scope. Draws are only valid inside a pass; BEGIN_RENDERING can't
 	 * be nested and must be closed by END_RENDERING before the list is
-	 * compiled. aprend_command_list_compile fails on any violation. */
+	 * compiled. aprend_command_list_compile fails on any violation.
+	 *
+	 * The targets of one pass are all 2D views, each one layer, or all 2D
+	 * array views of the same number of layers, which makes it a layered
+	 * pass: every layer is rendered to, cleared and stored together, and the
+	 * pass's vertex or mesh shader writes the layer each primitive is drawn
+	 * to (aprend_texture_view_desc, aprendimages.h). Mixing the two shapes
+	 * or two layer counts in one pass fails the compile. */
 	APREND_COMMAND_BEGIN_RENDERING        = 10,
 	APREND_COMMAND_END_RENDERING          = 11,
 	/* Puts an aprend_binding_set (aprendpipeline.h) at set slot _slot for the
@@ -62,8 +69,12 @@ enum {
 	 * Before a pass begins, every texture in a set that a draw of the pass
 	 * reads (one in a slot the pipeline bound at that draw declares) is
 	 * moved into the layout its binding reads it in. A set left in a slot no
-	 * draw of the pass reads is not touched. Such a texture can't also be a target of that pass, nor be
-	 * in a sampled slot and a storage image slot in the same pass. */
+	 * draw of the pass reads is not touched. Layouts are kept for each mip of
+	 * each layer, and a view is moved over the range it covers: the same mip
+	 * of the same layer can't be a target of the pass and in one of its
+	 * sets, nor in a sampled slot and a storage image slot of one pass, but
+	 * two views of one texture that share no mip of a layer can, so a mip
+	 * can be rendered from the one above it. */
 	APREND_COMMAND_SET_BINDING_SET        = 12,
 	/* Copies _source into _swap_chain's acquired back buffer (aprendswapchain.h)
 	 * and leaves it ready to present. Outside any pass; at most one per list.
@@ -95,8 +106,10 @@ enum {
 	 * dispatch every texture in those sets is moved into the layout its
 	 * binding reads it in, and every storage buffer and storage image in them
 	 * is ordered after the writes of earlier dispatches and draws, so a
-	 * dispatch reads what the one before it wrote. A texture can't be in a
-	 * sampled slot and a storage image slot of one dispatch.
+	 * dispatch reads what the one before it wrote. The same mip of the same
+	 * layer can't be in a sampled slot and a storage image slot of one
+	 * dispatch; two different mips of one texture can, so a dispatch can
+	 * read one mip and write the next.
 	 *
 	 * PUSH_CONSTANTS sent outside a pass writes the set compute pipeline's
 	 * block, under the same rules as inside a pass for a graphics pipeline:

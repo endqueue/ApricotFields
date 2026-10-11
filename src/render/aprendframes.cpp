@@ -35,7 +35,16 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 			owns_texture = true;
 		}
 
-		aprend_texture_view view = aprend_texture_view_create_2d(texture, APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET);
+		// An attachment is mip 0 of layer 0, whatever else the texture has.
+		aprend_texture_view_desc view_desc{};
+		view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
+		view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
+		view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
+		view_desc.base_mip    = 0;
+		view_desc.mip_count   = 1;
+		view_desc.base_layer  = 0;
+		view_desc.layer_count = 1;
+		aprend_texture_view view = aprend_texture_view_create_2d(texture, &view_desc);
 		if (!view) {
 			if (owns_texture)
 				aprend_texture2d_destroy(texture);
@@ -59,7 +68,16 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 		if (!depth_texture)
 			return false;
 
-		framebuffer->depth_attachment = aprend_texture_view_create_2d(depth_texture, APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL);
+		aprend_texture_view_desc depth_view_desc{};
+		depth_view_desc.type        = APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL;
+		depth_view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
+		// Every aspect of the format: the depth, and the stencil if it has one.
+		depth_view_desc.aspect      = aprend_format_has_stencil(desc.depth_format) ? APREND_TEXTURE_VIEW_ASPECT_DEPTH_STENCIL : APREND_TEXTURE_VIEW_ASPECT_DEPTH;
+		depth_view_desc.base_mip    = 0;
+		depth_view_desc.mip_count   = 1;
+		depth_view_desc.base_layer  = 0;
+		depth_view_desc.layer_count = 1;
+		framebuffer->depth_attachment = aprend_texture_view_create_2d(depth_texture, &depth_view_desc);
 		if (!framebuffer->depth_attachment) {
 			aprend_texture2d_destroy(depth_texture);
 			return false;
@@ -171,20 +189,25 @@ bool aprend_framebuffer_clear_colors(
 	const SPUDGPU_IMAGE_LAYOUT working = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	bool ok                            = aprend_submit_immediate(framebuffer->instance, queue, false, [&](spudgpu_command_list cmd) {
 		for (aprend_texture_view view : framebuffer->color_attachments) {
-			aprend_texture2d attachment             = view->texture._t2d;
-			const SPUDGPU_IMAGE_LAYOUT final_layout = aprend_immediate_final_layout(attachment->current_layout, working);
-			spudgpu_cmd_image_barrier(cmd, attachment->image, attachment->current_layout, working);
+			// The one mip of one layer the attachment's view covers.
+			aprend_texture2d attachment                     = view->texture._t2d;
+			const aprend_texture_range covered              = aprend_texture_view_range(view);
+			const spudgpu_image_view_desc_subresource_range range = aprend_texture_range_spudgpu(covered);
+			const SPUDGPU_IMAGE_LAYOUT found                = *attachment->tracking.at(covered.base_mip, covered.base_layer);
+			const SPUDGPU_IMAGE_LAYOUT final_layout         = aprend_immediate_final_layout(found, working);
+			spudgpu_cmd_image_barrier_subresource(cmd, attachment->image, &range, found, working);
 			spudgpu_cmd_clear_color_attachment(
 			    cmd, aprend_texture_view_get_spudgpu_image_view(view), r, g, b, a, attachment->desc.width, attachment->desc.height);
 			if (final_layout != working)
-				spudgpu_cmd_image_barrier(cmd, attachment->image, working, final_layout);
+				spudgpu_cmd_image_barrier_subresource(cmd, attachment->image, &range, working, final_layout);
 		}
 	});
 	if (!ok)
 		return false;
 	for (aprend_texture_view view : framebuffer->color_attachments) {
-		aprend_texture2d attachment = view->texture._t2d;
-		attachment->current_layout  = aprend_immediate_final_layout(attachment->current_layout, working);
+		aprend_texture2d attachment   = view->texture._t2d;
+		SPUDGPU_IMAGE_LAYOUT *tracked = attachment->tracking.at(view->desc.base_mip, view->desc.base_layer);
+		*tracked                      = aprend_immediate_final_layout(*tracked, working);
 	}
 	return true;
 }
@@ -210,7 +233,8 @@ bool aprend_framebuffer_clear_depth(
 	aprend_texture2d attachment_texture = view->texture._t2d;
 
 	return aprend_immediate_on_texture(
-	    attachment_texture, queue, false, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	    attachment_texture, queue, false, view->desc.base_mip, view->desc.base_layer, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	    SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	    [&](spudgpu_command_list cmd) {
 		    spudgpu_cmd_clear_depth_attachment(
 		        cmd, aprend_texture_view_get_spudgpu_image_view(view), clear_depth, clear_stencil, depth, stencil, attachment_texture->desc.width,

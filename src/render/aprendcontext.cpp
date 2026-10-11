@@ -173,6 +173,7 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 			goto failedattempt;
 		result->unified_memory         = properties.unified_memory;
 		result->device_mappable_memory = properties.device_mappable_memory;
+		result->layered_rendering      = properties.layered_rendering;
 	}
 
 	sr = spudgpu_create_fence(desc->device, SPUDGPU_FENCE_FLAG_NONE, 0, &result->frame_fence);

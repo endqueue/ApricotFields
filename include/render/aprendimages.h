@@ -44,6 +44,10 @@ enum {
 
 /**
  * @brief Configuration descriptor for a 2D texture or 2D texture array.
+ *
+ * There is no 1D texture. A row of texels (a lookup table, a ramp, a
+ * gradient) is a 2D texture with `height` 1, declared `sampler2D` in the
+ * shader and sampled at `vec2(u, 0.5)`.
  */
 typedef struct aprend_texture2d_desc {
 	/** Width of mip 0 in texels. Never 0. */
@@ -66,6 +70,15 @@ typedef struct aprend_texture2d_desc {
 	uint32_t array_layers;
 	/** 1 for no MSAA. More than 1 is refused: MSAA is not supported yet. */
 	uint32_t sample_count;
+	/**
+	 * Whether the texture's layers can be viewed as the faces of cubes
+	 * (APREND_TEXTURE_VIEW_SHAPE_CUBE and _CUBE_ARRAY). Such a texture has
+	 * #width equal to #height and #array_layers a multiple of six, each six
+	 * in a row being the +X, -X, +Y, -Y, +Z and -Z faces of one cube. There
+	 * is no cube texture type: a cube is this texture seen through a cube
+	 * view, and each face is rendered to through a one-layer 2D view of it.
+	 */
+	bool cube_capable;
 
 #if _DEBUG
 	/** A name for diagnostics. May be NULL. */
@@ -87,7 +100,9 @@ typedef struct aprend_texture2d_t *aprend_texture2d;
  * @param[in] desc     Texture configuration. Only read during the call.
  *
  * @return The texture, or NULL if @p instance or @p desc is NULL, `width`,
- *         `height` or `format` is 0, `sample_count` is above 1, or the image
+ *         `height` or `format` is 0, `sample_count` is above 1,
+ *         `cube_capable` is set on a texture that isn't square or whose
+ *         `array_layers` is not a multiple of six, or the image
  *         can't be created.
  *
  * @see aprend_texture2d_destroy()
@@ -482,46 +497,212 @@ enum {
 };
 
 /**
+ * @brief The shape a texture view has for the shader or the pass that uses
+ * it.
+ *
+ * It has to be what the shader declares for the slot (a `sampler2D`, a
+ * `sampler2DArray`, a `samplerCube`), and it says how many layers the view
+ * may cover.
+ */
+typedef uint32_t APREND_TEXTURE_VIEW_SHAPE;
+enum {
+	/** Not a shape: view creation refuses it. */
+	APREND_TEXTURE_VIEW_SHAPE_NONE       = 0,
+	/** One layer of a 2D texture. `layer_count` is 1. */
+	APREND_TEXTURE_VIEW_SHAPE_2D         = 1,
+	/** One or more layers of a 2D texture, as an array. */
+	APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY   = 2,
+	/**
+	 * Six layers of a cube-capable 2D texture, as one cube. `base_layer` is
+	 * 0 and `layer_count` is 6: one cube of several is reached through
+	 * APREND_TEXTURE_VIEW_SHAPE_CUBE_ARRAY.
+	 */
+	APREND_TEXTURE_VIEW_SHAPE_CUBE       = 3,
+	/**
+	 * A multiple of six layers of a cube-capable 2D texture, as an array of
+	 * cubes.
+	 */
+	APREND_TEXTURE_VIEW_SHAPE_CUBE_ARRAY = 4,
+	/** A 3D texture. `base_layer` is 0 and `layer_count` is 1. */
+	APREND_TEXTURE_VIEW_SHAPE_3D         = 5
+};
+
+/**
+ * @brief Which part of a texture's format a view covers.
+ *
+ * A color format has its color and nothing else. A depth format has its
+ * depth. A depth and stencil format (SPUDGPU_FORMAT_D24_UNORM_S8_UINT,
+ * SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT) has both, and a view of one says
+ * which it is of: a pass writes both through one view, and a shader reads
+ * one of them through a view.
+ */
+typedef uint32_t APREND_TEXTURE_VIEW_ASPECT;
+enum {
+	/** Not an aspect: view creation refuses it. */
+	APREND_TEXTURE_VIEW_ASPECT_NONE          = 0,
+	/** The color of a color format. */
+	APREND_TEXTURE_VIEW_ASPECT_COLOR         = 1,
+	/**
+	 * The depth. In a sampled slot it is read as a float in the first
+	 * component (`sampler2D`, or `sampler2DShadow` with a comparison
+	 * sampler).
+	 */
+	APREND_TEXTURE_VIEW_ASPECT_DEPTH         = 2,
+	/**
+	 * The stencil of a depth and stencil format. In a sampled slot it is
+	 * read as an unsigned integer in the first component (`usampler2D`,
+	 * with `texelFetch` or a nearest sampler: an integer isn't filtered).
+	 */
+	APREND_TEXTURE_VIEW_ASPECT_STENCIL       = 4,
+	/**
+	 * The depth and the stencil of a depth and stencil format together:
+	 * the depth target of a pass.
+	 */
+	APREND_TEXTURE_VIEW_ASPECT_DEPTH_STENCIL = 6
+};
+
+/**
+ * @brief For aprend_texture_view_desc::mip_count and ::layer_count: every
+ * mip, or every layer, from the base one to the texture's last.
+ */
+#define APREND_TEXTURE_VIEW_REMAINING UINT32_MAX
+
+/**
+ * @brief Configuration descriptor for a texture view: what it is used as,
+ * its shape, and the mips and layers of the texture it covers.
+ *
+ * No field has a default. A count of 0 is refused; "all the rest" is
+ * APREND_TEXTURE_VIEW_REMAINING, said outright.
+ *
+ * What a use allows:
+ *
+ * | `type`                                     | Shape              | Mips | Layers        |
+ * |--------------------------------------------|--------------------|------|---------------|
+ * | APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET      | 2D or 2D array     | 1    | as the shape  |
+ * | APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL     | 2D or 2D array     | 1    | as the shape  |
+ * | APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS  | any for its texture| 1    | as the shape  |
+ * | APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE   | any for its texture| any  | as the shape  |
+ *
+ * A pass renders to one mip. Through 2D views it renders to one layer, so
+ * one cube face or one shadow cascade is a 2D view of that layer. Through 2D
+ * array views it is a layered pass: it renders to every layer the views
+ * cover at once, and the pass's vertex shader (or mesh shader) writes the
+ * layer each primitive is drawn to, counted from the view's first layer
+ * (`gl_Layer` in GLSL). A primitive whose layer is not written is drawn to
+ * the first; one written past the last is undefined. All six faces of a cube
+ * are rendered in one pass through a 2D array view of its six layers, not a
+ * cube view. A 2D array view of one layer is a layered pass too, and is not
+ * interchangeable with a 2D view in the same pass.
+ *
+ * A layered pass needs a device that supports it
+ * (SPUDGPU_DEVICE_PROPERTIES::layered_rendering of the device the instance
+ * was created with): on one that doesn't, creating a 2D array view of type
+ * RENDER_TAGET or DEPTH_STENCIL fails.
+ *
+ * A storage image slot reads and writes one mip. That is what a storage
+ * image is in every graphics API (an image store takes no mip level), not a
+ * limit of Aprend's: a shader that writes several mips in one dispatch
+ * declares an array of slots (`image2D mips[N]`, aprend_binding_desc::_count)
+ * and is given a one-mip view in each.
+ *
+ * What `aspect` has to be:
+ *
+ * | Texture's format  | `type`                                  | `aspect`       |
+ * |-------------------|-----------------------------------------|----------------|
+ * | color             | any                                     | COLOR          |
+ * | depth             | DEPTH_STENCIL, SHADER_RESOURCE          | DEPTH          |
+ * | depth and stencil | DEPTH_STENCIL                           | DEPTH_STENCIL  |
+ * | depth and stencil | SHADER_RESOURCE                         | DEPTH or STENCIL |
+ *
+ * So a depth and stencil texture has one view to be rendered to and another
+ * for each of the depth and the stencil a shader reads. Both are read in
+ * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, which Aprend moves the whole mip
+ * into: the stencil can't be sampled in a pass that has the same mip as its
+ * depth target.
+ */
+typedef struct aprend_texture_view_desc {
+	/** What the view is used as. Not APREND_TEXTURE_VIEW_TYPE_NONE. */
+	APREND_TEXTURE_VIEW_TYPE type;
+	/** The view's shape. Not APREND_TEXTURE_VIEW_SHAPE_NONE. */
+	APREND_TEXTURE_VIEW_SHAPE shape;
+	/**
+	 * The part of the texture's format the view covers. Not
+	 * APREND_TEXTURE_VIEW_ASPECT_NONE; see the table above.
+	 */
+	APREND_TEXTURE_VIEW_ASPECT aspect;
+	/** The first mip level the view covers. Below the texture's mip count. */
+	uint32_t base_mip;
+	/**
+	 * How many mip levels, from #base_mip. Not 0, and not past the
+	 * texture's last; APREND_TEXTURE_VIEW_REMAINING for all the rest.
+	 */
+	uint32_t mip_count;
+	/** The first array layer the view covers. Below the texture's layer count. */
+	uint32_t base_layer;
+	/**
+	 * How many array layers, from #base_layer. Not 0, and not past the
+	 * texture's last; APREND_TEXTURE_VIEW_REMAINING for all the rest.
+	 */
+	uint32_t layer_count;
+} aprend_texture_view_desc;
+
+/**
  * @brief Opaque handle to a view of a texture: what a pass renders to and a
  * binding set reads through.
+ *
+ * A view covers some of its texture's mips and layers, and Aprend tracks the
+ * image layout of each mip of each layer on its own. So one mip of a texture
+ * can be rendered to, or written by a compute shader, while another is
+ * sampled, through two views of it; what can't be is the same mip of the
+ * same layer used two ways at once.
  */
 typedef struct aprend_texture_view_t *aprend_texture_view;
 
 /**
- * @brief Creates a view of a 2D texture, covering every mip and array layer.
+ * @brief Creates a view of some of a 2D texture's mips and layers.
  *
  * @param[in] texture Texture to view. It must outlive the view.
- * @param[in] type    What the view is used as. Not
- *                    APREND_TEXTURE_VIEW_TYPE_NONE.
+ * @param[in] desc    The view's use, shape and range. Only read during the
+ *                    call.
  *
- * @return The view, or NULL if @p texture is NULL, @p type is
- *         APREND_TEXTURE_VIEW_TYPE_NONE or not an APREND_TEXTURE_VIEW_TYPE,
- *         @p texture was created without the usage bit @p type needs, or the
- *         view can't be created.
+ * @return The view, or NULL if @p texture or @p desc is NULL, `type` or
+ *         `shape` is not a value of its enum, the texture was created without
+ *         the usage bit `type` needs, `shape` is APREND_TEXTURE_VIEW_SHAPE_3D,
+ *         a cube shape is asked of a texture that is not cube-capable, the
+ *         range starts or runs past the texture's mips or layers or has a
+ *         count of 0, the range is not one the shape and `type` allow (see
+ *         aprend_texture_view_desc), `aspect` is not the one the texture's
+ *         format and `type` take, a 2D array view to render to is asked
+ *         of a device without layered rendering, or the view can't be
+ *         created.
  *
  * @see aprend_destroy_texture_view()
  */
 aprend_texture_view aprend_texture_view_create_2d(
 	aprend_texture2d texture,
-	APREND_TEXTURE_VIEW_TYPE type);
+	const aprend_texture_view_desc *desc);
 
 /**
- * @brief Creates a view of a 3D texture, covering every mip.
+ * @brief Creates a view of some of a 3D texture's mips.
  *
  * @param[in] texture Texture to view. It must outlive the view.
- * @param[in] type    What the view is used as. Not
- *                    APREND_TEXTURE_VIEW_TYPE_NONE.
+ * @param[in] desc    The view's use, shape and range. `shape` is
+ *                    APREND_TEXTURE_VIEW_SHAPE_3D, `base_layer` 0 and
+ *                    `layer_count` 1. Only read during the call.
  *
- * @return The view, or NULL if @p texture is NULL, @p type is
- *         APREND_TEXTURE_VIEW_TYPE_NONE or not an APREND_TEXTURE_VIEW_TYPE,
- *         @p texture was created without the usage bit @p type needs, or the
- *         view can't be created.
+ * @return The view, or NULL if @p texture or @p desc is NULL, `type` is not
+ *         a value of its enum or is a render target or depth use, the texture
+ *         was created without the usage bit `type` needs, `shape` is not
+ *         APREND_TEXTURE_VIEW_SHAPE_3D, the mip range starts or runs past the
+ *         texture's mips or has a count of 0, a storage view covers more than
+ *         one mip, the layer range is not layer 0 alone, or the view can't be
+ *         created.
  *
  * @see aprend_destroy_texture_view()
  */
 aprend_texture_view aprend_texture_view_create_3d(
 	aprend_texture3d texture,
-	APREND_TEXTURE_VIEW_TYPE type);
+	const aprend_texture_view_desc *desc);
 
 /**
  * @brief Destroys a texture view. Its texture is not destroyed.
@@ -543,6 +724,17 @@ void aprend_destroy_texture_view(aprend_texture_view view);
  * @return The type, or APREND_TEXTURE_VIEW_TYPE_NONE if @p view is NULL.
  */
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view);
+
+/**
+ * @brief Reads the descriptor a view was created with.
+ *
+ * @param[in] view View to read.
+ *
+ * @return The descriptor, with `mip_count` and `layer_count` as real counts
+ *         where APREND_TEXTURE_VIEW_REMAINING was given; zeroed if @p view is
+ *         NULL.
+ */
+aprend_texture_view_desc aprend_texture_view_get_desc(aprend_texture_view view);
 
 /**
  * @brief Gets the shape of what a view looks at.

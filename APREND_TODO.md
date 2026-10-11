@@ -10,15 +10,28 @@ unfinished in it.
 
 ## State of the code
 
-- **Compiled on macOS on 2026-10-10; not run.** Everything in the three lists
-  below built with no errors and no warnings: Aprend with Clang, against
+- **Compiled on macOS on 2026-10-10; run there in part.** Everything in this section
+  built with no errors and no warnings: Aprend with Clang, against
   SpudGPU's Metal backend, through trellislib's `trellislib-macos-metal`
-  preset. It needed one fix outside this repo: `spudgpu.h` had lost the
-  declarations of the command allocator and command list calls and
-  `spudgpu_queue_wait_idle` in the fence rewrite, and they were put back.
+  preset. That is two builds the same day: the first covered the three
+  lists that follow, the second everything after them. Each needed one fix
+  outside this repo. The first: `spudgpu.h` had lost the declarations of the
+  command allocator and command list calls and `spudgpu_queue_wait_idle` in
+  the fence rewrite, and they were put back. The second: a rename had run
+  over the cube view constants in SpudGPU's Metal image backend.
   Still to do, and what "compiled" below doesn't mean:
-  - Nothing has run on a device. The repo's headless tests pass, and none of
-    them touches Aprend.
+  - One application has run on it, on macOS over Metal, 2026-10-11, and
+    drew correctly. That exercises what that application uses and no more:
+    instance creation, shaders and graphics pipelines (one of them with a
+    push constant range, created and never drawn with), a uniform buffer
+    in a binding set, vertex buffers written directly (unified memory) and
+    destroyed through the release queue, 2D color and depth views, passes
+    to a texture, and the swap chain. Each "none of it has run" below
+    still stands for everything else: no push constant set, nothing
+    staged, no compute, no indirect draw, no view of part of a texture, no
+    layered pass. Nothing checked the release queue for an early release
+    beyond the picture being right.
+  - The repo's headless tests pass, and none of them touches Aprend.
   - Not compiled with MSVC or GCC, and SpudGPU's D3D12 and Vulkan backends
     are not compiled at all.
 - **The changes of 2026-10-09 are compiled on macOS only**:
@@ -48,8 +61,8 @@ unfinished in it.
     their layouts before the pass begins. Layout tracking covers 3D textures.
   - None of it has run: no texture has been sampled and no storage buffer or
     storage image has been read through a set.
-- **The move to SpudGPU's memory kinds, 2026-10-10, is not compiled on any
-  backend**. `SPUDGPU_MEMORY_FLAGS` is gone and every buffer names one
+- **The move to SpudGPU's memory kinds, 2026-10-10, is compiled on macOS
+  only**. `SPUDGPU_MEMORY_FLAGS` is gone and every buffer names one
   `SPUDGPU_MEMORY_KIND`; where the bullets below say host-visible or
   device-local, read the kind:
   - Uniform buffers and every staging buffer written by the CPU are `UPLOAD`;
@@ -133,7 +146,7 @@ unfinished in it.
     read, no mip below 0 written, and no staged buffer copied: every device
     this has been near is unified, so the staged path is the least tested
     code in Aprend.
-- **Compute, written 2026-10-10 and not compiled** on any platform (item 14):
+- **Compute, written 2026-10-10 and compiled on macOS only** (item 14):
   - `aprend_shader` accepts the compute stage and remembers its stage; a
     pipeline refuses a shader given as another stage than its own.
   - `aprend_compute_pipeline`: a shader, entry point, binding layouts and push
@@ -150,8 +163,8 @@ unfinished in it.
   - A binding set records every storage buffer it holds, not only the staged
     ones.
   - None of it has run: no compute shader has been dispatched on any backend.
-- **Indirect draws and mesh shaders, written 2026-10-10 and not compiled** on
-  any platform (item 15):
+- **Indirect draws and mesh shaders, written 2026-10-10 and compiled on
+  macOS only** (item 15):
   - A storage buffer, or a storage buffer set, created with
     `APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS` is the argument buffer of
     `APREND_COMMAND_DRAW_INDIRECT` and `APREND_COMMAND_DRAW_INDEXED_INDIRECT`,
@@ -173,8 +186,8 @@ unfinished in it.
   - `APREND_RENDERING_FLAG_EXECUTES_BUNDLES` and `BEGIN_RENDERING`'s `_flags`
     are gone (item 33).
   - None of it has run.
-- **The release queue, written 2026-10-10 and not compiled** on any
-  platform (item 12):
+- **The release queue, written 2026-10-10 and compiled on macOS
+  only** (item 12):
   - An instance has a queue of what was destroyed while the GPU might still
     use it. Each entry carries the submit serial current when it was
     retired and is released, front first, once the instance's fence has
@@ -201,6 +214,61 @@ unfinished in it.
 - **The thread contract is in the headers** (2026-10-10, comments only):
   `aprendcontext.h` holds the rule and the other six say what is particular
   to them. It describes the code as it is and changes none of it.
+- **Views of a range, cubes and per-mip layouts, written 2026-10-10 and
+  compiled on macOS only** (items 16 and 17):
+  - `aprend_texture_view_desc` replaces the `type` argument of the two view
+    create calls: a use, a shape (2D, 2D array, cube, cube array, 3D) and a
+    mip and layer range, with `APREND_TEXTURE_VIEW_REMAINING` for "to the
+    end". A 2D texture with several layers is viewed as a 2D array; before,
+    it was asked for as a plain 2D view, which is invalid on Vulkan.
+  - `aprend_texture2d_desc::cube_capable`. A cube is a texture and a view.
+  - A texture tracks a layout for each mip of each layer, and a command list
+    an entry for each it touches. A view is moved over its range, with one
+    barrier where the range is in one layout. Conflicts in a pass or a
+    dispatch are by overlap, so two views of one texture that share no mip
+    of a layer can be read and written together.
+  - The texture update, readback and clear calls move only the mip of the
+    layer they touch.
+  - A storage image's ordering barrier is SpudGPU's layout barrier from
+    GENERAL to GENERAL over the view's range, in place of a pipeline barrier
+    over the whole image.
+  - SpudGPU changes it rests on, built for Metal only: cube-capable images, D3D12
+    state for each subresource, Vulkan's whole-image barrier covering every
+    mip and layer, and the storage layout meaning the storage state on D3D12.
+  - None of it has run. A view of part of a texture has never been created.
+- **Layered passes, written 2026-10-10 and compiled on macOS only**
+  (item 16):
+  - A view of type RENDER_TAGET or DEPTH_STENCIL may be a 2D array of one
+    mip, on a device that reports
+    `SPUDGPU_DEVICE_PROPERTIES::layered_rendering` (read once into the
+    instance); on any other, creating one fails.
+  - BEGIN_RENDERING over 2D array views is a layered pass: the compile
+    refuses targets that differ in shape or layer count, and the layer count
+    goes to SpudGPU as `spudgpu_rendering_begin_desc::layer_count` (0 for a
+    pass over 2D views). Layouts and conflicts needed nothing new: a target
+    is already moved, and checked for overlap, over its view's range.
+  - SpudGPU changes it rests on, built for Metal only: `layer_count`, the
+    `layered_rendering` property (which enables `shaderOutputLayer` on
+    Vulkan where the device has it), and Metal pipelines always stating
+    their primitive class, which Metal requires in a layered pass.
+  - No shader that writes a layer has been through SpudGPU's SPIR-V
+    cross-compile to HLSL or MSL, and no layered pass has run on any backend.
+- **View aspects and stencil sampling, written 2026-10-11 and not compiled**
+  on any platform (item 16):
+  - `aprend_texture_view_desc::aspect` (COLOR, DEPTH, STENCIL,
+    DEPTH_STENCIL), required and checked against the texture's format and
+    the view's type. Before, Aprend chose it from the format, and a sampled
+    view of a depth and stencil texture was always the depth.
+  - A SHADER_RESOURCE view with the STENCIL aspect is what a shader samples
+    the stencil through, as an unsigned integer.
+  - SpudGPU changes it rests on, equally unbuilt: named aspect bits and one
+    rule for a view's aspect; Metal's stencil view format; and on D3D12 a
+    view that keeps a shader resource desc and an unordered access desc
+    beside its attachment desc, readable formats for depth and stencil, and
+    typeless depth resources. The last three also mean a texture that is
+    rendered to and sampled, color or depth, was not correctly sampled on
+    D3D12 before; that backend has never been built or run.
+  - No stencil has been sampled on any backend.
 - **No tests.** There is no `tests/aprend_tests.*`: the repo's tests are
   headless with no GPU, and nothing in Aprend runs without a device.
 
@@ -224,7 +292,7 @@ shader. It belongs with the rewrite `aprendbuffers.h` already says it is due
 
 ### 2. A host-visible storage buffer on D3D12
 
-Closed 2026-10-10, not compiled. A storage buffer written directly is
+Closed 2026-10-10, compiled on macOS only. A storage buffer written directly is
 `SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE`, which SpudGPU reports per device
 (`SPUDGPU_DEVICE_PROPERTIES::device_mappable_memory`) and which D3D12 backs
 with a custom heap, not an upload heap. A device without it takes the staged
@@ -338,7 +406,7 @@ buffer with one the GPU is reading. Left over:
   waits for the last serial of the frame that used the index before. Work a
   caller submits to SpudGPU itself is outside it. An instance submits on one
   queue, the queue of its first submission, and a submission on another is
-  refused (written 2026-10-10, not compiled): the serials are an order of
+  refused (written 2026-10-10, compiled on macOS only): the serials are an order of
   completion on a single queue only. A second queue, for copies or compute,
   would need a fence and serials of its own.
 - **The swap chain still waits for its queue to go idle** before a resize or
@@ -453,10 +521,6 @@ Compute is in (see "State of the code"): compute shaders,
 `aprend_compute_pipeline`, and `SET_COMPUTE_PIPELINE` and `DISPATCH` in the
 same command list as rendering, outside a pass. Left over:
 
-- **Whole textures only.** Reading mip N and writing mip N + 1 of one
-  texture, which is most of what Hazel uses compute for (hierarchical depth,
-  pre-integration, bloom), waits on a view of one mip (item 16) and layout
-  tracking per mip (item 17).
 - **Every storage buffer and storage image of a dispatch's sets gets an
   ordering barrier before it**, and the same before a pass for the sets its
   draws read. A set doesn't say whether the shader writes a slot, so Aprend
@@ -506,22 +570,77 @@ is left is how the built part behaves:
   create on a device without it, with a message; Aprend has no query of its
   own, since the caller holds the device and can ask SpudGPU.
 
-### 16. No per-mip or per-layer views, no cube textures
+### 16. Views of a range, cubes: what is left
 
-A texture view always covers every mip and layer. Rendering to one mip or one
-array layer (a shadow cascade, a cube face) isn't possible, and there is no cube
-texture type although SpudGPU has cube images and views. The layout tracking in
-`aprendcommands.cpp` is per whole texture and has to become per subresource for
-it (item 17). Hazel: `ImageViewSpecification`, `TextureCube`.
+A view covers a range of its texture's mips and layers and has a shape, and a
+2D texture can be cube-capable (see "State of the code"). Left over:
 
-### 17. Layout tracking is per whole texture
+- **A pass renders to one mip.** Through 2D views it renders to one layer;
+  through 2D array views to all their layers at once, the layer chosen in
+  the vertex or mesh shader (see "State of the code"). What that leaves:
+  - Rendering to several mips in one pass isn't offered, and no graphics
+    API offers it.
+  - A device without `SPUDGPU_DEVICE_PROPERTIES::layered_rendering` can't
+    make a 2D array view to render to, and Aprend has no fallback: the
+    caller renders a layer at a time through 2D views there. Aprend has no
+    query of its own for it; the caller reads the device's properties.
+  - The layer can't be chosen in a geometry shader, which Aprend doesn't
+    take and Metal doesn't have.
+  - Multiview (one draw repeated to each layer by the device, a view index
+    in the shader) isn't offered. SpudGPU has nothing for it.
+  - The framebuffer's attachments and its clear calls are still mip 0 of
+    layer 0; an `aprend_framebuffer` is never layered.
+- **A storage image slot is one mip, and stays so.** It is not a gap: an
+  image store takes no mip level in SPIR-V, and a D3D12 unordered access
+  view is one mip slice. Writing several mips in one dispatch is an array
+  of slots (`image2D mips[N]`, `aprend_binding_desc::_count`) with a one-mip
+  view in each, which the binding set and the per-mip layouts already take;
+  `aprendimages.h` says so. No dispatch has run with one.
+- **1D textures and 1D views: not planned until something needs them.** A
+  lookup table, ramp or gradient is a 2D texture one texel high, declared
+  `sampler2D` and sampled at `vec2(u, 0.5)`: the same memory and the same
+  result. A 1D type would have to be the narrowest of the three APIs', and
+  Metal refuses a 1D texture as a render target, with mips, and in a
+  compressed format. Hazel has none either: its `TextureType` is 2D and
+  cube, and its lookup tables are `Texture2D`. SpudGPU has the 1D image and
+  view types; Aprend doesn't use them.
+- **A view's format is its texture's.** No view in another format of the
+  same size. The one exception is built: a view of a depth and stencil
+  texture says which aspect it covers, so the stencil can be sampled (see
+  "State of the code").
+- **The stencil can't be sampled in a pass that tests against the same
+  mip's depth.** A mip of a layer has one layout, not one for each aspect
+  (item 17), so sampling either aspect moves both out of the attachment
+  layout. Read-only depth with the stencil sampled needs a layout for each
+  aspect and SpudGPU's read-only depth and stencil layouts.
+- **Not taken from Hazel, on purpose.** Its `Image2D` makes and keeps
+  per-layer and per-mip views itself (`CreatePerLayerImageViews`,
+  `GetMipImageView`); here the caller makes the views it needs and owns
+  them. Its `TextureCube` is a class of its own and an asset type; here a
+  cube is a texture and a view.
+- **SpudGPU's Rust bindings don't have `cube_capable`**; their image
+  descriptor was already out of step with the header.
 
-The command list tracks a layout for each 2D and 3D texture it uses: pass
-attachments, the present source, and the textures of a pass's binding sets. It
-is one layout for the whole texture, so a texture can't be sampled at one mip
-while another is rendered to, and a texture can't be both in a pass's sets and
-one of its targets, and a dispatch can't read one mip of a texture and write
-another. Becomes per subresource with item 16.
+Hazel: `ImageViewSpecification`, `ImageSpecification` (`Mips`, `Layers`),
+`TextureCube`.
+
+### 17. Layout tracking: what is left
+
+A layout is tracked for each mip of each layer (see "State of the code"), so
+one mip can be sampled while another is rendered to or written by a compute
+shader. Left over:
+
+- **A list keeps an entry for every mip of every layer it touches**, found by
+  a linear search. A texture with a full mip chain and many layers, used by
+  many lists, makes that slow before it makes it wrong.
+- **A range whose subresources differ is moved one barrier each.** Runs of
+  equal layouts inside it aren't merged.
+- **A resize to a different mip count replaces the layout storage**, so a
+  list compiled before the resize holds pointers into what was freed. With
+  the same mip count the storage is kept. The header says to recompile after
+  a resize; nothing checks (item 32).
+- **The stencil of a depth and stencil texture follows its depth.** There is
+  one layout for a mip of a layer, not one for each aspect.
 
 ### 32. Texture layouts: what the command list gets wrong or can't do
 
@@ -668,8 +787,9 @@ Two ways it gets built:
   layout at the end. Integer and depth formats can't be blitted with a linear
   filter everywhere, and SpudGPU has no query for it.
 - **Aprend draws each level**: a pass per level that samples the one above.
-  It needs a view of one mip (item 16), layout tracking per mip (item 17) and
-  a shader Aprend ships, which is item 22's open question.
+  A view of one mip and layout tracking per mip are there now (items 16 and
+  17), so a caller can already do this with its own shader. For Aprend to do
+  it needs a shader Aprend ships, which is item 22's open question.
 
 Either way there are two forms, both asked for by the caller and never done
 by `aprend_texture*_update` on its own: an immediate one for a texture filled
@@ -692,7 +812,7 @@ the same thing everywhere, and offers neither.
   draws once and replaying them, an Aprend command list already does: it is
   compiled once and submitted as often as its textures and buffers allow.
   `APREND_RENDERING_FLAG_EXECUTES_BUNDLES` and the `_flags` of
-  `BEGIN_RENDERING` were removed on 2026-10-10 (written, not compiled): the
+  `BEGIN_RENDERING` were removed on 2026-10-10 (written, compiled on macOS only): the
   flag told SpudGPU a pass would execute bundles when no command could
   record or execute one. If bundles are wanted after all, the flag comes
   back with the commands that give it something to mean.
@@ -734,8 +854,8 @@ and 5 are closed and their numbers are not reused.
 2. What the release queue made possible and isn't built: freeing staging
    copies and a shared upload path (items 13 and 6), and rewriting a binding
    set in place (item 9).
-3. Items 16, 17 and the rest of 32: per-mip views and texture layouts,
-   which also give compute its mip chains (item 14).
+3. The rest of item 32: what the command list still gets wrong about
+   texture layouts.
 4. Item 18, which settles item 1 and unblocks 19.
 5. Items 19, 20, 21: material, pass and draw list.
 6. Items 25, 26, 29 and 31 as SpudGPU gains them, and item 2; then 23 and 24.

@@ -339,48 +339,88 @@ void aprend_send_command(
 	cmd_list->commands.emplace_back(cmd);
 }
 
-/* Moves the image whose tracked layout is at [tracked] into [layout]. Unless
- * [skip_if_same], issued even when the layout already matches: back-to-back
- * passes on the same attachment (e.g. a LOAD after a previous pass's STORE)
- * still need the barrier's memory dependency. Two reads in a row don't, which
+/* Where [cmd_list] keeps the layout of (mip, layer) of [range]'s texture, as
+ * an index into layout_uses, adding it the first time the list uses that
+ * subresource: it starts from the layout everything submitted so far leaves
+ * it in. An index, not a pointer: adding grows the vector. */
+static size_t aprend_cmd_layout_use(
+    aprend_command_list cmd_list,
+    const aprend_texture_range &range,
+    uint32_t mip,
+    uint32_t layer) {
+	for (size_t i = 0; i < cmd_list->layout_uses.size(); ++i) {
+		const auto &use = cmd_list->layout_uses[i];
+		if (use.image == range.image && use.mip == mip && use.layer == layer)
+			return i;
+	}
+	SPUDGPU_IMAGE_LAYOUT *tracked = range.tracking->at(mip, layer);
+	cmd_list->layout_uses.push_back({range.image, mip, layer, tracked, *tracked, *tracked});
+	return cmd_list->layout_uses.size() - 1;
+}
+
+/* Moves every mip of every layer in [range] into [layout]. Unless
+ * [skip_if_same], a barrier is recorded even for one already there:
+ * back-to-back passes on the same attachment (a LOAD after a previous pass's
+ * STORE) still need the barrier's memory dependency, and for a storage image
+ * a barrier from GENERAL to GENERAL is what orders one shader's writes before
+ * the next one's accesses (spudgpu.h). Two reads in a row need nothing, which
  * is what [skip_if_same] is for.
  *
- * Tracks the layout in [cmd_list]'s own layout_uses, never on the texture:
- * the texture's layout only changes once the list is actually submitted. */
-static void aprend_cmd_transition_image(
+ * The subresources of a range are usually all in one layout, and then it is
+ * one barrier over the range; where they differ, each is moved from its own.
+ *
+ * Tracks the layouts in [cmd_list]'s own layout_uses, never on the texture:
+ * a texture's layouts only change once the list is actually submitted.
+ * Recorded outside any pass. */
+static void aprend_cmd_transition_range(
     aprend_command_list cmd_list,
-    spudgpu_image image,
-    SPUDGPU_IMAGE_LAYOUT *tracked,
+    const aprend_texture_range &range,
     SPUDGPU_IMAGE_LAYOUT layout,
     bool skip_if_same) {
-	aprend_command_list_t::layout_use *use = nullptr;
-	for (auto &u : cmd_list->layout_uses)
-		if (u.image == image)
-			use = &u;
-	if (!use) {
-		// First use in this list: start from the layout everything submitted
-		// so far leaves it in.
-		cmd_list->layout_uses.push_back({image, tracked, *tracked, *tracked});
-		use = &cmd_list->layout_uses.back();
+	// Make sure the list has an entry for each subresource, and see whether
+	// they agree on where they are now.
+	bool uniform                  = true;
+	SPUDGPU_IMAGE_LAYOUT from     = SPUDGPU_IMAGE_LAYOUT_UNDEFINED;
+	for (uint32_t layer = 0; layer < range.layer_count; ++layer) {
+		for (uint32_t mip = 0; mip < range.mip_count; ++mip) {
+			const size_t index                = aprend_cmd_layout_use(cmd_list, range, range.base_mip + mip, range.base_layer + layer);
+			const SPUDGPU_IMAGE_LAYOUT current = cmd_list->layout_uses[index].final_layout;
+			if (layer == 0 && mip == 0)
+				from = current;
+			else if (current != from)
+				uniform = false;
+		}
 	}
 
-	if (skip_if_same && use->final_layout == layout)
-		return;
-	spudgpu_cmd_image_barrier(cmd_list->cmd_list, image, use->final_layout, layout);
-	use->final_layout = layout;
+	if (uniform) {
+		if (skip_if_same && from == layout)
+			return;
+		const spudgpu_image_view_desc_subresource_range spud_range = aprend_texture_range_spudgpu(range);
+		spudgpu_cmd_image_barrier_subresource(cmd_list->cmd_list, range.image, &spud_range, from, layout);
+	}
+	for (uint32_t layer = 0; layer < range.layer_count; ++layer) {
+		for (uint32_t mip = 0; mip < range.mip_count; ++mip) {
+			const size_t index = aprend_cmd_layout_use(cmd_list, range, range.base_mip + mip, range.base_layer + layer);
+			auto &use          = cmd_list->layout_uses[index];
+			if (!uniform && !(skip_if_same && use.final_layout == layout)) {
+				spudgpu_image_view_desc_subresource_range one{};
+				one.base_mip_level    = use.mip;
+				one.mip_level_count   = 1;
+				one.base_array_layer  = use.layer;
+				one.array_layer_count = 1;
+				spudgpu_cmd_image_barrier_subresource(cmd_list->cmd_list, range.image, &one, use.final_layout, layout);
+			}
+			use.final_layout = layout;
+		}
+	}
 }
-static void aprend_cmd_transition_texture(
-    aprend_command_list cmd_list,
-    aprend_texture2d tex,
-    SPUDGPU_IMAGE_LAYOUT layout) {
-	aprend_cmd_transition_image(cmd_list, tex->image, &tex->current_layout, layout, false);
-}
-/* Render targets are always 2D views (see aprend_begin_rendering_valid). */
+/* A view's whole range, with a barrier whether or not it is already there:
+ * for a pass's targets. */
 static void aprend_cmd_transition_view(
     aprend_command_list cmd_list,
     aprend_texture_view view,
     SPUDGPU_IMAGE_LAYOUT layout) {
-	aprend_cmd_transition_texture(cmd_list, view->texture._t2d, layout);
+	aprend_cmd_transition_range(cmd_list, aprend_texture_view_range(view), layout, false);
 }
 
 /* PRESENT_TEXTURE: copies the source into the acquired back buffer and moves
@@ -421,7 +461,15 @@ static bool aprend_cmd_present_texture(
 	}
 
 	spudgpu_command_list cmd = cmd_list->cmd_list;
-	aprend_cmd_transition_texture(cmd_list, src, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC);
+	// What is presented is mip 0 of layer 0, and only that is moved.
+	aprend_texture_range presented{};
+	presented.image       = src->image;
+	presented.tracking    = &src->tracking;
+	presented.base_mip    = 0;
+	presented.mip_count   = 1;
+	presented.base_layer  = 0;
+	presented.layer_count = 1;
+	aprend_cmd_transition_range(cmd_list, presented, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, false);
 	spudgpu_cmd_image_barrier_view(cmd, back_view, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST);
 
 	uint32_t width  = src->desc.width < actual.width ? src->desc.width : actual.width;
@@ -455,7 +503,7 @@ static bool aprend_begin_rendering_valid(const APREND_COMMAND &command) {
 	const auto &p = command._params._begin_rendering;
 	for (uint32_t i = 0; i < p._color_target_count; ++i) {
 		if (!aprend_render_view_valid(p._color_targets[i].view)) {
-			printf("aprend: BEGIN_RENDERING color target %u is not a valid 2D texture view\n", i);
+			printf("aprend: BEGIN_RENDERING color target %u is not a view of a 2D texture\n", i);
 			return false;
 		}
 		/* spudgpu_color_attachment_desc has no resolve attachment yet, so a
@@ -466,11 +514,34 @@ static bool aprend_begin_rendering_valid(const APREND_COMMAND &command) {
 		}
 	}
 	if (p._depth_target.view && !aprend_render_view_valid(p._depth_target.view)) {
-		printf("aprend: BEGIN_RENDERING depth target is not a valid 2D texture view\n");
+		printf("aprend: BEGIN_RENDERING depth target is not a view of a 2D texture\n");
 		return false;
 	}
 	if (p._color_target_count == 0 && !p._depth_target.view) {
 		printf("aprend: BEGIN_RENDERING has no color or depth target\n");
+		return false;
+	}
+	// The targets of one pass are all one layer, or all the same number of
+	// layers of 2D array views: the pass is layered or it isn't.
+	aprend_texture_view first = p._color_target_count > 0 ? p._color_targets[0].view : p._depth_target.view;
+	for (uint32_t i = 0; i < p._color_target_count; ++i) {
+		if (p._color_targets[i].view->desc.shape != first->desc.shape) {
+			printf("aprend: BEGIN_RENDERING color target %u is not the shape of the pass's first target\n", i);
+			return false;
+		}
+		if (p._color_targets[i].view->desc.layer_count != first->desc.layer_count) {
+			printf("aprend: BEGIN_RENDERING color target %u covers %u layers, and the pass's first target covers %u\n", i,
+			       p._color_targets[i].view->desc.layer_count, first->desc.layer_count);
+			return false;
+		}
+	}
+	if (p._depth_target.view && p._depth_target.view->desc.shape != first->desc.shape) {
+		printf("aprend: BEGIN_RENDERING depth target is not the shape of the pass's first target\n");
+		return false;
+	}
+	if (p._depth_target.view && p._depth_target.view->desc.layer_count != first->desc.layer_count) {
+		printf("aprend: BEGIN_RENDERING depth target covers %u layers, and the pass's first target covers %u\n",
+		       p._depth_target.view->desc.layer_count, first->desc.layer_count);
 		return false;
 	}
 	return true;
@@ -517,10 +588,18 @@ static void aprend_cmd_begin_rendering(
 		desc.depth_attachment.clear_stencil    = depth.clear_stencil;
 	}
 
+	// A pass over 2D array views is layered, over as many layers as each
+	// covers (aprend_begin_rendering_valid made them agree); one over 2D
+	// views is not, which SpudGPU spells 0. An array view of one layer is
+	// still a layered pass.
+	aprend_texture_view sizing = p._color_target_count > 0 ? p._color_targets[0].view : depth.view;
+	if (sizing->desc.shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY)
+		desc.layer_count = sizing->desc.layer_count;
+
 	if (desc.width == 0 || desc.height == 0) {
-		aprend_texture2d sizing = p._color_target_count > 0 ? p._color_targets[0].view->texture._t2d : depth.view->texture._t2d;
-		desc.width              = sizing->desc.width;
-		desc.height             = sizing->desc.height;
+		// The size of the mip the view covers, not of the texture's mip 0.
+		desc.width                 = aprend_mip_size(sizing->texture._t2d->desc.width, sizing->desc.base_mip);
+		desc.height                = aprend_mip_size(sizing->texture._t2d->desc.height, sizing->desc.base_mip);
 	}
 
 	spudgpu_cmd_begin_rendering(cmd, &desc);
@@ -528,8 +607,8 @@ static void aprend_cmd_begin_rendering(
 
 /* A texture one pass's binding sets read or write, and the layout that takes. */
 struct aprend_pass_image {
-	spudgpu_image image;
-	SPUDGPU_IMAGE_LAYOUT *tracked;
+	/* The mips and layers the view in the set covers. */
+	aprend_texture_range range;
 	SPUDGPU_IMAGE_LAYOUT layout;
 };
 
@@ -551,28 +630,34 @@ static void aprend_storage_stores_add_set(
 	}
 }
 
-/* Adds [set]'s textures to [images]. False if one is already there in another
- * layout: sampled through one slot and a storage image through another. */
+/* Adds what [set]'s views cover to [images]. False if any mip of any layer
+ * is already there in another layout: sampled through one slot and a storage
+ * image through another. Two views of one texture that don't share a mip of
+ * a layer are no conflict, which is what lets one mip be read while another
+ * is written. */
 static bool aprend_pass_images_add_set(
     std::vector<aprend_pass_image> &images,
     aprend_binding_set set) {
 	for (uint32_t i = 0; i < set->image_use_count; ++i) {
-		const auto &use               = set->image_uses[i];
-		SPUDGPU_IMAGE_LAYOUT *tracked = nullptr;
-		spudgpu_image image           = aprend_texture_view_image(use.view, &tracked);
+		const auto &use                  = set->image_uses[i];
+		const aprend_texture_range range = aprend_texture_view_range(use.view);
 
 		bool known = false;
 		for (const aprend_pass_image &pass_image : images) {
-			if (pass_image.image != image)
+			if (!aprend_texture_ranges_overlap(pass_image.range, range))
 				continue;
 			if (pass_image.layout != use.layout) {
-				printf("aprend: a texture is in a sampled slot and a storage image slot of the binding sets of one pass or dispatch\n");
+				printf("aprend: a mip of a texture is in a sampled slot and a storage image slot of the binding sets of one pass or dispatch\n");
 				return false;
 			}
-			known = true;
+			// The same range again adds nothing. One that only overlaps is
+			// kept: it has subresources the other doesn't.
+			if (pass_image.range.base_mip == range.base_mip && pass_image.range.mip_count == range.mip_count &&
+			    pass_image.range.base_layer == range.base_layer && pass_image.range.layer_count == range.layer_count)
+				known = true;
 		}
 		if (!known)
-			images.push_back({image, tracked, use.layout});
+			images.push_back({range, use.layout});
 	}
 	return true;
 }
@@ -617,20 +702,23 @@ static void aprend_cmd_transition_store(
  * an earlier dispatch or draw may have written it. Reads after reads need no
  * barrier, so a sampled texture already in its layout gets none.
  *
- * The ordering is a SpudGPU pipeline barrier from UNORDERED_ACCESS to
- * UNORDERED_ACCESS (spudgpu.h): recording it is the caller's, and Aprend
- * can't know which of these a shader wrote, so it records it for all of
- * them. Recorded outside any pass. */
+ * The ordering is SpudGPU's barrier that moves nothing: from GENERAL to
+ * GENERAL over the range for an image, from UNORDERED_ACCESS to
+ * UNORDERED_ACCESS for a buffer (spudgpu.h). Recording it is the caller's,
+ * and Aprend can't know which of these a shader wrote, so it records it for
+ * all of them. Recorded outside any pass. */
 static void aprend_cmd_ready_set_resources(
     aprend_command_list cmd_list,
     const std::vector<aprend_pass_image> &images,
     const std::vector<aprend_buffer_store *> &stores) {
-	std::vector<spudgpu_image_barrier> image_barriers;
 	for (const aprend_pass_image &pass_image : images) {
-		aprend_cmd_transition_image(cmd_list, pass_image.image, pass_image.tracked, pass_image.layout, true);
-		// GENERAL is the layout of a storage image slot.
-		if (pass_image.layout == SPUDGPU_IMAGE_LAYOUT_GENERAL)
-			image_barriers.push_back({pass_image.image, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
+		// GENERAL is the layout of a storage image slot. Such a range gets
+		// its barrier even when it is there already: from GENERAL to GENERAL
+		// is SpudGPU's ordering barrier for a storage image, and it is over
+		// the range, so the texture's other mips are left where they are. A
+		// sampled range already in its layout gets none.
+		const bool is_storage = pass_image.layout == SPUDGPU_IMAGE_LAYOUT_GENERAL;
+		aprend_cmd_transition_range(cmd_list, pass_image.range, pass_image.layout, !is_storage);
 	}
 	std::vector<spudgpu_buffer_barrier> buffer_barriers;
 	for (aprend_buffer_store *store : stores) {
@@ -640,10 +728,9 @@ static void aprend_cmd_ready_set_resources(
 			aprend_cmd_transition_store(cmd_list, store, store->use_state);
 		buffer_barriers.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
 	}
-	if (image_barriers.empty() && buffer_barriers.empty())
+	if (buffer_barriers.empty())
 		return;
-	spudgpu_cmd_pipeline_barrier(
-	    cmd_list->cmd_list, buffer_barriers.data(), (uint32_t)buffer_barriers.size(), image_barriers.data(), (uint32_t)image_barriers.size());
+	spudgpu_cmd_pipeline_barrier(cmd_list->cmd_list, buffer_barriers.data(), (uint32_t)buffer_barriers.size(), nullptr, 0);
 }
 
 /* Before the BEGIN_RENDERING at [begin_index] opens its pass: moves every
@@ -718,14 +805,16 @@ static bool aprend_cmd_prepare_pass_images(
 
 	// A texture can't be read through a set and rendered to at once.
 	const auto &p = cmd_list->commands[begin_index]._params._begin_rendering;
+	// The same mip of the same layer, that is: another mip of the target's
+	// texture may be in a set, which is how a mip is made from the one above.
 	for (const aprend_pass_image &pass_image : images) {
 		for (uint32_t i = 0; i < p._color_target_count; ++i) {
-			if (p._color_targets[i].view->texture._t2d->image == pass_image.image) {
+			if (aprend_texture_ranges_overlap(aprend_texture_view_range(p._color_targets[i].view), pass_image.range)) {
 				printf("aprend: color target %u of a pass is also in one of the pass's binding sets\n", i);
 				return false;
 			}
 		}
-		if (p._depth_target.view && p._depth_target.view->texture._t2d->image == pass_image.image) {
+		if (p._depth_target.view && aprend_texture_ranges_overlap(aprend_texture_view_range(p._depth_target.view), pass_image.range)) {
 			printf("aprend: the depth target of a pass is also in one of the pass's binding sets\n");
 			return false;
 		}

@@ -3,8 +3,6 @@
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
 
-// Vulkan-aligned aspect bits (COLOR=1, DEPTH=2, STENCIL=4) — SpudGPU doesn't
-// expose a named enum for these yet.
 // aprend_texture*_create pass desc->usage straight through as
 // SPUDGPU_IMAGE_USAGE, which is only right while the bits line up.
 static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_SAMPLED));
@@ -12,30 +10,26 @@ static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_RENDER_TARGET) 
 static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT));
 static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_STORAGE) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_STORAGE));
 
-// [sampled] is a view a shader samples: of a format with depth and stencil it
-// covers the depth alone, since a sampled view reads one aspect.
-static uint64_t aprend_texture2d_view_aspect_mask(
-    SPUDGPU_FORMAT format,
-    bool sampled = false) {
+// aprend_texture_view_create_* pass desc->aspect straight through as
+// SPUDGPU_IMAGE_ASPECT bits.
+static_assert(APREND_TEXTURE_VIEW_ASPECT(APREND_TEXTURE_VIEW_ASPECT_COLOR) == SPUDGPU_IMAGE_ASPECT(SPUDGPU_IMAGE_ASPECT_COLOR));
+static_assert(APREND_TEXTURE_VIEW_ASPECT(APREND_TEXTURE_VIEW_ASPECT_DEPTH) == SPUDGPU_IMAGE_ASPECT(SPUDGPU_IMAGE_ASPECT_DEPTH));
+static_assert(APREND_TEXTURE_VIEW_ASPECT(APREND_TEXTURE_VIEW_ASPECT_STENCIL) == SPUDGPU_IMAGE_ASPECT(SPUDGPU_IMAGE_ASPECT_STENCIL));
+static_assert(APREND_TEXTURE_VIEW_ASPECT(APREND_TEXTURE_VIEW_ASPECT_DEPTH_STENCIL) == (SPUDGPU_IMAGE_ASPECT_DEPTH | SPUDGPU_IMAGE_ASPECT_STENCIL));
+
+// Every aspect [format] has, as SPUDGPU_IMAGE_ASPECT bits and as the
+// APREND_TEXTURE_VIEW_ASPECT of a view of all of them.
+static uint64_t aprend_texture2d_view_aspect_mask(SPUDGPU_FORMAT format) {
 	switch (format) {
 	case SPUDGPU_FORMAT_D24_UNORM_S8_UINT:
 	case SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT:
-		return sampled ? 2 : (2 | 4); // DEPTH, or DEPTH | STENCIL
+		return SPUDGPU_IMAGE_ASPECT_DEPTH | SPUDGPU_IMAGE_ASPECT_STENCIL;
 	case SPUDGPU_FORMAT_D16_UNORM:
 	case SPUDGPU_FORMAT_D32_FLOAT:
-		return 2; // DEPTH
+		return SPUDGPU_IMAGE_ASPECT_DEPTH;
 	default:
-		return 1; // COLOR
+		return SPUDGPU_IMAGE_ASPECT_COLOR;
 	}
-}
-
-// One side of mip [level] of a texture whose level 0 is [size] along it.
-static uint32_t aprend_mip_size(
-    uint32_t size,
-    uint32_t level) {
-	// A shift by the type's width or more is undefined; such a level is 1.
-	const uint32_t mip_size = level < 32 ? size >> level : 0;
-	return mip_size ? mip_size : 1;
 }
 
 static uint32_t aprend_compute_mip_levels(
@@ -57,11 +51,19 @@ static uint32_t aprend_compute_mip_levels(
 
 // aprend_submit_immediate is shared — see aprendimages_internal.hpp.
 
-aprend_texture2d_t::~aprend_texture2d_t() { spudgpu_destroy_image(this->image); }
+// A texture that failed to create may have no image, and a 3D one no view.
+aprend_texture2d_t::~aprend_texture2d_t() {
+	if (this->image)
+		spudgpu_destroy_image(this->image);
+	free(this->tracking.layouts);
+}
 aprend_texture3d_t::~aprend_texture3d_t() {
 	// View first: SpudGPU requires an image's views to be gone before it is.
-	spudgpu_destroy_image_view(this->image_view);
-	spudgpu_destroy_image(this->image);
+	if (this->image_view)
+		spudgpu_destroy_image_view(this->image_view);
+	if (this->image)
+		spudgpu_destroy_image(this->image);
+	free(this->tracking.layouts);
 }
 
 // The view a 3D texture owns: every mip of [image].
@@ -129,7 +131,11 @@ static APREND_TEXTURE_USAGE_BITS aprend_texture_view_type_usage(APREND_TEXTURE_V
 	}
 }
 
-aprend_texture_view_t::~aprend_texture_view_t() { spudgpu_destroy_image_view(this->image_view); }
+aprend_texture_view_t::~aprend_texture_view_t() {
+	// A view that failed to create has nothing to destroy.
+	if (this->image_view)
+		spudgpu_destroy_image_view(this->image_view);
+}
 aprend_sampler_t::~aprend_sampler_t() {
 	// A sampler that failed to create has nothing to destroy.
 	if (this->sampler)
@@ -147,6 +153,20 @@ aprend_texture2d aprend_texture2d_create(
 		return nullptr;
 	if (desc->sample_count > 1)
 		return nullptr; // MSAA not yet supported by SpudGPU
+	if (desc->cube_capable) {
+		if (desc->width != desc->height) {
+			printf("apricot: aprend_texture2d_create: a cube-capable texture is square, and this is %ux%u\n", desc->width, desc->height);
+			return nullptr;
+		}
+		if (desc->array_layers == 0) {
+			printf("apricot: aprend_texture2d_create: a cube-capable texture has array_layers in sixes, and this has 0\n");
+			return nullptr;
+		}
+		if (desc->array_layers % 6 != 0) {
+			printf("apricot: aprend_texture2d_create: a cube-capable texture has array_layers in sixes, and this has %u\n", desc->array_layers);
+			return nullptr;
+		}
+	}
 
 	aprend_texture2d_t *result = (aprend_texture2d_t *)malloc(sizeof(aprend_texture2d_t));
 	if (result)
@@ -167,13 +187,19 @@ aprend_texture2d aprend_texture2d_create(
 	image_desc.depth        = 1;
 	image_desc.array_layers = desc->array_layers ? desc->array_layers : 1;
 	image_desc.mip_levels   = desc->mip_levels ? desc->mip_levels : aprend_compute_mip_levels(desc->width, desc->height);
+	image_desc.cube_capable = desc->cube_capable;
 #if _DEBUG
 	image_desc.debug_name = desc->debug_name;
 #endif
 
-	SPUDRESULT sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
-	if (sr != SPUD_SUCCESS)
+	SPUDRESULT sr = SPUDRESULT_OUT_OF_MEMORY;
+	if (!aprend_texture_layouts_reset(&result->tracking, image_desc.mip_levels, image_desc.array_layers))
 		goto failedattempt;
+	sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
+	if (sr != SPUD_SUCCESS) {
+		result->image = nullptr;
+		goto failedattempt;
+	}
 
 	// desc->mip_levels/array_layers may have been 0 (meaning "auto"); record
 	// what was actually allocated so aprend_texture2d_get_desc and later view
@@ -264,7 +290,7 @@ bool aprend_texture2d_update(
 
 	// Not waited for: the copy runs ahead of anything submitted after it,
 	// and the staging buffer is released once it has.
-	bool ok = aprend_immediate_on_texture(texture, queue, false, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, array_layer, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level         = mip_level;
 		copy_desc.base_array_layer  = array_layer;
@@ -332,7 +358,7 @@ bool aprend_texture2d_get_data(
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
 	// Waited for: the caller reads what the copy wrote.
-	bool ok = aprend_immediate_on_texture(texture, queue, true, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, true, mip_level, array_layer, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level         = mip_level;
 		copy_desc.base_array_layer  = array_layer;
@@ -379,6 +405,10 @@ bool aprend_texture2d_resize(
 		return false;
 	if (new_width == texture->desc.width && new_height == texture->desc.height)
 		return true; // No resize needed
+	if (texture->desc.cube_capable && new_width != new_height) {
+		printf("apricot: aprend_texture2d_resize: a cube-capable texture stays square, and %ux%u is not\n", new_width, new_height);
+		return false;
+	}
 
 	spudgpu_image_desc image_desc{};
 	if (!aprend_resized_image_desc(texture->image, texture->requested_mip_levels, new_width, new_height, 1, &image_desc))
@@ -390,6 +420,14 @@ bool aprend_texture2d_resize(
 		printf("apricot: aprend_texture2d_resize to %ux%u failed: %s\n", new_width, new_height, spudresult_str(sr));
 		return false;
 	}
+	// A new image, with no contents: every mip of every layer is back to no
+	// layout. Done before the old image goes, so running out of memory for
+	// a different mip count still leaves the texture as it was.
+	if (!aprend_texture_layouts_reset(&texture->tracking, image_desc.mip_levels, image_desc.array_layers)) {
+		printf("apricot: aprend_texture2d_resize to %ux%u failed: out of memory\n", new_width, new_height);
+		spudgpu_destroy_image(new_image);
+		return false;
+	}
 
 	// The old image goes only now that its replacement exists, so a failed
 	// resize leaves the texture exactly as it was. Submitted work may still
@@ -399,7 +437,6 @@ bool aprend_texture2d_resize(
 	texture->desc.width      = new_width;
 	texture->desc.height     = new_height;
 	texture->desc.mip_levels = image_desc.mip_levels;
-	texture->current_layout  = SPUDGPU_IMAGE_LAYOUT_UNDEFINED; // a new image, with no contents
 	return true;
 }
 aprend_texture3d aprend_texture3d_create(
@@ -432,9 +469,14 @@ aprend_texture3d aprend_texture3d_create(
 	image_desc.debug_name = desc->debug_name;
 #endif
 
-	SPUDRESULT sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
-	if (sr != SPUD_SUCCESS)
+	SPUDRESULT sr = SPUDRESULT_OUT_OF_MEMORY;
+	if (!aprend_texture_layouts_reset(&result->tracking, image_desc.mip_levels, 1))
 		goto failedattempt;
+	sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
+	if (sr != SPUD_SUCCESS) {
+		result->image = nullptr;
+		goto failedattempt;
+	}
 
 	// desc->mip_levels may have been 0 (meaning "auto"); record what was
 	// actually allocated so aprend_texture3d_get_desc and later view creation
@@ -442,8 +484,10 @@ aprend_texture3d aprend_texture3d_create(
 	result->desc.mip_levels = image_desc.mip_levels;
 
 	sr = aprend_texture3d_create_image_view(result->image, desc->format, image_desc.mip_levels, &result->image_view);
-	if (sr != SPUD_SUCCESS)
+	if (sr != SPUD_SUCCESS) {
+		result->image_view = nullptr;
 		goto failedattempt;
+	}
 
 	return result;
 failedattempt:
@@ -535,7 +579,7 @@ bool aprend_texture3d_update(
 
 	// Not waited for: the copy runs ahead of anything submitted after it,
 	// and the staging buffer is released once it has.
-	bool ok = aprend_immediate_on_texture(texture, queue, false, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, 0, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
@@ -610,7 +654,7 @@ bool aprend_texture3d_get_data(
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
 	// Waited for: the caller reads what the copy wrote.
-	bool ok = aprend_immediate_on_texture(texture, queue, true, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, true, mip_level, 0, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
@@ -679,6 +723,13 @@ bool aprend_texture3d_resize(
 		spudgpu_destroy_image(new_image);
 		return false;
 	}
+	// As aprend_texture2d_resize: every mip is back to no layout.
+	if (!aprend_texture_layouts_reset(&texture->tracking, image_desc.mip_levels, 1)) {
+		printf("apricot: aprend_texture3d_resize to %ux%ux%u failed: out of memory\n", new_width, new_height, new_depth);
+		spudgpu_destroy_image_view(new_view);
+		spudgpu_destroy_image(new_image);
+		return false;
+	}
 
 	// The old image and its view go only now that their replacements exist,
 	// so a failed resize leaves the texture exactly as it was. Submitted
@@ -692,25 +743,162 @@ bool aprend_texture3d_resize(
 	texture->desc.height     = new_height;
 	texture->desc.depth      = new_depth;
 	texture->desc.mip_levels = image_desc.mip_levels;
-	texture->current_layout  = SPUDGPU_IMAGE_LAYOUT_UNDEFINED; // a new image, with no contents
+	return true;
+}
+
+// What is common to a view of a 2D and of a 3D texture: the use is a view
+// type the texture's usage allows, the mip range is inside [mip_levels], and
+// a use that takes one mip is given one. [desc]'s mip_count is resolved from
+// APREND_TEXTURE_VIEW_REMAINING in [out_desc]. [who] is the calling function,
+// for the message.
+static bool aprend_texture_view_desc_valid(
+    const char *who,
+    const aprend_texture_view_desc *desc,
+    APREND_TEXTURE_USAGE_BITS texture_usage,
+    SPUDGPU_FORMAT format,
+    uint32_t mip_levels,
+    aprend_texture_view_desc *out_desc) {
+	const APREND_TEXTURE_USAGE_BITS needed_usage = aprend_texture_view_type_usage(desc->type);
+	if (needed_usage == APREND_TEXTURE_USAGE_BIT_NONE) {
+		printf("apricot: %s: type %u is not a view type\n", who, (unsigned)desc->type);
+		return false;
+	}
+	if (!(texture_usage & needed_usage)) {
+		printf("apricot: %s: a view of type %u needs usage bit %u, and the texture's usage is %u\n", who, (unsigned)desc->type,
+		       (unsigned)needed_usage, (unsigned)texture_usage);
+		return false;
+	}
+	if (desc->base_mip >= mip_levels) {
+		printf("apricot: %s: base_mip %u is not below the texture's %u mip levels\n", who, desc->base_mip, mip_levels);
+		return false;
+	}
+	// The aspect is one the format has. A view rendered to covers all of
+	// them; a view a shader reads covers one.
+	const uint64_t format_aspects = aprend_texture2d_view_aspect_mask(format);
+	if (desc->aspect == APREND_TEXTURE_VIEW_ASPECT_NONE) {
+		printf("apricot: %s: aspect is APREND_TEXTURE_VIEW_ASPECT_NONE\n", who);
+		return false;
+	}
+	if (desc->aspect & ~format_aspects) {
+		printf("apricot: %s: aspect %u is not in the texture's format, whose aspects are %u\n", who, (unsigned)desc->aspect, (unsigned)format_aspects);
+		return false;
+	}
+	if (desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL && desc->aspect != format_aspects) {
+		printf("apricot: %s: a view of type DEPTH_STENCIL covers every aspect of its format (%u), and aspect is %u\n", who, (unsigned)format_aspects,
+		       (unsigned)desc->aspect);
+		return false;
+	}
+	if (desc->type == APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE && desc->aspect == APREND_TEXTURE_VIEW_ASPECT_DEPTH_STENCIL) {
+		printf("apricot: %s: a view of type SHADER_RESOURCE reads one aspect: APREND_TEXTURE_VIEW_ASPECT_DEPTH or _STENCIL\n", who);
+		return false;
+	}
+	*out_desc = *desc;
+	if (desc->mip_count == APREND_TEXTURE_VIEW_REMAINING)
+		out_desc->mip_count = mip_levels - desc->base_mip;
+	if (out_desc->mip_count == 0) {
+		printf("apricot: %s: mip_count is 0\n", who);
+		return false;
+	}
+	if (out_desc->mip_count > mip_levels - desc->base_mip) {
+		printf("apricot: %s: %u mips from mip %u run past the texture's %u mip levels\n", who, out_desc->mip_count, desc->base_mip, mip_levels);
+		return false;
+	}
+	// A pass renders to one mip, and a storage image slot is one mip.
+	if (desc->type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE && out_desc->mip_count != 1) {
+		printf("apricot: %s: a view of type %u covers one mip, and mip_count is %u\n", who, (unsigned)desc->type, out_desc->mip_count);
+		return false;
+	}
 	return true;
 }
 
 aprend_texture_view aprend_texture_view_create_2d(
     aprend_texture2d texture,
-    APREND_TEXTURE_VIEW_TYPE type) {
+    const aprend_texture_view_desc *desc) {
+	static const char *who = "aprend_texture_view_create_2d";
 	if (!texture)
 		return nullptr;
-	const APREND_TEXTURE_USAGE_BITS needed_usage = aprend_texture_view_type_usage(type);
-	if (needed_usage == APREND_TEXTURE_USAGE_BIT_NONE) {
-		printf("apricot: aprend_texture_view_create_2d: type %u is not a view type\n", (unsigned)type);
+	if (!desc)
+		return nullptr;
+	aprend_texture_view_desc resolved{};
+	if (!aprend_texture_view_desc_valid(who, desc, texture->desc.usage, texture->desc.format, texture->desc.mip_levels, &resolved))
+		return nullptr;
+
+	const uint32_t array_layers = texture->desc.array_layers;
+	if (desc->base_layer >= array_layers) {
+		printf("apricot: %s: base_layer %u is not below the texture's %u array layers\n", who, desc->base_layer, array_layers);
 		return nullptr;
 	}
-	if (!(texture->desc.usage & needed_usage)) {
-		printf("apricot: aprend_texture_view_create_2d: a view of type %u needs usage bit %u, and the texture's usage is %u\n",
-		       (unsigned)type, (unsigned)needed_usage, (unsigned)texture->desc.usage);
+	if (desc->layer_count == APREND_TEXTURE_VIEW_REMAINING)
+		resolved.layer_count = array_layers - desc->base_layer;
+	if (resolved.layer_count == 0) {
+		printf("apricot: %s: layer_count is 0\n", who);
 		return nullptr;
 	}
+	if (resolved.layer_count > array_layers - desc->base_layer) {
+		printf("apricot: %s: %u layers from layer %u run past the texture's %u array layers\n", who, resolved.layer_count, desc->base_layer,
+		       array_layers);
+		return nullptr;
+	}
+
+	// The shape decides the SpudGPU view type and how many layers it takes.
+	uint32_t spud_view_type = SPUDGPU_IMAGE_VIEW_TYPE_NONE;
+	switch (desc->shape) {
+	case APREND_TEXTURE_VIEW_SHAPE_2D:
+		if (resolved.layer_count != 1) {
+			printf("apricot: %s: a 2D view is one layer, and layer_count is %u\n", who, resolved.layer_count);
+			return nullptr;
+		}
+		spud_view_type = SPUDGPU_IMAGE_VIEW_TYPE_2D;
+		break;
+	case APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY:
+		spud_view_type = SPUDGPU_IMAGE_VIEW_TYPE_2D_ARRAY;
+		break;
+	case APREND_TEXTURE_VIEW_SHAPE_CUBE:
+		if (!texture->desc.cube_capable) {
+			printf("apricot: %s: a cube view of a texture that was not created cube_capable\n", who);
+			return nullptr;
+		}
+		if (desc->base_layer != 0) {
+			printf("apricot: %s: a cube view starts at layer 0, and base_layer is %u\n", who, desc->base_layer);
+			return nullptr;
+		}
+		if (resolved.layer_count != 6) {
+			printf("apricot: %s: a cube view is six layers, and layer_count is %u\n", who, resolved.layer_count);
+			return nullptr;
+		}
+		spud_view_type = SPUDGPU_IMAGE_VIEW_TYPE_CUBE;
+		break;
+	case APREND_TEXTURE_VIEW_SHAPE_CUBE_ARRAY:
+		if (!texture->desc.cube_capable) {
+			printf("apricot: %s: a cube array view of a texture that was not created cube_capable\n", who);
+			return nullptr;
+		}
+		if (resolved.layer_count % 6 != 0) {
+			printf("apricot: %s: a cube array view is layers in sixes, and layer_count is %u\n", who, resolved.layer_count);
+			return nullptr;
+		}
+		spud_view_type = SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+		break;
+	case APREND_TEXTURE_VIEW_SHAPE_3D:
+		printf("apricot: %s: a 3D view of a 2D texture\n", who);
+		return nullptr;
+	default:
+		printf("apricot: %s: shape %u is not a view shape\n", who, (unsigned)desc->shape);
+		return nullptr;
+	}
+	// A pass renders to one layer through a 2D view, or to every layer of a
+	// 2D array view at once (a layered pass). A cube is rendered to as the 2D
+	// array its layers are: no graphics API has a cube render target.
+	const bool is_target = desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL;
+	if (is_target && desc->shape != APREND_TEXTURE_VIEW_SHAPE_2D && desc->shape != APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY) {
+		printf("apricot: %s: a view rendered to is APREND_TEXTURE_VIEW_SHAPE_2D or _2D_ARRAY, and shape is %u\n", who, (unsigned)desc->shape);
+		return nullptr;
+	}
+	if (is_target && desc->shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY && !texture->instance->layered_rendering) {
+		printf("apricot: %s: a 2D array view rendered to needs layered rendering, which the device doesn't support\n", who);
+		return nullptr;
+	}
+
 	aprend_texture_view_t *result = (aprend_texture_view_t *)malloc(sizeof(aprend_texture_view_t));
 	if (!result)
 		return nullptr;
@@ -718,43 +906,61 @@ aprend_texture_view aprend_texture_view_create_2d(
 
 	result->instance     = texture->instance;
 	result->dimension    = APREND_TEXTURE_DIMENSION_2D;
-	result->view_type    = type;
+	result->view_type    = desc->type;
 	result->texture._t2d = texture;
+	result->desc         = resolved;
 
 	spudgpu_image_view_desc imgvd{};
 	imgvd.parent_image                        = texture->image;
-	imgvd.type                                = SPUDGPU_IMAGE_VIEW_TYPE_2D;
-	imgvd.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(texture->desc.format, type == APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE);
-	imgvd.subresource_range.base_mip_level    = 0;
-	imgvd.subresource_range.mip_level_count   = texture->desc.mip_levels;
-	imgvd.subresource_range.base_array_layer  = 0;
-	imgvd.subresource_range.array_layer_count = texture->desc.array_layers;
+	imgvd.type                                = spud_view_type;
+	imgvd.subresource_range.aspect_mask       = desc->aspect;
+	imgvd.subresource_range.base_mip_level    = resolved.base_mip;
+	imgvd.subresource_range.mip_level_count   = resolved.mip_count;
+	imgvd.subresource_range.base_array_layer  = resolved.base_layer;
+	imgvd.subresource_range.array_layer_count = resolved.layer_count;
 	SPUDRESULT sr = spudgpu_create_image_view(texture->image, &imgvd, &result->image_view);
-	if (SPUDFAIL(sr))
+	if (SPUDFAIL(sr)) {
+		result->image_view = nullptr;
 		goto failedattempt;
+	}
 
 	return result;
 failedattempt:
-	printf("apricot: aprend_texture_view_create_2d failed: %s\n", spudresult_str(sr));
+	printf("apricot: %s failed: %s\n", who, spudresult_str(sr));
 	result->~aprend_texture_view_t();
 	free(result);
 	return nullptr;
 }
 aprend_texture_view aprend_texture_view_create_3d(
     aprend_texture3d texture,
-    APREND_TEXTURE_VIEW_TYPE type) {
+    const aprend_texture_view_desc *desc) {
+	static const char *who = "aprend_texture_view_create_3d";
 	if (!texture)
 		return nullptr;
-	const APREND_TEXTURE_USAGE_BITS needed_usage = aprend_texture_view_type_usage(type);
-	if (needed_usage == APREND_TEXTURE_USAGE_BIT_NONE) {
-		printf("apricot: aprend_texture_view_create_3d: type %u is not a view type\n", (unsigned)type);
+	if (!desc)
+		return nullptr;
+	aprend_texture_view_desc resolved{};
+	if (!aprend_texture_view_desc_valid(who, desc, texture->desc.usage, texture->desc.format, texture->desc.mip_levels, &resolved))
+		return nullptr;
+	if (desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL) {
+		printf("apricot: %s: a 3D texture can't be rendered to through a view\n", who);
 		return nullptr;
 	}
-	if (!(texture->desc.usage & needed_usage)) {
-		printf("apricot: aprend_texture_view_create_3d: a view of type %u needs usage bit %u, and the texture's usage is %u\n",
-		       (unsigned)type, (unsigned)needed_usage, (unsigned)texture->desc.usage);
+	if (desc->shape != APREND_TEXTURE_VIEW_SHAPE_3D) {
+		printf("apricot: %s: a view of a 3D texture is APREND_TEXTURE_VIEW_SHAPE_3D, and shape is %u\n", who, (unsigned)desc->shape);
 		return nullptr;
 	}
+	// A 3D texture has one layer.
+	if (desc->base_layer != 0) {
+		printf("apricot: %s: base_layer is %u, and a 3D texture has only layer 0\n", who, desc->base_layer);
+		return nullptr;
+	}
+	if (desc->layer_count != 1 && desc->layer_count != APREND_TEXTURE_VIEW_REMAINING) {
+		printf("apricot: %s: layer_count is %u, and a 3D texture has one layer\n", who, desc->layer_count);
+		return nullptr;
+	}
+	resolved.layer_count = 1;
+
 	aprend_texture_view_t *result = (aprend_texture_view_t *)malloc(sizeof(aprend_texture_view_t));
 	if (!result)
 		return nullptr;
@@ -762,24 +968,27 @@ aprend_texture_view aprend_texture_view_create_3d(
 
 	result->instance     = texture->instance;
 	result->dimension    = APREND_TEXTURE_DIMENSION_3D;
-	result->view_type    = type;
+	result->view_type    = desc->type;
 	result->texture._t3d = texture;
+	result->desc         = resolved;
 
 	spudgpu_image_view_desc imgvd{};
 	imgvd.parent_image                        = texture->image;
 	imgvd.type                                = SPUDGPU_IMAGE_VIEW_TYPE_3D;
-	imgvd.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(texture->desc.format);
-	imgvd.subresource_range.base_mip_level    = 0;
-	imgvd.subresource_range.mip_level_count   = texture->desc.mip_levels;
+	imgvd.subresource_range.aspect_mask       = desc->aspect;
+	imgvd.subresource_range.base_mip_level    = resolved.base_mip;
+	imgvd.subresource_range.mip_level_count   = resolved.mip_count;
 	imgvd.subresource_range.base_array_layer  = 0;
 	imgvd.subresource_range.array_layer_count = 1; // 3D textures do not support array layers
 	SPUDRESULT sr = spudgpu_create_image_view(texture->image, &imgvd, &result->image_view);
-	if (SPUDFAIL(sr))
+	if (SPUDFAIL(sr)) {
+		result->image_view = nullptr;
 		goto failedattempt;
+	}
 
 	return result;
 failedattempt:
-	printf("apricot: aprend_texture_view_create_3d failed: %s\n", spudresult_str(sr));
+	printf("apricot: %s failed: %s\n", who, spudresult_str(sr));
 	result->~aprend_texture_view_t();
 	free(result);
 	return nullptr;
@@ -791,6 +1000,7 @@ void aprend_destroy_texture_view(aprend_texture_view view) {
 	aprend_instance_retire(view->instance, view, &aprend_release_handle<aprend_texture_view_t>);
 }
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) { return view ? view->view_type : APREND_TEXTURE_VIEW_TYPE_NONE; }
+aprend_texture_view_desc aprend_texture_view_get_desc(aprend_texture_view view) { return view ? view->desc : aprend_texture_view_desc{}; }
 APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) { return view ? view->dimension : APREND_TEXTURE_DIMENSION_1D; }
 spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view) { return view ? view->image_view : nullptr; }
 aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view) {

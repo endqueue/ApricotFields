@@ -87,6 +87,10 @@ typedef struct aprend_instance_t {
 	 * with it: whether a buffer a shader may write can be written directly
 	 * too (SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE). */
 	bool device_mappable_memory{false};
+	/* SPUDGPU_DEVICE_PROPERTIES::layered_rendering of desc.device, read once
+	 * at creation: whether a pass may render to the layers of 2D array
+	 * views. */
+	bool layered_rendering{false};
 	/* Which copy of every buffer set is current: 0 to
 	 * desc.frames_in_flight - 1. */
 	uint32_t frame_index{0};
@@ -301,15 +305,18 @@ typedef struct aprend_command_list_t {
 	/* Set by aprend_send_command on a malformed command; fails compile until reset. */
 	bool recording_error{false};
 
-	/* Per-texture layout transitions of the last compile. Compiling never
-	 * touches a texture's current_layout (the layout the GPU will see
-	 * once everything submitted so far has run) - only a successful
-	 * aprend_command_list_submit commits final_layout to it. initial_layout is
-	 * what this list's first barrier assumes, checked against current_layout
-	 * at submit. */
+	/* The layout transitions of the last compile, one entry for each mip of
+	 * each layer of each texture the list uses. Compiling never touches a
+	 * texture's tracked layouts (what the GPU will see once everything
+	 * submitted so far has run) - only a successful
+	 * aprend_command_list_submit commits final_layout to them. initial_layout
+	 * is what this list's first barrier on that subresource assumes, checked
+	 * against the tracked layout at submit. */
 	struct layout_use {
 		spudgpu_image image;
-		/* The texture's current_layout (2D or 3D). */
+		uint32_t mip;
+		uint32_t layer;
+		/* The texture's tracked layout for (mip, layer), 2D or 3D. */
 		SPUDGPU_IMAGE_LAYOUT *tracked;
 		SPUDGPU_IMAGE_LAYOUT initial_layout;
 		SPUDGPU_IMAGE_LAYOUT final_layout;
