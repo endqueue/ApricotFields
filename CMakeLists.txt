@@ -16,6 +16,11 @@ add_library(ApricotFields STATIC
         src/render/aprendimages.cpp
         src/render/aprendframes.cpp
         src/render/aprendcommands.cpp
+        src/render/aprenddrawlist.cpp
+        src/render/aprendmaterial.cpp
+        src/render/aprendpass.cpp
+        src/render/aprendreflect_internal.hpp
+        src/render/aprendreflect.cpp
         src/render/aprendpipeline.cpp
         src/render/aprendswapchain.cpp
         src/render/aprendtransient_internal.hpp
@@ -33,6 +38,10 @@ add_library(ApricotFields STATIC
         include/render/aprendimages.h
         include/render/aprendframes.h
         include/render/aprendcommands.h
+        include/render/aprenddrawlist.h
+        include/render/aprendmaterial.h
+        include/render/aprendpass.h
+        include/render/aprendshader.h
         include/render/aprendpipeline.h
         include/render/aprendswapchain.h
         include/render/aprendtransient.h
@@ -52,6 +61,35 @@ if (NOT TARGET spudlib)
 endif ()
 # Link SpudLib library
 target_link_libraries(ApricotFields PUBLIC spudlib)
+
+# SPIRV-Cross - SPIR-V reflection for Aprend's shaders
+# (src/render/aprendreflect.cpp): only its core, which reads SPIR-V and
+# writes nothing. SpudLib already builds it on the backends that
+# cross-compile SPIR-V (Metal from eqdev/.deps/SPIRV-Cross, D3D12 from its
+# Vulkan SDK tag); where it hasn't (Vulkan), it is built here from the same
+# vendored checkout as Metal's. Its core API is the same in both.
+if (NOT TARGET spirv-cross-core)
+    include(FetchContent)
+    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_GLSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+            spirv_cross
+            SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/SPIRV-Cross
+    )
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+    FetchContent_MakeAvailable(spirv_cross)
+endif ()
+# ApricotFields may be linked into a shared library too.
+set_target_properties(spirv-cross-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ApricotFields PRIVATE spirv-cross-core)
 
 # ApSync runs each session on a thread of its own (src/sync/apsyncnet.cpp).
 find_package(Threads REQUIRED)
@@ -170,4 +208,10 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(aprendranges_tests tests/aprendranges_tests.cpp)
     target_include_directories(aprendranges_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
     add_test(NAME aprendranges_tests COMMAND aprendranges_tests)
+    # SPIR-V reflection, and writing a member where the reflection lays it
+    # out: no device either, so it sees src/render too.
+    add_executable(aprendreflect_tests tests/aprendreflect_tests.cpp)
+    target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
+    target_link_libraries(aprendreflect_tests PRIVATE ApricotFields)
+    add_test(NAME aprendreflect_tests COMMAND aprendreflect_tests)
 endif ()

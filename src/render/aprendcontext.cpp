@@ -24,6 +24,9 @@ aprend_instance_t::~aprend_instance_t() {
 		}
 		entry.release(entry.object);
 	}
+	// Every material has been released with the queue, and given its range
+	// back: the arena's buffers are all that is left of it.
+	aprend_material_arena_destroy(this);
 	// Nothing reads a transient span any more.
 	aprend_transient_arena_destroy(this);
 	// An instance that failed to create may have neither.

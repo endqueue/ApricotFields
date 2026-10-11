@@ -307,6 +307,15 @@ unfinished in it.
     not.
   - Never run. No span has been bound on any backend, and drawing from
     upload memory through a view at an offset is untested on all three.
+- **Every header is Javadoc-style Doxygen** (2026-10-11, comments only):
+  `aprendcontext.h`, `aprendbuffers.h`, `aprendcommands.h`, `aprendframes.h`
+  and `aprendswapchain.h` were rewritten to the style `aprendimages.h` and
+  `aprendpipeline.h` already had, and the rest of `aprendtransient.h` and
+  `apricotfields.h` with them. No declaration changed. The calls that had
+  no comment have one now, written from the implementation: the framebuffer
+  and swap chain calls, the buffer destroy and getter calls, the command
+  list's create, destroy and reset, and each draw command. Doxygen reports
+  no warnings over `include/render`.
 - **Vertex and index pools, written 2026-10-11 and not compiled** on any
   platform (`aprendbuffers.h`; `aprendpools.cpp`, `aprendpools_internal.hpp`
   and `aprendranges_internal.hpp`, new; item 13):
@@ -327,6 +336,12 @@ unfinished in it.
     fence has reached it. It doesn't go on the release queue, since nothing
     is destroyed; the pool looks at what is waiting at each allocate, trim
     and get_usage.
+  - Every range has an entry in the pool's table of allocations and
+    carries the entry's number and generation. A free is checked against
+    the entry, so a range freed twice is refused, also when its elements
+    have been handed out again in between, and so is a range of another
+    pool. The freed ranges waiting for the GPU are a list through the
+    entries, so a free needs no memory.
   - Blocks are added one at a time and given back only by the trim calls. A
     range longer than a block has a block to itself. `memory_limit` in the
     desc; no default block size.
@@ -336,6 +351,181 @@ unfinished in it.
     compiled either.
   - Never run. No range has been allocated, drawn from or freed on any
     backend.
+- **Materials, passes and draw lists, written 2026-10-11 and not compiled**
+  on any platform; type-checked only (items 19, 20 and 21). GCC 11 on
+  Linux with `-fsyntax-only -Wall -Wextra`, with and without `_DEBUG`, over
+  every file in `src/render`, and `apricotfields.h` as C11: no errors and
+  no new warnings. Nothing was linked, and nothing has run. Doxygen has
+  not been run over the three new headers, so "no warnings over
+  `include/render`" above is not known to hold for them.
+  - `aprendmaterial.h`, `aprendmaterial.cpp` (item 19): `aprend_material`
+    is a binding layout and what each of its bindings holds, by name
+    (revised the same day by item 18: names and blocks come from the
+    layout). A uniform block the layout knows is one the material owns,
+    unless the desc names it external: a CPU copy of its bytes, set by
+    member name or as bytes, and the block on the GPU (revised again: see
+    "The material arena" below). Textures, samplers and the caller's own buffers are set by slot
+    name and array element. Its binding set is built at the first compile
+    that binds it and rebuilt (`aprend_binding_set_update`) at the next
+    compile after a resource changes.
+  - `APREND_COMMAND_SET_MATERIAL` (22): SET_BINDING_SET with the material's
+    set. `aprend_command_list_compile` builds every named material's set
+    before it records anything, since a pass looks ahead at its sets; that
+    is the one thing a compile now changes outside the list. A list keeps
+    the materials it binds, and `aprend_command_list_submit` copies their
+    changed blocks first.
+  - `aprendpass.h`, `aprendpass.cpp` (item 20): `aprend_render_pass` is a
+    graphics pipeline, its targets (views, or an `aprend_framebuffer`
+    whose attachments are read when the pass is begun, so it follows a
+    resize) with their ops, and the binding sets of the slots it fixes.
+    Formats, view types, shapes and layer counts, and each set's layout are
+    checked at creation. `APREND_COMMAND_BEGIN_RENDER_PASS` (23) is
+    expanded when sent into BEGIN_RENDERING, SET_SHADER_PIPELINE, a
+    viewport and scissor over the whole target, and SET_BINDING_SET for
+    each fixed set; END_RENDERING ends it. `aprend_compute_pass` and
+    `APREND_COMMAND_SET_COMPUTE_PASS` (24) are the same for a compute
+    pipeline. A pass is a CPU description: nothing of it is on the GPU, and
+    it is freed at destroy.
+  - `aprenddrawlist.h`, `aprenddrawlist.cpp` (item 21): `aprend_draw_list`
+    takes (mesh, material, instance bytes) draws. `aprend_draw_list_build`
+    orders them (by material then mesh, or as added), merges draws of one
+    mesh and material into one instanced draw, and writes every instance's
+    bytes, in batch order, into one transient span. `APREND_COMMAND_DRAW_
+    LIST` (25) is expanded when sent: the span at the list's instance slot,
+    then for each batch SET_MATERIAL, SET_VERTEX_BUFFERS and
+    SET_INDEX_BUFFER where they change, and DRAW_INSTANCED[_INDEXED] with
+    the batch's first instance as `_start_instance_location`.
+  - Never run. No material has been bound, no pass begun and no draw list
+    drawn on any backend. The first things to check: the per-instance
+    binding read from `_start_instance_location` past 0 on Metal and D3D12,
+    and a material's uniform values reaching the frame that set them.
+- **Shader reflection, written 2026-10-11 and not compiled for any backend**
+  (item 18; closes item 1). Type-checked with GCC 11 as the entry above.
+  Unlike everything else here, part of it has run: see the last bullet.
+  - `aprendshader.h` (new): the shader calls moved out of
+    `aprendpipeline.h`, and `aprend_shader_reflection`. A shader reflects
+    its SPIR-V at creation through SPIRV-Cross's core
+    (`aprendreflect.cpp`, `aprendreflect_internal.hpp`): each descriptor
+    binding (set, binding, type, count, a block's size and members, an
+    image's view shape, scalar type and depth compare, storage read-only),
+    the push constant block, a vertex shader's inputs, a fragment shader's
+    color output count and a compute or mesh shader's workgroup size, each
+    marked used if the stage's one entry point reaches it. Block members
+    are listed flat with their real offsets, array and matrix strides and
+    majority, structs and arrays of structs as `lights[2].color`. Creation
+    fails for SPIR-V that can't be read, has no entry point for the stage,
+    or uses a texel buffer, input attachment, acceleration structure,
+    unsized descriptor array, multisampled or 1D image.
+  - Pipelines are checked against their shaders: entry point, every used
+    binding declared by the layout at its set with its type, count and
+    stage, push constant bytes covered by a range of the stage, and every
+    used vertex input fed at each location by an element of its kind of
+    number. `_vertex_inputs_by_name` (new, last field of the graphics
+    pipeline desc) gives elements their locations from the inputs' names
+    (item 11's positional locations).
+  - `aprend_binding_layout_create_from_shaders`, and `_name` (new, last
+    field) on `aprend_binding_desc`; `aprend_binding_layout_find`,
+    `_get_binding`, `_get_binding_count`, `_get_block`,
+    `_get_uniform_layout`. A layout made from shaders keeps its bindings'
+    names and blocks.
+  - A command list checks the texture views of each set it binds for a
+    pipeline against the shape the shader declares, and a stencil read as
+    other than unsigned or a depth as other than float.
+  - `APREND_UNIFORM_TYPE_MAT2` and `_MAT3`; `aprend_uniform_layout::size`
+    (new, last field). `aprend_uniform_buffer_create` sizes from it, and
+    std140's matrix columns of 16 are kept in the footprint and by
+    `aprend_uniform_buffer_update_by_name` (item 1).
+  - The material (item 19) takes its names and blocks from the layout: its
+    desc is a layout and the names of uniform blocks it shouldn't own. A
+    member is set by its path, or its binding's name and its path.
+  - CMake: SPIRV-Cross's core is linked PRIVATE, the target SpudLib already
+    made on Metal and D3D12, built here from `../.deps/SPIRV-Cross` on
+    Vulkan. Never configured with CMake on any platform.
+  - **What has run**, on Linux in a scratch build, not through the repo's
+    CMake: `tests/aprendreflect_tests.cpp` (new) against SPIR-V from
+    glslang 16.6.0, under AddressSanitizer and UBSan: passes. And a
+    scratch harness (not in the repo) that linked all of `src/render`
+    against a SpudGPU of stubs that create nothing and return success:
+    layouts from shaders, every pipeline check passing and failing as
+    meant, a material set by name and completed, a render pass, a draw
+    list, a compile refused for a wrong view shape and passing once fixed,
+    submits writing the material's frame copies (since replaced by the
+    material arena, below) with the "read in this
+    turn" rule, three frames, and teardown through the release queue,
+    with no sanitizer error. The same harness made trellislib's four
+    pipelines (geometry, line, solid, overlay) the way
+    `trellisrenderresources.cpp` does, from its GLSL compiled with glslang,
+    and none was refused by the new checks. That exercises Aprend's logic
+    and none of SpudGPU, so nothing is known about any backend from it.
+  - Push constants are checked per member the stage uses (SPIR-V's active
+    ranges), so two stages can share one block and each take a range for
+    its own part.
+- **Layouts of the same bindings are one layout, written 2026-10-11 and
+  not compiled** for any backend (was step 1 of "Next, from the review").
+  Type-checked with GCC 11 as above, and run in the stub harness.
+  - `aprend_binding_layout_core` (`aprend_internal.hpp`): a layout's
+    bindings without names (sorted by number), its SpudGPU layout and its
+    descriptor pools. Both create calls look for the instance's core of
+    the same bindings (number, type, count, stages) and make one only if
+    there is none, so two layouts of the same bindings share one SpudGPU
+    layout. Each handle keeps its own names and blocks.
+  - A core is held by each layout handle and each binding set made through
+    one, and freed with its last holder. Every holder lets go on the thread
+    using the instance (a release function, or a failed create), so the
+    count takes no lock and destroy calls stay safe from any thread. A set
+    holds the core itself, so it no longer reads the handle it was made
+    through after creation.
+  - The compile, a dispatch, and a render or compute pass compare a set's
+    core with the pipeline's layout's (`aprend_binding_set_fits`) where
+    they compared the handles. A material made for one layout is drawn with
+    a pipeline that declares another of the same bindings.
+  - `aprendpipeline.h`, "Layouts of the same bindings": what counts (names
+    don't, stages do), and that a layout made from shaders is made from
+    every shader that reads the set and given to each pipeline that binds
+    it.
+  - Run in the stub harness: two layouts made separately from the same
+    shaders, and one by hand with other names, share a core; another stage
+    mask doesn't; a material made for one layout compiled into a pass
+    whose pipeline declares the other; handles destroyed before the sets
+    made through them; every core gone once the last layout and set are.
+- **The material arena, written 2026-10-11 and not compiled** for any
+  backend (was step 1 of "Next, from the review" after layouts were
+  shared). Type-checked with GCC 11 as above, and run in the stub harness.
+  - A material's owned uniform block is a fixed range of the instance's
+    material arena (`aprend_material_arena`, `aprend_internal.hpp`) for
+    the material's life, in place of a uniform buffer set: 64 KiB uniform
+    buffers in the device's memory (`aprend_uniform_buffer_create_device`,
+    new, internal), ranges 256-byte aligned and handed out with the pools'
+    range list. A block larger than 64 KiB gets a buffer of its own, which
+    goes with it. One copy of a block on the GPU, not one per frame, and
+    one descriptor set for a material that holds no caller's buffer set.
+  - `aprend_material_set_uniform` and `_bytes` mark the block dirty. At the
+    submit of a list that binds the material, each dirty block is written
+    to a span of the frame's transient memory and a copy from it into the
+    block's range is recorded in the list's upload list, the arena
+    buffer moved COMMON to COPY_DEST before and COPY_DEST to the uniform
+    state after, once per buffer. The flag is cleared once the submission
+    has gone in. A value set is seen by every later submission, of one
+    frame or the next; the "read in this turn" rule and
+    `aprend_instance_t::frame_count` are gone.
+  - A material that owns a block needs an instance with transient memory
+    and is refused without it. `aprend_material_destroy` puts the whole
+    material on the release queue, so its ranges are handed out again only
+    once the GPU has finished with what was submitted before it. The
+    arena's buffers go with the instance.
+  - `aprend_uniform_buffer_t`'s destructor unmaps, and destroys a view or
+    buffer, only where there is one.
+  - Run in the stub harness: the first submission copies the zeroed and
+    set block (bytes read back from the transient chunk), an unchanged
+    material copies nothing, a change between two submissions of one frame
+    reaches the second, the next frame copies nothing, no frame-locked
+    sets; three materials share an arena buffer at different ranges, a
+    destroyed one's range comes back after the queue and is handed out
+    again; a material is refused on an instance without transient memory
+    unless its block is external; a block over 64 KiB gets a buffer of its
+    own, gone after the material. Never on a GPU: the barrier that orders a
+    copy after earlier submissions' reads is SpudGPU's, unverified on every
+    backend, as for the staged buffers (item 13).
 - **No tests of anything that needs a device.** There is no
   `tests/aprend_tests.*`: the repo's tests are headless with no GPU. The one
   part of Aprend that runs without a device has a test
@@ -345,19 +535,14 @@ unfinished in it.
 
 ### 1. Uniform layouts are declared by hand
 
-`aprend_uniform_buffer_create` sizes the buffer from the caller's offsets, with
-std140's 16-byte stride for an array, and places nothing. What is left is that
-the offsets, types and counts are the caller's to get right, and nothing checks
-them against the shader:
-
-- A uniform declared at the wrong offset is read from the wrong bytes.
-- A `mat3`, a struct, or an array of structs has no `APREND_UNIFORM_TYPE`.
-- A `vec3` followed by a scalar shares its 16 bytes in std140, which a caller
-  working from sizes alone gets wrong.
-
-The fix is SPIR-V reflection: layouts, offsets and block sizes read from the
-shader. It belongs with the rewrite `aprendbuffers.h` already says it is due
-(item 18).
+Closed 2026-10-11 by item 18, not compiled: `aprend_binding_layout_get_uniform_layout`
+gives a uniform buffer's layout as the shader has it, `mat2` and `mat3` have
+types, structs and arrays of structs are listed member by member, and every
+offset is the SPIR-V's. A layout written by hand is still the caller's to
+get right, and `aprend_uniform_buffer_update_by_name` assumes std140 (a
+uniform block in `layout(std430)` or `scalar` through an extension would be
+written at the wrong strides; the material, which reads the strides, is
+not).
 
 ### 2. A host-visible storage buffer on D3D12
 
@@ -434,7 +619,12 @@ code"). Left over:
   gone back to the layout. The header says to compile again; nothing checks
   (item 32 has the same gap for textures).
 - **A layout has no debug name**: `aprend_binding_layout_create` takes no desc.
-- Nothing checks a layout against the SPIR-V (item 18).
+  Two layouts of the same bindings share one SpudGPU layout (see "State of
+  the code"), so a debug name would be a handle's, not the SpudGPU
+  object's.
+- A layout is checked against the SPIR-V when a pipeline is made from it
+  (item 18); a binding set against its layout, and its views' shapes
+  against the shader when it is bound.
 - **A combined image sampler slot doesn't work on SpudGPU's Metal backend**,
   which writes the texture half only. A layout that has to run there declares
   a sampled image slot and a sampler slot instead. Aprend accepts the combined
@@ -457,9 +647,12 @@ or per instance (see "State of the code"). Left over:
   at four locations.
 - **A per-instance binding steps every instance.** SpudGPU's binding has no
   step rate, so one element for every N instances can't be asked for.
-- **Locations are positional**: element N across the bindings is location N.
-  A shader that skips a location can't be described. Reflection (item 18)
-  replaces this.
+- **Locations are positional by default**: element N across the bindings
+  is location N. `_vertex_inputs_by_name` (item 18) gives them from the
+  shader's input names instead, and a shader that skips a location can be
+  fed that way.
+- **No unsigned element type**: a `uint` vertex input is refused at
+  pipeline creation, since no `APREND_BUFFER_ELEMENT_TYPE` feeds it.
 
 ### 12. Frames in flight: what is left
 
@@ -577,9 +770,9 @@ the code"). Left over:
   will be written once" above: a pool could take a transient span for each
   write, record an exact copy, and keep no staging copy at all. Not built.
 - **A pool is never compacted and frees nothing by itself.** Ranges don't
-  move, a freed range of a wrong pool or one freed twice is caught only
-  where the free call can see it, and a range freed twice with an
-  allocation between the two frees is not caught.
+  move. A pool's table of allocations only grows: an entry is used again,
+  never removed, so a pool that once held a million ranges keeps a million
+  entries (24 bytes each) until it is destroyed.
 - **Uniform buffers stay host-visible on every device**, on purpose: they are
   small and rewritten every frame, and a staged copy per buffer per frame
   costs more than the bus read it saves. A large uniform buffer written once
@@ -755,43 +948,124 @@ the sets its draws read (see "State of the code").
   in `GENERAL`.** Nothing puts it back. Right for most uses; written down
   because the immediate operations do put a texture back.
 
-### 18. No shader reflection
+### 18. Shader reflection: what is left
 
-Vertex layouts, uniform bindings and uniform offsets are declared by hand and
-nothing checks them against the SPIR-V, so a mismatch is found on screen.
-Wanted: reflection at shader creation giving sets, bindings, block members with
-offsets and sizes, and vertex inputs; pipelines and binding sets validated
-against it; inputs addressed by name. This is also the real fix for item 1 and
-the rewrite `aprendbuffers.h` asks for. Hazel:
+Written (see "State of the code"). Hazel:
 `Platform/Vulkan/ShaderCompiler/VulkanShaderCompiler.h` (`Reflect`),
 `Shader.h` (`ShaderBuffer`, `ShaderUniform`), `DescriptorSetManager::Validate`.
+Left over:
 
-### 19. No material
+- **One entry point per stage is assumed** to tell used from declared.
+  SPIR-V with several entry points for a stage counts everything as used,
+  so a pipeline over it needs layouts for all of them.
+- **Reflection is redone for every shader created**, with no cache. Fine
+  for a handful of shaders; a cache belongs with item 22.
+- **Specialization constants**: a workgroup size or array size set by one
+  reads as 0, and a descriptor array sized by one is refused.
+- **Formats aren't checked**: a storage image's declared format against
+  its view's, a vertex element's component count against the input's, a
+  color output's type against the target's format. The fragment shader's
+  color output count is reflected and nothing compares it yet.
+- **The bindings of one set must agree across stages** in type; different
+  array sizes take the largest, and different block declarations the
+  largest block's members, without saying so.
+- **SPIRV-Cross on D3D12 builds is SpudLib's git tag**, a different
+  revision from the vendored one; the core API used here is old and
+  stable, but the two aren't pinned together.
 
-Nothing pairs a shader with its parameter values and textures. Wanted, after
-items 9 and 18: an object holding a uniform block's bytes and the bound
-textures, set by name. Hazel: `Material.h`.
+### 19. Material: what is left
 
-### 20. No render pass or compute pass object
+`aprend_material` is written (see "State of the code"). Hazel: `Material.h`.
+Left over:
 
-A pass today is a `BEGIN_RENDERING` command the caller fills in each frame,
-followed by its own pipeline, set, viewport and scissor commands. Wanted: a pass
-that owns its pipeline, target and inputs, validates them once, and is begun
-with one command. Hazel: `RenderPass.h`, `ComputePass.h`,
-`Renderer::BeginRenderPass`.
+- **Names come from the layout**, which for owned blocks has to be made
+  from shaders (item 18). A hand-written layout gives names to textures
+  and buffers the caller sets, and no owned block.
+- **A changed resource rebuilds the whole binding set**, at the next
+  compile (item 9's first point). Fine for a texture swapped now and then;
+  a material whose textures change every frame wants item 33's bindless.
+- **A list compiled before a resource changed and submitted after it**
+  binds what the material held at its compile, as with any updated set;
+  nothing checks.
+- **One material is one set slot.** A shader that reads per-material data
+  from two sets needs two materials.
+- **No owned block in an array binding**, and a buffer the caller gives
+  is always bound whole: no `_offset` or `_range` through the material.
+- **No push constants in a material.** Hazel's materials can be push
+  constant blocks; here a material is a binding set.
+- **No copy.** Hazel's `Material::Copy` has no counterpart; a second
+  material of the same desc is made from scratch and its values set again.
+- **A material destroyed while a list that binds it is still compiled**
+  is a use after free at that list's next submit, since the submit copies
+  the material's blocks. The header says so; nothing checks.
+- **The arena keeps one empty buffer, and no more** (2026-10-11, not
+  compiled; run in the stub harness). When a material's range comes back
+  and leaves its buffer empty, the buffer goes if another is empty
+  already, and is kept as the spare if not. This happens in the
+  material's release function, after the GPU has finished with it, so the
+  buffer is destroyed there and then. Left: a new block goes to the first
+  buffer with room, not the fullest, so a buffer with one long-lived
+  material in it may never empty; nothing releases the spare
+  (`aprend_vertex_pool_trim` has no counterpart for the arena); nothing
+  compacts, by design, since moving a block means a copy and a rebuilt
+  descriptor set. Item 35 may replace the range list underneath.
+- **Every owned block takes at least 256 bytes**, the largest alignment of
+  the three APIs, since SpudGPU doesn't report the device's own. A
+  device-reported alignment (Vulkan's is often 64) would pack small blocks
+  four times tighter.
+- **A changed block is copied whole**, not the changed bytes.
+- **A material of a frequently changing block** (one written every frame)
+  pays a copy and a barrier on its arena buffer each submission; a block
+  that changes every frame is a buffer set's job, as an external block.
 
-`aprend_framebuffer` belongs here too: nothing connects one to
-`BEGIN_RENDERING` or to a pipeline's attachment formats, so the caller reads its
-views out and builds the targets by hand.
+### 20. Render and compute passes: what is left
 
-### 21. No draw list, batching or instancing
+`aprend_render_pass` and `aprend_compute_pass` are written, and a render pass
+renders to an `aprend_framebuffer` and checks it against the pipeline (see
+"State of the code"). Hazel: `RenderPass.h`, `ComputePass.h`,
+`Renderer::BeginRenderPass`. Left over:
 
-The caller issues every draw. Wanted: a caller-fed list of draws (mesh, material,
-transform) that is sorted, batched by mesh and material into instanced draws
-with transforms in a storage buffer, and replayed into each pass that needs it.
-No scene, asset or application concept: the caller hands over what to draw.
-Needs items 9, 11 and 12. Hazel: `SceneRenderer` (`MeshKey`, `DrawCommand`,
-`m_SBSInstanceTransforms`), `Renderer::RenderMesh`.
+- **One color target**, until a pipeline can describe more (item 25).
+  `APREND_RENDER_PASS_MAX_COLOR_TARGETS` is 1 for that reason.
+- **The render area is always the whole target**, and the viewport and
+  scissor cover it. A caller wanting less sends its own SET_VIEWPORTS
+  after the begin, or BEGIN_RENDERING by hand.
+- **Ops are fixed per pass.** A pass that clears on its first use in a
+  frame and loads on its second is two passes.
+- **Inputs are by slot, not by name** (Hazel's `SetInput("u_...")`): item
+  18 again.
+- **A pipeline set inside the pass** with SET_SHADER_PIPELINE is not
+  checked against the targets' formats, as BEGIN_RENDERING never was.
+- **The swap chain is not a target.** Presenting is still
+  `PRESENT_TEXTURE`'s copy from a texture the pass rendered to.
+- **A compute pass only sets state**: there is no begin and end, and
+  nothing groups its dispatches.
+
+### 21. Draw list: what is left
+
+`aprend_draw_list` is written (see "State of the code"). Hazel:
+`SceneRenderer` (`MeshKey`, `DrawCommand`, `m_SBSInstanceTransforms`),
+`Renderer::RenderMesh`. Left over:
+
+- **Instance bytes are a per-instance vertex binding, not a storage
+  buffer** as this item first asked. A vertex binding needs no binding
+  layout of the list's own, works the same on every backend, and takes its
+  memory from the frame's transient arena, so it needs no buffer set. What
+  it costs: a 4x4 matrix is four VEC4 elements at four locations (item 11),
+  and a shader can't index another instance's data. A storage buffer path
+  would be a second mode of the list, for a shader that wants one.
+- **No culling and no GPU-driven path.** The list draws what it is given;
+  culling is the caller's, and an indirect path built by a compute shader
+  waits on item 34.
+- **Batched order sorts by handle value.** Draws of one material are
+  together and each material is bound once, but which material comes first
+  follows its address, which changes from run to run. Nothing sorts front
+  to back for early depth rejection: that needs a depth the caller would
+  hand over.
+- **No pipeline per draw.** Draws that need different pipelines are in
+  different lists, each replayed after its own SET_SHADER_PIPELINE.
+- **A second build in one frame takes transient memory again**; the first
+  span is not reused until the frame comes round.
 
 ### 22. Shaders are precompiled SPIR-V only
 
@@ -799,7 +1073,8 @@ No runtime compilation, includes, macros, cache or reload; the build compiles tw
 GLSL files with glslc on Windows and Linux and nothing on Apple. Whether Aprend
 should compile shaders at all, or only take SPIR-V and reflection data from its
 caller, is undecided. Hazel: `VulkanShaderCompiler`, `ShaderPreprocessor`,
-`VulkanShaderCache`, `ShaderPack`.
+`VulkanShaderCache`, `ShaderPack`. Item 18 settled half of it: Aprend reflects
+the SPIR-V it is given itself, so a caller hands over SPIR-V and nothing more.
 
 ### 23. No 2D, line, text or debug drawing
 
@@ -929,6 +1204,45 @@ have on every backend:
   stage. SpudGPU's pipeline desc has a task module, and its Metal backend
   doesn't run one.
 
+### 35. One device allocation for every buffer and image
+
+Numbered out of order, as item 31. Every `spudgpu_create_buffer` and
+`spudgpu_create_image` is a device allocation of its own: a
+`vkAllocateMemory` on Vulkan (where many drivers allow about 4096 in all,
+`maxMemoryAllocationCount`), a committed resource on D3D12 (64 KiB at the
+least, whatever the buffer's size), a `newBufferWithLength` on Metal. Aprend
+works around it twice, with the vertex and index pools (item 13) and the
+material arena (item 19), each suballocating ranges of a few large buffers;
+every other buffer and every texture is still an allocation each.
+
+Decided 2026-10-11: **SpudGPU exposes heaps and resources placed in them,
+and Aprend decides placement.** That is translation, and keeps the
+decision with SpudLib's caller as `../CLAUDE.md` asks: a heap of a memory
+kind, and a buffer or image created at an offset of one, which are
+`vkAllocateMemory` and `vkBind*Memory` on Vulkan, `ID3D12Heap` and
+`CreatePlacedResource` on D3D12, and `MTLHeap` on Metal, with each
+resource's size and alignment requirement reported so the caller can place
+it. The alternative, Vulkan Memory Allocator and D3D12 Memory Allocator
+inside SpudGPU's backends, would be SpudLib deciding where memory goes, and
+Metal would need one of its own.
+
+- **SpudLib first**: the heap and placed-resource calls and the
+  requirement queries, on all three backends. Designed 2026-10-11 in
+  `../spudlib/spudgpu_heap_draft.h`, under review, not written: heaps of
+  one memory kind and one resource class (buffers, images, attachment
+  images), size and alignment asked of the heap, placed buffers and
+  images destroyed with the ordinary destroy calls. Its five open
+  questions are settled before any backend is written.
+- **Then Aprend**: a device allocator over the heaps for every buffer and
+  texture, with the placement policy (block sizes, which block a resource
+  goes in, when an empty block is released). Its bookkeeping could be VMA's
+  virtual allocator (`VmaVirtualBlock`, TLSF, which touches no Vulkan
+  object and serves every backend) in place of `aprend_range_list`, under
+  the pools and the arena as well.
+- The pools and the arena stay: they place many ranges in one buffer,
+  which is what one view, one barrier per buffer and a material table
+  (item 21, item 33) need, and which a device allocator doesn't do.
+
 ## Suggested order
 
 Each step is usable on its own, and later ones lean on earlier ones. Items 4
@@ -946,9 +1260,38 @@ and 5 are closed and their numbers are not reused.
    set in place (item 9) is written.
 3. The rest of item 32: what the command list still gets wrong about
    texture layouts.
-4. Item 18, which settles item 1 and unblocks 19.
-5. Items 19, 20, 21: material, pass and draw list.
+4. Item 18, which settles item 1 and unblocks 19. Written, not compiled;
+   its reflection and the logic over it have run without a device (see
+   "State of the code").
+5. Items 19, 20, 21: material, pass and draw list. Written, not compiled
+   (see "State of the code"); what is left of each is in its item.
 6. Items 25, 26, 29 and 31 as SpudGPU gains them, and item 2; then 23 and 24.
 
 Items 7, 22, 27, 28, 30, 33 and 34 wait until something needs them, decides
-them or SpudGPU gains them.
+them or SpudGPU gains them. Item 35 waits on SpudLib's heaps.
+
+## Next, from the review of items 18 and 19
+
+From the review of the reflection and the material against Hazel on
+2026-10-11. Most important first. Remove a step here when it is fixed,
+and record what was done under "State of the code" and in the item it
+belongs to.
+
+1. **`aprend_material_set_uniform` looks a name up by string on every
+   call**, across every member of every owned block. A lookup once (a
+   name to a handle) and a set by handle would make per-frame updates
+   cheap.
+2. **What Hazel's material has and Aprend's doesn't:** a copy
+   (`Material::Copy`), reading a value back (`Get`), and default
+   resources for slots left empty. Without defaults an incomplete
+   material fails the compile, which is stricter than Hazel and arguably
+   right, but every slot has to be set before the first draw.
+3. **Reflection limits** (item 18): several entry points for one stage
+   count everything as used; nothing is cached; specialization constants
+   aren't resolved; a vertex element's component count, a color output's
+   type against its target's format, and a storage image's declared
+   format against its view's are not checked.
+4. **The arena's remaining policy** (item 19): place a new block in the
+   fullest buffer that has room, so lightly used buffers drain, and a trim
+   that releases the spare buffer. Held until item 35 decides what the
+   arena's bookkeeping is.

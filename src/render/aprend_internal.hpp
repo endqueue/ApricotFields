@@ -9,11 +9,16 @@
 #include "render/aprendbuffers.h"
 #include "render/aprendcommands.h"
 #include "render/aprendcontext.h"
+#include "render/aprenddrawlist.h"
+#include "render/aprendframes.h"
+#include "render/aprendmaterial.h"
+#include "render/aprendpass.h"
 #include "render/aprendpipeline.h"
 #include "render/aprendswapchain.h"
 #include "render/aprendtransient.h"
 
 #include "aprendpools_internal.hpp"
+#include "aprendreflect_internal.hpp"
 #include "aprendtransient_internal.hpp"
 
 #include <spudgpu.h>
@@ -24,6 +29,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <deque>
+#include <string>
 #include <mutex>
 #include <vector>
 
@@ -74,6 +81,39 @@ inline ApriMat4 from_glm(const glm::mat4 &m) {
 /* How many SPUDGPU_DESCRIPTOR_TYPE values there are; they are 0 to this - 1. */
 #define APREND_DESCRIPTOR_TYPE_COUNT (SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE + 1)
 
+struct aprend_binding_layout_core;
+
+/* The alignment of a material's uniform block in the arena: the largest
+ * uniform buffer offset alignment of the three APIs (D3D12's 256). SpudGPU
+ * doesn't report the device's own. */
+#define APREND_MATERIAL_BLOCK_ALIGNMENT 256u
+/* The size of one buffer of the material arena. A block larger than this
+ * gets a buffer of its own. 64 KiB is also the most one uniform buffer
+ * descriptor can see on D3D12. */
+#define APREND_MATERIAL_ARENA_BUFFER_SIZE 65536u
+
+/* One buffer of the material arena: device-local uniform memory, written
+ * only by copies recorded at submit (aprend_material_stage_uploads), and the
+ * ranges of it handed out, in units of APREND_MATERIAL_BLOCK_ALIGNMENT. */
+struct aprend_material_arena_buffer {
+	aprend_uniform_buffer buffer{nullptr};
+	aprend_range_list ranges{};
+	/* Made for one block larger than an arena buffer, and destroyed when that
+	 * block is given back. */
+	bool dedicated{false};
+};
+
+/* An instance's material arena: where every material's owned uniform blocks
+ * live, each at a fixed range for the material's life. Buffers are added a
+ * buffer at a time. One left with no range is destroyed if another is empty
+ * already and kept as the one spare if not; a dedicated one goes with its
+ * block; the rest go with the instance. Used only on the thread using the instance: a range is taken at
+ * aprend_material_create and given back by the material's release function,
+ * once the GPU has finished with it. */
+struct aprend_material_arena {
+	std::vector<aprend_material_arena_buffer *> buffers{};
+};
+
 typedef struct aprend_instance_t {
 #if _DEBUG
 	char *debug_name{nullptr};
@@ -101,6 +141,8 @@ typedef struct aprend_instance_t {
 	/* Transient memory (render/aprendtransient.h): a run of chunks for each
 	 * frame index, empty until the first aprend_transient_allocate. */
 	aprend_transient_arena transient{};
+	/* The owned uniform blocks of every material (render/aprendmaterial.h). */
+	aprend_material_arena material_arena{};
 	/* Paces frames. Every aprend_command_list_submit signals it to the next
 	 * submit_serial, and frame_last_serial[i] is the serial of the last
 	 * submission made while frame index i was current: what
@@ -131,6 +173,11 @@ typedef struct aprend_instance_t {
 	};
 	std::vector<release_entry> release_queue{};
 	size_t release_head{0};
+	/* Every binding layout core alive (aprend_binding_layout_core): what a
+	 * new binding layout looks for one of the same bindings in. Written only
+	 * by the thread using the instance, by creating a layout and by releasing
+	 * a core's last holder. */
+	std::vector<aprend_binding_layout_core *> binding_layout_cores{};
 	/* Guards release_queue and release_head, and nothing else. It is what
 	 * lets a destroy call come from any thread: retiring only pushes an
 	 * entry under it. It is never held while a release function runs. */
@@ -300,6 +347,9 @@ typedef struct aprend_command_list_t {
 	/* Whether the list binds a transient span, which is memory of the frame
 	 * it was compiled in and no other. */
 	bool uses_transient{false};
+	/* Every material a SET_MATERIAL of the last compile names, once each:
+	 * submit writes their uniform values into the frame's copy first. */
+	std::vector<aprend_material> materials{};
 	std::vector<APREND_COMMAND> commands{};
 	/* Owned copies of each BEGIN_RENDERING's color target array, so recorded
 	 * commands never point at caller memory. Each inner vector's buffer stays
@@ -456,7 +506,30 @@ typedef struct aprend_shader_t {
 	/* The one stage the shader was created for, so a pipeline can refuse a
 	 * shader put in the wrong place. */
 	SPUDGPU_SHADER_STAGE stage{SPUDGPU_SHADER_STAGE_NONE};
+	/* What the SPIR-V declares, read at creation. It points into itself, so
+	 * it lives here and is never copied. */
+	aprend_reflection_store reflection{};
 } aprend_shader_t;
+
+/* A sampled or storage image binding a pipeline's shaders use, and what
+ * they read it as: a command list checks the view a set gives it against
+ * this when it binds the set for the pipeline. */
+struct aprend_image_expectation {
+	uint32_t set;
+	uint32_t binding;
+	APREND_TEXTURE_VIEW_SHAPE shape;
+	APREND_SHADER_SCALAR_TYPE scalar_type;
+};
+
+/* False, printed, if a texture view [set] holds is not what [expected]
+ * declares at its binding, for a pipeline that has [set] at [slot]: another
+ * shape, or a stencil read as anything but an unsigned integer, or a depth
+ * read as one. [who] names the command. */
+bool aprend_binding_set_matches_images(
+    const aprend_binding_set_t *set,
+    uint32_t slot,
+    const std::vector<aprend_image_expectation> &expected,
+    const char *who);
 
 typedef struct aprend_graphics_pipeline_t {
 #if _DEBUG
@@ -479,6 +552,8 @@ typedef struct aprend_graphics_pipeline_t {
 	/* Created with a mesh shader in place of a vertex shader: it is run
 	 * with DISPATCH_MESH and reads no vertex buffers. */
 	bool is_mesh{false};
+	/* The images its shaders use, from their reflection. */
+	std::vector<aprend_image_expectation> images{};
 } aprend_graphics_pipeline_t;
 
 typedef struct aprend_compute_pipeline_t {
@@ -495,7 +570,47 @@ typedef struct aprend_compute_pipeline_t {
 	char *entry_point{nullptr};
 	/* Where the furthest push constant range ends; 0 with no ranges. */
 	uint32_t push_constant_end{0};
+	/* The images its shader uses, from its reflection. */
+	std::vector<aprend_image_expectation> images{};
 } aprend_compute_pipeline_t;
+
+/* The part of a binding layout SpudGPU sees: its bindings without names,
+ * the SpudGPU layout made of them, and the pools its sets come from. Every
+ * aprend_binding_layout of an instance with the same bindings (number, type,
+ * count, stages; in any order) shares one core, so a set of one is a set of
+ * all of them and a pipeline declaring one takes a set of any: they are one
+ * SpudGPU object, on every backend.
+ *
+ * Held by each layout handle and each binding set made through one; freed,
+ * and taken off the instance's list, when the last holder is released. Every
+ * holder is released on the thread using the instance (a handle's or set's
+ * release function, or a failed create), so [holders] needs no lock. Plain
+ * data: calloc'd, freed with free. */
+struct aprend_binding_layout_core {
+	aprend_instance instance;
+	/* Sorted by _binding; _name is NULL in every one. */
+	aprend_binding_desc bindings[APREND_MAX_BINDINGS_PER_LAYOUT];
+	uint32_t binding_count;
+	spudgpu_descriptor_set_layout layout;
+	/* The pools this core's sets come from, each sized for
+	 * APREND_BINDING_SETS_PER_POOL sets. A pool is added when the last one is
+	 * full; none is released before the core. */
+	spudgpu_descriptor_pool *pools;
+	uint32_t pool_count;
+	/* Sets allocated so far from the last pool. */
+	uint32_t sets_in_last_pool;
+	/* Sets whose aprend_binding_set was destroyed, handed out again before
+	 * anything new is allocated: SpudGPU releases sets by the pool, not one
+	 * at a time. Always has room for every set of every pool. */
+	spudgpu_descriptor_set *free_sets;
+	uint32_t free_set_count;
+	/* Layout handles and binding sets holding the core. */
+	uint32_t holders;
+};
+
+/* Drops one holder of [core], and frees it when that was the last. NULL is
+ * accepted. */
+void aprend_binding_layout_core_release(aprend_binding_layout_core *core);
 
 typedef struct aprend_binding_layout_t {
 #if _DEBUG
@@ -504,23 +619,35 @@ typedef struct aprend_binding_layout_t {
 	aprend_binding_layout_t() = default;
 	~aprend_binding_layout_t();
 	aprend_instance instance{nullptr};
+	/* The bindings as the caller or the shaders gave them, in that order,
+	 * each _name pointing at names[i]. The core has the same ones sorted. */
 	aprend_binding_desc bindings[APREND_MAX_BINDINGS_PER_LAYOUT]{};
 	uint32_t binding_count{0};
 	/* Every binding's _count added up: the entries one set takes. */
 	uint32_t descriptor_count{0};
-	spudgpu_descriptor_set_layout layout{nullptr};
-	/* The pools this layout's sets come from, each sized for
-	 * APREND_BINDING_SETS_PER_POOL sets. A pool is added when the last one is
-	 * full; none is released before the layout. */
-	spudgpu_descriptor_pool *pools{nullptr};
-	uint32_t pool_count{0};
-	/* Sets allocated so far from the last pool. */
-	uint32_t sets_in_last_pool{0};
-	/* Sets whose aprend_binding_set was destroyed, handed out again before
-	 * anything new is allocated: SpudGPU releases sets by the pool, not one
-	 * at a time. Always has room for every set of every pool. */
-	spudgpu_descriptor_set *free_sets{nullptr};
-	uint32_t free_set_count{0};
+	/* Shared with every layout of the same bindings; held by this handle. */
+	aprend_binding_layout_core *core{nullptr};
+
+	/* Each binding's name, parallel to bindings: the caller's _name, or the
+	 * shader's for a layout made from shaders; empty for none.
+	 * bindings[i]._name points at names[i], or is NULL. */
+	std::string names[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	/* A layout made from shaders: each buffer binding's block, parallel to
+	 * bindings. Its members are in [members], and the ones with a type, as
+	 * aprend_uniform, in [uniforms]; the names of both are in [strings]. */
+	struct block_info {
+		bool known;
+		const char *block_name;
+		uint32_t size;
+		uint32_t first_member;
+		uint32_t member_count;
+		uint32_t first_uniform;
+		uint32_t uniform_count;
+	};
+	block_info blocks[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	std::vector<aprend_shader_member> members{};
+	std::vector<aprend_uniform> uniforms{};
+	std::deque<std::string> strings{};
 } aprend_binding_layout_t;
 
 typedef struct aprend_binding_set_t {
@@ -531,8 +658,13 @@ typedef struct aprend_binding_set_t {
 	~aprend_binding_set_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
 	aprend_instance instance{nullptr};
+	/* The handle the set was created through: its names are what a
+	 * material reads. */
 	aprend_binding_layout layout{nullptr};
-	/* From the layout's pools; each goes back on its free list. One set if
+	/* The layout's core, held by the set: what the set is a set of, for
+	 * every layout that shares it. */
+	aprend_binding_layout_core *core{nullptr};
+	/* From the core's pools; each goes back on its free list. One set if
 	 * every entry is a single buffer, texture or sampler. If any entry is a
 	 * buffer set there is one for each frame in flight, sets[f] pointing at
 	 * copy f of every buffer set and at the same single resources. */
@@ -564,6 +696,166 @@ typedef struct aprend_binding_set_t {
 	uint32_t storage_store_capacity{0};
 	uint32_t storage_store_counts[APREND_MAX_FRAMES_IN_FLIGHT]{};
 } aprend_binding_set_t;
+
+/* One binding of a material's layout: its name and what the material
+ * holds for it. */
+struct aprend_material_slot {
+	/* The layout's name for the binding, and its block name if it has one
+	 * (NULL otherwise); both the layout's strings. */
+	const char *name{nullptr};
+	const char *block_name{nullptr};
+	/* The layout's binding: number, type and count. */
+	aprend_binding_desc binding{};
+	/* Where the binding's elements start in aprend_material_t::entries. */
+	uint32_t first_entry{0};
+	/* An owned block: its members (the layout's), and its range of the
+	 * instance's material arena, [offset] bytes into [arena]'s buffer. NULL
+	 * and 0 for any other binding. */
+	const aprend_shader_member *members{nullptr};
+	uint32_t member_count{0};
+	aprend_material_arena_buffer *arena{nullptr};
+	uint32_t offset{0};
+	/* The block's bytes as the caller last set them: block_size of them,
+	 * which is also the size of the range's data. */
+	uint8_t *bytes{nullptr};
+	uint32_t block_size{0};
+	/* [bytes] have changed since they were last copied into the range: the
+	 * next submission of a list that binds the material copies them. Set at
+	 * creation, since a new buffer's contents are undefined. */
+	bool dirty{false};
+};
+
+/* One copy a submission records ahead of its list: [size] bytes from
+ * [source] at [source_offset] into [destination], a uniform buffer, at
+ * [destination_offset]. [*dirty] is cleared once the submission has gone in. */
+struct aprend_upload_copy {
+	spudgpu_buffer source;
+	uint64_t source_offset;
+	spudgpu_buffer destination;
+	uint64_t destination_offset;
+	uint64_t size;
+	bool *dirty;
+};
+
+typedef struct aprend_material_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_material_t() = default;
+	~aprend_material_t();
+	aprend_instance instance{nullptr};
+	aprend_binding_layout layout{nullptr};
+	/* One for each binding of the layout, in the layout's order. */
+	aprend_material_slot slots[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	uint32_t slot_count{0};
+	/* One entry for every array element of every binding, what the binding
+	 * set is built from: _binding, _array_element and _type are filled at
+	 * creation, the resource as the caller sets it. An owned block's entry
+	 * holds its buffer set from the start. */
+	aprend_binding_set_entry *entries{nullptr};
+	/* Parallel to entries: whether the element has its view (or buffer)
+	 * and whether it has its sampler, as its type needs. */
+	bool *has_resource{nullptr};
+	bool *has_sampler{nullptr};
+	uint32_t entry_count{0};
+	/* Built at the first compile that binds the material; NULL until then. */
+	aprend_binding_set set{nullptr};
+	/* A resource was set since the binding set was built. */
+	bool resources_changed{true};
+} aprend_material_t;
+
+/* For a compile: builds [material]'s binding set if it has none, or again if
+ * a resource was set since. False, printed, if the material is incomplete
+ * or the set can't be built; the material is left as it was. */
+bool aprend_material_prepare(aprend_material material);
+/* For a submission: writes each dirty block of [material] into a span of
+ * the current frame's transient memory and adds the copy from it into the
+ * block's range to [copies]. The submission clears each block's dirty flag
+ * once it has gone in (aprend_upload_copy::dirty). False, printed, if the
+ * transient memory can't be taken; what was added stays, and is only
+ * recorded if the caller goes on. Throws std::bad_alloc from [copies]. */
+bool aprend_material_stage_uploads(aprend_material material, std::vector<aprend_upload_copy> &copies);
+/* From the instance's destructor, once nothing is left on the release
+ * queue: destroys every buffer of the material arena. */
+void aprend_material_arena_destroy(aprend_instance instance);
+/* A uniform buffer in the device's own memory, never mapped, written only
+ * by copies: what the material arena's buffers are. NULL, printed, if the
+ * device refuses it. */
+aprend_uniform_buffer aprend_uniform_buffer_create_device(aprend_instance instance, uint32_t size);
+
+typedef struct aprend_render_pass_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_render_pass_t() = default;
+	~aprend_render_pass_t() = default;
+	aprend_instance instance{nullptr};
+	/* As the caller gave it, checked at creation. */
+	aprend_render_pass_desc desc{};
+} aprend_render_pass_t;
+
+typedef struct aprend_compute_pass_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_compute_pass_t() = default;
+	~aprend_compute_pass_t() = default;
+	aprend_instance instance{nullptr};
+	aprend_compute_pass_desc desc{};
+} aprend_compute_pass_t;
+
+/* What aprend_send_command records for BEGIN_RENDER_PASS, SET_COMPUTE_PASS
+ * and DRAW_LIST: each sends the commands it stands for into [cmd_list] and
+ * returns false, with a message, for one that can't be expanded. */
+bool aprend_render_pass_expand(aprend_command_list cmd_list, aprend_render_pass pass);
+bool aprend_compute_pass_expand(aprend_command_list cmd_list, aprend_compute_pass pass);
+bool aprend_draw_list_expand(aprend_command_list cmd_list, aprend_draw_list list, uint32_t material_slot);
+
+typedef struct aprend_draw_list_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_draw_list_t() = default;
+	~aprend_draw_list_t() = default;
+	aprend_instance instance{nullptr};
+	aprend_draw_list_desc desc{};
+	/* One for each aprend_draw_list_add since the reset. The mesh is stored
+	 * with every slot past _vertex_buffer_count zeroed, so two meshes are the
+	 * same mesh exactly when their bytes are. */
+	struct draw {
+		aprend_draw_mesh mesh;
+		aprend_material material;
+		uint32_t instance_count;
+		/* Where its instances start in instance_bytes, in instances. */
+		uint32_t first_instance;
+	};
+	std::vector<draw> draws{};
+	/* Every draw's instance bytes, in the order they were added. */
+	std::vector<uint8_t> instance_bytes{};
+	uint64_t instance_count{0};
+	/* The last build: the instanced draws, and the span their instances
+	 * were written to, in batch order. Valid while built is true. */
+	struct batch {
+		/* An index into draws, of the batch's first draw: its mesh and
+		 * material are the batch's. */
+		uint32_t draw;
+		uint32_t first_instance;
+		uint32_t instance_count;
+	};
+	std::vector<batch> batches{};
+	/* Scratch for the build's sort, kept so a build of a list of the same
+	 * size allocates nothing. */
+	std::vector<uint32_t> order{};
+	aprend_transient_span span{};
+	/* The list was built and nothing was added or reset since. */
+	bool built{false};
+} aprend_draw_list_t;
+
+/* Whether [set] can sit where a pipeline declares [layout]: whether the set
+ * is of [layout]'s core, which is whether the layout it was made through has
+ * the same bindings. The set's own hold on the core is what is read, not
+ * the handle it was made through, which may have gone. */
+inline bool aprend_binding_set_fits(const aprend_binding_set_t *set, const aprend_binding_layout_t *layout) { return set->core == layout->core; }
 
 /* Which of [set]'s descriptor sets a command list compiled in frame [frame]
  * binds: the frame's own if the set has one for each frame, its only one

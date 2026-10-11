@@ -35,7 +35,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
 
-`apricotfields.h` is not a full umbrella: it includes Aprend's eight headers and
+`apricotfields.h` is not a full umbrella: it includes Aprend's twelve headers and
 nothing of the other modules. Callers include the module header they need.
 
 Each module that has unfinished work keeps it in `AP<MODULE>_TODO.md` at the repo
@@ -174,8 +174,16 @@ block near the top. A new header gets the same block.
 - Lower-case for handles and functions (`apsync_session`), upper-case for value
   structs, enums and constants (`APSYNC_SESSION_DESC`, `APSYNC_CHANNEL_ORDERED`).
 - Header comments are the contract: what the call does, its preconditions, its
-  failures. They are `/* */` and name parameters in `[brackets]`. Implementation
-  notes are `//` comments in the `.cpp`.
+  failures. Implementation notes are `//` comments in the `.cpp`.
+- Aprend's headers (`include/render/`, and `apricotfields.h`) are Javadoc-style
+  Doxygen: a `@file` block with the header's `@par Threads`, then `/** */` on
+  every declaration, struct member and enumerator, with `@brief`,
+  `@param[in]`/`[out]`, `@return`, `@warning` and `@see`. A parameter is `@p
+  name` in prose, a function `name()`, a member of the same struct `#member`,
+  and a field or command member in backticks. `aprendimages.h` is the model.
+  The `Doxyfile` at the repo root builds them; it should report no warnings.
+- The other modules' headers are `/* */` comments that name parameters in
+  `[brackets]`. Don't mix the two styles in one header.
 - Math types crossing the API are the `Apri*` structs from `aprimath.h`. They are
   laid out identically to their GLM counterparts so `to_glm()` can reinterpret them
   in place; changing a member's order or type breaks that silently.
@@ -265,8 +273,11 @@ When asked to verify, on macOS: configure and build with the
 
 - A new source or header file is added to the `add_library` list in
   `CMakeLists.txt` by hand; there is no glob.
-- Third-party code is vendored under `../.deps/` (glm, libdeflate, glaze) and
-  linked `PRIVATE` unless a public header needs it. libdeflate is pinned on
+- Third-party code is vendored under `../.deps/` (glm, libdeflate, glaze,
+  SPIRV-Cross) and linked `PRIVATE` unless a public header needs it.
+  SPIRV-Cross's core is Aprend's SPIR-V reflection; SpudLib builds the same
+  target on Metal and D3D12, so `CMakeLists.txt` only builds it when no
+  target exists yet. libdeflate is pinned on
   purpose: its DEFLATE output is part of what makes an archive byte-identical.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
 - Shaders are compiled with glslc on Windows and Linux only. That block must not

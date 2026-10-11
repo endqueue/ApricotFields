@@ -1,14 +1,55 @@
 
 #include "render/aprendbuffers.h"
 #include "aprend_internal.hpp"
+#include "aprendreflect_internal.hpp"
 
 #include <spudgpu.h>
 
 aprend_uniform_buffer_t::~aprend_uniform_buffer_t() {
-	spudgpu_unmap_buffer(this->buffer);
-	spudgpu_destroy_buffer_view(this->buffer_view);
-	spudgpu_destroy_buffer(this->buffer);
-    free(this->layout.uniforms);
+	// One in the device's memory (aprend_uniform_buffer_create_device) is
+	// never mapped, and one that failed to create may be neither.
+	if (this->uniform_data_ptr)
+		spudgpu_unmap_buffer(this->buffer);
+	if (this->buffer_view)
+		spudgpu_destroy_buffer_view(this->buffer_view);
+	if (this->buffer)
+		spudgpu_destroy_buffer(this->buffer);
+	free(this->layout.uniforms);
+}
+
+aprend_uniform_buffer aprend_uniform_buffer_create_device(aprend_instance instance, uint32_t size) {
+	APREND_MALLOC__T(result, aprend_uniform_buffer_t);
+	if (!result)
+		return nullptr;
+	APREND_CONSTRUCT__T(result, aprend_uniform_buffer_t);
+	result->instance   = instance;
+	result->total_size = size;
+
+	spudgpu_buffer_desc bd{};
+	// Read by shaders, written by the copies a submission records ahead of
+	// its list: never by the CPU, so in the device's own memory.
+	bd.memory_kind = SPUDGPU_MEMORY_KIND_DEVICE;
+	bd.size        = size;
+	bd.usage       = SPUDGPU_BUFFER_USAGE_UNIFORM | SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
+	SPUDRESULT sr  = spudgpu_create_buffer(instance->desc.device, &bd, &result->buffer);
+	if (SPUDFAIL(sr)) {
+		result->buffer = nullptr;
+		printf("apricot: a uniform buffer of %u bytes in the device's memory can't be created: %s\n", size, spudresult_str(sr));
+		APREND_DESTRUCT__T(result, aprend_uniform_buffer_t);
+		return nullptr;
+	}
+	result->buffer_view_desc.parent_buffer             = result->buffer;
+	result->buffer_view_desc.offset_from_parent_buffer = 0;
+	result->buffer_view_desc.stride                    = 0;
+	result->buffer_view_desc.size                      = size;
+	sr = spudgpu_create_buffer_view(result->buffer, &result->buffer_view_desc, &result->buffer_view);
+	if (SPUDFAIL(sr)) {
+		result->buffer_view = nullptr;
+		printf("apricot: a view of a uniform buffer in the device's memory can't be created: %s\n", spudresult_str(sr));
+		APREND_DESTRUCT__T(result, aprend_uniform_buffer_t);
+		return nullptr;
+	}
+	return result;
 }
 
 // A buffer that failed to create may have no view, and its store may hold
@@ -160,20 +201,42 @@ uint32_t aprend_uniform_type_get_size(APREND_UNIFORM_TYPE type) {
 		return 16;
 	case APREND_UNIFORM_TYPE_MAT4:
 		return 64;
+	case APREND_UNIFORM_TYPE_MAT2:
+		return 16;
+	case APREND_UNIFORM_TYPE_MAT3:
+		return 36;
 	default:
 		return 0;
 	}
 }
+// What one [type] takes in a std140 block: its size, except that a matrix
+// keeps each column 16 bytes apart.
+static uint32_t aprend_uniform_std140_size(APREND_UNIFORM_TYPE type) {
+	const uint32_t columns = aprend_uniform_type_columns(type);
+	return columns > 1 ? columns * 16 : aprend_uniform_type_get_size(type);
+}
 // The distance between two elements of an array of [type] in a std140 block:
-// the type's size rounded up to 16.
-static uint32_t aprend_uniform_array_stride(APREND_UNIFORM_TYPE type) { return (aprend_uniform_type_get_size(type) + 15) & ~15u; }
+// what one takes, rounded up to 16.
+static uint32_t aprend_uniform_array_stride(APREND_UNIFORM_TYPE type) { return (aprend_uniform_std140_size(type) + 15) & ~15u; }
 
 // The bytes [u] takes in a std140 block from its offset. u.size is an array
 // element count, not a byte size; 0 and 1 are both "not an array".
 static uint64_t aprend_uniform_footprint(const aprend_uniform &u) {
 	if (u.size <= 1)
-		return aprend_uniform_type_get_size(u.type);
+		return aprend_uniform_std140_size(u.type);
 	return (uint64_t)aprend_uniform_array_stride(u.type) * u.size;
+}
+
+// [u] as a block member laid out by std140, for aprend_write_block_member.
+static aprend_shader_member aprend_uniform_as_member(const aprend_uniform &u) {
+	aprend_shader_member member{};
+	member.type          = u.type;
+	member.offset        = u.offset;
+	member.array_count   = u.size > 1 ? u.size : 1;
+	member.array_stride  = u.size > 1 ? aprend_uniform_array_stride(u.type) : 0;
+	member.matrix_stride = aprend_uniform_type_columns(u.type) > 1 ? 16 : 0;
+	member.size          = (uint32_t)aprend_uniform_footprint(u);
+	return member;
 }
 
 aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, const aprend_uniform_layout *layout) {
@@ -226,6 +289,13 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 		}
 		if (uniform_end > result->total_size)
 			result->total_size = (uint32_t)uniform_end;
+	}
+	// The block as the shader declares it, where the layout says.
+	if (layout->size > result->total_size)
+		result->total_size = layout->size;
+	if (result->total_size > UINT32_MAX - 15) {
+		printf("apricot: aprend_uniform_buffer_create: the block is larger than 32 bits can address\n");
+		goto failedattempt;
 	}
 	result->total_size = (result->total_size + 15) & ~15u;
 
@@ -295,19 +365,16 @@ bool aprend_uniform_buffer_update_by_name(aprend_uniform_buffer buffer, const ch
 		const aprend_uniform &u = buffer->layout.uniforms[i];
 		if (!u.name || strcmp(u.name, name) != 0)
 			continue;
-		const uint32_t type_size = aprend_uniform_type_get_size(u.type);
-		const uint32_t stride    = aprend_uniform_array_stride(u.type);
-		// Bounds are aprend_uniform_buffer_update's to check: a layout whose
-		// offsets run past the buffer fails there.
-		if (u.size <= 1 || stride == type_size)
-			return aprend_uniform_buffer_update(buffer, u.offset, type_size * (u.size ? u.size : 1), pData);
-		// An array whose elements are smaller than their std140 stride: the
-		// caller's elements are tightly packed, the block's are not.
-		for (uint32_t element = 0; element < u.size; ++element) {
-			if (!aprend_uniform_buffer_update(buffer, u.offset + element * stride, type_size, (uint8_t *)pData + (size_t)element * type_size))
-				return false;
-		}
-		return true;
+		if (aprend_uniform_type_get_size(u.type) == 0)
+			return false;
+		// The caller's elements and columns are tightly packed, the block's
+		// are where std140 puts them.
+		const aprend_shader_member member = aprend_uniform_as_member(u);
+		if ((uint64_t)member.offset + member.size > buffer->total_size)
+			return false;
+		const uint64_t base = buffer->buffer_view_desc.offset_from_parent_buffer;
+		aprend_write_block_member(member, (uint8_t *)buffer->uniform_data_ptr + base, pData);
+		return !SPUDFAIL(spudgpu_flush_buffer(buffer->buffer, base + member.offset, member.size));
 	}
 	return false; // no uniform of that name
 }

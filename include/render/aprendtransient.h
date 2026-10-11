@@ -8,8 +8,10 @@
 extern "C" {
 #endif // __cplusplus
 
-/* Transient memory: bytes the caller writes this frame and the GPU reads this
- * frame, with no buffer to create or destroy.
+/**
+ * @file aprendtransient.h
+ * @brief Transient memory: bytes the caller writes this frame and the GPU
+ * reads this frame, with no buffer to create or destroy.
  *
  * It is for geometry that is built again every frame and has no size worth
  * keeping a buffer for: 2D shapes, lines, text, debug drawing. The caller
@@ -19,35 +21,42 @@ extern "C" {
  * copied: the GPU reads the bytes where they were written.
  *
  * A span lasts for the frame it was taken in. The frames are the instance's
- * (aprendcontext.h): aprend_instance_next_frame takes back every span taken
- * the last time the frame index it moves to was current, once the GPU has
- * finished what was submitted then. So:
+ * (aprendcontext.h): aprend_instance_next_frame() takes back every span
+ * taken the last time the frame index it moves to was current, once the GPU
+ * has finished what was submitted then. So:
  *
  * - A span is written, compiled into a list and submitted before the next
- *   aprend_instance_next_frame. Its bytes are written before the submission
- *   that reads them.
+ *   aprend_instance_next_frame(). Its bytes are written before the
+ *   submission that reads them.
  * - A command list that names a span is compiled and submitted in the frame
- *   the span was taken in. aprend_command_list_compile refuses a span of
- *   another frame, and aprend_command_list_submit a list compiled in one.
- * - After that aprend_instance_next_frame, `data` must not be written:
+ *   the span was taken in. aprend_command_list_compile() refuses a span of
+ *   another frame, and aprend_command_list_submit() a list compiled in one.
+ * - After that aprend_instance_next_frame(), `data` must not be written:
  *   the memory may already be another span's.
- * - A caller that never calls aprend_instance_next_frame never gets any of
- *   it back.
+ * - A caller that never calls aprend_instance_next_frame() never gets any
+ *   of it back.
  *
  * The memory is the CPU's to write and never to read: reading `data` back is
  * outside the contract and slow where it works. It is not zeroed.
  *
- * What it is not for: data kept from frame to frame (a vertex buffer,
- * aprendbuffers.h), and uniform or storage data, which a binding set reads
- * through a buffer or a buffer set.
+ * What it is not for: data kept from frame to frame (a vertex buffer or a
+ * pool, aprendbuffers.h), and uniform or storage data, which a binding set
+ * reads through a buffer or a buffer set.
  *
  * An instance has transient memory only if it was created with
  * aprend_instance_desc::transient_chunk_size above 0.
  *
- * Threads: the rule is in aprendcontext.h ("Threads"). aprend_transient_allocate
+ * Aprend takes spans of it as well: a submission copies a material's
+ * changed uniform blocks through it (aprendmaterial.h). They count in
+ * aprend_transient_get_frame_usage() and against
+ * aprend_instance_desc::transient_memory_limit.
+ *
+ * @par Threads
+ * The rule is in aprendcontext.h ("Threads"). aprend_transient_allocate()
  * takes the instance, so it is one of the calls only one thread makes at a
  * time. Writing into a span's `data` is not a call into Aprend: several
- * threads may fill different spans at once. */
+ * threads may fill different spans at once.
+ */
 
 /**
  * @brief Some bytes of an instance's transient memory.
@@ -64,10 +73,13 @@ typedef struct aprend_transient_span {
 	void *data;
 	/** The number of bytes asked for. */
 	uint64_t size;
-	/* Which memory this is. Aprend's: not for the caller to read or change. */
+	/** Which memory this is. Aprend's: not for the caller to read or change. */
 	void *_chunk;
+	/** Aprend's, as #_chunk. */
 	uint64_t _offset;
+	/** Aprend's, as #_chunk. */
 	uint64_t _epoch;
+	/** Aprend's, as #_chunk. */
 	uint32_t _frame;
 } aprend_transient_span;
 

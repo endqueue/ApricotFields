@@ -3,6 +3,7 @@
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
 #include <spudfiles.h>
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -44,28 +45,50 @@ aprend_compute_pipeline_t::~aprend_compute_pipeline_t() {
 		spudgpu_destroy_compute_pipeline(this->pipeline);
 	free(this->entry_point);
 }
-aprend_binding_layout_t::~aprend_binding_layout_t() {
+void aprend_binding_layout_core_release(aprend_binding_layout_core *core) {
+	if (!core)
+		return;
+	if (--core->holders > 0)
+		return;
+	// The last holder: no layout or set of these bindings is left, so the
+	// next layout made with them starts a core of its own.
+	std::vector<aprend_binding_layout_core *> &cores = core->instance->binding_layout_cores;
+	for (size_t i = 0; i < cores.size(); ++i) {
+		if (cores[i] == core) {
+			cores.erase(cores.begin() + (std::ptrdiff_t)i);
+			break;
+		}
+	}
 	// Pools, then the layout their sets were allocated against.
-	for (uint32_t i = 0; i < this->pool_count; ++i)
-		spudgpu_destroy_descriptor_pool(this->pools[i]);
-	free(this->pools);
-	free(this->free_sets);
-	spudgpu_destroy_descriptor_set_layout(this->layout);
+	for (uint32_t i = 0; i < core->pool_count; ++i)
+		spudgpu_destroy_descriptor_pool(core->pools[i]);
+	free(core->pools);
+	free(core->free_sets);
+	if (core->layout)
+		spudgpu_destroy_descriptor_set_layout(core->layout);
+	free(core);
+}
+
+aprend_binding_layout_t::~aprend_binding_layout_t() {
+	// NULL for a layout that failed before it found its core.
+	aprend_binding_layout_core_release(this->core);
 }
 aprend_binding_set_t::~aprend_binding_set_t() {
 	free(this->entries);
 	free(this->image_uses);
 	free(this->storage_stores);
-	// A set that failed to create gives back what it got as far as acquiring.
+	// A set that failed to create gives back what it got as far as acquiring,
+	// and lets go of the core only once it has: the core may go with it.
 	for (uint32_t frame = 0; frame < this->frame_set_count; ++frame)
-		this->layout->free_sets[this->layout->free_set_count++] = this->sets[frame];
+		this->core->free_sets[this->core->free_set_count++] = this->sets[frame];
+	aprend_binding_layout_core_release(this->core);
 }
 
 static_assert(APREND_DESCRIPTOR_TYPE_COUNT <= SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES);
 
 // Adds one more pool to [layout], and room on its free list for the sets that
 // pool will hold.
-static SPUDRESULT aprend_binding_layout_add_pool(aprend_binding_layout_t *layout) {
+static SPUDRESULT aprend_binding_layout_add_pool(aprend_binding_layout_core *layout) {
 	const uint32_t pool_count = layout->pool_count + 1;
 
 	spudgpu_descriptor_pool *pools = (spudgpu_descriptor_pool *)realloc(layout->pools, sizeof(spudgpu_descriptor_pool) * pool_count);
@@ -105,7 +128,7 @@ static SPUDRESULT aprend_binding_layout_add_pool(aprend_binding_layout_t *layout
 // A descriptor set of [layout]: one given back by a destroyed
 // aprend_binding_set if there is one, else a new one from the last pool,
 // adding a pool when that is full.
-static SPUDRESULT aprend_binding_layout_acquire_set(aprend_binding_layout_t *layout, spudgpu_descriptor_set *out_set) {
+static SPUDRESULT aprend_binding_layout_acquire_set(aprend_binding_layout_core *layout, spudgpu_descriptor_set *out_set) {
 	if (layout->free_set_count > 0) {
 		*out_set = layout->free_sets[--layout->free_set_count];
 		return SPUD_SUCCESS;
@@ -127,7 +150,7 @@ static SPUDRESULT aprend_binding_layout_acquire_set(aprend_binding_layout_t *lay
 	return SPUD_SUCCESS;
 }
 
-static const aprend_binding_desc *aprend_binding_layout_find(const aprend_binding_layout_t *layout, uint32_t binding) {
+static const aprend_binding_desc *aprend_binding_layout_find_desc(const aprend_binding_layout_t *layout, uint32_t binding) {
 	for (uint32_t i = 0; i < layout->binding_count; ++i)
 		if (layout->bindings[i]._binding == binding)
 			return &layout->bindings[i];
@@ -254,6 +277,34 @@ static bool aprend_shader_stage_supported(SPUDGPU_SHADER_STAGE shader_stage) {
 	}
 }
 
+// Reflects [size] bytes of SPIR-V into [shader]'s reflection. False, printed
+// for [who], if it can't be. [code] is the caller's and may not be aligned to
+// 4, so the words are read through a copy where it isn't.
+static bool aprend_shader_reflect(
+    aprend_shader_t *shader,
+    const void *code,
+    uint64_t size,
+    SPUDGPU_SHADER_STAGE shader_stage,
+    const char *who) {
+	std::string error;
+	bool ok = false;
+	if (((uintptr_t)code % alignof(uint32_t)) == 0) {
+		ok = aprend_reflect_spirv((const uint32_t *)code, (size_t)(size / 4), shader_stage, &shader->reflection, &error);
+	} else {
+		uint32_t *words = (uint32_t *)malloc(size);
+		if (!words) {
+			printf("apricot: %s: out of memory\n", who);
+			return false;
+		}
+		memcpy(words, code, size);
+		ok = aprend_reflect_spirv(words, (size_t)(size / 4), shader_stage, &shader->reflection, &error);
+		free(words);
+	}
+	if (!ok)
+		printf("apricot: %s: the shader can't be reflected: %s\n", who, error.c_str());
+	return ok;
+}
+
 // SpudGPU copies the SPIR-V into its own shader module, so [code] only has to
 // live for this call.
 static SPUDRESULT aprend_shader_create_module(
@@ -275,6 +326,336 @@ static SPUDRESULT aprend_shader_create_module(
 	return spudgpu_create_shader_module(shader->instance->desc.device, &smd, &shader->shader_module);
 }
 
+// A stage's name, for messages.
+static const char *aprend_stage_name(SPUDGPU_SHADER_STAGE stage) {
+	switch (stage) {
+	case SPUDGPU_SHADER_STAGE_VERTEX:
+		return "vertex";
+	case SPUDGPU_SHADER_STAGE_FRAGMENT:
+		return "fragment";
+	case SPUDGPU_SHADER_STAGE_COMPUTE:
+		return "compute";
+	case SPUDGPU_SHADER_STAGE_MESH:
+		return "mesh";
+	default:
+		return "unknown";
+	}
+}
+
+// Checks [shader] against what a pipeline declares for it: [entry_point],
+// the [layout_count] [layouts] and the [range_count] push constant [ranges].
+// Adds the images it uses to [images]. False, printed for [who], at the
+// first mismatch. Throws std::bad_alloc from [images].
+static bool aprend_pipeline_check_shader(
+    const char *who,
+    aprend_shader shader,
+    const char *entry_point,
+    const aprend_binding_layout *layouts,
+    uint32_t layout_count,
+    const spudgpu_push_constant_range_desc *ranges,
+    uint32_t range_count,
+    std::vector<aprend_image_expectation> &images) {
+	const aprend_shader_reflection &reflection = shader->reflection.view;
+	const char *stage                          = aprend_stage_name(shader->stage);
+	if (reflection.entry_point && strcmp(reflection.entry_point, entry_point) != 0) {
+		printf("apricot: %s: the %s shader's entry point is \"%s\", and the pipeline names \"%s\"\n", who, stage, reflection.entry_point,
+		       entry_point);
+		return false;
+	}
+
+	for (uint32_t r = 0; r < reflection.resource_count; ++r) {
+		const aprend_shader_resource &resource = reflection.resources[r];
+		if (!resource.used)
+			continue;
+		if (resource.set >= layout_count) {
+			printf("apricot: %s: the %s shader uses \"%s\" at set %u binding %u, and the pipeline declares %u sets\n", who, stage, resource.name,
+			       resource.set, resource.binding, layout_count);
+			return false;
+		}
+		const aprend_binding_desc *binding = aprend_binding_layout_find_desc(layouts[resource.set], resource.binding);
+		if (!binding) {
+			printf("apricot: %s: the %s shader uses \"%s\" at set %u binding %u, which the layout at set %u doesn't declare\n", who, stage,
+			       resource.name, resource.set, resource.binding, resource.set);
+			return false;
+		}
+		if (binding->_type != resource.type) {
+			printf("apricot: %s: the %s shader reads set %u binding %u (\"%s\") as type %u, and the layout declares type %u\n", who, stage,
+			       resource.set, resource.binding, resource.name, (unsigned)resource.type, (unsigned)binding->_type);
+			return false;
+		}
+		if (binding->_count < resource.count) {
+			printf("apricot: %s: the %s shader reads %u descriptors at set %u binding %u (\"%s\"), and the layout declares %u\n", who, stage,
+			       resource.count, resource.set, resource.binding, resource.name, binding->_count);
+			return false;
+		}
+		if (!(binding->_stages & shader->stage)) {
+			printf("apricot: %s: the %s shader uses set %u binding %u (\"%s\"), and the layout doesn't give the binding to that stage\n", who,
+			       stage, resource.set, resource.binding, resource.name);
+			return false;
+		}
+		if (resource.image_shape != APREND_TEXTURE_VIEW_SHAPE_NONE)
+			images.push_back({resource.set, resource.binding, resource.image_shape, resource.image_scalar_type});
+	}
+
+	if (reflection.has_push_constants) {
+		// Each used member's bytes, a word at a time, in a range for this
+		// stage.
+		for (uint32_t m = 0; m < reflection.push_constant_member_count; ++m) {
+			const aprend_shader_member &member = reflection.members[reflection.push_constant_first_member + m];
+			// Only what this stage touches needs a range of this stage: two
+			// stages may share a block and each read part of it.
+			if (!member.used)
+				continue;
+			for (uint32_t byte = member.offset; byte < member.offset + member.size; byte += 4) {
+				bool covered = false;
+				for (uint32_t i = 0; i < range_count && !covered; ++i)
+					covered = (ranges[i].stage_flags & shader->stage) && byte >= ranges[i].offset && byte - ranges[i].offset < ranges[i].size;
+				if (!covered) {
+					printf("apricot: %s: the %s shader reads push constant \"%s\" at byte %u, which no push constant range for that stage covers\n",
+					       who, stage, member.name, byte);
+					return false;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+// The kind of number an element of [type] gives a vertex shader.
+static APREND_SHADER_SCALAR_TYPE aprend_element_scalar_type(APREND_BUFFER_ELEMENT_TYPE type) {
+	switch (type) {
+	case APREND_BUFFER_ELEMENT_TYPE_FLOAT:
+	case APREND_BUFFER_ELEMENT_TYPE_VEC2:
+	case APREND_BUFFER_ELEMENT_TYPE_VEC3:
+	case APREND_BUFFER_ELEMENT_TYPE_VEC4:
+		return APREND_SHADER_SCALAR_TYPE_FLOAT;
+	case APREND_BUFFER_ELEMENT_TYPE_INT:
+	case APREND_BUFFER_ELEMENT_TYPE_INT2:
+	case APREND_BUFFER_ELEMENT_TYPE_INT3:
+	case APREND_BUFFER_ELEMENT_TYPE_INT4:
+		return APREND_SHADER_SCALAR_TYPE_INT;
+	default:
+		return APREND_SHADER_SCALAR_TYPE_NONE;
+	}
+}
+
+// One vertex element and the location it is given, UINT32_MAX for one the
+// shader doesn't read.
+struct aprend_vertex_attribute_plan {
+	uint32_t binding;
+	const aprend_buffer_element *element;
+	uint32_t location;
+};
+
+// Gives each element of [desc]'s vertex bindings its location, by position
+// or by the names of [vertex_shader]'s inputs, and checks every input the
+// shader uses is fed at each of its locations by an element of its kind of
+// number. False, printed for [who], if not. Throws std::bad_alloc.
+static bool aprend_pipeline_plan_vertex_input(
+    const char *who,
+    const aprend_graphics_pipeline_desc &desc,
+    aprend_shader vertex_shader,
+    std::vector<aprend_vertex_attribute_plan> &plan) {
+	const aprend_shader_reflection &reflection = vertex_shader->reflection.view;
+	uint32_t position                          = 0;
+	for (uint32_t binding = 0; binding < desc._vertex_binding_count; ++binding) {
+		const aprend_buffer_layout &layout = desc._vertex_bindings[binding]._layout;
+		for (uint32_t i = 0; i < layout.count; ++i) {
+			const aprend_buffer_element &element = layout.elements[i];
+			uint32_t location                    = position++;
+			if (desc._vertex_inputs_by_name) {
+				if (!element.name) {
+					printf("apricot: %s: _vertex_inputs_by_name is set and element %u of _vertex_bindings[%u] has no name\n", who, i, binding);
+					return false;
+				}
+				// The input of that name, and for a matrix the next of its
+				// locations not yet given to an earlier element of the name.
+				location = UINT32_MAX;
+				for (uint32_t k = 0; k < reflection.input_count && location == UINT32_MAX; ++k) {
+					const aprend_shader_input &input = reflection.inputs[k];
+					if (strcmp(input.name, element.name) != 0)
+						continue;
+					uint32_t taken = 0;
+					for (const aprend_vertex_attribute_plan &earlier : plan)
+						if (earlier.location != UINT32_MAX && earlier.location >= input.location &&
+						    earlier.location < input.location + input.location_count)
+							++taken;
+					if (taken < input.location_count)
+						location = input.location + taken;
+				}
+			}
+			plan.push_back({binding, &element, location});
+		}
+	}
+
+	for (uint32_t k = 0; k < reflection.input_count; ++k) {
+		const aprend_shader_input &input = reflection.inputs[k];
+		if (!input.used)
+			continue;
+		if (input.scalar_type != APREND_SHADER_SCALAR_TYPE_FLOAT && input.scalar_type != APREND_SHADER_SCALAR_TYPE_INT) {
+			printf("apricot: %s: vertex input \"%s\" is read as a kind of number no vertex element type gives (only float and int)\n", who,
+			       input.name);
+			return false;
+		}
+		for (uint32_t location = input.location; location < input.location + input.location_count; ++location) {
+			const aprend_vertex_attribute_plan *fed = nullptr;
+			for (const aprend_vertex_attribute_plan &attribute : plan)
+				if (attribute.location == location)
+					fed = &attribute;
+			if (!fed) {
+				printf("apricot: %s: vertex input \"%s\" reads location %u, and no vertex element is given that location\n", who, input.name,
+				       location);
+				return false;
+			}
+			if (aprend_element_scalar_type(fed->element->type) != input.scalar_type) {
+				printf("apricot: %s: vertex input \"%s\" at location %u is read as %s, and its element is %s\n", who, input.name, location,
+				       input.scalar_type == APREND_SHADER_SCALAR_TYPE_FLOAT ? "float" : "int",
+				       aprend_element_scalar_type(fed->element->type) == APREND_SHADER_SCALAR_TYPE_FLOAT ? "float" : "int");
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+bool aprend_binding_set_matches_images(
+    const aprend_binding_set_t *set,
+    uint32_t slot,
+    const std::vector<aprend_image_expectation> &expected,
+    const char *who) {
+	for (uint32_t i = 0; i < set->entry_count; ++i) {
+		const aprend_binding_set_entry &entry = set->entries[i];
+		if (!aprend_descriptor_type_reads_view(entry._type))
+			continue;
+		for (const aprend_image_expectation &expectation : expected) {
+			if (expectation.set != slot || expectation.binding != entry._binding)
+				continue;
+			const aprend_texture_view view = entry._resource._image._view;
+			if (view->desc.shape != expectation.shape) {
+				printf("aprend: %s: set %u binding %u element %u is a view of shape %u, and the shader declares shape %u there\n", who, slot,
+				       entry._binding, entry._array_element, (unsigned)view->desc.shape, (unsigned)expectation.shape);
+				return false;
+			}
+			const bool stencil = view->desc.aspect == APREND_TEXTURE_VIEW_ASPECT_STENCIL;
+			if (stencil && expectation.scalar_type != APREND_SHADER_SCALAR_TYPE_UINT) {
+				printf("aprend: %s: set %u binding %u element %u is a stencil, and the shader reads it as other than an unsigned integer\n", who,
+				       slot, entry._binding, entry._array_element);
+				return false;
+			}
+			if (view->desc.aspect == APREND_TEXTURE_VIEW_ASPECT_DEPTH && expectation.scalar_type != APREND_SHADER_SCALAR_TYPE_FLOAT) {
+				printf("aprend: %s: set %u binding %u element %u is a depth, and the shader reads it as other than a float\n", who, slot,
+				       entry._binding, entry._array_element);
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// The core of [binding_count] [bindings], checked by the caller: the
+// instance's core of the same bindings if it has one, else a new one with a
+// SpudGPU layout of them. Held once more for the caller either way. NULL,
+// printed for [who], if a new one can't be made.
+static aprend_binding_layout_core *aprend_binding_layout_core_acquire(
+    aprend_instance instance,
+    const aprend_binding_desc *bindings,
+    uint32_t binding_count,
+    const char *who) {
+	// What makes two layouts one: each binding's number, type, count and
+	// stages, in binding order. Names are each handle's own.
+	aprend_binding_desc key[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	for (uint32_t i = 0; i < binding_count; ++i) {
+		key[i]       = bindings[i];
+		key[i]._name = nullptr;
+	}
+	std::sort(key, key + binding_count, [](const aprend_binding_desc &a, const aprend_binding_desc &b) { return a._binding < b._binding; });
+
+	for (aprend_binding_layout_core *core : instance->binding_layout_cores) {
+		if (core->binding_count != binding_count)
+			continue;
+		bool same = true;
+		for (uint32_t i = 0; i < binding_count && same; ++i) {
+			const aprend_binding_desc &a = core->bindings[i];
+			const aprend_binding_desc &b = key[i];
+			same = a._binding == b._binding && a._type == b._type && a._count == b._count && a._stages == b._stages;
+		}
+		if (same) {
+			++core->holders;
+			return core;
+		}
+	}
+
+	aprend_binding_layout_core *core = (aprend_binding_layout_core *)calloc(1, sizeof(aprend_binding_layout_core));
+	if (!core) {
+		printf("apricot: %s: out of memory\n", who);
+		return nullptr;
+	}
+	core->instance      = instance;
+	core->binding_count = binding_count;
+	core->holders       = 1;
+	spudgpu_descriptor_set_layout_desc ld{};
+	for (uint32_t i = 0; i < binding_count; ++i) {
+		core->bindings[i]              = key[i];
+		ld.bindings[i].binding         = key[i]._binding;
+		ld.bindings[i].descriptor_type = key[i]._type;
+		ld.bindings[i].count           = key[i]._count;
+		ld.bindings[i].stage_flags     = key[i]._stages;
+	}
+	ld.binding_count = binding_count;
+	SPUDRESULT sr    = spudgpu_create_descriptor_set_layout(instance->desc.device, &ld, &core->layout);
+	if (SPUDFAIL(sr)) {
+		printf("apricot: %s failed: %s\n", who, spudresult_str(sr));
+		free(core);
+		return nullptr;
+	}
+	try {
+		instance->binding_layout_cores.push_back(core);
+	} catch (const std::bad_alloc &) {
+		printf("apricot: %s: out of memory\n", who);
+		spudgpu_destroy_descriptor_set_layout(core->layout);
+		free(core);
+		return nullptr;
+	}
+	return core;
+}
+
+// Creates a layout of [binding_count] [bindings], checked by the caller,
+// with a copy of each binding's name. NULL, printed for [who], if it can't be
+// created.
+static aprend_binding_layout_t *aprend_binding_layout_build(
+    aprend_instance instance,
+    const aprend_binding_desc *bindings,
+    uint32_t binding_count,
+    const char *who) {
+	APREND_MALLOC__T(result, aprend_binding_layout_t);
+	if (!result)
+		return nullptr;
+	APREND_CONSTRUCT__T(result, aprend_binding_layout_t);
+	result->instance      = instance;
+	result->binding_count = binding_count;
+
+	try {
+		for (uint32_t i = 0; i < binding_count; ++i) {
+			result->bindings[i] = bindings[i];
+			result->names[i]    = bindings[i]._name ? bindings[i]._name : "";
+			// The layout's own copy, never the caller's string.
+			result->bindings[i]._name = result->names[i].empty() ? nullptr : result->names[i].c_str();
+			result->descriptor_count += bindings[i]._count;
+		}
+	} catch (const std::bad_alloc &) {
+		printf("apricot: %s: out of memory\n", who);
+		APREND_DESTRUCT__T(result, aprend_binding_layout_t);
+		return nullptr;
+	}
+
+	result->core = aprend_binding_layout_core_acquire(instance, bindings, binding_count, who);
+	if (!result->core) {
+		APREND_DESTRUCT__T(result, aprend_binding_layout_t);
+		return nullptr;
+	}
+	return result;
+}
+
 extern "C" {
 
 aprend_shader aprend_shader_create_spirv(
@@ -293,6 +674,11 @@ aprend_shader aprend_shader_create_spirv(
 	APREND_CONSTRUCT__T(result, aprend_shader_t);
 	result->instance = instance;
 
+	// Reflected first: SPIR-V that can't be read isn't handed to the device.
+	if (!aprend_shader_reflect(result, spirv_code, spirv_size, shader_stage, "aprend_shader_create_spirv")) {
+		APREND_DESTRUCT__T(result, aprend_shader_t);
+		return nullptr;
+	}
 	SPUDRESULT sr = aprend_shader_create_module(result, spirv_code, spirv_size, shader_stage, "aprend_shader_create_spirv");
 	if (SPUDFAIL(sr)) {
 		printf("apricot: aprend_shader_create_spirv failed: %s\n", spudresult_str(sr));
@@ -337,8 +723,20 @@ aprend_shader aprend_shader_read_from_file_spirv(
 		sfs_file_release(file);
 		goto failedattempt;
 	}
+	if (data_size == 0 || data_size % 4 != 0) {
+		printf("apricot: aprend_shader_read_from_file_spirv: '%s' is %llu bytes, not a whole number of SPIR-V words\n", filename,
+		       (unsigned long long)data_size);
+		sfs_file_release(file);
+		APREND_DESTRUCT__T(result, aprend_shader_t);
+		return nullptr;
+	}
 	data = (uint8_t *)malloc(data_size);
-	sr   = sfs_file_read(file, data, data_size);
+	if (!data) {
+		sfs_file_release(file);
+		APREND_DESTRUCT__T(result, aprend_shader_t);
+		return nullptr;
+	}
+	sr = sfs_file_read(file, data, data_size);
 	if (SPUDFAIL(sr)) {
 		sfs_file_release(file);
 		goto failedattempt;
@@ -347,6 +745,11 @@ aprend_shader aprend_shader_read_from_file_spirv(
 	if (SPUDFAIL(sr))
 		goto failedattempt;
 
+	if (!aprend_shader_reflect(result, data, data_size, shader_stage, filename)) {
+		free(data);
+		APREND_DESTRUCT__T(result, aprend_shader_t);
+		return nullptr;
+	}
 	// The raw file bytes aren't needed once SpudGPU has its own copy.
 	sr = aprend_shader_create_module(result, data, data_size, shader_stage, filename);
 	free(data);
@@ -365,6 +768,24 @@ void aprend_shader_destroy(aprend_shader shader) {
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(shader->instance, shader, &aprend_release_handle<aprend_shader_t>);
 }
+
+const aprend_shader_reflection *aprend_shader_get_reflection(aprend_shader shader) { return shader ? &shader->reflection.view : nullptr; }
+
+const aprend_shader_resource *aprend_shader_find_resource(aprend_shader shader, const char *name) {
+	if (!shader)
+		return nullptr;
+	if (!name)
+		return nullptr;
+	for (const aprend_shader_resource &resource : shader->reflection.resources) {
+		if (strcmp(resource.name, name) == 0)
+			return &resource;
+		if (resource.block_name && strcmp(resource.block_name, name) == 0)
+			return &resource;
+	}
+	return nullptr;
+}
+
+SPUDGPU_SHADER_STAGE aprend_shader_get_stage(aprend_shader shader) { return shader ? shader->stage : (SPUDGPU_SHADER_STAGE)SPUDGPU_SHADER_STAGE_NONE; }
 
 spudgpu_blend_attachment_desc aprend_blend_premultiplied(void) {
 	spudgpu_blend_attachment_desc blend{};
@@ -400,6 +821,10 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		printf("apricot: aprend_graphics_pipeline_create: fragment_shader was not created for the fragment stage\n");
 		return nullptr;
 	}
+	if (desc.fragment_shader->instance != instance) {
+		printf("apricot: aprend_graphics_pipeline_create: fragment_shader belongs to another instance\n");
+		return nullptr;
+	}
 	// The geometry comes from a vertex shader or a mesh shader, never both.
 	if (desc.mesh_shader) {
 		if (desc.vertex_shader) {
@@ -408,6 +833,10 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		}
 		if (desc.mesh_shader->stage != SPUDGPU_SHADER_STAGE_MESH) {
 			printf("apricot: aprend_graphics_pipeline_create: mesh_shader was not created for the mesh stage\n");
+			return nullptr;
+		}
+		if (desc.mesh_shader->instance != instance) {
+			printf("apricot: aprend_graphics_pipeline_create: mesh_shader belongs to another instance\n");
 			return nullptr;
 		}
 		if (!desc._mesh_entry_point) {
@@ -434,6 +863,10 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		}
 		if (desc.vertex_shader->stage != SPUDGPU_SHADER_STAGE_VERTEX) {
 			printf("apricot: aprend_graphics_pipeline_create: vertex_shader was not created for the vertex stage\n");
+			return nullptr;
+		}
+		if (desc.vertex_shader->instance != instance) {
+			printf("apricot: aprend_graphics_pipeline_create: vertex_shader belongs to another instance\n");
 			return nullptr;
 		}
 		if (!desc._vertex_entry_point) {
@@ -538,6 +971,30 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	result->desc     = desc;
 	result->instance = instance;
 
+	// The desc against what the shaders declare, and the locations each
+	// vertex element is read at.
+	std::vector<aprend_vertex_attribute_plan> plan;
+	try {
+		static const char *who      = "aprend_graphics_pipeline_create";
+		aprend_shader geometry      = desc.mesh_shader ? desc.mesh_shader : desc.vertex_shader;
+		const char *geometry_entry  = desc.mesh_shader ? desc._mesh_entry_point : desc._vertex_entry_point;
+		bool ok = aprend_pipeline_check_shader(who, geometry, geometry_entry, desc._binding_layouts, desc._binding_layout_count,
+		                                       desc._push_constant_ranges, desc._push_constant_range_count, result->images) &&
+		          aprend_pipeline_check_shader(who, desc.fragment_shader, desc._fragment_entry_point, desc._binding_layouts,
+		                                       desc._binding_layout_count, desc._push_constant_ranges, desc._push_constant_range_count,
+		                                       result->images);
+		if (ok && !desc.mesh_shader)
+			ok = aprend_pipeline_plan_vertex_input(who, desc, desc.vertex_shader, plan);
+		if (!ok) {
+			APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
+			return nullptr;
+		}
+	} catch (const std::bad_alloc &) {
+		printf("apricot: aprend_graphics_pipeline_create: out of memory\n");
+		APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
+		return nullptr;
+	}
+
 	// The names are copied, so the desc aprend_graphics_pipeline_get_desc
 	// hands back never points at a string the caller has released.
 	// The first name is the vertex shader's, or the mesh shader's in a mesh
@@ -571,7 +1028,6 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	pd.fragment_module      = desc.fragment_shader->shader_module;
 	pd.fragment_entry_point = result->desc._fragment_entry_point;
 
-	// Locations run on through the bindings in order.
 	for (uint32_t binding = 0; binding < desc._vertex_binding_count; ++binding) {
 		const aprend_vertex_binding_desc &vb = desc._vertex_bindings[binding];
 		result->vertex_strides[binding]      = aprend_buffer_layout_get_total_size(&vb._layout);
@@ -579,18 +1035,21 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		pd.vertex_bindings[binding].binding      = binding;
 		pd.vertex_bindings[binding].stride       = result->vertex_strides[binding];
 		pd.vertex_bindings[binding].per_instance = vb._per_instance;
-
-		for (uint32_t i = 0; i < vb._layout.count; ++i) {
-			const aprend_buffer_element &el         = vb._layout.elements[i];
-			spudgpu_vertex_attribute_desc &attribute = pd.vertex_attributes[pd.vertex_attribute_count];
-			attribute.location                       = pd.vertex_attribute_count;
-			attribute.binding                        = binding;
-			attribute.format                         = aprend_buffer_element_type_to_format(el.type);
-			attribute.offset                         = el.offset;
-			++pd.vertex_attribute_count;
-		}
 	}
 	pd.vertex_binding_count = desc._vertex_binding_count;
+	// At the locations the plan gives them: by position, running on through
+	// the bindings in order, or by name. An element the shader doesn't read
+	// by name is no attribute.
+	for (const aprend_vertex_attribute_plan &planned : plan) {
+		if (planned.location == UINT32_MAX)
+			continue;
+		spudgpu_vertex_attribute_desc &attribute = pd.vertex_attributes[pd.vertex_attribute_count];
+		attribute.location                       = planned.location;
+		attribute.binding                        = planned.binding;
+		attribute.format                         = aprend_buffer_element_type_to_format(planned.element->type);
+		attribute.offset                         = planned.element->offset;
+		++pd.vertex_attribute_count;
+	}
 
 	for (uint32_t i = 0; i < desc._push_constant_range_count; ++i) {
 		pd.push_constant_ranges[i] = desc._push_constant_ranges[i];
@@ -612,7 +1071,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	pd.color_attachment_format = desc.color_attachment_format;
 	pd.depth_format            = desc.depth_format;
 	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
-		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->layout;
+		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->core->layout;
 	pd.descriptor_set_layout_count = desc._binding_layout_count;
 #if _DEBUG
 	pd.debug_name = desc._debug_name;
@@ -713,6 +1172,19 @@ aprend_compute_pipeline aprend_compute_pipeline_create(
 	result->desc     = desc;
 	result->instance = instance;
 
+	try {
+		if (!aprend_pipeline_check_shader("aprend_compute_pipeline_create", desc.compute_shader, desc._entry_point, desc._binding_layouts,
+		                                  desc._binding_layout_count, desc._push_constant_ranges, desc._push_constant_range_count,
+		                                  result->images)) {
+			APREND_DESTRUCT__T(result, aprend_compute_pipeline_t);
+			return nullptr;
+		}
+	} catch (const std::bad_alloc &) {
+		printf("apricot: aprend_compute_pipeline_create: out of memory\n");
+		APREND_DESTRUCT__T(result, aprend_compute_pipeline_t);
+		return nullptr;
+	}
+
 	// The name is copied, so the desc aprend_compute_pipeline_get_desc hands
 	// back never points at a string the caller has released.
 	const size_t entry_size = strlen(desc._entry_point) + 1;
@@ -728,7 +1200,7 @@ aprend_compute_pipeline aprend_compute_pipeline_create(
 	pd.compute_module      = desc.compute_shader->shader_module;
 	pd.compute_entry_point = result->entry_point;
 	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
-		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->layout;
+		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->core->layout;
 	pd.descriptor_set_layout_count = desc._binding_layout_count;
 	for (uint32_t i = 0; i < desc._push_constant_range_count; ++i) {
 		pd.push_constant_ranges[i] = desc._push_constant_ranges[i];
@@ -800,32 +1272,222 @@ aprend_binding_layout aprend_binding_layout_create(
 		}
 	}
 
-	APREND_MALLOC__T(result, aprend_binding_layout_t);
+	return aprend_binding_layout_build(instance, bindings, binding_count, "aprend_binding_layout_create");
+}
+
+aprend_binding_layout aprend_binding_layout_create_from_shaders(
+    aprend_instance instance,
+    const aprend_shader *shaders,
+    uint32_t shader_count,
+    uint32_t set) {
+	static const char *who = "aprend_binding_layout_create_from_shaders";
+	if (!instance) {
+		printf("apricot: %s: instance is NULL\n", who);
+		return nullptr;
+	}
+	if (!shaders) {
+		printf("apricot: %s: shaders is NULL\n", who);
+		return nullptr;
+	}
+	if (shader_count == 0) {
+		printf("apricot: %s: shader_count is 0\n", who);
+		return nullptr;
+	}
+	for (uint32_t i = 0; i < shader_count; ++i) {
+		if (!shaders[i]) {
+			printf("apricot: %s: shaders[%u] is NULL\n", who, i);
+			return nullptr;
+		}
+		if (shaders[i]->instance != instance) {
+			printf("apricot: %s: shaders[%u] is of another instance\n", who, i);
+			return nullptr;
+		}
+	}
+
+	// The bindings of [set] every shader uses, merged, and for each the
+	// shader resource its name and block are taken from.
+	aprend_binding_desc bindings[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	const aprend_shader_resource *sources[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	const aprend_shader_member *source_members[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	uint32_t binding_count = 0;
+	for (uint32_t i = 0; i < shader_count; ++i) {
+		const aprend_shader_reflection &reflection = shaders[i]->reflection.view;
+		for (uint32_t r = 0; r < reflection.resource_count; ++r) {
+			const aprend_shader_resource &resource = reflection.resources[r];
+			if (resource.set != set || !resource.used)
+				continue;
+			uint32_t index = 0;
+			while (index < binding_count && bindings[index]._binding != resource.binding)
+				++index;
+			if (index == binding_count) {
+				if (binding_count == APREND_MAX_BINDINGS_PER_LAYOUT) {
+					printf("apricot: %s: set %u has more than APREND_MAX_BINDINGS_PER_LAYOUT bindings\n", who, set);
+					return nullptr;
+				}
+				++binding_count;
+				bindings[index]._binding = resource.binding;
+				bindings[index]._type    = resource.type;
+				bindings[index]._count   = resource.count;
+				bindings[index]._stages  = reflection.stage;
+				bindings[index]._name    = resource.name;
+				sources[index]           = &resource;
+				source_members[index]    = reflection.members;
+				continue;
+			}
+			aprend_binding_desc &binding = bindings[index];
+			if (binding._type != resource.type) {
+				printf("apricot: %s: set %u binding %u is of type %u in one shader and %u in another\n", who, set, resource.binding,
+				       (unsigned)binding._type, (unsigned)resource.type);
+				return nullptr;
+			}
+			binding._stages |= reflection.stage;
+			if (resource.count > binding._count)
+				binding._count = resource.count;
+			// The block as the shader that declares it largest has it.
+			if (resource.block_size > sources[index]->block_size) {
+				sources[index]        = &resource;
+				source_members[index] = reflection.members;
+			}
+		}
+	}
+	if (binding_count == 0) {
+		printf("apricot: %s: no shader uses a binding of set %u\n", who, set);
+		return nullptr;
+	}
+
+	aprend_binding_layout_t *result = aprend_binding_layout_build(instance, bindings, binding_count, who);
 	if (!result)
 		return nullptr;
-	APREND_CONSTRUCT__T(result, aprend_binding_layout_t);
-	result->instance      = instance;
-	result->binding_count = binding_count;
-
-	spudgpu_descriptor_set_layout_desc ld{};
-	for (uint32_t i = 0; i < binding_count; ++i) {
-		result->bindings[i] = bindings[i];
-		result->descriptor_count += bindings[i]._count;
-
-		ld.bindings[i].binding         = bindings[i]._binding;
-		ld.bindings[i].descriptor_type = bindings[i]._type;
-		ld.bindings[i].count           = bindings[i]._count;
-		ld.bindings[i].stage_flags     = bindings[i]._stages;
-	}
-	ld.binding_count = binding_count;
-
-	SPUDRESULT sr = spudgpu_create_descriptor_set_layout(instance->desc.device, &ld, &result->layout);
-	if (SPUDFAIL(sr)) {
-		printf("apricot: aprend_binding_layout_create failed: %s\n", spudresult_str(sr));
+	try {
+		for (uint32_t i = 0; i < binding_count; ++i) {
+			const aprend_shader_resource &resource = *sources[i];
+			if (resource.type != SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER && resource.type != SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+				continue;
+			aprend_binding_layout_t::block_info &block = result->blocks[i];
+			block.known                                = true;
+			result->strings.push_back(resource.block_name ? resource.block_name : "");
+			block.block_name    = result->strings.back().c_str();
+			block.size          = resource.block_size;
+			block.first_member  = (uint32_t)result->members.size();
+			block.member_count  = resource.member_count;
+			block.first_uniform = (uint32_t)result->uniforms.size();
+			for (uint32_t m = 0; m < resource.member_count; ++m) {
+				aprend_shader_member member = source_members[i][resource.first_member + m];
+				result->strings.push_back(member.name);
+				member.name = result->strings.back().c_str();
+				result->members.push_back(member);
+				// Every member with a type is a uniform a buffer of this
+				// block can be written by name through.
+				if (resource.type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER && member.type != APREND_UNIFORM_TYPE_UNKNOWN) {
+					aprend_uniform uniform{};
+					uniform.name   = member.name;
+					uniform.type   = member.type;
+					uniform.size   = member.array_count;
+					uniform.offset = member.offset;
+					result->uniforms.push_back(uniform);
+				}
+			}
+			block.uniform_count = (uint32_t)result->uniforms.size() - block.first_uniform;
+		}
+	} catch (const std::bad_alloc &) {
+		printf("apricot: %s: out of memory\n", who);
 		APREND_DESTRUCT__T(result, aprend_binding_layout_t);
 		return nullptr;
 	}
 	return result;
+}
+
+// The index of [binding] in [layout]'s bindings, or UINT32_MAX.
+static uint32_t aprend_binding_layout_index(const aprend_binding_layout_t *layout, uint32_t binding) {
+	for (uint32_t i = 0; i < layout->binding_count; ++i)
+		if (layout->bindings[i]._binding == binding)
+			return i;
+	return UINT32_MAX;
+}
+
+bool aprend_binding_layout_find(
+    aprend_binding_layout layout,
+    const char *name,
+    uint32_t *out_binding,
+    aprend_binding_desc *out_desc) {
+	if (!layout)
+		return false;
+	if (!name)
+		return false;
+	for (uint32_t i = 0; i < layout->binding_count; ++i) {
+		const bool by_name  = !layout->names[i].empty() && layout->names[i] == name;
+		const bool by_block = layout->blocks[i].known && strcmp(layout->blocks[i].block_name, name) == 0;
+		if (!by_name && !by_block)
+			continue;
+		if (out_binding)
+			*out_binding = layout->bindings[i]._binding;
+		if (out_desc)
+			*out_desc = layout->bindings[i];
+		return true;
+	}
+	return false;
+}
+
+bool aprend_binding_layout_get_binding(
+    aprend_binding_layout layout,
+    uint32_t index,
+    aprend_binding_desc *out_desc) {
+	if (!layout)
+		return false;
+	if (!out_desc)
+		return false;
+	if (index >= layout->binding_count)
+		return false;
+	*out_desc = layout->bindings[index];
+	return true;
+}
+
+uint32_t aprend_binding_layout_get_binding_count(aprend_binding_layout layout) { return layout ? layout->binding_count : 0; }
+
+bool aprend_binding_layout_get_block(
+    aprend_binding_layout layout,
+    uint32_t binding,
+    uint32_t *out_size,
+    const aprend_shader_member **out_members,
+    uint32_t *out_member_count) {
+	if (!layout)
+		return false;
+	const uint32_t index = aprend_binding_layout_index(layout, binding);
+	if (index == UINT32_MAX)
+		return false;
+	const aprend_binding_layout_t::block_info &block = layout->blocks[index];
+	if (!block.known)
+		return false;
+	if (out_size)
+		*out_size = block.size;
+	if (out_members)
+		*out_members = layout->members.data() + block.first_member;
+	if (out_member_count)
+		*out_member_count = block.member_count;
+	return true;
+}
+
+bool aprend_binding_layout_get_uniform_layout(
+    aprend_binding_layout layout,
+    uint32_t binding,
+    aprend_uniform_layout *out) {
+	if (!layout)
+		return false;
+	if (!out)
+		return false;
+	const uint32_t index = aprend_binding_layout_index(layout, binding);
+	if (index == UINT32_MAX)
+		return false;
+	const aprend_binding_layout_t::block_info &block = layout->blocks[index];
+	if (!block.known)
+		return false;
+	if (layout->bindings[index]._type != SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+		return false;
+	out->count    = block.uniform_count;
+	// The vector is never changed after creation, so the pointer holds.
+	out->uniforms = const_cast<aprend_uniform *>(layout->uniforms.data()) + block.first_uniform;
+	out->size     = block.size;
+	return true;
 }
 void aprend_binding_layout_destroy(aprend_binding_layout layout) {
 	if (!layout)
@@ -856,7 +1518,7 @@ aprend_binding_set aprend_binding_set_create(
 	bool has_buffer_set      = false;
 	for (uint32_t i = 0; i < entry_count; ++i) {
 		const aprend_binding_set_entry &entry = entries[i];
-		const aprend_binding_desc *binding    = aprend_binding_layout_find(layout, entry._binding);
+		const aprend_binding_desc *binding    = aprend_binding_layout_find_desc(layout, entry._binding);
 		if (!binding) {
 			printf("apricot: aprend_binding_set_create: entry %u names binding %u, which the layout doesn't declare\n", i, entry._binding);
 			return nullptr;
@@ -913,6 +1575,9 @@ aprend_binding_set aprend_binding_set_create(
 	}
 	APREND_CONSTRUCT__T(result, aprend_binding_set_t);
 	result->layout   = layout;
+	// Held from here on: the destructor lets go of it on every path below.
+	result->core = layout->core;
+	++result->core->holders;
 	result->instance = layout->instance;
 
 	// What the set was built from, for aprend_binding_set_update to change
@@ -951,7 +1616,7 @@ aprend_binding_set aprend_binding_set_create(
 	// frame_set_count goes up with each set acquired, so the destructor
 	// gives back exactly those if a later one fails.
 	for (uint32_t frame = 0; frame < frame_set_count; ++frame) {
-		SPUDRESULT sr = aprend_binding_layout_acquire_set(layout, &result->sets[frame]);
+		SPUDRESULT sr = aprend_binding_layout_acquire_set(layout->core, &result->sets[frame]);
 		if (SPUDFAIL(sr)) {
 			printf("apricot: aprend_binding_set_create failed: %s\n", spudresult_str(sr));
 			result->sets[frame] = nullptr;
@@ -1048,7 +1713,7 @@ bool aprend_binding_set_update(
 	// what its slot takes: the checks aprend_binding_set_create makes.
 	for (uint32_t i = 0; i < entry_count; ++i) {
 		const aprend_binding_set_entry &entry = entries[i];
-		const aprend_binding_desc *binding    = aprend_binding_layout_find(layout, entry._binding);
+		const aprend_binding_desc *binding    = aprend_binding_layout_find_desc(layout, entry._binding);
 		if (!binding) {
 			printf("apricot: %s: entry %u names binding %u, which the layout doesn't declare\n", who, i, entry._binding);
 			return false;

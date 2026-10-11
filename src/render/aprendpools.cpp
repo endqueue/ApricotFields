@@ -88,107 +88,152 @@ static void aprend_pool_remove_block(aprend_pool_core *core, uint32_t slot) {
 	block.ranges.reset(0);
 }
 
+// An entry for a new range: an unused one, or one more. Its generation is
+// already the new range's. Throws std::bad_alloc.
+static uint32_t aprend_pool_allocation_take(aprend_pool_core *core) {
+	uint32_t id = core->unused_first;
+	if (id != APREND_POOL_NO_ALLOCATION) {
+		core->unused_first = core->allocations[id].next;
+	} else {
+		core->allocations.emplace_back();
+		id = (uint32_t)core->allocations.size() - 1;
+	}
+	aprend_pool_allocation &allocation = core->allocations[id];
+	allocation.next = APREND_POOL_NO_ALLOCATION;
+	// 0 is no generation: after four billion uses of one entry it is
+	// stepped over.
+	allocation.generation++;
+	if (allocation.generation == 0)
+		allocation.generation = 1;
+	return id;
+}
+
+// Puts entry [id] back on the unused list. It keeps its generation, which
+// the next range to use it moves on.
+static void aprend_pool_allocation_release(aprend_pool_core *core, uint32_t id) {
+	aprend_pool_allocation &allocation = core->allocations[id];
+	allocation.state   = aprend_pool_allocation::UNUSED;
+	allocation.next    = core->unused_first;
+	core->unused_first = id;
+}
+
 // Takes back every freed range the GPU has finished with: its elements are
-// free again, and a block made for it alone is destroyed.
+// free again, its entry unused, and a block made for it alone is destroyed.
 static void aprend_pool_reclaim(aprend_pool_core *core) {
-	if (core->pending_head == core->pending.size())
+	if (core->pending_first == APREND_POOL_NO_ALLOCATION)
 		return;
 	// 0 if the value can't be read, which takes back only what was freed
 	// before anything was submitted.
 	const uint64_t completed = spudgpu_get_fence_value(core->instance->frame_fence);
-	while (core->pending_head < core->pending.size()) {
-		const aprend_pool_pending entry = core->pending[core->pending_head];
-		if (entry.serial > completed)
+	while (core->pending_first != APREND_POOL_NO_ALLOCATION) {
+		const uint32_t id                  = core->pending_first;
+		aprend_pool_allocation &allocation = core->allocations[id];
+		if (allocation.serial > completed)
 			break;
-		aprend_pool_block &block = core->blocks[entry.block];
-		// The block went with an earlier entry for the same range: a range
-		// freed twice. The free call refuses that where it can see it.
-		if (block.buffer != entry.buffer) {
-			printf("apricot: a pool range was freed twice\n");
-			core->pending_head++;
-			continue;
-		}
-		bool given = false;
+		aprend_pool_block &block = core->blocks[allocation.block];
+		bool given               = false;
 		try {
-			given = block.ranges.give(entry.offset, entry.count);
+			given = block.ranges.give(allocation.offset, allocation.count);
 		} catch (const std::bad_alloc &) {
 			// No memory to list it as free. It stays where it is and is
 			// tried again at the next call.
 			break;
 		}
-		core->pending_head++;
-		if (!given) {
-			printf("apricot: a pool range was freed twice\n");
-			continue;
-		}
-		core->used_bytes -= (uint64_t)entry.count * core->element_size;
+		core->pending_first = allocation.next;
+		if (core->pending_first == APREND_POOL_NO_ALLOCATION)
+			core->pending_last = APREND_POOL_NO_ALLOCATION;
+		// An entry is a range's elements for as long as it is LIVE or
+		// FREED, so they can't have been free. Checked all the same: a
+		// range list out of step with the entries would hand one range's
+		// elements to another.
+		if (!given)
+			printf("apricot: a pool's free list already held a freed range: %u elements at %u\n", allocation.count, allocation.offset);
+		else
+			core->used_bytes -= (uint64_t)allocation.count * core->element_size;
 		if (block.dedicated)
-			aprend_pool_remove_block(core, entry.block);
-	}
-	if (core->pending_head == core->pending.size()) {
-		core->pending.clear();
-		core->pending_head = 0;
-		return;
-	}
-	// A caller that always has work in flight never empties the list, so the
-	// taken entries at its front are dropped once they are most of it.
-	if (core->pending_head >= 64 && core->pending_head * 2 >= core->pending.size()) {
-		core->pending.erase(core->pending.begin(), core->pending.begin() + (std::ptrdiff_t)core->pending_head);
-		core->pending_head = 0;
+			aprend_pool_remove_block(core, allocation.block);
+		aprend_pool_allocation_release(core, id);
 	}
 }
 
-// Takes [count] elements, from a block that has them or a new one, and
-// writes [data] into them. False with nothing taken on any failure. Throws
+// Takes [count] elements from a block that has them, or from a new one.
+// False, with nothing taken, if a block is needed and can't be made. Throws
 // std::bad_alloc, with nothing taken.
+static bool aprend_pool_take_elements(
+    aprend_pool_core *core,
+    uint32_t count,
+    const char *who,
+    uint32_t *out_slot,
+    uint32_t *out_offset) {
+	if (count > core->block_element_count) {
+		// Longer than a block: a block of its own, exactly that long.
+		const uint32_t slot = aprend_pool_add_block(core, count, true, who);
+		if (slot == UINT32_MAX)
+			return false;
+		core->blocks[slot].ranges.take(count, out_offset);
+		*out_slot = slot;
+		return true;
+	}
+	for (uint32_t i = 0; i < (uint32_t)core->blocks.size(); ++i) {
+		aprend_pool_block &block = core->blocks[i];
+		if (!block.buffer)
+			continue;
+		if (block.dedicated)
+			continue;
+		if (!block.ranges.take(count, out_offset))
+			continue;
+		*out_slot = i;
+		return true;
+	}
+	const uint32_t slot = aprend_pool_add_block(core, core->block_element_count, false, who);
+	if (slot == UINT32_MAX)
+		return false;
+	core->blocks[slot].ranges.take(count, out_offset);
+	*out_slot = slot;
+	return true;
+}
+
+// Takes [count] elements, writes [data] into them and makes them a range:
+// entry [out_id], of generation [out_generation]. False with nothing taken
+// on any failure. Throws std::bad_alloc, with nothing taken.
 static bool aprend_pool_allocate(
     aprend_pool_core *core,
     uint32_t count,
     const void *data,
     const char *who,
     void **out_buffer,
-    uint32_t *out_slot,
-    uint32_t *out_offset) {
+    uint32_t *out_offset,
+    uint32_t *out_id,
+    uint32_t *out_generation) {
 	aprend_pool_reclaim(core);
 
-	uint32_t slot   = UINT32_MAX;
-	uint32_t offset = 0;
-	if (count > core->block_element_count) {
-		// Longer than a block: a block of its own, exactly that long.
-		slot = aprend_pool_add_block(core, count, true, who);
-		if (slot == UINT32_MAX)
-			return false;
-		core->blocks[slot].ranges.take(count, &offset);
-	} else {
-		for (uint32_t i = 0; i < (uint32_t)core->blocks.size(); ++i) {
-			aprend_pool_block &block = core->blocks[i];
-			if (!block.buffer)
-				continue;
-			if (block.dedicated)
-				continue;
-			if (!block.ranges.take(count, &offset))
-				continue;
-			slot = i;
-			break;
-		}
-		if (slot == UINT32_MAX) {
-			slot = aprend_pool_add_block(core, core->block_element_count, false, who);
-			if (slot == UINT32_MAX)
-				return false;
-			core->blocks[slot].ranges.take(count, &offset);
-		}
+	// The entry first: with no memory for it, no elements have been taken.
+	const uint32_t id = aprend_pool_allocation_take(core);
+	uint32_t slot     = UINT32_MAX;
+	uint32_t offset   = 0;
+	bool taken        = false;
+	try {
+		taken = aprend_pool_take_elements(core, count, who, &slot, &offset);
+	} catch (const std::bad_alloc &) {
+		aprend_pool_allocation_release(core, id);
+		throw;
+	}
+	if (!taken) {
+		aprend_pool_allocation_release(core, id);
+		return false;
 	}
 
 	// Nothing submitted reads these elements: they were free, which a freed
 	// range only becomes once the GPU has finished with it. So this is the
 	// one write a store allows while its buffer is in use, to bytes nothing
 	// in flight reads.
-	aprend_pool_block &block = core->blocks[slot];
+	aprend_pool_block &block   = core->blocks[slot];
 	const uint64_t byte_offset = (uint64_t)offset * core->element_size;
 	const uint64_t byte_size   = (uint64_t)count * core->element_size;
 	SPUDRESULT sr = aprend_buffer_store_write(aprend_pool_buffer_store(core, block.buffer), byte_offset, byte_size, data);
 	if (SPUDFAIL(sr)) {
 		printf("apricot: %s: writing %u %s failed: %s\n", who, count, aprend_pool_element_name(core), spudresult_str(sr));
+		aprend_pool_allocation_release(core, id);
 		if (block.dedicated) {
 			aprend_pool_remove_block(core, slot);
 			return false;
@@ -203,51 +248,75 @@ static bool aprend_pool_allocate(
 		return false;
 	}
 
+	aprend_pool_allocation &allocation = core->allocations[id];
+	allocation.block  = slot;
+	allocation.offset = offset;
+	allocation.count  = count;
+	allocation.state  = aprend_pool_allocation::LIVE;
+
 	core->used_bytes += byte_size;
-	*out_buffer = block.buffer;
-	*out_slot   = slot;
-	*out_offset = offset;
+	*out_buffer     = block.buffer;
+	*out_offset     = offset;
+	*out_id         = id;
+	*out_generation = allocation.generation;
 	return true;
 }
 
-// Queues a range to be taken back once the GPU has finished with it.
-// [who] names the call, for the messages.
+// Marks the range of entry [id] freed, to be taken back once the GPU has
+// finished with it. [generation], [buffer], [offset] and [count] are what
+// the caller's copy of the range says, and all of it has to be what the
+// entry says: a copy of a range freed earlier, a range of another pool and a
+// range that was never one are each refused. [who] names the call, for the
+// messages. Needs no memory.
 static void aprend_pool_free(
     aprend_pool_core *core,
+    uint32_t id,
+    uint32_t generation,
     void *buffer,
-    uint32_t slot,
     uint32_t offset,
     uint32_t count,
     const char *who) {
-	if (slot >= core->blocks.size()) {
+	if (id >= core->allocations.size()) {
 		printf("apricot: %s: the range is not one of this pool\n", who);
 		return;
 	}
-	aprend_pool_block &block = core->blocks[slot];
-	if (!buffer) {
+	aprend_pool_allocation &allocation = core->allocations[id];
+	if (allocation.generation != generation) {
+		// The entry has been a later range since, or the range is no
+		// range (generation 0).
+		printf("apricot: %s: the range is not allocated: it was freed before, or is not one of this pool\n", who);
+		return;
+	}
+	// Freed and waiting for the GPU, or taken back since and its entry not
+	// yet used again.
+	if (allocation.state != aprend_pool_allocation::LIVE) {
+		printf("apricot: %s: the range was freed already\n", who);
+		return;
+	}
+	// Two pools number their entries alike, so a range of another pool can
+	// match an entry here by id and generation. Its block's buffer is its
+	// own pool's, which no block of this one is.
+	if (core->blocks[allocation.block].buffer != buffer) {
 		printf("apricot: %s: the range is not one of this pool\n", who);
 		return;
 	}
-	if (block.buffer != buffer) {
-		printf("apricot: %s: the range is not one of this pool\n", who);
+	if (allocation.offset != offset) {
+		printf("apricot: %s: the range's start is not the one it was allocated with\n", who);
 		return;
 	}
-	if (!block.ranges.contains(offset, count)) {
-		printf("apricot: %s: the range runs outside its block\n", who);
+	if (allocation.count != count) {
+		printf("apricot: %s: the range's length is not the one it was allocated with\n", who);
 		return;
 	}
-	if (block.ranges.overlaps_free(offset, count)) {
-		printf("apricot: %s: the range is already free\n", who);
-		return;
-	}
-	const uint64_t serial = core->instance->submit_serial.load();
-	try {
-		core->pending.push_back({slot, buffer, offset, count, serial});
-	} catch (const std::bad_alloc &) {
-		// As a destroy call with no memory to queue its object: left as it
-		// is, which wastes the range and breaks nothing.
-		printf("apricot: %s: out of memory: %u %s of the pool are lost\n", who, count, aprend_pool_element_name(core));
-	}
+
+	allocation.state  = aprend_pool_allocation::FREED;
+	allocation.serial = core->instance->submit_serial.load();
+	allocation.next   = APREND_POOL_NO_ALLOCATION;
+	if (core->pending_last == APREND_POOL_NO_ALLOCATION)
+		core->pending_first = id;
+	else
+		core->allocations[core->pending_last].next = id;
+	core->pending_last = id;
 }
 
 // Destroys every ordinary block all of whose elements are free.
@@ -271,9 +340,11 @@ static void aprend_pool_destroy_blocks(aprend_pool_core *core) {
 		if (core->blocks[i].buffer)
 			aprend_pool_remove_block(core, i);
 	}
-	core->pending.clear();
-	core->pending_head = 0;
-	core->used_bytes   = 0;
+	core->allocations.clear();
+	core->unused_first  = APREND_POOL_NO_ALLOCATION;
+	core->pending_first = APREND_POOL_NO_ALLOCATION;
+	core->pending_last  = APREND_POOL_NO_ALLOCATION;
+	core->used_bytes    = 0;
 }
 
 aprend_vertex_pool_t::~aprend_vertex_pool_t() {
@@ -356,11 +427,12 @@ bool aprend_vertex_pool_allocate(aprend_vertex_pool pool, uint32_t vertex_count,
 	if (!data)
 		return false;
 
-	void *buffer    = nullptr;
-	uint32_t slot   = 0;
-	uint32_t offset = 0;
+	void *buffer        = nullptr;
+	uint32_t offset     = 0;
+	uint32_t id         = 0;
+	uint32_t generation = 0;
 	try {
-		if (!aprend_pool_allocate(&pool->core, vertex_count, data, "aprend_vertex_pool_allocate", &buffer, &slot, &offset))
+		if (!aprend_pool_allocate(&pool->core, vertex_count, data, "aprend_vertex_pool_allocate", &buffer, &offset, &id, &generation))
 			return false;
 	} catch (const std::bad_alloc &) {
 		printf("apricot: aprend_vertex_pool_allocate: out of memory\n");
@@ -369,7 +441,8 @@ bool aprend_vertex_pool_allocate(aprend_vertex_pool pool, uint32_t vertex_count,
 	out_range->buffer       = (aprend_vertex_buffer)buffer;
 	out_range->first_vertex = offset;
 	out_range->vertex_count = vertex_count;
-	out_range->_block       = slot;
+	out_range->_id          = id;
+	out_range->_generation  = generation;
 	return true;
 }
 
@@ -378,7 +451,7 @@ void aprend_vertex_pool_free(aprend_vertex_pool pool, const aprend_vertex_range 
 		return;
 	if (!range)
 		return;
-	aprend_pool_free(&pool->core, range->buffer, range->_block, range->first_vertex, range->vertex_count, "aprend_vertex_pool_free");
+	aprend_pool_free(&pool->core, range->_id, range->_generation, range->buffer, range->first_vertex, range->vertex_count, "aprend_vertex_pool_free");
 }
 
 void aprend_vertex_pool_trim(aprend_vertex_pool pool) {
@@ -453,11 +526,12 @@ bool aprend_index_pool_allocate(aprend_index_pool pool, uint32_t index_count, co
 	if (!data)
 		return false;
 
-	void *buffer    = nullptr;
-	uint32_t slot   = 0;
-	uint32_t offset = 0;
+	void *buffer        = nullptr;
+	uint32_t offset     = 0;
+	uint32_t id         = 0;
+	uint32_t generation = 0;
 	try {
-		if (!aprend_pool_allocate(&pool->core, index_count, data, "aprend_index_pool_allocate", &buffer, &slot, &offset))
+		if (!aprend_pool_allocate(&pool->core, index_count, data, "aprend_index_pool_allocate", &buffer, &offset, &id, &generation))
 			return false;
 	} catch (const std::bad_alloc &) {
 		printf("apricot: aprend_index_pool_allocate: out of memory\n");
@@ -466,7 +540,8 @@ bool aprend_index_pool_allocate(aprend_index_pool pool, uint32_t index_count, co
 	out_range->buffer      = (aprend_index_buffer)buffer;
 	out_range->first_index = offset;
 	out_range->index_count = index_count;
-	out_range->_block      = slot;
+	out_range->_id         = id;
+	out_range->_generation = generation;
 	return true;
 }
 
@@ -475,7 +550,7 @@ void aprend_index_pool_free(aprend_index_pool pool, const aprend_index_range *ra
 		return;
 	if (!range)
 		return;
-	aprend_pool_free(&pool->core, range->buffer, range->_block, range->first_index, range->index_count, "aprend_index_pool_free");
+	aprend_pool_free(&pool->core, range->_id, range->_generation, range->buffer, range->first_index, range->index_count, "aprend_index_pool_free");
 }
 
 void aprend_index_pool_trim(aprend_index_pool pool) {

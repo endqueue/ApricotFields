@@ -26,25 +26,44 @@ struct aprend_pool_block {
 	 * to be filled. */
 	void *buffer{nullptr};
 	/* Which of the block's elements are free. A freed range is not among
-	 * them until the GPU has finished with it (aprend_pool_core::pending). */
+	 * them until the GPU has finished with it (aprend_pool_allocation). */
 	aprend_range_list ranges{};
 	/* Made for one range longer than a block: it holds that range and
 	 * nothing else, and goes when the range does. */
 	bool dedicated{false};
 };
 
-/* A range that was freed while the GPU might still read it. */
-struct aprend_pool_pending {
-	uint32_t block;
-	/* The block's buffer when the range was freed: the slot may hold another
-	 * block by the time this is looked at. */
-	void *buffer;
-	uint32_t offset;
-	uint32_t count;
-	/* The instance's submit serial at the free. Everything submitted up to
-	 * then may read the range, and nothing submitted after may, so the range
-	 * is free once the instance's fence has reached this. */
-	uint64_t serial;
+/* No entry: the end of a list of allocations. */
+#define APREND_POOL_NO_ALLOCATION 0xFFFFFFFFu
+
+/* One range the pool has handed out: what a range a caller holds is checked
+ * against, since the caller's copy is only a value and may be stale. A range
+ * names its entry and the generation the entry had when the range was made;
+ * an entry is used again for later ranges and its generation goes up each
+ * time, so an old copy of a range never matches a newer one, wherever the
+ * newer one's elements are. */
+struct aprend_pool_allocation {
+	enum : uint8_t {
+		/* Not a range. On the unused list. */
+		UNUSED = 0,
+		/* Handed out and not freed. */
+		LIVE = 1,
+		/* Freed, and the GPU may still read it. On the pending list. */
+		FREED = 2,
+	};
+	uint32_t block{0};
+	uint32_t offset{0};
+	uint32_t count{0};
+	/* Never 0 in an entry that has been used, so a zeroed range matches
+	 * nothing. */
+	uint32_t generation{0};
+	/* FREED: the instance's submit serial at the free. Everything submitted
+	 * up to then may read the range, and nothing submitted after may, so
+	 * its elements are free once the instance's fence has reached this. */
+	uint64_t serial{0};
+	/* The entry after this one on the list it is on, unused or pending. */
+	uint32_t next{APREND_POOL_NO_ALLOCATION};
+	uint8_t state{UNUSED};
 };
 
 struct aprend_pool_core {
@@ -67,10 +86,17 @@ struct aprend_pool_core {
 	 * freed counts until the GPU has finished with it. */
 	uint64_t used_bytes{0};
 	std::vector<aprend_pool_block> blocks{};
-	/* In the order they were freed, so their serials never go down: taken
-	 * back strictly from the front. Entries before pending_head are done. */
-	std::vector<aprend_pool_pending> pending{};
-	size_t pending_head{0};
+	/* Every range handed out since the pool was made has an entry here, by
+	 * the id it carries. Entries are never removed, only used again. */
+	std::vector<aprend_pool_allocation> allocations{};
+	/* The entries that are no range, to be used before a new one is added. */
+	uint32_t unused_first{APREND_POOL_NO_ALLOCATION};
+	/* The freed ranges the GPU may still read, in the order they were freed,
+	 * so their serials never go down: taken back strictly from the front,
+	 * added at the back. Both lists run through the entries themselves, so
+	 * neither ever needs memory and a free can't fail for want of it. */
+	uint32_t pending_first{APREND_POOL_NO_ALLOCATION};
+	uint32_t pending_last{APREND_POOL_NO_ALLOCATION};
 };
 
 typedef struct aprend_vertex_pool_t {

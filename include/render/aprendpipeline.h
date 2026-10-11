@@ -4,8 +4,15 @@
 
 /**
  * @file aprendpipeline.h
- * @brief Shaders, graphics pipelines, and the binding layouts and sets that
- * give a pipeline's shaders their buffers, textures and samplers.
+ * @brief Graphics and compute pipelines, and the binding layouts and sets
+ * that give a pipeline's shaders their buffers, textures and samplers.
+ *
+ * Shaders, and what their SPIR-V declares, are in aprendshader.h. A
+ * pipeline is checked against its shaders when it is created: see
+ * aprend_graphics_pipeline_create(). A binding layout can be written by hand
+ * or made from shaders (aprend_binding_layout_create_from_shaders()); one
+ * made from shaders also knows the names of its bindings and the members of
+ * its blocks.
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). Shaders, pipelines, binding
@@ -19,74 +26,11 @@
 
 #include "aprendbuffers.h"
 #include "aprendimages.h"
+#include "aprendshader.h"
 
 #if __cplusplus
 extern "C" {
 #endif // __cplusplus
-
-/**
- * @brief Opaque handle to one compiled shader stage.
- */
-typedef struct aprend_shader_t *aprend_shader;
-
-/**
- * @brief Creates a shader from a SPIR-V file.
- *
- * The file is read whole during the call and not kept open.
- *
- * @param[in] instance     Instance whose device the shader is created on.
- * @param[in] filename     Path of the SPIR-V file.
- * @param[in] shader_stage The one stage the code is for. Only
- *                         SPUDGPU_SHADER_STAGE_VERTEX,
- *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
- *                         SPUDGPU_SHADER_STAGE_COMPUTE and
- *                         SPUDGPU_SHADER_STAGE_MESH are accepted.
- *
- * @return The shader, or NULL if @p instance or @p filename is NULL,
- *         @p shader_stage is not accepted, the file doesn't exist or can't be
- *         read, or the shader module can't be created.
- *
- * @see aprend_shader_create_spirv()
- * @see aprend_shader_destroy()
- */
-aprend_shader aprend_shader_read_from_file_spirv(
-    aprend_instance instance,
-    const char *filename,
-    SPUDGPU_SHADER_STAGE shader_stage);
-/**
- * @brief Creates a shader from SPIR-V already in memory, such as code embedded
- * in the caller's binary.
- *
- * The code is copied, so @p spirv_code only has to live for this call.
- *
- * @param[in] instance     Instance whose device the shader is created on.
- * @param[in] spirv_code   The SPIR-V words.
- * @param[in] spirv_size   Size of @p spirv_code in bytes. A multiple of 4, and
- *                         not 0.
- * @param[in] shader_stage The one stage the code is for. Only
- *                         SPUDGPU_SHADER_STAGE_VERTEX,
- *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
- *                         SPUDGPU_SHADER_STAGE_COMPUTE and
- *                         SPUDGPU_SHADER_STAGE_MESH are accepted.
- *
- * @return The shader, or NULL if @p instance or @p spirv_code is NULL,
- *         @p spirv_size is 0 or not a multiple of 4, @p shader_stage is not
- *         accepted, or the shader module can't be created.
- *
- * @see aprend_shader_destroy()
- */
-aprend_shader aprend_shader_create_spirv(
-    aprend_instance instance,
-    const void *spirv_code,
-    uint64_t spirv_size,
-    SPUDGPU_SHADER_STAGE shader_stage);
-
-/**
- * @brief Destroys a shader.
- *
- * @param[in] shader Shader to destroy. NULL is accepted and does nothing.
- */
-void aprend_shader_destroy(aprend_shader shader);
 
 /**
  * @brief Upper bound on the bindings one aprend_binding_layout can declare.
@@ -121,6 +65,11 @@ typedef struct aprend_binding_desc {
 	 * @see SPUDGPU_SHADER_STAGE
 	 */
 	SPUDGPU_SHADER_STAGE _stages;
+	/**
+	 * A name the slot is found by (aprend_binding_layout_find()), such as the
+	 * shader's variable name. May be NULL. Copied.
+	 */
+	const char *_name;
 } aprend_binding_desc;
 
 /**
@@ -128,6 +77,28 @@ typedef struct aprend_binding_desc {
  *
  * Shared by every pipeline that declares it and every aprend_binding_set
  * created from it.
+ *
+ * @par Layouts of the same bindings
+ * Two layouts of one instance whose bindings are the same - each binding's
+ * number, type, count and stages, in any order - are one layout to
+ * everything that takes a layout: a set created from either may be put where
+ * a pipeline declares the other, and a material made for one is drawn with
+ * a pipeline that declares the other. They share one SpudGPU layout and one
+ * set of descriptor pools, so this holds on every backend. Names don't take
+ * part (`_name`, and a layout made from shaders' names and blocks): each
+ * layout keeps its own, and they are what aprend_binding_layout_find() and a
+ * material read. A binding's stages do take part: a layout whose binding is
+ * given to the vertex stage alone is another layout from one that gives it
+ * to vertex and fragment.
+ *
+ * So pipelines that bind the same sets share them by declaring layouts of
+ * the same bindings, made however the caller likes: the same handle, or
+ * layouts made separately. For a layout made from shaders, make it from
+ * every shader that will read the set
+ * (aprend_binding_layout_create_from_shaders()), and give that layout to
+ * each pipeline that binds the set, a pipeline whose shaders read less
+ * than it declares included (a depth pre-pass of the main pass's materials,
+ * say): a pipeline may declare more than its shaders use.
  */
 typedef struct aprend_binding_layout_t *aprend_binding_layout;
 
@@ -156,7 +127,150 @@ aprend_binding_layout aprend_binding_layout_create(
     uint32_t binding_count);
 
 /**
- * @brief Destroys a binding layout and the descriptor pools it owns.
+ * @brief Creates the binding layout of one set from what shaders declare
+ * there.
+ *
+ * Every binding of set @p set that the entry point of one of @p shaders uses
+ * (aprendshader.h, "used") is a binding of the layout: its type and count as
+ * the shaders declare them (the largest count, where two shaders declare one
+ * binding with different counts), and the stages of every shader that uses
+ * it. A binding declared and not used is left out, as the pipeline doesn't
+ * need it.
+ *
+ * The layout keeps, for each binding, the shader's name for it (the
+ * variable's, or a block's instance name, or its block name if it has none)
+ * and, for a uniform or storage buffer, its block's size and members. That
+ * is what aprend_binding_layout_find(), aprend_binding_layout_get_block(),
+ * aprend_binding_layout_get_uniform_layout() and a material
+ * (aprendmaterial.h) read. Where two shaders declare one binding the names
+ * and members of the first that uses it are kept, and the block of the one
+ * that declares it largest.
+ *
+ * @param[in] instance     Instance whose device the layout is created on.
+ * @param[in] shaders      The shaders whose declarations make the layout:
+ *                         every shader that reads set @p set in any
+ *                         pipeline that is to share its sets, so one layout
+ *                         serves all of those pipelines (see "Layouts of the
+ *                         same bindings" at aprend_binding_layout). Not
+ *                         NULL, and none of them NULL. The layout doesn't
+ *                         keep them.
+ * @param[in] shader_count Number of elements in @p shaders. Not 0.
+ * @param[in] set          The descriptor set: `set = ...` in GLSL.
+ *
+ * @return The layout, or NULL if an argument is NULL or 0, a shader is of
+ *         another instance, no shader uses a binding of @p set, two shaders
+ *         declare one binding with different types, a set has more than
+ *         APREND_MAX_BINDINGS_PER_LAYOUT bindings, or the layout can't be
+ *         created. Each is printed.
+ *
+ * @see aprend_binding_layout_destroy()
+ */
+aprend_binding_layout aprend_binding_layout_create_from_shaders(
+    aprend_instance instance,
+    const aprend_shader *shaders,
+    uint32_t shader_count,
+    uint32_t set);
+
+/**
+ * @brief Finds one of a layout's bindings by name.
+ *
+ * @param[in]  layout      Layout to search.
+ * @param[in]  name        The binding's name: its `_name`, or for a layout
+ *                         made from shaders the shader's name for it or, for
+ *                         a block, its block name. Case-sensitive.
+ * @param[out] out_binding Receives the binding's number (`binding = ...`).
+ *                         May be NULL.
+ * @param[out] out_desc    Receives the binding's desc; its `_name` is the
+ *                         layout's copy, valid as long as the layout. May be
+ *                         NULL.
+ *
+ * @return false, with nothing written, if an argument but the out ones is
+ *         NULL or no binding has that name.
+ */
+bool aprend_binding_layout_find(
+    aprend_binding_layout layout,
+    const char *name,
+    uint32_t *out_binding,
+    aprend_binding_desc *out_desc);
+
+/**
+ * @brief Gets one of a layout's bindings by its place in the layout.
+ *
+ * @param[in]  layout   Layout to read.
+ * @param[in]  index    From 0 to aprend_binding_layout_get_binding_count() - 1.
+ * @param[out] out_desc Receives the binding's desc, with its name as
+ *                      aprend_binding_layout_find() gives it.
+ *
+ * @return false, with nothing written, if @p layout or @p out_desc is NULL
+ *         or @p index is out of range.
+ */
+bool aprend_binding_layout_get_binding(
+    aprend_binding_layout layout,
+    uint32_t index,
+    aprend_binding_desc *out_desc);
+
+/**
+ * @brief Gets how many bindings a layout has.
+ *
+ * @param[in] layout Layout to read.
+ *
+ * @return The count, or 0 if @p layout is NULL.
+ */
+uint32_t aprend_binding_layout_get_binding_count(aprend_binding_layout layout);
+
+/**
+ * @brief Gets the block of a uniform or storage buffer binding of a layout
+ * made from shaders: its size and its members as the SPIR-V lays them out.
+ *
+ * @param[in]  layout           Layout to read.
+ * @param[in]  binding          The binding's number.
+ * @param[out] out_size         Receives the block's size (for a storage block
+ *                              ending in an array without a size, the bytes
+ *                              before it). May be NULL.
+ * @param[out] out_members      Receives the members, owned by the layout and
+ *                              valid as long as it. May be NULL.
+ * @param[out] out_member_count Receives how many. May be NULL.
+ *
+ * @return false, with nothing written, if @p layout is NULL, it has no such
+ *         binding, or the binding has no block it knows: not a buffer, or a
+ *         layout written by hand.
+ */
+bool aprend_binding_layout_get_block(
+    aprend_binding_layout layout,
+    uint32_t binding,
+    uint32_t *out_size,
+    const aprend_shader_member **out_members,
+    uint32_t *out_member_count);
+
+/**
+ * @brief Gets the uniform layout of a uniform buffer binding of a layout
+ * made from shaders, for aprend_uniform_buffer_create() and
+ * aprend_uniform_buffer_set_create() (aprendbuffers.h).
+ *
+ * Every member with an APREND_UNIFORM_TYPE is a uniform, named by its path
+ * (`color`, `lights[2].position`), at its offset, with its array's element
+ * count; `size` is the block's. The offsets are the shader's, so nothing
+ * placed by hand can be wrong. A member with no type (a double, a
+ * non-square matrix) is not listed and can't be written by name.
+ *
+ * @param[in]  layout  Layout to read.
+ * @param[in]  binding The binding's number.
+ * @param[out] out     Receives the layout. Its `uniforms` and their names
+ *                     are the layout's, valid as long as it.
+ *
+ * @return false, with nothing written, if @p layout or @p out is NULL, it
+ *         has no such binding, the binding is not a uniform buffer, or the
+ *         layout was written by hand.
+ */
+bool aprend_binding_layout_get_uniform_layout(
+    aprend_binding_layout layout,
+    uint32_t binding,
+    aprend_uniform_layout *out);
+
+/**
+ * @brief Destroys a binding layout. The SpudGPU layout and descriptor pools
+ * it shares with layouts of the same bindings go with the last of them and
+ * of their sets.
  *
  * @warning Every pipeline declaring @p layout and every aprend_binding_set
  * created from it must be destroyed first.
@@ -328,6 +442,21 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * 0 is a pipeline with no push constants.
 	 */
 	uint32_t _push_constant_range_count;
+
+	/**
+	 * How the elements of #_vertex_bindings meet the vertex shader's inputs.
+	 *
+	 * false: by position, as #_vertex_bindings describes: element N across
+	 * the bindings is `location = N`.
+	 *
+	 * true: by name. Each element whose `name` is the name of one of the
+	 * vertex shader's inputs is given that input's location; an element whose
+	 * name matches none is not read, so one vertex layout can serve shaders
+	 * that read different parts of it. Every input the shader uses must be
+	 * matched; a matrix input is matched by one element per column, each
+	 * named as the input. Every element then has a name.
+	 */
+	bool _vertex_inputs_by_name;
 } aprend_graphics_pipeline_desc;
 
 /**
@@ -390,7 +519,23 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *         set with `_depth_compare_op` SPUDGPU_COMPARE_OP_NEVER,
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
  *         counted entry of `_binding_layouts` is NULL or belongs to another
- *         instance, or the pipeline can't be created.
+ *         instance, a shader is of another instance, the shaders don't match
+ *         the desc (below), or the pipeline can't be created.
+ *
+ * Checked against each shader's reflection (aprendshader.h), with each
+ * failure printed:
+ *
+ * - The entry point named is the SPIR-V's entry point for the stage.
+ * - Every binding a shader uses is declared by the binding layout at its
+ *   set, with the same type, at least as many descriptors, and the shader's
+ *   stage among its `_stages`. A layout may declare more than the shaders
+ *   use.
+ * - Every byte of a shader's push constant block that a member covers is in
+ *   a range whose `stage_flags` include the shader's stage.
+ * - Every input the vertex shader uses has a vertex element at each of its
+ *   locations, of the same kind of number: a float input from a VEC or
+ *   FLOAT element, an int input from an INT element. A `uint` input has no
+ *   element type that feeds it and is refused.
  *
  * @see aprend_graphics_pipeline_destroy()
  */
@@ -493,7 +638,9 @@ typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
  *         instance, `_push_constant_range_count` is above
  *         APREND_MAX_PUSH_CONSTANT_RANGES, a counted push constant range has
  *         a stage other than compute alone, a size of 0, or an offset or size
- *         that is not a multiple of 4, or the pipeline can't be created.
+ *         that is not a multiple of 4, the shader doesn't match the desc as
+ *         aprend_graphics_pipeline_create() checks (entry point, bindings,
+ *         push constants), or the pipeline can't be created.
  *
  * @see aprend_compute_pipeline_destroy()
  */
@@ -531,8 +678,9 @@ aprend_compute_pipeline_desc aprend_compute_pipeline_get_desc(aprend_compute_pip
  * Put at a set slot in a command list with APREND_COMMAND_SET_BINDING_SET.
  * Which resource sits in which slot is fixed at creation; the contents of the
  * buffers and textures can still change. Usable with any pipeline that
- * declares the layout it was created from, at any set slot where the pipeline
- * declares it.
+ * declares the layout it was created from, or a layout of the same bindings
+ * ("Layouts of the same bindings" at aprend_binding_layout), at any set slot
+ * where the pipeline declares it.
  */
 typedef struct aprend_binding_set_t *aprend_binding_set;
 
