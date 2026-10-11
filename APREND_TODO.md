@@ -307,8 +307,39 @@ unfinished in it.
     not.
   - Never run. No span has been bound on any backend, and drawing from
     upload memory through a view at an offset is untested on all three.
-- **No tests.** There is no `tests/aprend_tests.*`: the repo's tests are
-  headless with no GPU, and nothing in Aprend runs without a device.
+- **Vertex and index pools, written 2026-10-11 and not compiled** on any
+  platform (`aprendbuffers.h`; `aprendpools.cpp`, `aprendpools_internal.hpp`
+  and `aprendranges_internal.hpp`, new; item 13):
+  - `aprend_vertex_pool` and `aprend_index_pool` own a few large vertex or
+    index buffers, the blocks, and hand out ranges of them
+    (`aprend_vertex_range`, `aprend_index_range`) that last until freed. For
+    a caller with thousands of small meshes: a buffer each is a device
+    allocation each, which a device limits in number and in smallest size.
+  - A range names its block's buffer and its start. It is drawn as any
+    buffer is, with the start in `_start_vertex_location`,
+    `_start_index_location` or `_base_vertex_location`; a block is an
+    ordinary `aprend_vertex_buffer` or `aprend_index_buffer`, and nothing in
+    the command list knows a pool exists.
+  - A range is written once, at allocation. That is what makes the write
+    safe while the block is being drawn from: the bytes were free.
+  - A free is deferred by the instance's fence, in the pool: the range
+    carries the submit serial of its free and is handed out again once the
+    fence has reached it. It doesn't go on the release queue, since nothing
+    is destroyed; the pool looks at what is waiting at each allocate, trim
+    and get_usage.
+  - Blocks are added one at a time and given back only by the trim calls. A
+    range longer than a block has a block to itself. `memory_limit` in the
+    desc; no default block size.
+  - `aprendranges_internal.hpp` is the list of a block's free elements, with
+    nothing of Aprend or SpudGPU in it, and `tests/aprendranges_tests.cpp`
+    checks it against one flag an element. That test is written and not
+    compiled either.
+  - Never run. No range has been allocated, drawn from or freed on any
+    backend.
+- **No tests of anything that needs a device.** There is no
+  `tests/aprend_tests.*`: the repo's tests are headless with no GPU. The one
+  part of Aprend that runs without a device has a test
+  (`tests/aprendranges_tests.cpp`, the pools' range list).
 
 ## Wrong things
 
@@ -539,6 +570,16 @@ the code"). Left over:
   release queue doesn't, since nothing is destroyed.
 - **One dirty range per buffer.** Two small writes far apart copy everything
   between them. Correct, and more than is needed.
+- **A pool block is staged like any buffer.** On a device with its own
+  memory each block keeps a staging copy for life and has one dirty range,
+  so two ranges allocated far apart in a block copy everything between them.
+  A pool range is written exactly once, which is the "store that is told it
+  will be written once" above: a pool could take a transient span for each
+  write, record an exact copy, and keep no staging copy at all. Not built.
+- **A pool is never compacted and frees nothing by itself.** Ranges don't
+  move, a freed range of a wrong pool or one freed twice is caught only
+  where the free call can see it, and a range freed twice with an
+  allocation between the two frees is not caught.
 - **Uniform buffers stay host-visible on every device**, on purpose: they are
   small and rewritten every frame, and a staged copy per buffer per frame
   costs more than the bus read it saves. A large uniform buffer written once

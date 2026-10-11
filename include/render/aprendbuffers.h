@@ -318,6 +318,181 @@ bool aprend_storage_buffer_set_update(
     uint64_t size,
     void *pData);
 
+/****************************************************
+ * Pools: many small meshes in a few large buffers
+ *
+ * A vertex or index buffer is one allocation of the device's, and a device
+ * has a limit on how many it gives out and a smallest size for each. A
+ * caller with thousands of small meshes that each last a while doesn't make
+ * a buffer for each: it makes a pool, which owns a few large buffers, the
+ * blocks, and hands out ranges of them. A range is kept until it is freed.
+ * (Geometry rebuilt every frame is what transient memory is for,
+ * aprendtransient.h.)
+ *
+ * A range names its block's buffer and where in it the range starts. The
+ * caller draws from it as from any buffer: the block goes in
+ * SET_VERTEX_BUFFERS or SET_INDEX_BUFFER, and the range's start is added to
+ * the draw's _start_vertex_location or _start_index_location
+ * (aprendcommands.h). Draws from ranges of one block need the block bound
+ * once.
+ *
+ * A mesh that is indexed takes a range from a vertex pool and one from an
+ * index pool. Its indices count from its own first vertex, 0 for the first,
+ * as they would in a buffer of its own, and the draw passes the vertex
+ * range's first_vertex as _base_vertex_location. Neither pool knows of the
+ * other.
+ *
+ * The rules:
+ *
+ * - A range is written once, by the allocate call, and never again. To
+ *   change a mesh, free its range and allocate another. The block's buffer
+ *   is the pool's: it is never passed to an update or destroy call.
+ * - Allocating is safe while submitted work is drawing other ranges of the
+ *   same block.
+ * - Freeing a range doesn't need the GPU to be finished with it. The range
+ *   is handed out again only once everything submitted through the instance
+ *   up to the free has finished, as a destroyed buffer is released
+ *   (aprendcontext.h, "Destroying"), and with the same gap: a command list
+ *   compiled against a range and submitted after its free may draw another
+ *   mesh's data. Free a range after the last submission that draws it.
+ * - A range never moves, and nothing is compacted. A pool whose blocks have
+ *   become mostly holes is the caller's to make again.
+ * - A pool grows a block at a time and gives a block back only in
+ *   aprend_vertex_pool_trim or aprend_index_pool_trim. A range longer than
+ *   a block gets a block of its own, which goes when the range is freed.
+ *
+ * Where a block is kept and how a write reaches the device are as for any
+ * vertex or index buffer, above: on a device with memory of its own each
+ * block has a staging copy beside it, which memory_limit does not count.
+ *
+ * Threads: a pool is used by one thread at a time with everything else of
+ * its instance (aprendcontext.h, "Threads"). That includes the free calls,
+ * which are not destroy calls: they are not safe from another thread.
+ ****************************************************/
+
+typedef struct aprend_vertex_pool_t *aprend_vertex_pool;
+typedef struct aprend_index_pool_t *aprend_index_pool;
+
+typedef struct aprend_vertex_pool_desc {
+	/* The layout of every vertex in the pool. Copied: it doesn't have to
+	 * outlive the call. */
+	aprend_buffer_layout vertex_layout;
+	/* Vertices in one block. Not 0. */
+	uint32_t block_vertex_count;
+	/* The most bytes the pool's blocks may hold, the blocks of ranges
+	 * longer than a block included; an allocation that needs a block more
+	 * fails. 0 is no limit. If not 0, at least one block's bytes. */
+	uint64_t memory_limit;
+} aprend_vertex_pool_desc;
+
+/* A range of a vertex pool. A value: copy it freely. Zeroed, it is no range. */
+typedef struct aprend_vertex_range {
+	/* The block the range is in, for SET_VERTEX_BUFFERS. The pool's: read by
+	 * draws and by the get_ calls, never updated or destroyed. */
+	aprend_vertex_buffer buffer;
+	/* Where the range starts in the block: a draw's _start_vertex_location,
+	 * or an indexed draw's _base_vertex_location. */
+	uint32_t first_vertex;
+	uint32_t vertex_count;
+	/* Which block this is. Aprend's: not for the caller to read or change. */
+	uint32_t _block;
+} aprend_vertex_range;
+
+/* A pool with no blocks: the first is made by the first allocation. NULL if
+ * [instance] or [desc] is NULL, the layout has no elements or a stride of 0,
+ * block_vertex_count is 0, or memory_limit is not 0 and below one block's
+ * bytes. */
+aprend_vertex_pool aprend_vertex_pool_create(
+    aprend_instance instance,
+    const aprend_vertex_pool_desc *desc);
+/* Destroys the pool and its blocks; every range of it is gone. NULL is
+ * accepted. The GPU doesn't have to be finished with the blocks
+ * (aprendcontext.h, "Destroying"), and no later submission may draw from
+ * one. */
+void aprend_vertex_pool_destroy(aprend_vertex_pool pool);
+/* Takes a range of [vertex_count] vertices and writes the vertices at [data]
+ * into it. False, with [out_range] zeroed and nothing taken, if [pool],
+ * [data] or [out_range] is NULL, [vertex_count] is 0, a block is needed and
+ * memory_limit doesn't allow it or the device refuses it, the write fails,
+ * or memory runs out. */
+bool aprend_vertex_pool_allocate(
+    aprend_vertex_pool pool,
+    uint32_t vertex_count,
+    const void *data,
+    aprend_vertex_range *out_range);
+/* Gives [range] back. It is handed out again once the GPU has finished what
+ * was submitted up to now. Nothing happens, and it is printed, if [range] is
+ * not a range of [pool] that is still allocated; [pool] or [range] NULL is
+ * accepted. */
+void aprend_vertex_pool_free(
+    aprend_vertex_pool pool,
+    const aprend_vertex_range *range);
+/* Destroys every block that holds no range. A block holding a freed range
+ * the GPU hasn't finished with is kept, and goes at a later call. The pool
+ * never does this by itself: a block that empties is kept for the next
+ * allocation. NULL is accepted. */
+void aprend_vertex_pool_trim(aprend_vertex_pool pool);
+/* [out_used_bytes]: the bytes of every range allocated, a freed one counted
+ * until the GPU has finished with it. [out_block_bytes]: the bytes of every
+ * block. The difference is what the next allocations can take without a new
+ * block, if it is in long enough pieces. Either may be NULL. Both 0 if
+ * [pool] is NULL. */
+void aprend_vertex_pool_get_usage(
+    aprend_vertex_pool pool,
+    uint64_t *out_used_bytes,
+    uint64_t *out_block_bytes);
+
+typedef struct aprend_index_pool_desc {
+	/* The size of every index in the pool: UINT16 or UINT32. */
+	APREND_INDEX_STRIDE stride;
+	/* Indices in one block. Not 0. */
+	uint32_t block_index_count;
+	/* As aprend_vertex_pool_desc::memory_limit. */
+	uint64_t memory_limit;
+} aprend_index_pool_desc;
+
+/* A range of an index pool. A value: copy it freely. Zeroed, it is no range. */
+typedef struct aprend_index_range {
+	/* The block the range is in, for SET_INDEX_BUFFER. The pool's: read by
+	 * draws and by the get_ calls, never updated or destroyed. */
+	aprend_index_buffer buffer;
+	/* Where the range starts in the block: an indexed draw's
+	 * _start_index_location. */
+	uint32_t first_index;
+	uint32_t index_count;
+	/* Which block this is. Aprend's: not for the caller to read or change. */
+	uint32_t _block;
+} aprend_index_range;
+
+/* As aprend_vertex_pool_create. NULL if [instance] or [desc] is NULL, stride
+ * is not UINT16 or UINT32, block_index_count is 0, or memory_limit is not 0
+ * and below one block's bytes. */
+aprend_index_pool aprend_index_pool_create(
+    aprend_instance instance,
+    const aprend_index_pool_desc *desc);
+/* As aprend_vertex_pool_destroy. */
+void aprend_index_pool_destroy(aprend_index_pool pool);
+/* As aprend_vertex_pool_allocate, for [index_count] indices of the pool's
+ * size at [data]. The indices are written as they are given: one that
+ * counts from its mesh's first vertex is drawn with that vertex's place as
+ * _base_vertex_location. */
+bool aprend_index_pool_allocate(
+    aprend_index_pool pool,
+    uint32_t index_count,
+    const void *data,
+    aprend_index_range *out_range);
+/* As aprend_vertex_pool_free. */
+void aprend_index_pool_free(
+    aprend_index_pool pool,
+    const aprend_index_range *range);
+/* As aprend_vertex_pool_trim. */
+void aprend_index_pool_trim(aprend_index_pool pool);
+/* As aprend_vertex_pool_get_usage. */
+void aprend_index_pool_get_usage(
+    aprend_index_pool pool,
+    uint64_t *out_used_bytes,
+    uint64_t *out_block_bytes);
+
 #if __cplusplus
 }
 #endif

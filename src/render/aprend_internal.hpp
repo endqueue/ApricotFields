@@ -13,6 +13,7 @@
 #include "render/aprendswapchain.h"
 #include "render/aprendtransient.h"
 
+#include "aprendpools_internal.hpp"
 #include "aprendtransient_internal.hpp"
 
 #include <spudgpu.h>

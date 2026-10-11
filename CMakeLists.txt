@@ -9,6 +9,9 @@ add_library(ApricotFields STATIC
         src/render/aprend_internal.hpp
         src/render/aprendcontext.cpp
         src/render/aprendbuffers.cpp
+        src/render/aprendranges_internal.hpp
+        src/render/aprendpools_internal.hpp
+        src/render/aprendpools.cpp
         src/render/aprendimages_internal.hpp
         src/render/aprendimages.cpp
         src/render/aprendframes.cpp
@@ -162,4 +165,9 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
+    # The range list under Aprend's pools: an internal header with no GPU in
+    # it, which is why this one test sees src/render.
+    add_executable(aprendranges_tests tests/aprendranges_tests.cpp)
+    target_include_directories(aprendranges_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
+    add_test(NAME aprendranges_tests COMMAND aprendranges_tests)
 endif ()
