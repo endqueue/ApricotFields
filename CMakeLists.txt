@@ -62,6 +62,30 @@ endif ()
 # Link SpudLib library
 target_link_libraries(ApricotFields PUBLIC spudlib)
 
+# --- vendored-or-fetched dependency ----------------------------------------
+# Probe eqdev/.deps/<dir> for a hand-vendored checkout and use it if present
+# (one copy shared across the whole workspace, no per-repo duplication),
+# otherwise fetch <repo> at the pinned <tag> so a standalone clone of this repo
+# still configures with nothing vendored by hand. Probe <dir>/CMakeLists.txt,
+# not just the directory, so an empty placeholder folder doesn't match.
+include(FetchContent)
+function(declare_vendored_or_fetch name dir repo tag)
+    # Accept either the plain `git clone` folder name (<dir>) or the
+    # FetchContent-style <dir>-src, so a vendored checkout is found without
+    # renaming. Probe <cand>/CMakeLists.txt, not just the directory, so an
+    # empty placeholder folder doesn't match.
+    foreach (_cand "${dir}" "${dir}-src")
+        set(_vendored "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/${_cand}")
+        if (EXISTS "${_vendored}/CMakeLists.txt")
+            message(STATUS "${name}: using vendored ${_vendored}")
+            FetchContent_Declare(${name} SOURCE_DIR "${_vendored}")
+            return ()
+        endif ()
+    endforeach ()
+    message(STATUS "${name}: no vendored copy under .deps/, fetching ${repo}@${tag}")
+    FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}")
+endfunction()
+
 # SPIRV-Cross - SPIR-V reflection for Aprend's shaders
 # (src/render/aprendreflect.cpp): only its core, which reads SPIR-V and
 # writes nothing. SpudLib already builds it on the backends that
@@ -80,10 +104,8 @@ if (NOT TARGET spirv-cross-core)
     set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
     set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-            spirv_cross
-            SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/SPIRV-Cross
-    )
+    declare_vendored_or_fetch(spirv_cross SPIRV-Cross
+            https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
     FetchContent_MakeAvailable(spirv_cross)
 endif ()
@@ -143,12 +165,7 @@ if (WIN32 OR (UNIX AND NOT APPLE))
 endif ()
 
 # GLM — header-only math library used internally by the C++ backends
-set(GLM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/glm-src")
-include(FetchContent)
-FetchContent_Declare(
-        glm
-        SOURCE_DIR ${GLM_DIR}
-)
+declare_vendored_or_fetch(glm glm https://github.com/g-truc/glm.git 1.0.1)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 FetchContent_MakeAvailable(glm)
 target_link_libraries(ApricotFields PUBLIC glm::glm)
@@ -166,10 +183,8 @@ set(LIBDEFLATE_GZIP_SUPPORT ON CACHE BOOL "" FORCE)
 set(LIBDEFLATE_BUILD_GZIP OFF CACHE BOOL "" FORCE)
 set(LIBDEFLATE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LIBDEFLATE_INSTALL OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-        libdeflate
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/libdeflate
-)
+declare_vendored_or_fetch(libdeflate libdeflate
+        https://github.com/ebiggers/libdeflate.git v1.26)
 FetchContent_MakeAvailable(libdeflate)
 # ApricotFields may be linked into a shared library too.
 set_target_properties(libdeflate_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -178,10 +193,9 @@ target_link_libraries(ApricotFields PRIVATE libdeflate::libdeflate_static)
 # glaze - JSON, for ApAudio's sound bank manifests (src/audio/apaudiocues.cpp).
 # Header only, vendored under eqdev/.deps/glaze like libdeflate. Private: no
 # glaze type crosses ApricotFields' C API.
-FetchContent_Declare(
-        glaze
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/glaze
-)
+# NOTE: the fetch fallback tag is a placeholder - pin a real glaze release once
+# one is chosen; the vendored eqdev/.deps/glaze path is unaffected by it.
+declare_vendored_or_fetch(glaze glaze https://github.com/stephenberry/glaze.git main)
 FetchContent_MakeAvailable(glaze)
 target_link_libraries(ApricotFields PRIVATE glaze::glaze)
 
