@@ -37,8 +37,8 @@ unfinished in it.
   down to "View aspects and stencil sampling" built there, with the SpudGPU
   it depends on, and one application ran on it and exited with code 0. That
   is the first build of this code outside macOS and the first of a SpudGPU
-  backend other than Metal. Which backend, D3D12 or Vulkan, is not recorded
-  here, and the other is still not compiled. As on macOS, it exercises what
+  backend other than Metal. The backend was D3D12 (Trellis_Avalonia);
+  Vulkan is still not compiled. As on macOS, it exercises what
   that application uses and no more (the list above); whether the device
   had memory of its own, which is what would have run the staged path, is
   not recorded either.
@@ -275,7 +275,8 @@ unfinished in it.
     beside its attachment desc, readable formats for depth and stencil, and
     typeless depth resources. The last three also mean a texture that is
     rendered to and sampled, color or depth, was not correctly sampled on
-    D3D12 before; that backend has never been built or run.
+    D3D12 before; that backend has since built and run (2026-10-11), but
+  without these changes.
   - No stencil has been sampled on any backend.
 - **`aprend_binding_set_update`, written 2026-10-11 and not compiled** on
   any platform (item 9): points some of a set's slots at other resources
@@ -1250,10 +1251,24 @@ and 5 are closed and their numbers are not reused.
 
 1. Run what is written, and compile it where it hasn't been. It builds on
    macOS as of 2026-10-10 (see "State of the code"); left of this step:
-   - Run it: nothing since 2026-10-09 has drawn a frame, in Aprend or in the
-     SpudGPU changes it now depends on.
-   - Compile it on Linux, and on Windows with the backend that hasn't been
-     built there (see "State of the code").
+   - Run more of it: one application ran on Metal and on D3D12 on
+     2026-10-11, covering only what it uses (see "State of the code"). No
+     push constant set, staging, compute, indirect draw, partial view or
+     layered pass has run on either. `../apricottests` (`aprend_gpu_tests`)
+     is written for this: push constants, a buffer update (staged on a
+     device with its own memory), sampled views of one mip, rendering to
+     one mip and sampling it in a later pass, each checked by reading the
+     pixels back. Ran on Metal on 2026-10-11 (Apple M5 Pro, unified memory,
+     so not the staged path) and passed, after two fixes: a SpudGPU Metal
+     descriptor set kept a rewritten descriptor's old resource and crashed
+     on it once destroyed; and a compiled list could not in fact be
+     submitted twice (a SpudGPU command list is submitted once per
+     recording), so `aprend_command_list_submit()` now takes one compile
+     once and the header says so. Not built on D3D12.
+   - Vulkan: write its side of each change alongside Metal and D3D12, but
+     don't build it for now, on Windows or Linux. Linux is held by a Wayland
+     driver issue on the Linux machine. Treat Vulkan code as unbuilt until
+     then (see "State of the code").
    - Run it on a device with its own memory as well, for the staged path.
 2. What the release queue made possible and isn't built: freeing staging
    copies and a shared upload path (items 13 and 6). Rewriting a binding

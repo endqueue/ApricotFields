@@ -1516,7 +1516,7 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 	if (!cmd_list || !queue)
 		return false;
 	if (!cmd_list->compiled) {
-		printf("aprend: submit of a command list without a successful compile\n");
+		printf("aprend: submit of a command list without a successful compile since its last submit\n");
 		return false;
 	}
 	// Every texture must still be in the layout this list's barriers were
@@ -1601,6 +1601,10 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 
 	for (const auto &use : cmd_list->layout_uses)
 		*use.tracked = use.final_layout;
+
+	// A compile is one recording of the SpudGPU list, and SpudGPU submits a
+	// recording once.
+	cmd_list->compiled = false;
 	return true;
 }
 }

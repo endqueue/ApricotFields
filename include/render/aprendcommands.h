@@ -614,8 +614,12 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * destroying one and then submitting a list compiled against it is a use
  * after free.
  *
- * A compiled list may be submitted again as long as none of the failures
- * below applies. The caller decides when to wait for the GPU.
+ * A compile is submitted once. To run the same recorded commands again,
+ * compile the list again and submit that: a SpudGPU command list is
+ * submitted once for each time it is recorded (spudgpu.h), and a compile is
+ * one recording. The recorded commands stay until
+ * aprend_command_list_reset(), so nothing has to be sent again. The caller
+ * decides when to wait for the GPU.
  *
  * A list with a PRESENT_TEXTURE must be submitted on its swap chain's
  * queue, while the back buffer it was compiled against is still the
@@ -625,7 +629,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * @param[in] queue    Queue to submit on: the instance's one queue.
  *
  * @return false without submitting if the list hasn't compiled
- *         successfully, if @p queue is not the queue the instance already
+ *         successfully since it was last submitted, if @p queue is not the queue the instance already
  *         submits on, if a texture it uses has changed layout since it was
  *         compiled (another list touching the same texture was submitted in
  *         between), or if it binds a set holding a buffer set and
