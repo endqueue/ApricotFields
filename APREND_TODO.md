@@ -1226,13 +1226,13 @@ it. The alternative, Vulkan Memory Allocator and D3D12 Memory Allocator
 inside SpudGPU's backends, would be SpudLib deciding where memory goes, and
 Metal would need one of its own.
 
-- **SpudLib first**: the heap and placed-resource calls and the
-  requirement queries, on all three backends. Designed 2026-10-11 in
-  `../spudlib/spudgpu_heap_draft.h`, under review, not written: heaps of
-  one memory kind and one resource class (buffers, images, attachment
-  images), size and alignment asked of the heap, placed buffers and
-  images destroyed with the ordinary destroy calls. Its five open
-  questions are settled before any backend is written.
+- **SpudLib first**: done 2026-10-11, written and not run on a GPU.
+  `spudgpu_create_heap` (one memory kind, one resource class: buffers,
+  images, attachment images), `spudgpu_get_buffer/image_placement_requirements`
+  (asked of the heap), `spudgpu_create_placed_buffer/image` (ordinary
+  handles, destroyed with the ordinary calls). Vulkan and D3D12
+  type-checked on Linux, the Vulkan side run against a mock; Metal parsed
+  against a stub only. See `../spudlib/CLAUDE.md` for what was settled.
 - **Then Aprend**: a device allocator over the heaps for every buffer and
   texture, with the placement policy (block sizes, which block a resource
   goes in, when an empty block is released). Its bookkeeping could be VMA's
