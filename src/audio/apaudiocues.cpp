@@ -854,6 +854,36 @@ extern "C"
         delete cues;
     }
 
+    void apaudio_cues_clear_banks(apaudio_cues cues)
+    {
+        if (!cues)
+            return;
+        // Every cue is undefined under one hold of cue_mutex, so a play sees
+        // every bank or none of them.
+        uint32_t count = 0;
+        {
+            std::lock_guard<std::mutex> lock(cues->cue_mutex);
+            count = (uint32_t)cues->cues.size();
+            for (cue_t &cue : cues->cues)
+                cue.defined = false;
+        }
+        // Then each cue lets go of its sounds and group: taken out of the
+        // table under the mutex and destroyed after it, on this thread, as
+        // the mutex is never held while the mixer is called. One at a time,
+        // into a local, so nothing here allocates and nothing can fail.
+        for (uint32_t index = 0; index < count; index++)
+        {
+            cue_t dropped;
+            std::lock_guard<std::mutex> lock(cues->cue_mutex);
+            std::swap(cues->cues[index], dropped);
+        }
+        for (bus_t &bus : cues->buses)
+        {
+            apaudio_modifier_destroy(cues->mixer, bus.ducking);
+            bus.ducking = 0;
+        }
+    }
+
     void apaudio_cues_set_sample_rate(apaudio_cues cues, uint32_t sample_rate)
     {
         if (cues && sample_rate)

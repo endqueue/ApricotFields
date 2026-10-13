@@ -5,6 +5,7 @@
 // compiles and links as one.
 
 #include "audio/apaudio.h"
+#include "audio/apaudiocues.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -1351,6 +1352,149 @@ static void test_start_time(void)
     apaudio_mixer_destroy(mixer);
 }
 
+/* A bank kept in memory, for apaudio_cues_load_bank(): its manifest, and
+ * one WAV that the manifest calls "tick.wav". */
+typedef struct memory_bank
+{
+    const char *manifest;
+    const unsigned char *wav;
+    uint64_t wav_size;
+} memory_bank;
+
+static bool memory_bank_get_size(void *user, const char *name, uint64_t *out_size)
+{
+    const memory_bank *bank = (const memory_bank *)user;
+    if (strcmp(name, "manifest.json") == 0)
+    {
+        *out_size = strlen(bank->manifest);
+        return true;
+    }
+    if (strcmp(name, "tick.wav") == 0)
+    {
+        *out_size = bank->wav_size;
+        return true;
+    }
+    return false;
+}
+
+static bool memory_bank_read(void *user, const char *name, void *buffer, uint64_t size)
+{
+    const memory_bank *bank = (const memory_bank *)user;
+    if (strcmp(name, "manifest.json") == 0 && size == strlen(bank->manifest))
+    {
+        memcpy(buffer, bank->manifest, (size_t)size);
+        return true;
+    }
+    if (strcmp(name, "tick.wav") == 0 && size == bank->wav_size)
+    {
+        memcpy(buffer, bank->wav, (size_t)size);
+        return true;
+    }
+    return false;
+}
+
+static APAUDIO_CUE_INFO cue_info(apaudio_cues cues, APAUDIO_CUE cue)
+{
+    APAUDIO_CUE_INFO info;
+    memset(&info, 0, sizeof(info));
+    info.struct_size = sizeof(info);
+    CHECK(apaudio_cues_get_info(cues, cue, &info) == APRESULT_OK);
+    return info;
+}
+
+/* apaudio_cues_clear_banks(): what banks defined goes - cues and ducking -
+ * while names, handles and the table itself stay good for the next bank. */
+static void test_cues_clear_banks(void)
+{
+    current_test = "cues clear banks";
+    APAUDIO_MIXER_DESC mixer_desc = valid_mixer_desc();
+    apaudio_mixer mixer = make_mixer(&mixer_desc);
+    APAUDIO_CUES_BUS buses[2];
+    memset(buses, 0, sizeof(buses));
+    buses[0].name = "feedback";
+    buses[0].bus = make_bus(mixer, 0, 1.0f);
+    buses[0].virtual_behavior = APAUDIO_VIRTUAL_KILL;
+    buses[1].name = "alerts";
+    buses[1].bus = make_bus(mixer, 0, 1.0f);
+    buses[1].virtual_behavior = APAUDIO_VIRTUAL_KILL;
+
+    APAUDIO_CUES_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.struct_size = sizeof(desc);
+    desc.mixer = mixer;
+    desc.buses = buses;
+    desc.bus_count = 2;
+    desc.max_cues = 8;
+    desc.max_playings = 4;
+    desc.max_voices = mixer_desc.max_voices;
+    desc.sample_rate = 48000;
+    desc.max_bank_size = 1 << 20;
+    desc.duck_fade_in_us = 10000;
+    desc.duck_fade_out_us = 10000;
+    apaudio_cues cues = NULL;
+    APAUDIO_ERROR error;
+    CHECK(apaudio_cues_create(&desc, &cues, &error) == APRESULT_OK && cues != NULL);
+
+    /* 16-bit mono, four frames. */
+    static const unsigned char pcm16[] = {0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0xC0};
+    unsigned char wav[256];
+    unsigned char fmt[40];
+    make_fmt(fmt, 1, 1, 48000, 16);
+    memory_bank bank;
+    bank.wav = wav;
+    bank.wav_size = make_wav(wav, fmt, 16, pcm16, sizeof(pcm16));
+    APAUDIO_BANK_SOURCE source = {&bank, memory_bank_get_size, memory_bank_read};
+
+    /* A bank that defines one cue, with a limit of its own so it has a
+     * concurrency group, and has one bus duck the other. */
+    static const char first[] = "{\"version\": 1,"
+                                " \"cues\": {\"ui.tick\": {\"sounds\": [\"tick.wav\"], \"bus\": \"feedback\","
+                                " \"max_instances\": 2}},"
+                                " \"buses\": {\"alerts\": {\"duck\": {\"feedback\": 0.3}}}}";
+    bank.manifest = first;
+    CHECK(apaudio_cues_load_bank(cues, &source, &error) == APRESULT_OK);
+    APAUDIO_CUE tick = 0;
+    CHECK(apaudio_cues_find(cues, "ui.tick", &tick) == APRESULT_OK && tick != 0);
+    CHECK(cue_info(cues, tick).defined && cue_info(cues, tick).sound_count == 1);
+    CHECK(apaudio_cues_get_bus_ducking(cues, 1) != 0);
+
+    /* Cleared: nothing is defined and nothing ducks. The name and its
+     * handle are as they were, and playing it plays nothing and succeeds. */
+    apaudio_cues_clear_banks(cues);
+    CHECK(!cue_info(cues, tick).defined && cue_info(cues, tick).sound_count == 0);
+    CHECK(cue_info(cues, tick).max_instances == 0);
+    CHECK(apaudio_cues_get_bus_ducking(cues, 1) == 0);
+    APAUDIO_CUE again = 0;
+    CHECK(apaudio_cues_find(cues, "ui.tick", &again) == APRESULT_OK && again == tick);
+    APAUDIO_VOICE voice = 99;
+    CHECK(apaudio_cues_play(cues, tick, NULL, &voice) == APRESULT_OK && voice == 0);
+
+    /* Clearing what's already clear, or no table at all, does nothing. */
+    apaudio_cues_clear_banks(cues);
+    apaudio_cues_clear_banks(NULL);
+    CHECK(!cue_info(cues, tick).defined);
+
+    /* The table takes banks as before: another one defines another cue,
+     * and the cleared one stays undefined until a bank defines it again. */
+    static const char second[] = "{\"version\": 1,"
+                                 " \"cues\": {\"ui.other\": {\"sounds\": [\"tick.wav\"], \"bus\": \"alerts\"}}}";
+    bank.manifest = second;
+    CHECK(apaudio_cues_load_bank(cues, &source, &error) == APRESULT_OK);
+    APAUDIO_CUE other = 0;
+    CHECK(apaudio_cues_find(cues, "ui.other", &other) == APRESULT_OK && other != tick);
+    CHECK(cue_info(cues, other).defined && cue_info(cues, other).bus_index == 1);
+    CHECK(!cue_info(cues, tick).defined);
+    CHECK(apaudio_cues_get_bus_ducking(cues, 1) == 0);
+    bank.manifest = first;
+    CHECK(apaudio_cues_load_bank(cues, &source, &error) == APRESULT_OK);
+    CHECK(cue_info(cues, tick).defined && cue_info(cues, tick).max_instances == 2);
+    CHECK(cue_info(cues, other).defined);
+    CHECK(apaudio_cues_get_bus_ducking(cues, 1) != 0);
+
+    apaudio_cues_destroy(cues);
+    apaudio_mixer_destroy(mixer);
+}
+
 int main(void)
 {
     test_format_from_spudaudio();
@@ -1368,6 +1512,7 @@ int main(void)
     test_buses();
     test_modifiers();
     test_start_time();
+    test_cues_clear_banks();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);

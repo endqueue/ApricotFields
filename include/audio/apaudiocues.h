@@ -197,6 +197,22 @@ APRESULT apaudio_cues_load_zip_bank(
     const APARCHIVE_SOURCE *archive,
     APAUDIO_ERROR *error);
 
+/* Thread: control. Forgets what every loaded bank defined, leaving the
+ * table as it was before the first one: no cue is defined, and no bus
+ * ducks another. Cue names and their handles stay, and so does what the
+ * caller set - cues turned off (apaudio_cues_set_enabled()) and buses
+ * muted (apaudio_cues_set_bus_muted()). The sounds, concurrency groups and
+ * ducking modifiers the banks made are destroyed on the mixer; voices
+ * playing those sounds stop at the next render. A play sees every bank or
+ * none.
+ *
+ * This is how a bank is taken away. A cue keeps only its latest
+ * definition, so one bank can't be unloaded from under the others: clear,
+ * then load the banks that are to remain, in order.
+ *
+ * It can't fail. Clearing an empty table, or a null one, does nothing. */
+void apaudio_cues_clear_banks(apaudio_cues cues);
+
 /* ---- Cues ------------------------------------------------------------ */
 
 /* A cue: a handle to a cue name - its index in the table plus one. Never

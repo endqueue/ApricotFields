@@ -15,7 +15,10 @@ even if they're built later. Everything else can be added without breaking calle
 
 Cues and sound banks - names over the mixer, defined by a manifest and its WAVs - are
 `include/audio/apaudiocues.h` (`src/audio/apaudiocues.cpp`), general purpose so any
-application has them. It has no tests of its own yet.
+application has them. Its only test is `test_cues_clear_banks` in
+`tests/apaudio_tests.c`, which loads banks from memory and clears them
+(`apaudio_cues_clear_banks()`); the manifest's rules, playing, sustained playings
+and ducking are untested here. That call and its test are written, not compiled.
 
 ## Wrong things: design bugs in the draft
 
