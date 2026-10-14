@@ -9,7 +9,8 @@
       "binaryDir": "${sourceDir}/build-windows-d3d12",
       "cacheVariables": {
         "GRAPHICS_BACKEND": "D3D12",
-        "LANGUAGE_BINDING": "NONE"
+        "LANGUAGE_BINDING": "NONE",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo"
       }
     },
     {
@@ -20,39 +21,106 @@
       "binaryDir": "${sourceDir}/build-windows-vulkan",
       "cacheVariables": {
         "GRAPHICS_BACKEND": "Vulkan",
-        "LANGUAGE_BINDING": "NONE"
+        "LANGUAGE_BINDING": "NONE",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo"
       }
     },
     {
       "name": "apricotfields-linux-vulkan",
       "displayName": "ApricotFields Linux Vulkan",
-      "generator": "Ninja",
+      "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-linux-vulkan",
       "cacheVariables": {
         "GRAPHICS_BACKEND": "Vulkan",
-        "LANGUAGE_BINDING": "NONE"
+        "LANGUAGE_BINDING": "NONE",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo"
       }
     },
     {
       "name": "apricotfields-macos-metal",
       "displayName": "ApricotFields macOS Metal",
-      "generator": "Ninja",
+      "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-macos-metal",
       "cacheVariables": {
         "GRAPHICS_BACKEND": "Metal",
         "LANGUAGE_BINDING": "NONE",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo"
       }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "apricotfields-windows-d3d12-debug",
+      "displayName": "ApricotFields Windows D3D12 (Debug)",
+      "configurePreset": "apricotfields-windows-d3d12",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-windows-d3d12-release",
+      "displayName": "ApricotFields Windows D3D12 (Release)",
+      "configurePreset": "apricotfields-windows-d3d12",
+      "configuration": "Release"
+    },
+    {
+      "name": "apricotfields-windows-d3d12-relwithdebinfo",
+      "displayName": "ApricotFields Windows D3D12 (RelWithDebInfo)",
+      "configurePreset": "apricotfields-windows-d3d12",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "apricotfields-windows-vulkan-debug",
+      "displayName": "ApricotFields Windows Vulkan (Debug)",
+      "configurePreset": "apricotfields-windows-vulkan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-windows-vulkan-release",
+      "displayName": "ApricotFields Windows Vulkan (Release)",
+      "configurePreset": "apricotfields-windows-vulkan",
+      "configuration": "Release"
+    },
+    {
+      "name": "apricotfields-windows-vulkan-relwithdebinfo",
+      "displayName": "ApricotFields Windows Vulkan (RelWithDebInfo)",
+      "configurePreset": "apricotfields-windows-vulkan",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-debug",
+      "displayName": "ApricotFields Linux Vulkan (Debug)",
+      "configurePreset": "apricotfields-linux-vulkan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-release",
+      "displayName": "ApricotFields Linux Vulkan (Release)",
+      "configurePreset": "apricotfields-linux-vulkan",
+      "configuration": "Release"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-relwithdebinfo",
+      "displayName": "ApricotFields Linux Vulkan (RelWithDebInfo)",
+      "configurePreset": "apricotfields-linux-vulkan",
+      "configuration": "RelWithDebInfo"
     },
     {
       "name": "apricotfields-macos-metal-debug",
       "displayName": "ApricotFields macOS Metal (Debug)",
-      "inherits": "apricotfields-macos-metal",
-      "binaryDir": "${sourceDir}/build-macos-metal-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
+      "configurePreset": "apricotfields-macos-metal",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-macos-metal-release",
+      "displayName": "ApricotFields macOS Metal (Release)",
+      "configurePreset": "apricotfields-macos-metal",
+      "configuration": "Release"
+    },
+    {
+      "name": "apricotfields-macos-metal-relwithdebinfo",
+      "displayName": "ApricotFields macOS Metal (RelWithDebInfo)",
+      "configurePreset": "apricotfields-macos-metal",
+      "configuration": "RelWithDebInfo"
     }
   ]
 }

@@ -266,8 +266,10 @@ registered with `add_test` behind `APRICOTFIELDS_BUILD_TESTS`.
   existing one. Brute-force comparison against a slow obvious implementation is the
   preferred check for anything algorithmic (`test_mesh_against_brute_force`).
 
-When asked to verify, on macOS: configure and build with the
-`apricotfields-macos-metal` preset, then run `ctest` in `build-macos-metal`.
+When asked to verify, on macOS: configure with the `apricotfields-macos-metal`
+preset, build with the `apricotfields-macos-metal-debug` build preset, then run
+`ctest --test-dir build-macos-metal -C Debug`. (The presets are multi-config;
+there is no separate `-debug` configure preset any more.)
 
 ## Build
 

@@ -109,7 +109,13 @@ struct aprend_range_list {
 		const bool touches_next = next < free.size() && offset + count == free[next].offset;
 		if (touches_prev && touches_next) {
 			free[next - 1].count += count + free[next].count;
-			free.erase(free.begin() + (std::ptrdiff_t)next);
+			/* free.erase(free.begin() + next), written out: GCC 16 at -O3,
+			 * inlining erase where it knows the vector's contents, warns of
+			 * an overflowing memmove (-Wstringop-overflow) on a path that
+			 * can't run. */
+			for (size_t i = next; i + 1 < free.size(); ++i)
+				free[i] = free[i + 1];
+			free.pop_back();
 			return true;
 		}
 		if (touches_prev) {
