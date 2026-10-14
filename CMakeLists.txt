@@ -1,7 +1,13 @@
 cmake_minimum_required(VERSION 3.30)
 project(ApricotFields)
 
-set(CMAKE_CXX_STANDARD 26)
+# CMake knows no C++26 flag for MSVC; its C++23 maps to /std:c++latest,
+# the newest dialect MSVC offers.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    set(CMAKE_CXX_STANDARD 23)
+else()
+    set(CMAKE_CXX_STANDARD 26)
+endif()
 
 add_library(ApricotFields STATIC
         src/apricotfields.cpp
