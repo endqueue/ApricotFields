@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <limits>
 #include <new>
 #include <utility>
 #include <vector>
@@ -734,6 +735,290 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
     return true;
 }
 
+// ---- Straight skeleton ------------------------------------------------------------
+//
+// A kinetic simulation of the wavefront. Every active vertex moves at a
+// constant velocity between events - the point where its two edges' moving
+// lines meet - so its position is a line in time. Each step finds the
+// earliest event among every loop, processes it, and looks again from
+// scratch: no event queue to keep valid, at a cost of about the square of
+// the vertex count a step, which is nothing at the sizes this is for.
+//
+//   collapse  two neighbours meet: the edge between them is gone, and one
+//             vertex carries on between the edges either side.
+//   split     a reflex vertex reaches an edge across the loop: the loop
+//             splits in two there, each with a new vertex at the point.
+//   finish    a loop down to two vertices has no area left: the segment
+//             between them (a ridge) closes the two faces either side.
+//
+// Every vertex leaves a trace from where it started to where it ended,
+// between the faces of its two edges; the faces are walked from those.
+
+const size_t APMATH_POLY_SKELETON_DESC_V1_SIZE = sizeof(APMATH_POLY_SKELETON_DESC);
+
+// Unit cross products below this count two edges as parallel (the header's
+// rule).
+const double SKELETON_PARALLEL = 1e-12;
+
+struct sk_edge_t
+{
+    double dx, dy; // unit direction
+    double nx, ny; // unit inward normal
+    double c;      // the line at time t: n . x = c + w t
+    double w;
+};
+
+struct sk_vertex_t
+{
+    double ox, oy, t0; // where it was, and when
+    double vx, vy;
+    uint32_t in, out; // the input edges either side
+    uint32_t node;    // where it started
+    uint32_t prev, next;
+    bool alive, reflex;
+};
+
+struct sk_trace_t
+{
+    uint32_t a, b;           // nodes
+    uint32_t face_a, face_b; // the input edges whose faces it divides
+};
+
+struct skeleton_t
+{
+    std::vector<sk_edge_t> edges;
+    std::vector<sk_vertex_t> vertices;
+    std::vector<double> node_x, node_y;
+    std::vector<sk_trace_t> traces;
+    double eps_length{0.0};
+
+    double x_at(uint32_t v, double t) const
+    {
+        return vertices[v].ox + vertices[v].vx * (t - vertices[v].t0);
+    }
+    double y_at(uint32_t v, double t) const
+    {
+        return vertices[v].oy + vertices[v].vy * (t - vertices[v].t0);
+    }
+    uint32_t add_node(double x, double y)
+    {
+        node_x.push_back(x);
+        node_y.push_back(y);
+        return (uint32_t)node_x.size() - 1;
+    }
+    // Where [in]'s and [out]'s moving lines meet moves at this velocity.
+    void set_velocity(sk_vertex_t &v) const
+    {
+        const sk_edge_t &a = edges[v.in];
+        const sk_edge_t &b = edges[v.out];
+        double det = a.nx * b.ny - a.ny * b.nx;
+        double turn = a.dx * b.dy - a.dy * b.dx;
+        v.reflex = turn < -SKELETON_PARALLEL;
+        if (std::fabs(det) >= SKELETON_PARALLEL)
+        {
+            v.vx = (a.w * b.ny - b.w * a.ny) / det;
+            v.vy = (a.nx * b.w - b.nx * a.w) / det;
+        }
+        else if (a.nx * b.nx + a.ny * b.ny > 0.0)
+        {
+            // One line: equal weights in valid input. Edges that come to
+            // follow each other later with different weights are a
+            // degenerate meeting; the faster one leads.
+            double w = a.w > b.w ? a.w : b.w;
+            v.vx = a.nx * w;
+            v.vy = a.ny * w;
+        }
+        else
+        {
+            // Facing each other on one line: there's nothing between them.
+            v.vx = 0.0;
+            v.vy = 0.0;
+        }
+    }
+    // Throws std::bad_alloc.
+    uint32_t add_vertex(double x, double y, double t, uint32_t in, uint32_t out, uint32_t node)
+    {
+        sk_vertex_t v{};
+        v.ox = x;
+        v.oy = y;
+        v.t0 = t;
+        v.in = in;
+        v.out = out;
+        v.node = node;
+        v.prev = v.next = UINT32_MAX;
+        v.alive = true;
+        set_velocity(v);
+        vertices.push_back(v);
+        return (uint32_t)vertices.size() - 1;
+    }
+    // [v] stops at [node], leaving its trace.
+    void end_vertex(uint32_t v, uint32_t node)
+    {
+        sk_vertex_t &vertex = vertices[v];
+        if (node != vertex.node && vertex.in != vertex.out)
+            traces.push_back({vertex.node, node, vertex.in, vertex.out});
+        vertex.alive = false;
+    }
+    uint32_t loop_size(uint32_t v) const
+    {
+        uint32_t count = 1;
+        for (uint32_t at = vertices[v].next; at != v && count <= vertices.size(); at = vertices[at].next)
+            count++;
+        return count;
+    }
+    // A loop of two vertices or one, at time [t]: nothing left inside it.
+    void finish_small(uint32_t v, double t)
+    {
+        uint32_t other = vertices[v].next;
+        if (other == v)
+        {
+            end_vertex(v, add_node(x_at(v, t), y_at(v, t)));
+            return;
+        }
+        uint32_t end_v = add_node(x_at(v, t), y_at(v, t));
+        uint32_t end_other = add_node(x_at(other, t), y_at(other, t));
+        uint32_t p = vertices[v].out, q = vertices[v].in;
+        end_vertex(v, end_v);
+        end_vertex(other, end_other);
+        if (p != q)
+            traces.push_back({end_v, end_other, p, q});
+    }
+};
+
+// Runs the wavefront of [sk], whose vertices are the input polygon's, to
+// the end. False, with [problem] set, if it can't close. Throws
+// std::bad_alloc.
+bool run_skeleton(skeleton_t &sk, const char *&problem)
+{
+    const double INF = std::numeric_limits<double>::infinity();
+    double now = 0.0;
+    size_t limit = 10 * sk.vertices.size() + 100;
+    for (size_t step = 0; step < limit; step++)
+    {
+        // The earliest event of any loop: kind 0 a collapse of [v] with its
+        // next, kind 1 [v] splitting the edge from [x] to its next.
+        double best = INF;
+        int kind = -1;
+        uint32_t best_v = 0, best_x = 0;
+        bool any = false;
+        for (uint32_t u = 0; u < sk.vertices.size(); u++)
+        {
+            if (!sk.vertices[u].alive)
+                continue;
+            any = true;
+            uint32_t w = sk.vertices[u].next;
+            const sk_edge_t &e = sk.edges[sk.vertices[u].out];
+            double ux = sk.x_at(u, now), uy = sk.y_at(u, now);
+            double s0 = (sk.x_at(w, now) - ux) * e.dx + (sk.y_at(w, now) - uy) * e.dy;
+            double rate = (sk.vertices[w].vx - sk.vertices[u].vx) * e.dx + (sk.vertices[w].vy - sk.vertices[u].vy) * e.dy;
+            double t = INF;
+            if (s0 <= sk.eps_length)
+                t = now;
+            else if (rate < 0.0)
+                t = now + s0 / -rate;
+            if (t < best)
+            {
+                best = t;
+                kind = 0;
+                best_v = u;
+            }
+
+            if (!sk.vertices[u].reflex)
+                continue;
+            const sk_vertex_t &vu = sk.vertices[u];
+            for (uint32_t x = vu.next; x != u; x = sk.vertices[x].next)
+            {
+                uint32_t y = sk.vertices[x].next;
+                if (y == u)
+                    break;
+                uint32_t edge = sk.vertices[x].out;
+                if (edge == vu.in || edge == vu.out)
+                    continue;
+                const sk_edge_t &f = sk.edges[edge];
+                double approach = f.nx * vu.vx + f.ny * vu.vy - f.w;
+                if (approach >= -1e-12)
+                    continue;
+                double distance = f.nx * ux + f.ny * uy - (f.c + f.w * now);
+                if (distance < -sk.eps_length)
+                    continue;
+                double tau = now + (distance > 0.0 ? distance : 0.0) / -approach;
+                if (!(tau < best))
+                    continue;
+                double px = sk.x_at(u, tau), py = sk.y_at(u, tau);
+                double ax = sk.x_at(x, tau), ay = sk.y_at(x, tau);
+                double length = (sk.x_at(y, tau) - ax) * f.dx + (sk.y_at(y, tau) - ay) * f.dy;
+                double along = (px - ax) * f.dx + (py - ay) * f.dy;
+                if (length < -sk.eps_length)
+                    continue;
+                if (along < -sk.eps_length)
+                    continue;
+                if (along > length + sk.eps_length)
+                    continue;
+                best = tau;
+                kind = 1;
+                best_v = u;
+                best_x = x;
+            }
+        }
+        if (!any)
+            return true;
+        if (kind < 0)
+        {
+            problem = "part of the polygon never closes: its edges all have weight 0";
+            return false;
+        }
+        if (best > now)
+            now = best;
+
+        if (kind == 0)
+        {
+            uint32_t u = best_v, w = sk.vertices[u].next;
+            double px = (sk.x_at(u, now) + sk.x_at(w, now)) * 0.5;
+            double py = (sk.y_at(u, now) + sk.y_at(w, now)) * 0.5;
+            uint32_t node = sk.add_node(px, py);
+            uint32_t before = sk.vertices[u].prev, after = sk.vertices[w].next;
+            uint32_t in = sk.vertices[u].in, out = sk.vertices[w].out;
+            bool alone = before == w; // a loop of two: u and w
+            sk.end_vertex(u, node);
+            sk.end_vertex(w, node);
+            if (alone)
+                continue;
+            uint32_t m = sk.add_vertex(px, py, now, in, out, node);
+            sk.vertices[m].prev = before;
+            sk.vertices[m].next = after;
+            sk.vertices[before].next = m;
+            sk.vertices[after].prev = m;
+            if (sk.loop_size(m) <= 2)
+                sk.finish_small(m, now);
+        }
+        else
+        {
+            uint32_t u = best_v, x = best_x, y = sk.vertices[x].next;
+            double px = sk.x_at(u, now), py = sk.y_at(u, now);
+            uint32_t node = sk.add_node(px, py);
+            uint32_t before = sk.vertices[u].prev, after = sk.vertices[u].next;
+            uint32_t in = sk.vertices[u].in, out = sk.vertices[u].out, edge = sk.vertices[x].out;
+            sk.end_vertex(u, node);
+            uint32_t first = sk.add_vertex(px, py, now, in, edge, node);
+            uint32_t second = sk.add_vertex(px, py, now, edge, out, node);
+            sk.vertices[before].next = first;
+            sk.vertices[first].prev = before;
+            sk.vertices[first].next = y;
+            sk.vertices[y].prev = first;
+            sk.vertices[x].next = second;
+            sk.vertices[second].prev = x;
+            sk.vertices[second].next = after;
+            sk.vertices[after].prev = second;
+            if (sk.loop_size(first) <= 2)
+                sk.finish_small(first, now);
+            if (sk.vertices[second].alive && sk.loop_size(second) <= 2)
+                sk.finish_small(second, now);
+        }
+    }
+    problem = "the skeleton took more events than a polygon of this size can have";
+    return false;
+}
+
 } // namespace
 
 // ---- Checking -----------------------------------------------------------------------
@@ -866,6 +1151,206 @@ APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_po
     {
         return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory moving the edges");
     }
+}
+
+APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly *out_poly, APMATH_ERROR *out_error)
+{
+    clear(out_error);
+    if (out_poly)
+        *out_poly = nullptr;
+    APMATH_POLY_SKELETON_DESC d;
+    if (!read_versioned(desc, APMATH_POLY_SKELETON_DESC_V1_SIZE, d))
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null or its struct_size is too small");
+    if (!out_poly)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_poly is null");
+    APRESULT result = check_set(d.set, "the set", false, out_error);
+    if (result != APRESULT_OK)
+        return result;
+    if (d.set.ring_count == 0)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "the set has no ring");
+    if (d.set.ring_count > 1)
+        return fail(out_error, APRESULT_UNSUPPORTED, "the set has holes, which the skeleton doesn't take");
+    if (!d.weights)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "weights is null");
+    bool moving = false;
+    for (uint32_t i = 0; i < d.set.point_count; i++)
+    {
+        if (!std::isfinite(d.weights[i]))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "weight %u isn't finite", i);
+        if (d.weights[i] < 0.0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "weight %u is negative", i);
+        moving = moving || d.weights[i] > 0.0;
+    }
+    if (!moving)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "every weight is 0");
+
+    apmath_poly_t *poly = nullptr;
+    try
+    {
+        APMATH_POLY_SET ring = d.set;
+        ring.ring_outers = nullptr;
+        APMATH_POLY_DEFECT_INFO defect = find_defect(ring);
+        if (defect.defect != APMATH_POLY_DEFECT_NONE)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT,
+                        "the set isn't a simple counter-clockwise ring (defect %d at edge %u)", (int)defect.defect,
+                        defect.edge);
+
+        // Relative to the first point, so the doubles stay small; exact,
+        // since coordinates are within 2^40.
+        uint32_t n = d.set.point_count;
+        const APMATH_POLY_POINT &origin = d.set.points[0];
+        auto px = [&](uint32_t i) { return (double)(d.set.points[i].x - origin.x); };
+        auto py = [&](uint32_t i) { return (double)(d.set.points[i].y - origin.y); };
+
+        skeleton_t sk;
+        double lo_x = 0.0, hi_x = 0.0, lo_y = 0.0, hi_y = 0.0;
+        sk.edges.resize(n);
+        for (uint32_t i = 0; i < n; i++)
+        {
+            uint32_t j = (i + 1) % n;
+            double dx = px(j) - px(i), dy = py(j) - py(i);
+            double length = std::sqrt(dx * dx + dy * dy);
+            sk_edge_t &e = sk.edges[i];
+            e.dx = dx / length;
+            e.dy = dy / length;
+            e.nx = -e.dy;
+            e.ny = e.dx;
+            e.c = e.nx * px(i) + e.ny * py(i);
+            e.w = d.weights[i];
+            lo_x = px(i) < lo_x ? px(i) : lo_x;
+            hi_x = px(i) > hi_x ? px(i) : hi_x;
+            lo_y = py(i) < lo_y ? py(i) : lo_y;
+            hi_y = py(i) > hi_y ? py(i) : hi_y;
+        }
+        for (uint32_t i = 0; i < n; i++)
+        {
+            const sk_edge_t &a = sk.edges[(i + n - 1) % n];
+            const sk_edge_t &b = sk.edges[i];
+            bool parallel = std::fabs(a.dx * b.dy - a.dy * b.dx) < SKELETON_PARALLEL && a.dx * b.dx + a.dy * b.dy > 0.0;
+            if (parallel && a.w != b.w)
+                return fail(out_error, APRESULT_INVALID_ARGUMENT,
+                            "edges %u and %u follow each other on one line with different weights", (i + n - 1) % n, i);
+        }
+        double extent = hi_x - lo_x > hi_y - lo_y ? hi_x - lo_x : hi_y - lo_y;
+        sk.eps_length = (extent > 1.0 ? extent : 1.0) * 1e-9;
+
+        // The input corners: node i, and the vertex between edge i - 1 and
+        // edge i.
+        for (uint32_t i = 0; i < n; i++)
+            sk.add_node(px(i), py(i));
+        for (uint32_t i = 0; i < n; i++)
+            sk.add_vertex(px(i), py(i), 0.0, (i + n - 1) % n, i, i);
+        for (uint32_t i = 0; i < n; i++)
+        {
+            sk.vertices[i].prev = (i + n - 1) % n;
+            sk.vertices[i].next = (i + 1) % n;
+        }
+
+        const char *problem = nullptr;
+        if (!run_skeleton(sk, problem))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "the skeleton couldn't be traced: %s", problem);
+
+        // Each face's boundary: its own edge, and the traces it lies beside,
+        // each with the face across it.
+        struct side_t
+        {
+            uint32_t a, b, across;
+        };
+        std::vector<std::vector<side_t>> sides(n);
+        for (const sk_trace_t &trace : sk.traces)
+        {
+            sides[trace.face_a].push_back({trace.a, trace.b, trace.face_b});
+            sides[trace.face_b].push_back({trace.a, trace.b, trace.face_a});
+        }
+
+        poly = (apmath_poly_t *)malloc(sizeof(apmath_poly_t));
+        if (!poly)
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory for the result");
+        poly = new (poly) apmath_poly_t();
+        const double limit = (double)APMATH_POLY_COORD_LIMIT;
+        std::vector<uint32_t> nodes;
+        std::vector<uint64_t> tags;
+        std::vector<APMATH_POLY_POINT> points;
+        std::vector<bool> used;
+        for (uint32_t face = 0; face < n; face++)
+        {
+            // From the edge's end back round to its start.
+            uint32_t start = face, end = (face + 1) % n;
+            nodes.assign({start, end});
+            tags.assign({d.set.edge_tags ? d.set.edge_tags[face] : 0});
+            used.assign(sides[face].size(), false);
+            uint32_t at = end;
+            bool closed = false;
+            for (size_t walked = 0; walked <= sides[face].size() && !closed; walked++)
+            {
+                size_t found = SIZE_MAX;
+                for (size_t k = 0; k < sides[face].size() && found == SIZE_MAX; k++)
+                {
+                    if (!used[k] && (sides[face][k].a == at || sides[face][k].b == at))
+                        found = k;
+                }
+                if (found == SIZE_MAX)
+                    break;
+                used[found] = true;
+                const side_t &side = sides[face][found];
+                uint32_t next = side.a == at ? side.b : side.a;
+                tags.push_back(d.set.edge_tags ? d.set.edge_tags[side.across] : 0);
+                if (next == start)
+                    closed = true;
+                else
+                    nodes.push_back(next);
+                at = next;
+            }
+            if (!closed)
+            {
+                poly->~apmath_poly_t();
+                free(poly);
+                return fail(out_error, APRESULT_INVALID_ARGUMENT,
+                            "the skeleton couldn't be traced: the face of edge %u doesn't close", face);
+            }
+
+            // On the grid, without points rounded onto their neighbours: of
+            // two equal points the earlier goes, with the empty edge it
+            // started, except the edge's own start.
+            points.clear();
+            for (uint32_t node : nodes)
+            {
+                double x = sk.node_x[node] + (double)origin.x, y = sk.node_y[node] + (double)origin.y;
+                if (!(std::fabs(x) <= limit) || !(std::fabs(y) <= limit))
+                {
+                    poly->~apmath_poly_t();
+                    free(poly);
+                    return fail(out_error, APRESULT_INVALID_ARGUMENT, "a skeleton point lands past the coordinate limit");
+                }
+                points.push_back({(int64_t)std::llround(x), (int64_t)std::llround(y)});
+            }
+            for (size_t i = points.size(); i-- > 1;)
+            {
+                size_t next = (i + 1) % points.size();
+                if (points.size() > 2 && same_point(points[i], points[next]))
+                {
+                    points.erase(points.begin() + (long)i);
+                    tags.erase(tags.begin() + (long)i);
+                }
+            }
+            poly->points.insert(poly->points.end(), points.begin(), points.end());
+            poly->edge_tags.insert(poly->edge_tags.end(), tags.begin(), tags.end());
+            poly->ring_ends.push_back((uint32_t)poly->points.size());
+            poly->ring_outers.push_back(APMATH_POLY_NO_RING);
+        }
+    }
+    catch (const std::bad_alloc &)
+    {
+        if (poly)
+        {
+            poly->~apmath_poly_t();
+            free(poly);
+        }
+        return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory building the skeleton");
+    }
+
+    *out_poly = poly;
+    return APRESULT_OK;
 }
 
 void apmath_poly_destroy(apmath_poly poly)

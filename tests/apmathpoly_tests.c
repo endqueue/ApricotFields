@@ -802,6 +802,201 @@ static void test_offset_arguments(void)
     CHECK(poly == NULL);
 }
 
+// ---- Straight skeleton ---------------------------------------------------------------
+
+static apmath_poly run_skeleton(const test_set *set, const double *weights)
+{
+    APMATH_POLY_SKELETON_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.struct_size = sizeof(desc);
+    desc.set = view(set);
+    desc.weights = weights;
+    apmath_poly poly = NULL;
+    APMATH_ERROR error;
+    APRESULT result = apmath_poly_skeleton(&desc, &poly, &error);
+    CHECK(result == APRESULT_OK);
+    if (result != APRESULT_OK)
+        printf("  %s\n", error.message);
+    return poly;
+}
+
+// Every face starts with its own edge and its own tag, and together the
+// faces cover the polygon: their areas add up to its (to within rounding
+// onto the grid, relative to [tolerance]).
+static void check_faces(const test_set *set, const APMATH_POLY_SET *faces, double tolerance)
+{
+    CHECK(faces->ring_count == set->point_count);
+    if (faces->ring_count != set->point_count)
+        return;
+    APMATH_POLY_SET input = view(set);
+    double total = 0.0;
+    for (uint32_t ring = 0; ring < faces->ring_count; ring++)
+    {
+        uint32_t begin = ring_begin(faces, ring);
+        uint32_t next = (ring + 1) % set->point_count;
+        CHECK(faces->points[begin].x == set->points[ring].x && faces->points[begin].y == set->points[ring].y);
+        CHECK(faces->points[begin + 1].x == set->points[next].x && faces->points[begin + 1].y == set->points[next].y);
+        CHECK(faces->edge_tags[begin] == set->tags[ring]);
+        CHECK(faces->ring_outers[ring] == APMATH_POLY_NO_RING);
+        double area2 = ring_area2(faces, ring);
+        CHECK(area2 >= -tolerance);
+        total += area2;
+    }
+    double expected = set_area2(&input);
+    CHECK(fabs(total - expected) <= tolerance * expected);
+}
+
+// A square: four triangles meeting in the middle, each tagged with its
+// neighbours.
+static void test_skeleton_square(void)
+{
+    current_test = "skeleton_square";
+    test_set square = {0};
+    add_rect(&square, 0, 0, 10, 10, 1);
+    const double ones[4] = {1, 1, 1, 1};
+    apmath_poly faces = run_skeleton(&square, ones);
+    APMATH_POLY_SET s = apmath_poly_get_set(faces);
+    check_faces(&square, &s, 0.0);
+    int64_t bottom_xy[] = {0, 0, 10, 0, 5, 5};
+    uint64_t bottom_tags[] = {1, 2, 4};
+    CHECK(s.ring_count == 4 && ring_is(&s, 0, bottom_xy, bottom_tags, 3));
+    apmath_poly_destroy(faces);
+}
+
+// A rectangle twice as long as it's wide, every edge at weight 1 - a hip
+// roof - and with its ends at weight 0 - a gable roof.
+static void test_skeleton_roofs(void)
+{
+    current_test = "skeleton_roofs";
+    test_set rect = {0};
+    add_rect(&rect, 0, 0, 20, 10, 1);
+
+    const double hip[4] = {1, 1, 1, 1};
+    apmath_poly hipped = run_skeleton(&rect, hip);
+    APMATH_POLY_SET s = apmath_poly_get_set(hipped);
+    check_faces(&rect, &s, 0.0);
+    int64_t long_side[] = {0, 0, 20, 0, 15, 5, 5, 5};
+    uint64_t long_tags[] = {1, 2, 3, 4};
+    CHECK(s.ring_count == 4 && ring_is(&s, 0, long_side, long_tags, 4));
+    int64_t hip_end[] = {20, 0, 20, 10, 15, 5};
+    uint64_t hip_end_tags[] = {2, 3, 1};
+    CHECK(s.ring_count == 4 && ring_is(&s, 1, hip_end, hip_end_tags, 3));
+    apmath_poly_destroy(hipped);
+
+    // Gable ends don't move: the long sides run all the way to them, and
+    // meet along a ridge at half the width.
+    const double gable[4] = {1, 0, 1, 0};
+    apmath_poly gabled = run_skeleton(&rect, gable);
+    s = apmath_poly_get_set(gabled);
+    check_faces(&rect, &s, 0.0);
+    int64_t gable_side[] = {0, 0, 20, 0, 20, 5, 0, 5};
+    uint64_t gable_tags[] = {1, 2, 3, 4};
+    CHECK(s.ring_count == 4 && ring_is(&s, 0, gable_side, gable_tags, 4));
+    CHECK(s.ring_count == 4 && ring_area2(&s, 1) == 0.0);
+    apmath_poly_destroy(gabled);
+
+    // Different weights: the bottom moves twice as fast as the top, so it
+    // sweeps two thirds of the width.
+    const double steep[4] = {2, 0, 1, 0};
+    apmath_poly uneven = run_skeleton(&rect, steep);
+    s = apmath_poly_get_set(uneven);
+    check_faces(&rect, &s, 1e-6);
+    CHECK(s.ring_count == 4 && fabs(ring_area2(&s, 0) - 2.0 * 20.0 * 20.0 / 3.0) <= 20.0);
+    apmath_poly_destroy(uneven);
+}
+
+// A notch from the top nearly to the bottom: its reflex corner reaches the
+// bottom edge first and splits the polygon in two. Scaled up so rounding
+// onto the grid is small against the areas.
+static void test_skeleton_split(void)
+{
+    current_test = "skeleton_split";
+    test_set notched = {0};
+    int64_t xy[] = {0, 0, 30000, 0, 30000, 10000, 16000, 10000, 15000, 2000, 14000, 10000, 0, 10000};
+    add_ring(&notched, xy, 7, 1, APMATH_POLY_NO_RING);
+    const double ones[7] = {1, 1, 1, 1, 1, 1, 1};
+    apmath_poly faces = run_skeleton(&notched, ones);
+    APMATH_POLY_SET s = apmath_poly_get_set(faces);
+    check_faces(&notched, &s, 1e-4);
+    apmath_poly_destroy(faces);
+
+    // An L, likewise.
+    test_set ell = {0};
+    int64_t ell_xy[] = {0, 0, 8000, 0, 8000, 3000, 4000, 3000, 4000, 6000, 0, 6000};
+    add_ring(&ell, ell_xy, 6, 1, APMATH_POLY_NO_RING);
+    const double six[6] = {1, 1, 1, 1, 1, 1};
+    apmath_poly ell_faces = run_skeleton(&ell, six);
+    s = apmath_poly_get_set(ell_faces);
+    check_faces(&ell, &s, 1e-4);
+    apmath_poly_destroy(ell_faces);
+}
+
+static void test_skeleton_arguments(void)
+{
+    current_test = "skeleton_arguments";
+    test_set square = {0};
+    add_rect(&square, 0, 0, 10, 10, 1);
+    const double ones[4] = {1, 1, 1, 1};
+    APMATH_POLY_SKELETON_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.struct_size = sizeof(desc);
+    desc.set = view(&square);
+    desc.weights = ones;
+    apmath_poly poly = (apmath_poly)1;
+    APMATH_ERROR error;
+
+    CHECK(apmath_poly_skeleton(NULL, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(poly == NULL);
+    CHECK(apmath_poly_skeleton(&desc, NULL, NULL) == APRESULT_INVALID_ARGUMENT);
+    APMATH_POLY_SKELETON_DESC bad = desc;
+    bad.weights = NULL;
+    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_INVALID_ARGUMENT);
+    const double negative[4] = {1, -1, 1, 1};
+    bad.weights = negative;
+    CHECK(apmath_poly_skeleton(&bad, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "weight 1") != NULL);
+    const double zeros[4] = {0, 0, 0, 0};
+    bad.weights = zeros;
+    CHECK(apmath_poly_skeleton(&bad, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "every weight") != NULL);
+    const double not_finite[4] = {1, 1, INFINITY, 1};
+    bad.weights = not_finite;
+    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_INVALID_ARGUMENT);
+
+    // Clockwise, and with a hole.
+    test_set clockwise = {0};
+    int64_t cw_xy[] = {0, 0, 0, 10, 10, 10, 10, 0};
+    add_ring(&clockwise, cw_xy, 4, 1, APMATH_POLY_NO_RING);
+    bad = desc;
+    bad.set = view(&clockwise);
+    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_INVALID_ARGUMENT);
+    test_set holed = {0};
+    int64_t hole_xy[] = {3, 3, 3, 6, 6, 6, 6, 3};
+    add_rect(&holed, 0, 0, 10, 10, 1);
+    add_ring(&holed, hole_xy, 4, 5, 0);
+    const double eight[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+    bad = desc;
+    bad.set = view(&holed);
+    bad.weights = eight;
+    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_UNSUPPORTED);
+
+    // Two edges on one line at different weights.
+    test_set run = {0};
+    int64_t run_xy[] = {0, 0, 5, 0, 10, 0, 10, 10, 0, 10};
+    add_ring(&run, run_xy, 5, 1, APMATH_POLY_NO_RING);
+    const double split_bottom[5] = {1, 2, 1, 1, 1};
+    bad = desc;
+    bad.set = view(&run);
+    bad.weights = split_bottom;
+    CHECK(apmath_poly_skeleton(&bad, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "one line") != NULL);
+    // At one weight they're fine.
+    const double same_bottom[5] = {1, 1, 1, 1, 1};
+    bad.weights = same_bottom;
+    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_OK);
+    apmath_poly_destroy(poly);
+}
+
 // ---- Triangulation ----------------------------------------------------------------
 
 static void test_triangulate_shapes(void)
@@ -893,6 +1088,10 @@ int main(void)
     test_offset_moves();
     test_offset_corners();
     test_offset_arguments();
+    test_skeleton_square();
+    test_skeleton_roofs();
+    test_skeleton_split();
+    test_skeleton_arguments();
     test_triangulate_shapes();
     test_triangulate_arguments();
 

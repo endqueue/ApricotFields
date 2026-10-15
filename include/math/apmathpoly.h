@@ -252,6 +252,52 @@ typedef struct APMATH_POLY_OFFSET_DESC {
  * limit. [out_poly] is NULL on failure. */
 APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_poly *out_poly, APMATH_ERROR *out_error);
 
+/* ---- Straight skeleton ----------------------------------------------- */
+
+typedef struct APMATH_POLY_SKELETON_DESC {
+	uint32_t struct_size;
+	/* One ring, simple and counter-clockwise (apmath_poly_validate()); no
+	 * holes (APRESULT_UNSUPPORTED). */
+	APMATH_POLY_SET set;
+	/* One per point: how fast the edge starting there moves inward, square
+	 * to itself, in grid units per unit of time. At least 0, finite, and
+	 * not all 0. An edge with weight 0 stays where it is, and the edges
+	 * beside it slide along it. Two edges that follow each other on one
+	 * line - parallel by the rule below - must have the same weight. */
+	const double *weights;
+} APMATH_POLY_SKELETON_DESC;
+
+/* The weighted straight skeleton of [desc]'s polygon: every edge moves
+ * inward at its weight, corners follow where their two edges meet, and
+ * where the moving edges collide the polygon shrinks, splits and closes up.
+ * The region an edge sweeps before it's gone is its face.
+ *
+ * [out_poly] holds one ring per input edge, in input order, each that
+ * edge's face: counter-clockwise, starting with the edge itself (its point
+ * 0 and 1 are the edge's start and end), then back round its boundary. The
+ * first edge of a face keeps the input edge's tag; every other edge of it
+ * is tagged with the tag of the input edge whose face is across it - so a
+ * caller knows which two faces meet along it. ring_outers is NO_RING for
+ * every ring, and the rings aren't a set apmath_poly_validate() accepts:
+ * faces share edges, and a face of an edge with weight 0 has no area (it
+ * runs along the edge and back).
+ *
+ * Time t is only the parameter the edges move by: a point's time is when
+ * the first edge reached it, so with every weight 1 it's the point's
+ * distance from the boundary measured along the skeleton. A caller that
+ * reads time as height gets a roof: each face then lies in a plane through
+ * its edge, rising at 1 / weight.
+ *
+ * Corners are found in doubles and rounded to the grid; two edges that
+ * follow each other count as parallel when the cross product of their unit
+ * directions is less than 1e-12 in magnitude. The same desc gives the same
+ * result on every platform. Costs about the cube of the edge count.
+ *
+ * APRESULT_INVALID_ARGUMENT also for a set that isn't one simple
+ * counter-clockwise ring, and for a polygon whose skeleton can't be traced
+ * (a degenerate case the message names). [out_poly] is NULL on failure. */
+APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly *out_poly, APMATH_ERROR *out_error);
+
 /* ---- Triangulation --------------------------------------------------- */
 
 /* The most indices apmath_poly_triangulate() can write for [set]: three for

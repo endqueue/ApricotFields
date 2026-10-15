@@ -30,7 +30,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 |---|---|---|---|
 | Core | `apricore.h` | `APRESULT`, `apri_` | The shared result enum and debug names |
 | Aprend | `render/aprend*.h` | `aprend_` / `APREND_` | Renderer over SpudGPU. Older code, mid-overhaul |
-| ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision; exact plane polygons on an integer grid (booleans, checks, per-edge offsets, triangulation); unrelated to Aprend |
+| ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision; exact plane polygons on an integer grid (booleans, checks, per-edge offsets, weighted straight skeletons, triangulation); unrelated to Aprend |
 | ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
