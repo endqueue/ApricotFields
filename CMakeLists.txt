@@ -36,6 +36,8 @@ add_library(ApricotFields STATIC
         src/audio/apaudio.cpp
         src/audio/apaudiocues.cpp
         src/math/apmathbvh.cpp
+        src/math/apmathpoly_internal.hpp
+        src/math/apmathpoly.cpp
         src/sync/apsync_internal.hpp
         src/sync/apsyncnet.cpp
         include/apricore.h
@@ -55,6 +57,7 @@ add_library(ApricotFields STATIC
         include/audio/apaudio.h
         include/audio/apaudiocues.h
         include/math/apmathbvh.h
+        include/math/apmathpoly.h
         include/sync/apsyncnet.h
         )
 
@@ -90,6 +93,25 @@ function(declare_vendored_or_fetch name dir repo tag)
     endforeach ()
     message(STATUS "${name}: no vendored copy under .deps/, fetching ${repo}@${tag}")
     FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}")
+endfunction()
+
+# The same for a dependency whose sources are built here rather than through
+# its own CMakeLists.txt: probes for [probe], a file inside the checkout, and
+# points SOURCE_SUBDIR at a directory that doesn't exist, so
+# FetchContent_MakeAvailable only downloads it (or finds the vendored copy)
+# and <name>_SOURCE_DIR says where.
+function(declare_vendored_or_fetch_sources name dir repo tag probe)
+    foreach (_cand "${dir}" "${dir}-src")
+        set(_vendored "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/${_cand}")
+        if (EXISTS "${_vendored}/${probe}")
+            message(STATUS "${name}: using vendored ${_vendored}")
+            FetchContent_Declare(${name} SOURCE_DIR "${_vendored}" SOURCE_SUBDIR sources-only-not-a-directory)
+            return ()
+        endif ()
+    endforeach ()
+    message(STATUS "${name}: no vendored copy under .deps/, fetching ${repo}@${tag}")
+    FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}" GIT_SHALLOW TRUE
+            SOURCE_SUBDIR sources-only-not-a-directory)
 endfunction()
 
 # SPIRV-Cross - SPIR-V reflection for Aprend's shaders
@@ -205,6 +227,43 @@ declare_vendored_or_fetch(glaze glaze https://github.com/stephenberry/glaze.git 
 FetchContent_MakeAvailable(glaze)
 target_link_libraries(ApricotFields PRIVATE glaze::glaze)
 
+# Clipper2 - polygon booleans for ApMath's polygons (src/math/apmathpoly.cpp).
+# Boost licence. Only its library sources are used, built here: its own
+# CMakeLists.txt treats warnings as errors and builds tests and examples.
+# Pinned on purpose, like libdeflate: where its intersections land on the grid
+# is part of what makes a boolean's result the same on every build. Built with
+# floating-point contraction off for the same reason - a fused multiply-add
+# rounds differently from the two operations it replaces (see the note at the
+# top of apmathpoly.cpp).
+declare_vendored_or_fetch_sources(clipper2 Clipper2
+        https://github.com/AngusJohnson/Clipper2.git Clipper2_1.5.4
+        CPP/Clipper2Lib/src/clipper.engine.cpp)
+FetchContent_MakeAvailable(clipper2)
+add_library(apmath_clipper2 STATIC
+        ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/src/clipper.engine.cpp
+        ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/src/clipper.offset.cpp
+        ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/src/clipper.rectclip.cpp)
+target_include_directories(apmath_clipper2 PUBLIC ${clipper2_SOURCE_DIR}/CPP/Clipper2Lib/include)
+set_target_properties(apmath_clipper2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ApricotFields PRIVATE apmath_clipper2)
+
+# earcut.hpp - triangulation for ApMath's polygons. ISC licence, header only;
+# its CMakeLists.txt builds its tests, so only the header is used. Pinned:
+# which triangles it makes is part of a triangulation's result.
+declare_vendored_or_fetch_sources(earcut earcut.hpp
+        https://github.com/mapbox/earcut.hpp.git v2.2.4
+        include/mapbox/earcut.hpp)
+FetchContent_MakeAvailable(earcut)
+target_include_directories(ApricotFields PRIVATE ${earcut_SOURCE_DIR}/include)
+
+# No floating-point contraction where ApMath's polygons compute in doubles:
+# results must be the same bits on every platform. MSVC doesn't contract
+# unless asked (/fp:contract), so only Clang and GCC need telling.
+if (NOT MSVC)
+    target_compile_options(apmath_clipper2 PRIVATE -ffp-contract=off)
+    set_source_files_properties(src/math/apmathpoly.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+endif ()
+
 # Headless tests - no GPU, no window. Run with ctest, or the executable.
 option(APRICOTFIELDS_BUILD_TESTS "Build ApricotFields' headless tests" ON)
 if (APRICOTFIELDS_BUILD_TESTS)
@@ -223,6 +282,9 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
+    add_executable(apmathpoly_tests tests/apmathpoly_tests.c)
+    target_link_libraries(apmathpoly_tests PRIVATE ApricotFields)
+    add_test(NAME apmathpoly_tests COMMAND apmathpoly_tests)
     # The range list under Aprend's pools: an internal header with no GPU in
     # it, which is why this one test sees src/render.
     add_executable(aprendranges_tests tests/aprendranges_tests.cpp)

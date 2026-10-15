@@ -30,7 +30,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 |---|---|---|---|
 | Core | `apricore.h` | `APRESULT`, `apri_` | The shared result enum and debug names |
 | Aprend | `render/aprend*.h` | `aprend_` / `APREND_` | Renderer over SpudGPU. Older code, mid-overhaul |
-| ApMath | `aprimath.h`, `math/apmathbvh.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision, unrelated to Aprend |
+| ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision; exact plane polygons on an integer grid (booleans, checks, per-edge offsets, triangulation); unrelated to Aprend |
 | ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
@@ -276,7 +276,13 @@ there is no separate `-debug` configure preset any more.)
 - A new source or header file is added to the `add_library` list in
   `CMakeLists.txt` by hand; there is no glob.
 - Third-party code is vendored under `../.deps/` (glm, libdeflate, glaze,
-  SPIRV-Cross) and linked `PRIVATE` unless a public header needs it.
+  SPIRV-Cross, Clipper2, earcut.hpp) and linked `PRIVATE` unless a public
+  header needs it. Clipper2 and earcut.hpp are used as sources only, through
+  `declare_vendored_or_fetch_sources`: Clipper2's library sources are built
+  here as `apmath_clipper2`, and earcut.hpp is a header. Both are pinned, and
+  both and `src/math/apmathpoly.cpp` are built with floating-point
+  contraction off, because what ApMath's polygons compute must be the same
+  bits on every platform.
   SPIRV-Cross's core is Aprend's SPIR-V reflection; SpudLib builds the same
   target on Metal and D3D12, so `CMakeLists.txt` only builds it when no
   target exists yet. libdeflate is pinned on
