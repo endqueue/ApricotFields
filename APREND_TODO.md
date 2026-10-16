@@ -715,7 +715,10 @@ unfinished in it.
     sampler for each filter, and a pipeline for each format used.
   - `aprend_texture2d_generate_mips` (item 31's immediate form): every
     level below a base level of every layer, a pass each, sampling the
-    level above through a one-mip view; recorded into the upload batch,
+    level above through a one-mip, one-layer 2D array view (the shader
+    declares a `texture2DArray`: D3D12 has no 2D view of a layer past the
+    first, and a 2D shader texture given an array view is undefined
+    there); recorded into the upload batch,
     each level left in the layout it was found in. Refused, printed: a
     texture without render target and shader resource usage, a format
     outside the eleven every backend renders to and filters, a base level
@@ -724,7 +727,12 @@ unfinished in it.
     level by level and the refusals. **Passed on Metal on 2026-10-16** (Apple
     M5 Pro, unified memory), on its first run: Debug under Metal API and
     shader validation with warnings fatal, and Release; no leak at exit.
-    Not run on D3D12 or Vulkan.
+    **Passed on D3D12 and Vulkan on 2026-10-16** (Windows 11, Intel Iris Xe
+    and NVIDIA RTX A2000; D3D12 under cdb with the debug layer clean, Vulkan
+    with the validation layer clean), after a fix in SpudGPU's D3D12 backend:
+    every 2D view there saw layer 0, so layer 1 was rendered into and
+    sampled from layer 0. The array-view source came after, and has run on
+    D3D12 and Vulkan only; not yet on Metal.
 
 ## Wrong things
 
@@ -1639,7 +1647,7 @@ it.
 ### 31. Mip generation
 
 Numbered out of order so the other items keep their numbers. The immediate
-form is written (2026-10-16; `test_generate_mips` passed on Metal, not run on D3D12 or Vulkan):
+form is written (2026-10-16; `test_generate_mips` passed on Metal, D3D12 and Vulkan):
 `aprend_texture2d_generate_mips` renders each level below a base level of
 every layer, a pass per level sampling the one above through Aprend's own
 downsample shader (item 22). SpudGPU's blit resamples only on Vulkan, so a
@@ -1795,8 +1803,8 @@ and 5 are closed and their numbers are not reused.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
    and item 31's immediate form (mip generation by a pass per level) are
-   written, and `test_generate_mips` passed on Metal (2026-10-16): run it
-   on D3D12 and Vulkan first. Then item 31's command form, then 23 and 24,
+   written, and `test_generate_mips` passed on Metal, D3D12 and Vulkan
+   (2026-10-16). Next is item 31's command form, then 23 and 24,
    and 36 (post-processing, bloom first) once render passes have run; each
    is a shader Aprend ships, as item 22 now allows.
 

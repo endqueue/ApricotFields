@@ -553,8 +553,11 @@ bool aprend_texture2d_generate_mips(
 		for (uint32_t i = 0; i < levels; ++i) {
 			aprend_mip_step &step = steps[(size_t)layer * levels + i];
 
+			// The source is a 2D array view of its one layer, as the
+			// downsample shader declares it (aprend_downsample.frag says
+			// why); the target a 2D view of its layer, which no shader reads.
 			aprend_texture_view_desc view_desc{};
-			view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
+			view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY;
 			view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
 			view_desc.mip_count   = 1;
 			view_desc.base_layer  = layer;
@@ -562,6 +565,7 @@ bool aprend_texture2d_generate_mips(
 			view_desc.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 			view_desc.base_mip    = base_mip + i;
 			step.source           = aprend_texture_view_create_2d(texture, &view_desc);
+			view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 			view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
 			view_desc.base_mip    = base_mip + i + 1;
 			step.target           = aprend_texture_view_create_2d(texture, &view_desc);
