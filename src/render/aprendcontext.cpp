@@ -10,6 +10,46 @@
 #include <mutex>
 #include <new>
 
+// The lists go before their allocator.
+static void aprend_command_pool_destroy(aprend_instance_t::command_pool &pool) {
+	for (spudgpu_command_list list : pool.lists)
+		spudgpu_destroy_command_list(list);
+	if (pool.allocator)
+		spudgpu_destroy_command_allocator(pool.allocator);
+}
+
+static SPUDRESULT aprend_command_pool_take(
+    aprend_instance_t::command_pool &pool,
+    spudgpu_command_list *out_list) {
+	if (pool.used == pool.lists.size()) {
+		spudgpu_command_list list = nullptr;
+		SPUDRESULT sr             = spudgpu_create_command_list(pool.allocator, &list);
+		if (SPUDFAIL(sr))
+			return sr;
+		// The push can only fail for want of memory. No exception leaves a
+		// C entry point, and this is reached from one.
+		try {
+			pool.lists.push_back(list);
+		} catch (...) {
+			spudgpu_destroy_command_list(list);
+			return SPUDRESULT_OUT_OF_MEMORY;
+		}
+	}
+	*out_list = pool.lists[pool.used++];
+	return SPUD_SUCCESS;
+}
+
+// Once nothing recorded into the pool runs: its memory comes back, and every
+// list is free again.
+static void aprend_command_pool_reset(
+    aprend_instance_t::command_pool &pool,
+    uint32_t frame_index) {
+	SPUDRESULT reset = spudgpu_reset_command_allocator(pool.allocator);
+	if (SPUDFAIL(reset))
+		printf("apricot: aprend_instance_next_frame: resetting a command allocator of frame %u failed: %s\n", frame_index, spudresult_str(reset));
+	pool.used = 0;
+}
+
 aprend_instance_t::~aprend_instance_t() {
 	// Whatever is still queued goes now: the instance is the last thing that
 	// could release it. aprend_instance_destroy has waited for the GPU. A
@@ -38,10 +78,8 @@ aprend_instance_t::~aprend_instance_t() {
 	if (this->upload_batch && this->upload_batch_open)
 		spudgpu_end_command_list(this->upload_batch);
 	for (command_frame &frame : this->frame_commands) {
-		for (spudgpu_command_list list : frame.lists)
-			spudgpu_destroy_command_list(list);
-		if (frame.allocator)
-			spudgpu_destroy_command_allocator(frame.allocator);
+		aprend_command_pool_destroy(frame.recordings);
+		aprend_command_pool_destroy(frame.batches);
 	}
 }
 
@@ -128,23 +166,7 @@ SPUDRESULT aprend_instance_wait_serial(
 SPUDRESULT aprend_instance_take_command_list(
     aprend_instance instance,
     spudgpu_command_list *out_list) {
-	aprend_instance_t::command_frame &frame = instance->frame_commands[instance->frame_index];
-	if (frame.used == frame.lists.size()) {
-		spudgpu_command_list list = nullptr;
-		SPUDRESULT sr             = spudgpu_create_command_list(frame.allocator, &list);
-		if (SPUDFAIL(sr))
-			return sr;
-		// The push can only fail for want of memory. No exception leaves a
-		// C entry point, and this is reached from one.
-		try {
-			frame.lists.push_back(list);
-		} catch (...) {
-			spudgpu_destroy_command_list(list);
-			return SPUDRESULT_OUT_OF_MEMORY;
-		}
-	}
-	*out_list = frame.lists[frame.used++];
-	return SPUD_SUCCESS;
+	return aprend_command_pool_take(instance->frame_commands[instance->frame_index].recordings, out_list);
 }
 
 SPUDRESULT aprend_instance_flush_upload_batch(
@@ -179,7 +201,7 @@ SPUDRESULT aprend_instance_open_upload_batch(
 	}
 	if (!instance->upload_batch) {
 		spudgpu_command_list list = nullptr;
-		SPUDRESULT sr             = aprend_instance_take_command_list(instance, &list);
+		SPUDRESULT sr             = aprend_command_pool_take(instance->frame_commands[instance->frame_index].batches, &list);
 		if (SPUDFAIL(sr))
 			return sr;
 		spudgpu_begin_command_list(list);
@@ -285,16 +307,21 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 
-	// One allocator for each frame index, so that one can be reset while
-	// the GPU still runs what the others recorded.
+	// Allocators for each frame index, so that one index's can be reset
+	// while the GPU still runs what the others recorded.
 	for (uint32_t i = 0; i < desc->frames_in_flight; ++i) {
 		spudgpu_command_allocator_desc aDesc = {};
 		aDesc.flags                          = 0;
 		aDesc.type                           = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
 
-		sr = spudgpu_create_command_allocator(desc->device, &aDesc, &result->frame_commands[i].allocator);
+		sr = spudgpu_create_command_allocator(desc->device, &aDesc, &result->frame_commands[i].recordings.allocator);
 		if (SPUDFAIL(sr)) {
-			result->frame_commands[i].allocator = nullptr;
+			result->frame_commands[i].recordings.allocator = nullptr;
+			goto failedattempt;
+		}
+		sr = spudgpu_create_command_allocator(desc->device, &aDesc, &result->frame_commands[i].batches.allocator);
+		if (SPUDFAIL(sr)) {
+			result->frame_commands[i].batches.allocator = nullptr;
 			goto failedattempt;
 		}
 	}
@@ -307,6 +334,7 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 		result->unified_memory         = properties.unified_memory;
 		result->device_mappable_memory = properties.device_mappable_memory;
 		result->layered_rendering      = properties.layered_rendering;
+		result->max_draw_indirect_count = properties.max_draw_indirect_count;
 	}
 
 	sr = spudgpu_create_fence(desc->device, SPUDGPU_FENCE_FLAG_NONE, 0, &result->frame_fence);
@@ -375,11 +403,8 @@ uint32_t aprend_instance_next_frame(aprend_instance instance) {
 	if (!SPUDFAIL(sr)) {
 		aprend_transient_arena_begin_frame(instance);
 		aprend_instance_t::command_frame &frame = instance->frame_commands[instance->frame_index];
-		SPUDRESULT reset                         = spudgpu_reset_command_allocator(frame.allocator);
-		if (SPUDFAIL(reset))
-			printf("apricot: aprend_instance_next_frame: resetting frame %u's command allocator failed: %s\n", instance->frame_index,
-			       spudresult_str(reset));
-		frame.used = 0;
+		aprend_command_pool_reset(frame.recordings, instance->frame_index);
+		aprend_command_pool_reset(frame.batches, instance->frame_index);
 	}
 	return instance->frame_index;
 }

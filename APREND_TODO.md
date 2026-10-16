@@ -645,6 +645,16 @@ unfinished in it.
     is not reopened while its last recording may run.
   - The texture update and readback calls refuse a format with no whole
     number of bytes to a texel, where they divided by zero (item 38).
+  - **The batch has an allocator of its own, fixed 2026-10-16; run on
+    D3D12 (NVIDIA RTX A2000 Laptop) by `aprend_gpu_tests`, all passed.**
+    The batch was taken from the frame's one allocator and stays open
+    while other lists of that allocator are opened, which D3D12 refuses
+    (`COMMAND_ALLOCATOR_CONTENTION`): the compile's list stayed closed
+    and `BeginRenderPass` on it faulted in the driver. Each frame index
+    now has two pools, `recordings` and `batches`, each an allocator and
+    its lists, both reset by `aprend_instance_next_frame`. `spudgpu.h`
+    now says that one list of an allocator is open at a time. Not run on
+    Metal or Vulkan since.
   - What to check first when it runs: memory flat over many frames on
     D3D12 (the leak of item 37); a texture updated and drawn in the same
     frame; an update with no draw after it, carried by

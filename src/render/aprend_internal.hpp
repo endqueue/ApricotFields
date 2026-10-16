@@ -131,18 +131,27 @@ typedef struct aprend_instance_t {
 	 * may still be running, and Vulkan can't reopen a pending command
 	 * buffer. So a frame takes a list for each recording, and the vector
 	 * holds as many as the busiest turn of the index needed. */
-	struct command_frame {
+	struct command_pool {
 		spudgpu_command_allocator allocator{nullptr};
 		std::vector<spudgpu_command_list> lists{};
 		/* lists[0, used) are handed out in this turn of the index. */
 		size_t used{0};
+	};
+	/* Two pools for each index. Only one list of an allocator may be open
+	 * at a time (spudgpu_begin_command_list), and the upload batch stays
+	 * open while other recordings are made, so it is made from an allocator
+	 * of its own. Batches follow one another, so one at a time is all that
+	 * allocator ever has open. */
+	struct command_frame {
+		command_pool recordings{};
+		command_pool batches{};
 	};
 	command_frame frame_commands[APREND_MAX_FRAMES_IN_FLIGHT]{};
 	/* Counts aprend_instance_next_frame calls. A recording is made in one
 	 * frame and submitted in the same one, which this tells apart from the
 	 * next turn of the same index. */
 	uint64_t frame_number{0};
-	/* The upload batch: a list from the current frame's commands, open for
+	/* The upload batch: a list from the current frame's batches pool, open for
 	 * recording, that texture updates, readbacks and framebuffer clears are
 	 * recorded into instead of each being a submission (item 6). It goes
 	 * ahead of the lists of the next submission, in that submission, and
@@ -173,6 +182,10 @@ typedef struct aprend_instance_t {
 	 * at creation: whether a pass may render to the layers of 2D array
 	 * views. */
 	bool layered_rendering{false};
+	/* SPUDGPU_DEVICE_PROPERTIES::max_draw_indirect_count of desc.device, read
+	 * once at creation: the most draws one indirect SpudGPU call takes. An
+	 * indirect draw command with more is recorded as several calls. */
+	uint32_t max_draw_indirect_count{1};
 	/* Which copy of every buffer set is current: 0 to
 	 * desc.frames_in_flight - 1. */
 	uint32_t frame_index{0};
@@ -301,17 +314,18 @@ SPUDRESULT aprend_instance_wait_serial(
     aprend_instance instance,
     uint64_t serial);
 
-/* A SpudGPU list of the current frame's allocator, for one recording to be
- * submitted in this frame. Not handed out again until
+/* A SpudGPU list of the current frame's recordings pool, for one recording
+ * to be submitted in this frame. Not handed out again until
  * aprend_instance_next_frame has come round to this index and waited, so it
  * is never reopened while its recording may run. Made if the frame has none
- * left. */
+ * left. Opened and closed again before the next is taken from the pool:
+ * the upload batch, which stays open, has a pool of its own. */
 SPUDRESULT aprend_instance_take_command_list(
     aprend_instance instance,
     spudgpu_command_list *out_list);
 
 /* The upload batch, open for recording, for work to go on [queue]: the one
- * waiting, or a new one from the current frame's commands. Refuses, with
+ * waiting, or a new one from the current frame's batches pool. Refuses, with
  * SPUDRESULT_GPU_INVALID_COMMAND_QUEUE, a queue that is not the instance's
  * or not the batch's. A batch left closed by a failed submission is
  * submitted first, and its failure is this call's. What is recorded runs

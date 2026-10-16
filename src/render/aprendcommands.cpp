@@ -1502,14 +1502,30 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			// What the CPU wrote to it is copied at submit if it is staged.
 			// It was moved to the indirect argument state before the pass.
 			aprend_cmd_use_store(cmd_list, &arguments->store);
-			spudgpu_cmd_draw_indirect(cmd, arguments->store.buffer, p._offset, p._draw_count, p._stride);
+			// In calls of at most the device's count, at advancing offsets:
+			// a SpudGPU call with more records nothing.
+			const uint32_t most = cmd_list->instance->max_draw_indirect_count;
+			uint64_t offset     = p._offset;
+			for (uint32_t left = p._draw_count; left > 0;) {
+				const uint32_t count = std::min(most, left);
+				spudgpu_cmd_draw_indirect(cmd, arguments->store.buffer, offset, count, p._stride);
+				offset += (uint64_t)count * p._stride;
+				left -= count;
+			}
 			break;
 		}
 		case APREND_COMMAND_DRAW_INDEXED_INDIRECT: {
 			const auto &p                   = command._params._draw_indirect;
 			aprend_storage_buffer arguments = aprend_cmd_indirect_arguments(command, cmd_list->compiled_frame);
 			aprend_cmd_use_store(cmd_list, &arguments->store);
-			spudgpu_cmd_draw_indexed_indirect(cmd, arguments->store.buffer, p._offset, p._draw_count, p._stride);
+			const uint32_t most = cmd_list->instance->max_draw_indirect_count;
+			uint64_t offset     = p._offset;
+			for (uint32_t left = p._draw_count; left > 0;) {
+				const uint32_t count = std::min(most, left);
+				spudgpu_cmd_draw_indexed_indirect(cmd, arguments->store.buffer, offset, count, p._stride);
+				offset += (uint64_t)count * p._stride;
+				left -= count;
+			}
 			break;
 		}
 		case APREND_COMMAND_DISPATCH_MESH: {
