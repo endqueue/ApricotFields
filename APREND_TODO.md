@@ -708,8 +708,10 @@ unfinished in it.
   renders mip 0, generates, and samples mip 3 in one list, twice, and
   checks three compile failures. **Passed on Metal on 2026-10-16** (Apple
   M5 Pro) on its first build: Debug under Metal API and shader validation
-  with warnings fatal, and Release; no leak at exit. Not run on D3D12 or
-  Vulkan.
+  with warnings fatal, and Release; no leak at exit. **Passed on D3D12 and
+  Vulkan the same evening** (Windows 11, Intel Iris Xe and NVIDIA RTX
+  A2000, Debug; D3D12 under cdb with the debug layer clean, Vulkan with
+  the validation layer clean), on the first run, with every other check.
 - **Aprend ships shaders, and generates mips with them; written
   2026-10-16; run on Metal the same day** (items 22, 31, 7):
   - GLSL in `shaders/` is compiled to SPIR-V by glslc at build time and
@@ -1671,7 +1673,7 @@ every layer, a pass per level sampling the one above through Aprend's own
 downsample shader (item 22). SpudGPU's blit resamples only on Vulkan, so a
 blit-based form would have done nothing on Metal and D3D12. The command
 form, `APREND_COMMAND_GENERATE_MIPS`, is written (2026-10-16;
-`test_generate_mips_command` passed on Metal, not run on D3D12 or Vulkan): the same passes recorded into a command list outside any pass,
+`test_generate_mips_command` passed on Metal, D3D12 and Vulkan): the same passes recorded into a command list outside any pass,
 through the list's layout tracking, for a texture rendered earlier in the
 same list; every level it fills, and the base, ends in
 `SHADER_READ_ONLY` for a later pass. The views and sets both forms render
@@ -1828,9 +1830,8 @@ and 5 are closed and their numbers are not reused.
    and item 31's immediate form (mip generation by a pass per level) are
    written, and `test_generate_mips` passed on Metal, D3D12 and Vulkan
    (2026-10-16). Item 31's command form is written and
-   `test_generate_mips_command` passed on Metal (2026-10-16): run it on
-   D3D12 and Vulkan.
-   Then 23 and 24,
+   `test_generate_mips_command` passed on Metal, D3D12 and Vulkan
+   (2026-10-16). Next are 23 and 24,
    and 36 (post-processing, bloom first) once render passes have run; each
    is a shader Aprend ships, as item 22 now allows.
 
