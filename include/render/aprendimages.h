@@ -12,7 +12,7 @@
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A texture, a view and a sampler
  * are each used by one thread at a time with everything else of their
- * instance. A texture's update, readback and resize calls submit work and
+ * instance. A texture's update, readback and resize calls record work and
  * write the image layout Aprend tracks for it, which
  * aprend_command_list_compile() reads and aprend_command_list_submit()
  * writes, so none of them runs while another thread compiles or submits a
@@ -149,12 +149,15 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  * @brief Writes a region of one mip level of one array layer of a 2D
  * texture.
  *
- * Submitted at once, on @p queue, and not waited for: the call returns when
- * the copy is submitted, and the copy runs after everything submitted before
- * it and ahead of everything submitted after. @p ppData is read during the
- * call and may be released when it returns. It is one of the instance's
- * submissions, so @p queue is the instance's one queue (aprendcontext.h): the
- * call fails if the instance has already submitted on another.
+ * Recorded into the frame's batch of updates and clears, and not waited for
+ * (aprendcontext.h, "Texture updates and clears"): the copy runs after
+ * everything submitted before the call and ahead of everything submitted
+ * after it. @p ppData is read during the call and may be released when it
+ * returns. The texels are staged in the frame's transient memory where the
+ * instance has some to give, and in a buffer of the update's own where it
+ * hasn't. @p queue is the instance's one queue (aprendcontext.h): the call
+ * fails if the instance has already submitted on another, or has updates
+ * waiting for another.
  *
  * The texture is left in the image layout it was found in, so a command list
  * already compiled against it can still be submitted. The exception is a
@@ -177,8 +180,9 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  *
  * @return true if the region was written. false if an argument or `*ppData`
  *         is NULL or 0, the level or layer doesn't exist, the region runs
- *         outside the level, or the copy
- *         couldn't be made or submitted.
+ *         outside the level, the texture's format has no whole number of
+ *         bytes to a texel (a block-compressed format has no update path),
+ *         or the copy couldn't be staged or recorded.
  */
 bool aprend_texture2d_update(
 	aprend_texture2d texture,
@@ -195,10 +199,11 @@ bool aprend_texture2d_update(
  * @brief Reads back a region of one mip level of one array layer of a 2D
  * texture.
  *
- * Submitted at once on @p queue, as aprend_texture2d_update(), and unlike it
- * waited for: the call blocks until the copy has run and everything
- * submitted before it has finished, since the caller reads the result. It
- * leaves the texture's image layout the same way.
+ * Recorded as aprend_texture2d_update() is, and unlike it waited for: the
+ * call submits the frame's batch of updates and clears with the copy last,
+ * and blocks until it has run and everything submitted before it has
+ * finished, since the caller reads the result. It leaves the texture's
+ * image layout the same way.
  *
  * @param[in]  texture  Texture to read.
  * @param[in]  queue    Queue the copy is submitted on. Never NULL. It must be
@@ -215,8 +220,10 @@ bool aprend_texture2d_update(
  *
  * @return true if the region was read. false if an argument or `*ppData` is
  *         NULL or 0, the level or layer doesn't exist, the region runs
- *         outside the level, or the copy
- *         couldn't be made or submitted.
+ *         outside the level, the texture's format has no whole number of
+ *         bytes to a texel, or the copy couldn't be recorded, submitted or
+ *         waited for. After a failed submission or wait the copy may still
+ *         run with a later submission, and @p ppData is not written.
  */
 bool aprend_texture2d_get_data(
 	aprend_texture2d texture,
@@ -358,8 +365,8 @@ spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
 /**
  * @brief Writes a region of one mip level of a 3D texture.
  *
- * Submitted, not waited for, and leaving the texture's image layout as
- * aprend_texture2d_update().
+ * Recorded, not waited for, staged and leaving the texture's image layout
+ * as aprend_texture2d_update().
  *
  * @param[in] texture  Texture to write.
  * @param[in] queue    Queue the copy is submitted on. Never NULL. It must be
@@ -377,8 +384,8 @@ spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
  *
  * @return true if the region was written. false if an argument or `*ppData`
  *         is NULL or 0, the level or layer doesn't exist, the region runs
- *         outside the level, or the copy
- *         couldn't be made or submitted.
+ *         outside the level, the texture's format has no whole number of
+ *         bytes to a texel, or the copy couldn't be staged or recorded.
  */
 bool aprend_texture3d_update(
 	aprend_texture3d texture,
@@ -395,8 +402,8 @@ bool aprend_texture3d_update(
 /**
  * @brief Reads back a region of one mip level of a 3D texture.
  *
- * Submitted, waited for, and leaving the texture's image layout as
- * aprend_texture2d_get_data().
+ * Submitted with the frame's batch, waited for, and leaving the texture's
+ * image layout as aprend_texture2d_get_data().
  *
  * @param[in]  texture  Texture to read.
  * @param[in]  queue    Queue the copy is submitted on. Never NULL. It must be

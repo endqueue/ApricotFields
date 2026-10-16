@@ -948,6 +948,16 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		printf("apricot: aprend_graphics_pipeline_create: _depth_test is set but _depth_compare_op is NEVER\n");
 		return nullptr;
 	}
+	if (desc.color_attachment_count > APREND_MAX_COLOR_TARGETS) {
+		printf("apricot: aprend_graphics_pipeline_create: color_attachment_count %u is above APREND_MAX_COLOR_TARGETS\n", desc.color_attachment_count);
+		return nullptr;
+	}
+	for (uint32_t i = 0; i < desc.color_attachment_count; ++i) {
+		if (desc.color_attachment_formats[i] == SPUDGPU_FORMAT_UNKNOWN) {
+			printf("apricot: aprend_graphics_pipeline_create: color_attachment_formats[%u] is SPUDGPU_FORMAT_UNKNOWN\n", i);
+			return nullptr;
+		}
+	}
 	if (desc._binding_layout_count > APREND_MAX_BINDING_LAYOUTS) {
 		printf("apricot: aprend_graphics_pipeline_create: _binding_layout_count %u is above APREND_MAX_BINDING_LAYOUTS\n", desc._binding_layout_count);
 		return nullptr;
@@ -1066,10 +1076,18 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	pd.depth_test_enable  = desc._depth_test;
 	pd.depth_write_enable = desc._depth_write;
 	pd.depth_compare_op   = desc._depth_compare_op;
-	pd.blend_attachment   = desc._blend;
+	// The device's limits on these are SpudGPU's to check
+	// (SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp, independent_blend).
+	pd.depth_bias_constant = desc._depth_bias_constant;
+	pd.depth_bias_slope    = desc._depth_bias_slope;
+	pd.depth_bias_clamp    = desc._depth_bias_clamp;
 
-	pd.color_attachment_format = desc.color_attachment_format;
-	pd.depth_format            = desc.depth_format;
+	for (uint32_t i = 0; i < desc.color_attachment_count; ++i) {
+		pd.color_attachment_formats[i] = desc.color_attachment_formats[i];
+		pd.blend_attachments[i]        = desc._blends[i];
+	}
+	pd.color_attachment_count = desc.color_attachment_count;
+	pd.depth_format           = desc.depth_format;
 	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
 		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->core->layout;
 	pd.descriptor_set_layout_count = desc._binding_layout_count;

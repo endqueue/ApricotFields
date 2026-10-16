@@ -27,9 +27,12 @@
  *   aprend_instance_wait_idle();
  * - the frame index: aprend_instance_next_frame(), a buffer set's update
  *   calls, aprend_command_list_compile() and aprend_command_list_submit();
- * - one SpudGPU command allocator, which every command list of the instance
- *   records through: aprend_command_list_create(), _compile() and
- *   _submit();
+ * - the command memory of the current frame (a SpudGPU allocator and the
+ *   lists recorded from it), which every recording of the instance is made
+ *   in: aprend_command_list_compile() and _submit(), the texture update,
+ *   readback and framebuffer clear calls, and aprend_instance_next_frame();
+ * - the upload batch those update, readback and clear calls record into,
+ *   which the next submission carries;
  * - a texture's tracked image layout: read by aprend_command_list_compile(),
  *   written by aprend_command_list_submit() and by the texture update,
  *   readback, resize and framebuffer clear calls;
@@ -60,8 +63,8 @@
  * - Record into different command lists, one thread to a list, with
  *   aprend_send_command() and aprend_command_list_reset(). They write the
  *   list and nothing else. No thread may destroy what the commands name
- *   meanwhile. Compiling is not included: every list compiles through the
- *   instance's one allocator.
+ *   meanwhile. Compiling is not included: every list compiles into the
+ *   instance's command memory for the frame.
  *
  * Two instances share nothing of Aprend's, which keeps no state outside an
  * instance. Whether they may then be used from two threads at once is
@@ -108,6 +111,19 @@
  * which is what lets it come from any thread; with no later submission,
  * what was destroyed waits for aprend_instance_wait_idle() or
  * aprend_instance_destroy().
+ *
+ * @par Texture updates and clears
+ * A texture update or readback and a framebuffer clear are not each a
+ * submission. They are recorded, in order, into one batch for the frame,
+ * which goes ahead of the command lists of the next
+ * aprend_command_list_submit(), in that same submission.
+ * aprend_instance_next_frame() and aprend_instance_wait_idle() submit it on
+ * its own if nothing else has. So each runs after everything submitted
+ * before it and ahead of everything submitted after, as if it were
+ * submitted at once, and a frame's updates cost one SpudGPU list between
+ * them. A readback submits the batch itself, since it waits for the result.
+ * Destroying a texture the batch writes is safe as anything else is: it is
+ * released once the submission that carries the batch has finished.
  */
 
 #if __cplusplus
@@ -193,17 +209,29 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc);
  * the start of each frame after the first, before writing any buffer set or
  * compiling any command list for that frame.
  *
- * It blocks until everything aprend_command_list_submit() submitted the
- * last time this index was current has finished: the frame from
- * `frames_in_flight` frames ago. So at most `frames_in_flight` frames are
- * ever on the GPU, and the caller needs no wait of its own between frames.
- * With `frames_in_flight` 1 it waits for the frame before. If the wait
- * fails the index has still moved, and the failure is printed.
+ * First it submits the frame's texture updates and framebuffer clears, if
+ * no submission has carried them yet ("Texture updates and clears", at the
+ * top of this header). If that submission fails they are dropped, and that
+ * is printed.
+ *
+ * It blocks until everything submitted the last time this index was
+ * current has finished: the frame from `frames_in_flight` frames ago. So
+ * at most `frames_in_flight` frames are ever on the GPU, and the caller
+ * needs no wait of its own between frames. With `frames_in_flight` 1 it
+ * waits for the frame before. If the wait fails the index has still moved,
+ * and the failure is printed.
  *
  * What it waits for is what went through Aprend:
- * aprend_command_list_submit() and the calls that submit at once (texture
- * update and readback, framebuffer clears). Work the caller submits to
- * SpudGPU itself is not counted.
+ * aprend_command_list_submit() and the texture updates, readbacks and
+ * framebuffer clears. Work the caller submits to SpudGPU itself is not
+ * counted.
+ *
+ * Once that wait is over, the memory of every recording made in that frame
+ * comes back: the compiles of command lists and the update batch, recorded
+ * through a SpudGPU command allocator of that frame index, which this
+ * resets, and the frame's transient memory (aprendtransient.h). A caller
+ * that never calls this never gets either back. After a failed wait
+ * neither is taken back, and both go on growing until a wait succeeds.
  *
  * An instance submits on one queue. The queue is the caller's to choose,
  * and it is chosen by the first call that submits: every later one is
@@ -235,7 +263,8 @@ uint32_t aprend_instance_get_frame_index(aprend_instance instance);
  * finished.
  *
  * That is every aprend_command_list_submit(), and every texture update,
- * readback and framebuffer clear. Whatever was destroyed and waiting on
+ * readback and framebuffer clear: a batch of them not yet submitted is
+ * submitted first. Whatever was destroyed and waiting on
  * that work is released before it returns. Destroying and resizing don't
  * need it (see "Destroying" at the top of this header); it is for a caller
  * that wants the result of submitted work, or wants memory back now. It
@@ -247,7 +276,8 @@ uint32_t aprend_instance_get_frame_index(aprend_instance instance);
  *
  * @param[in] instance Instance to wait for.
  *
- * @return false if @p instance is NULL or the wait fails.
+ * @return false if @p instance is NULL, the batch of texture updates and
+ *         clears can't be submitted, or the wait fails.
  */
 bool aprend_instance_wait_idle(aprend_instance instance);
 

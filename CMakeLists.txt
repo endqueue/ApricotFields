@@ -31,6 +31,7 @@ add_library(ApricotFields STATIC
         src/render/aprendswapchain.cpp
         src/render/aprendtransient_internal.hpp
         src/render/aprendtransient.cpp
+        src/render/aprendtimer.cpp
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio.cpp
@@ -53,6 +54,7 @@ add_library(ApricotFields STATIC
         include/render/aprendpipeline.h
         include/render/aprendswapchain.h
         include/render/aprendtransient.h
+        include/render/aprendtimer.h
         include/archive/aparchive.h
         include/audio/apaudio.h
         include/audio/apaudiocues.h

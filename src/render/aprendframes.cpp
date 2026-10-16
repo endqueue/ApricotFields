@@ -184,10 +184,10 @@ bool aprend_framebuffer_clear_colors(
 		return true; // Nothing to clear.
 
 	// Each attachment goes back to the layout it was found in (see
-	// aprend_immediate_final_layout), and the tracked layouts are only
-	// written once the one submission covering all of them has succeeded.
+	// aprend_immediate_final_layout), and the tracked layouts are written
+	// once the clears are recorded into the upload batch.
 	const SPUDGPU_IMAGE_LAYOUT working = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	bool ok                            = aprend_submit_immediate(framebuffer->instance, queue, false, [&](spudgpu_command_list cmd) {
+	bool ok                            = aprend_record_immediate(framebuffer->instance, queue, [&](spudgpu_command_list cmd) {
 		for (aprend_texture_view view : framebuffer->color_attachments) {
 			// The one mip of one layer the attachment's view covers.
 			aprend_texture2d attachment                     = view->texture._t2d;

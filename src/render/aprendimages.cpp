@@ -49,7 +49,82 @@ static uint32_t aprend_compute_mip_levels(
 	return levels;
 }
 
-// aprend_submit_immediate is shared — see aprendimages_internal.hpp.
+// aprend_record_immediate is shared — see aprendimages_internal.hpp.
+
+/* Where an upload to an image is staged: [buffer] at [offset], written
+ * through [data]. Either a span of the current frame's transient memory,
+ * which the frame takes back once the GPU has finished with it, or, where
+ * the instance has none to give or the copy's offset rule can't be met in
+ * it, a buffer of the upload's own ([own]), mapped until
+ * aprend_upload_staging_end and retired by aprend_upload_staging_release. */
+struct aprend_upload_staging {
+	spudgpu_buffer buffer{nullptr};
+	uint64_t offset{0};
+	uint64_t size{0};
+	uint8_t *data{nullptr};
+	bool own{false};
+};
+
+/* Staging for an upload of [size] bytes to [image]. */
+static bool aprend_upload_staging_begin(
+    aprend_instance instance,
+    spudgpu_image image,
+    uint64_t size,
+    aprend_upload_staging *out) {
+	*out      = {};
+	out->size = size;
+	uint64_t alignment = 0;
+	SPUDRESULT sr      = spudgpu_get_image_buffer_copy_offset_alignment(image, &alignment);
+	if (SPUDFAIL(sr)) {
+		printf("apricot: a texture update can't be staged: %s\n", spudresult_str(sr));
+		return false;
+	}
+	// The transient arena aligns to powers of two only.
+	if ((alignment & (alignment - 1)) == 0) {
+		aprend_transient_span span{};
+		if (aprend_transient_allocate_staging(instance, size, alignment, &span)) {
+			out->buffer = ((aprend_transient_chunk *)span._chunk)->buffer;
+			out->offset = span._offset;
+			out->data   = (uint8_t *)span.data;
+			return true;
+		}
+	}
+	spudgpu_buffer_desc staging_desc{};
+	staging_desc.usage       = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
+	staging_desc.memory_kind = SPUDGPU_MEMORY_KIND_UPLOAD;
+	staging_desc.size        = size;
+	if (SPUDFAIL(spudgpu_create_buffer(instance->desc.device, &staging_desc, &out->buffer))) {
+		out->buffer = nullptr;
+		return false;
+	}
+	void *mapped = nullptr;
+	if (SPUDFAIL(spudgpu_map_buffer(out->buffer, 0, size, &mapped))) {
+		spudgpu_destroy_buffer(out->buffer);
+		out->buffer = nullptr;
+		return false;
+	}
+	out->data = (uint8_t *)mapped;
+	out->own  = true;
+	return true;
+}
+
+/* After the bytes are written. A span is flushed by the submission that
+ * reads it; a buffer of the upload's own is flushed and unmapped here. */
+static void aprend_upload_staging_end(aprend_upload_staging *staging) {
+	if (!staging->own)
+		return;
+	spudgpu_flush_buffer(staging->buffer, 0, staging->size);
+	spudgpu_unmap_buffer(staging->buffer);
+	staging->data = nullptr;
+}
+
+/* Once the copy is recorded, or has failed to be: a buffer of the upload's
+ * own is released after the batch that reads it has run. */
+static void aprend_upload_staging_release(aprend_instance instance, aprend_upload_staging *staging) {
+	if (staging->own)
+		aprend_instance_retire(instance, staging->buffer, &aprend_release_spudgpu_buffer);
+	*staging = {};
+}
 
 // A texture that failed to create may have no image, and a 3D one no view.
 aprend_texture2d_t::~aprend_texture2d_t() {
@@ -255,6 +330,10 @@ bool aprend_texture2d_update(
 		return false;
 
 	uint32_t bytes_per_pixel = spudgpu_format_bit_count(texture->desc.format) / 8;
+	if (bytes_per_pixel == 0 || spudgpu_format_bit_count(texture->desc.format) % 8 != 0) {
+		printf("apricot: aprend_texture2d_update: the texture's format has no whole number of bytes to a texel; a block-compressed format has no update path\n");
+		return false;
+	}
 	uint32_t tight_row_pitch = width * bytes_per_pixel;
 
 	// D3D12 requires the buffer-side row pitch to be 256-byte aligned; Vulkan
@@ -264,34 +343,23 @@ bool aprend_texture2d_update(
 	spudgpu_get_image_buffer_copy_size(texture->image, mip_level, &aligned_row_pitch, &unused_full_mip_size);
 	uint64_t region_size = aligned_row_pitch * height;
 
-	spudgpu_buffer_desc staging_desc{};
-	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
-	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
-	staging_desc.size         = region_size;
-
-	spudgpu_buffer staging_buffer;
-	if (spudgpu_create_buffer(texture->instance->desc.device, &staging_desc, &staging_buffer) != SPUD_SUCCESS)
+	aprend_upload_staging staging{};
+	if (!aprend_upload_staging_begin(texture->instance, texture->image, region_size, &staging))
 		return false;
-
-	void *pMapped;
-	if (spudgpu_map_buffer(staging_buffer, 0, region_size, &pMapped) != SPUD_SUCCESS) {
-		spudgpu_destroy_buffer(staging_buffer);
-		return false;
-	}
 	// Re-pack the caller's tightly-packed rows into the backend's (possibly padded) row pitch.
 	const uint8_t *src = (const uint8_t *)*ppData;
-	uint8_t *dst       = (uint8_t *)pMapped;
+	uint8_t *dst       = staging.data;
 	for (uint32_t row = 0; row < height; ++row)
 		memcpy(dst + row * aligned_row_pitch, src + row * tight_row_pitch, tight_row_pitch);
-	spudgpu_flush_buffer(staging_buffer, 0, region_size);
-	spudgpu_unmap_buffer(staging_buffer);
+	aprend_upload_staging_end(&staging);
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	// Not waited for: the copy runs ahead of anything submitted after it,
-	// and the staging buffer is released once it has.
+	// Recorded into the upload batch and not waited for: the copy runs ahead
+	// of anything submitted after it.
 	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, array_layer, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
+		copy_desc.buffer_offset     = staging.offset;
 		copy_desc.mip_level         = mip_level;
 		copy_desc.base_array_layer  = array_layer;
 		copy_desc.array_layer_count = 1;
@@ -301,10 +369,10 @@ bool aprend_texture2d_update(
 		copy_desc.width             = width;
 		copy_desc.height            = height;
 		copy_desc.depth             = 1;
-		spudgpu_cmd_copy_buffer_to_image(cmd, staging_buffer, texture->image, &copy_desc);
+		spudgpu_cmd_copy_buffer_to_image(cmd, staging.buffer, texture->image, &copy_desc);
 	});
 
-	aprend_instance_retire(texture->instance, staging_buffer, &aprend_release_spudgpu_buffer);
+	aprend_upload_staging_release(texture->instance, &staging);
 	return ok;
 }
 bool aprend_texture2d_get_data(
@@ -340,6 +408,10 @@ bool aprend_texture2d_get_data(
 		return false;
 
 	uint32_t bytes_per_pixel = spudgpu_format_bit_count(texture->desc.format) / 8;
+	if (bytes_per_pixel == 0 || spudgpu_format_bit_count(texture->desc.format) % 8 != 0) {
+		printf("apricot: aprend_texture2d_get_data: the texture's format has no whole number of bytes to a texel; a block-compressed format has no readback path\n");
+		return false;
+	}
 	uint32_t tight_row_pitch = width * bytes_per_pixel;
 
 	uint64_t aligned_row_pitch = 0, unused_full_mip_size = 0;
@@ -357,7 +429,8 @@ bool aprend_texture2d_get_data(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	// Waited for: the caller reads what the copy wrote.
+	// Recorded into the upload batch, which is then submitted and waited
+	// for: the caller reads what the copy wrote.
 	bool ok = aprend_immediate_on_texture(texture, queue, true, mip_level, array_layer, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level         = mip_level;
@@ -372,7 +445,8 @@ bool aprend_texture2d_get_data(
 		spudgpu_cmd_copy_image_to_buffer(cmd, texture->image, staging_buffer, &copy_desc);
 	});
 	if (!ok) {
-		spudgpu_destroy_buffer(staging_buffer);
+		// The copy may be recorded and still run with a later submission.
+		aprend_instance_retire(texture->instance, staging_buffer, &aprend_release_spudgpu_buffer);
 		return false;
 	}
 
@@ -542,6 +616,10 @@ bool aprend_texture3d_update(
 		return false;
 
 	uint32_t bytes_per_pixel   = spudgpu_format_bit_count(texture->desc.format) / 8;
+	if (bytes_per_pixel == 0 || spudgpu_format_bit_count(texture->desc.format) % 8 != 0) {
+		printf("apricot: aprend_texture3d_update: the texture's format has no whole number of bytes to a texel; a block-compressed format has no update path\n");
+		return false;
+	}
 	uint32_t tight_row_pitch   = width * bytes_per_pixel;
 	uint64_t tight_slice_pitch = (uint64_t)tight_row_pitch * height;
 
@@ -553,34 +631,23 @@ bool aprend_texture3d_update(
 	uint64_t aligned_slice_pitch = aligned_row_pitch * height;
 	uint64_t region_size         = aligned_slice_pitch * depth;
 
-	spudgpu_buffer_desc staging_desc{};
-	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
-	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
-	staging_desc.size         = region_size;
-
-	spudgpu_buffer staging_buffer;
-	if (spudgpu_create_buffer(texture->instance->desc.device, &staging_desc, &staging_buffer) != SPUD_SUCCESS)
+	aprend_upload_staging staging{};
+	if (!aprend_upload_staging_begin(texture->instance, texture->image, region_size, &staging))
 		return false;
-
-	void *pMapped;
-	if (spudgpu_map_buffer(staging_buffer, 0, region_size, &pMapped) != SPUD_SUCCESS) {
-		spudgpu_destroy_buffer(staging_buffer);
-		return false;
-	}
 	const uint8_t *src = (const uint8_t *)*ppData;
-	uint8_t *dst       = (uint8_t *)pMapped;
+	uint8_t *dst       = staging.data;
 	for (uint32_t z = 0; z < depth; ++z)
 		for (uint32_t row = 0; row < height; ++row)
 			memcpy(dst + z * aligned_slice_pitch + row * aligned_row_pitch, src + z * tight_slice_pitch + row * tight_row_pitch, tight_row_pitch);
-	spudgpu_flush_buffer(staging_buffer, 0, region_size);
-	spudgpu_unmap_buffer(staging_buffer);
+	aprend_upload_staging_end(&staging);
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	// Not waited for: the copy runs ahead of anything submitted after it,
-	// and the staging buffer is released once it has.
+	// Recorded into the upload batch and not waited for: the copy runs ahead
+	// of anything submitted after it.
 	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, 0, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
+		copy_desc.buffer_offset       = staging.offset;
 		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
 		copy_desc.buffer_row_length   = buffer_row_length_texels;
@@ -591,10 +658,10 @@ bool aprend_texture3d_update(
 		copy_desc.width               = width;
 		copy_desc.height              = height;
 		copy_desc.depth               = depth;
-		spudgpu_cmd_copy_buffer_to_image(cmd, staging_buffer, texture->image, &copy_desc);
+		spudgpu_cmd_copy_buffer_to_image(cmd, staging.buffer, texture->image, &copy_desc);
 	});
 
-	aprend_instance_retire(texture->instance, staging_buffer, &aprend_release_spudgpu_buffer);
+	aprend_upload_staging_release(texture->instance, &staging);
 	return ok;
 }
 bool aprend_texture3d_get_data(
@@ -634,6 +701,10 @@ bool aprend_texture3d_get_data(
 		return false;
 
 	uint32_t bytes_per_pixel   = spudgpu_format_bit_count(texture->desc.format) / 8;
+	if (bytes_per_pixel == 0 || spudgpu_format_bit_count(texture->desc.format) % 8 != 0) {
+		printf("apricot: aprend_texture3d_get_data: the texture's format has no whole number of bytes to a texel; a block-compressed format has no readback path\n");
+		return false;
+	}
 	uint32_t tight_row_pitch   = width * bytes_per_pixel;
 	uint64_t tight_slice_pitch = (uint64_t)tight_row_pitch * height;
 
@@ -653,7 +724,8 @@ bool aprend_texture3d_get_data(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	// Waited for: the caller reads what the copy wrote.
+	// Recorded into the upload batch, which is then submitted and waited
+	// for: the caller reads what the copy wrote.
 	bool ok = aprend_immediate_on_texture(texture, queue, true, mip_level, 0, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level           = mip_level;
@@ -669,7 +741,8 @@ bool aprend_texture3d_get_data(
 		spudgpu_cmd_copy_image_to_buffer(cmd, texture->image, staging_buffer, &copy_desc);
 	});
 	if (!ok) {
-		spudgpu_destroy_buffer(staging_buffer);
+		// The copy may be recorded and still run with a later submission.
+		aprend_instance_retire(texture->instance, staging_buffer, &aprend_release_spudgpu_buffer);
 		return false;
 	}
 

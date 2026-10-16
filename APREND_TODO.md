@@ -234,7 +234,8 @@ unfinished in it.
     on it.
   - Texture updates and framebuffer clears are submitted and not waited for;
     their list, allocator and staging buffer are retired. A readback still
-    waits.
+    waits. (Since 2026-10-15 they are recorded into the frame's upload
+    batch instead: see the bullet of that date.)
   - An instance submits on one queue and refuses another.
   - The queue has a mutex and the submit serial is atomic, so a destroy call
     is safe from any thread: it pushes an entry under the lock and releases
@@ -569,6 +570,86 @@ unfinished in it.
   is items 37 and 38 and the additions to items 8, 12, 13 and 20; what it
   found already fixed was taken out of items 8, 12, 14 and 20. No code was
   changed.
+- **Multiple render targets, depth bias, debug labels and GPU timers,
+  written 2026-10-15; compiled on macOS over Metal through Trellis_macOS, which ran (reported 2026-10-16)** (items 25, 26, 29):
+  - The run used one color target, no bias, no labels and no timer, so
+    it shows the arrays and the new pipeline checks build and pass for
+    what Trellis draws, and no more. Vulkan and D3D12 are not built.
+  - SpudGPU: `spudgpu_shader_pipeline_desc` has `color_attachment_formats`,
+    `blend_attachments` and `color_attachment_count` in place of the one
+    format and blend, and `depth_bias_constant`, `_slope`, `_clamp`. The
+    bundle inheritance desc has the formats too. New device properties
+    `depth_bias_clamp`, `independent_blend` and `pass_timestamps`, the
+    first two Vulkan features enabled where reported. The checks every
+    backend makes on these are written once (`src/gpu/spudgpushared.c`).
+    Vulkan's blend state now translates the caller's factors and ops: it
+    had been fixed to straight alpha whatever was asked.
+  - SpudGPU debug labels (`spudgpu_cmd_begin_debug_label`, `_end_`):
+    `VK_EXT_debug_utils`, enabled on the instance wherever offered; PIX's
+    ANSI events on D3D12; debug groups on Metal, on the render encoder in a
+    pass and the command buffer outside one.
+  - SpudGPU timestamp sets (`spudgpu_create_timestamp_set`, reset, resolve,
+    `spudgpu_get_timestamps` in nanoseconds), written by a pass at its start
+    and end through `spudgpu_rendering_begin_desc::timestamp_set`. A query
+    pool on Vulkan, a query heap and readback buffer on D3D12, a counter
+    sample buffer sampled at stage boundaries on Metal. A new `query` file
+    in each backend.
+  - Aprend: the pipeline desc's `color_attachment_formats` and
+    `color_attachment_count` (0 for depth only), `_blends`, and the depth
+    bias; a render pass takes up to `APREND_MAX_COLOR_TARGETS` targets,
+    each checked against the pipeline's format at its index. The compile
+    now refuses a pipeline set inside a pass whose targets it doesn't
+    match (count, formats, depth), which nothing checked before.
+  - Aprend labels (`APREND_COMMAND_BEGIN_LABEL`, `END_LABEL`), checked at
+    compile for nesting and for not crossing a pass's boundary, and closed
+    in the SpudGPU list on a failed compile so it stays balanced.
+  - `aprend_gpu_timer` (`aprendtimer.h`): slots a pass is timed into,
+    through `BEGIN_RENDERING`'s `_timer` and `_timer_slot` or a render
+    pass's, kept once for each frame in flight and read a frame late.
+  - Every caller in the workspace follows: spudgpusamples, libdemo,
+    trellislib, Latran and `../apricottests` set the formats as arrays.
+  - What to check first: a pipeline with two targets on each backend; a
+    shadow pass's bias; labels in RenderDoc, PIX and Xcode; a timer's
+    reading against a known cost, on Metal above all.
+- **Command memory for each frame and the upload batch, written 2026-10-15;
+  compiled on macOS over Metal through Trellis_macOS, which ran (reported 2026-10-16)** (items 37 and 6):
+  - On Metal there is no allocator memory to leak, so the run shows the
+    per-frame lists and the batch work there, not that the D3D12 leak is
+    gone. Whether Trellis updated or read back a texture in the run is not
+    recorded.
+  - An instance has a SpudGPU command allocator for each frame index, and
+    the SpudGPU lists recorded from it. `aprend_instance_next_frame` resets
+    the index's allocator once its wait has succeeded. A list is handed out
+    for one recording and not again until then, so none is reopened while
+    it may still run (Vulkan can't reset a pending command buffer).
+  - An `aprend_command_list` owns no SpudGPU list. A compile takes one from
+    the frame, or records over its own if it was compiled in this frame and
+    not submitted since; the upload list of its staged buffers is taken at
+    submit. Every list is refused at submit in any frame but the one it was
+    compiled in, counted by a frame number, which replaces the two checks by
+    frame index (per-frame sets, transient spans). Those compared indices
+    only, so a list `frames_in_flight` frames old passed them.
+  - Texture updates and readbacks and framebuffer clears are recorded into
+    one batch for the frame, from the frame's lists, which the next
+    submission carries ahead of its own lists. `aprend_instance_next_frame`
+    and `aprend_instance_wait_idle` submit it if nothing has; a readback
+    submits it and waits for that serial. No more allocator, list and
+    submission per call. What is destroyed while a batch waits is retired a
+    serial later, for the submission that will carry it.
+  - A texture update is staged in the frame's transient memory where the
+    instance has some and the copy's offset rule is a power of two, and in a
+    buffer of its own (as before) otherwise. The offset rule is new in
+    SpudGPU: `spudgpu_get_image_buffer_copy_offset_alignment` (512 on D3D12;
+    the texel block size, and of 4 on Vulkan; the block size on Metal).
+    `spudgpu.h` also now says when an allocator may be reset and that a list
+    is not reopened while its last recording may run.
+  - The texture update and readback calls refuse a format with no whole
+    number of bytes to a texel, where they divided by zero (item 38).
+  - What to check first when it runs: memory flat over many frames on
+    D3D12 (the leak of item 37); a texture updated and drawn in the same
+    frame; an update with no draw after it, carried by
+    `aprend_instance_next_frame`; a readback; and the D3D12 offset of 512
+    inside a transient chunk.
 
 ## Wrong things
 
@@ -602,20 +683,28 @@ a level from the one above (item 31). Until then such a texture wants
 
 ### 6. Immediate operations: what is left
 
-Texture updates and framebuffer clears no longer block (see "State of the
-code"): they are submitted as one of the instance's counted submissions and
-their list, allocator and staging buffer go on the release queue. Left over:
+Texture updates and readbacks and framebuffer clears are recorded into one
+batch for the frame, carried by the next submission, and an update is
+staged in the frame's transient memory (see "State of the code",
+2026-10-15). Left over:
 
 - **A readback blocks**, and has to: the caller reads the result. One that
   hands the result over later (a pending read the caller polls) is the only
-  way it wouldn't, and nothing asks for it.
-- **Every call still makes a command allocator, a command list and, for an
-  update, a staging buffer**, and releases them a moment later. A caller
-  that updates many textures in a frame pays that each time. Wanted: updates
-  recorded into a shared upload list for the frame, from a staging buffer
-  that is reused (item 13).
-- **An update is its own submission.** It can't be placed between two
-  commands of a command list.
+  way it wouldn't, and nothing asks for it. It also submits the whole batch
+  early, with whatever updates the frame has recorded so far.
+- **An update can't be placed between two commands of a command list.** The
+  batch goes ahead of the next submission's lists, so an update between two
+  passes of one list (write, draw, write again, draw) is two lists. A
+  command that records a copy from a transient span inside the list is the
+  way, and nothing asks for it yet.
+- **The staging falls back to a buffer of its own** on an instance with no
+  transient memory, past `transient_memory_limit`, and for a format whose
+  copy offset rule is not a power of two (a 12-byte texel on Vulkan). Each
+  of those still makes and retires a buffer per call.
+- **The batch's layouts are written when it is recorded.** If the
+  submission that carries it fails, and `aprend_instance_next_frame` then
+  drops it, the tracked layouts say what the dropped barriers would have
+  done. A failed submission is a lost device in practice.
 
 ### 7. The default shaders are unused
 
@@ -670,52 +759,25 @@ today:
 
 ### 37. The instance's command allocator is never reset
 
-Numbered out of order, as item 31. Found by reading on 2026-10-13; not
-measured on a device.
-
-Every command list of an instance, and each list's upload list, records
-into the instance's one `spudgpu_command_allocator`, and nothing in
-`src/render` calls `spudgpu_reset_command_allocator`. What that costs
-depends on the API underneath, which is why it has to be Aprend that
-resets:
-
-- On D3D12, opening a list (`spudgpu_begin_command_list`) resets the list
-  and not its allocator. Each compile takes more of the allocator's memory
-  and none comes back until the instance is destroyed: an application that
-  compiles every frame grows for as long as it runs.
-- On Vulkan the same call resets the command buffer, whose pool was made
-  to allow that, so memory is reused.
-- On Metal a command buffer is taken fresh each time and there is nothing
-  to reset.
-
-An allocator may be reset only when nothing recorded from it is still
-running, and the instance already knows when that is: the frame fence.
-What is wanted is an allocator for each frame index in place of the one,
-reset in `aprend_instance_next_frame` after its wait, with a list opened
-on the current frame's. That needs a list to be able to change allocator
-between recordings, which `spudgpu_create_command_list` fixes at creation,
-so it is a change on both sides: SpudGPU says which allocator a recording
-uses, Aprend chooses. A list compiled in one frame and submitted in a
-later one then has to be refused, as lists that read buffer sets and
-transient spans already are. The immediate operations make and retire an
-allocator each and are not affected (item 6).
-
-Item 12's "a SpudGPU command allocator for each command list", wanted for
-recording on several threads, is a different split of the same object;
-decide the two together.
+Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16) (see "State of the code"). Each frame index
+has its own allocator, reset by `aprend_instance_next_frame` after its wait,
+and a recording takes a list of the current frame's; a list compiled in
+one frame is refused at submit in a later one. SpudGPU needed no new call
+for it: a list stays tied to the allocator it was created on, which is what
+Vulkan requires, and Aprend keeps lists for each frame. Not run: the D3D12
+leak it fixes was found by reading and never measured, so whether memory
+now stays flat on D3D12 is the first thing to see.
 
 ### 38. Unchecked inputs and stale lists, from the review of 2026-10-13
 
 Numbered out of order, as item 31. Each was found by reading and none has
 been reproduced.
 
-- **`aprend_texture2d_update` and `_get_data` (and the 3D pair) divide by
-  the format's bytes per pixel**, taken as `spudgpu_format_bit_count / 8`.
-  That is 0 for a format of under 8 bits a pixel (the block-compressed
-  ones report their average) and for one with no known pixel size, and
-  the call then divides by zero where it should refuse. A compressed
-  texture has no upload path at all: rows of texels are not what it is
-  made of.
+- **Fixed 2026-10-15, not compiled: `aprend_texture2d_update` and
+  `_get_data` (and the 3D pair) divided by the format's bytes per pixel**,
+  0 for a block-compressed format and for one with no known pixel size.
+  They now refuse such a format. A compressed texture still has no upload
+  path: rows of texels are not what it is made of.
 - **`aprend_shader_read_from_file_spirv` leaks the file's bytes** when the
   read or the file's release fails: both go to the failure label, which
   frees the handle and not `data`.
@@ -833,10 +895,11 @@ buffer with one the GPU is reading. Left over:
   - A debug-build check that remembers the thread an instance is used from
     and reports a call from another, since a broken rule is otherwise a
     silent race.
-  - A SpudGPU command allocator for each command list, in place of the
-    instance's one, so different lists can be compiled from different
-    threads as they can already be recorded. Not before something records
-    in parallel: it costs an allocator a list.
+  - Command memory for each thread, so different lists can be compiled
+    from different threads as they can already be recorded. Each frame
+    index has an allocator of its own now (item 37); recording in parallel
+    needs one for each thread and frame index, with the frame's lists kept
+    apart the same way. Not before something records in parallel.
   - What two instances on one device may do at once is SpudGPU's to say,
     and `spudgpu.h` says nothing about threads beyond one command list.
 - **A destroy call releases nothing itself.** It queues, and the queue is
@@ -930,8 +993,9 @@ the code"). Left over:
   small and rewritten every frame, and a staged copy per buffer per frame
   costs more than the bus read it saves. A large uniform buffer written once
   would be better staged; nothing asks for it.
-- **A texture upload is still its own allocator, list and staging buffer**,
-  though it no longer blocks (item 6).
+- **A texture upload is staged in transient memory** and recorded into the
+  frame's batch (item 6); where it falls back to a buffer of its own is
+  item 6's.
 - **A compiled list holds a pointer to each staged buffer it uses**, as it
   does to each texture (item 32). Destroying the buffer and then submitting
   the list is a use after free.
@@ -1253,6 +1317,81 @@ of the code") are what a batch of quads or glyphs is written into each
 frame. Not there: the batcher, the shaders, a font atlas, and uniform data
 from transient memory (a binding set reads a buffer, not a span).
 
+#### Text: the design (decided 2026-10-15, not started)
+
+Text is split in two. Everything about turning a string into glyphs is CPU
+work in a new module, ApText (`APTEXT_TODO.md`); Aprend only draws what
+ApText hands it. Aprend never sees a string, a font or a codepoint.
+
+**The method: MTSDF.** A multi-channel signed distance field (MSDF) in RGB
+with a true single-channel SDF in alpha, generated with msdfgen. One atlas
+draws a glyph at any size, scale, rotation and under perspective, so text
+placed in a 3D scene and zoomed stays sharp; the alpha channel's true
+distance is what an outline, halo or soft shadow is computed from (MSDF's
+RGB is only exact near the edge). The cost is softer small text than a
+hinted bitmap at its exact size. Small fixed-size text is the case bitmap
+atlases win, and is not what this is for; a bitmap mode can be added later
+as a second atlas kind if a caller needs it, as Unreal has both.
+
+**What Aprend holds:**
+
+- **The atlas is an ordinary 2D texture** the caller creates and updates:
+  RGBA8 unorm, linear filtering, clamp, one mip. ApText reports which
+  rectangles changed since the last upload, and the caller updates those
+  with `aprend_texture2d_update`. Nothing in Aprend knows it is a font atlas.
+  It grows by layers (a 2D array) or by a bigger texture and a re-pack;
+  which is ApText's choice, and Aprend needs nothing new for either.
+- **The glyph batch** is part of the 2D batcher above: per glyph one
+  instance (position or 3D transform row, size, atlas rectangle, layer,
+  color, outline color and width), written into a transient span, drawn as
+  instanced quads. Screen-space and world-space glyphs are one batch kind
+  with the transform in the vertex shader; the caller chooses which per
+  batch.
+- **The shader:** median of RGB, `screenPxRange` from `fwidth` of the atlas
+  coordinate and the atlas's distance range, coverage clamped to [0, 1];
+  outline and halo from the alpha channel. The distance range (pxRange) is
+  data from the atlas, passed in, never a constant in the shader: Hazel
+  hard-codes 2.0 in both places and they must agree by hand. Depth test,
+  depth write and blending are the pipeline's, set by the caller.
+- **No mips.** MSDF doesn't sample mips, so this doesn't wait on item 31.
+  At strong minification it aliases; the shader fades coverage once
+  `screenPxRange` drops below 1 rather than relying on a mip chain.
+
+**Needs:** items 9 and 12 as above, uniform data from transient memory, and
+item 22's answer, since the glyph shader is the first shader Aprend would
+have to ship (or the caller supplies it, with Aprend documenting the
+instance layout it expects).
+
+**What not to copy from Hazel** (`Renderer/UI/Font.cpp`,
+`Renderer2D::DrawString`, `Renderer2D_Text.glsl`):
+
+- Layout inside the renderer. `DrawString` decodes UTF-8, wraps lines,
+  applies kerning and writes vertices in one function. Here layout is
+  ApText's and the draw takes positioned glyphs.
+- No shaping: per-codepoint lookup with kerning pairs only, so no
+  ligatures and no complex scripts. ApText shapes with HarfBuzz.
+- A fixed charset baked at load (Latin, Latin-1, Cyrillic), and a missing
+  glyph silently skipped. ApText adds glyphs on demand and has fallback
+  faces.
+- An RGBA32F atlas, four times RGBA8's memory for no visible difference.
+- The atlas cached to a disk path from inside the font class, and default
+  fonts in static globals. Aprend and ApText do no file I/O and hold no
+  global state.
+
+**Reference: Unreal.** Slate shapes with HarfBuzz, breaks lines and
+reorders bidirectional text with ICU, and caches glyphs on demand in a
+dynamic atlas with fallback faces per Unicode range (composite fonts).
+Since UE 5.5 a font face chooses Bitmap, MSDF, SDF or an approximated SDF
+(`EFontRasterizationMode`, with a pixels-per-em setting for the distance
+field and per-platform overrides). In-world text is `TextRenderComponent`
+over a font texture, or the Text3D plugin's extruded meshes.
+
+**Not this:** single-stroke (plotter-style) fonts are lines, not filled
+glyphs, and go through the line batch; ApText gives their strokes as
+polylines (`APTEXT_TODO.md`). Exact curve rendering with no atlas (Slug) is
+the quality ceiling and is commercial; MTSDF is the choice until something
+shows it isn't enough.
+
 ### 24. No lit pipeline
 
 No lighting, shadows or post-processing of any kind; a pipeline today outputs
@@ -1352,14 +1491,20 @@ there, not by this list. These are what Aprend can't do until it does.
 
 ### 25. Multiple render targets per pipeline
 
-`BEGIN_RENDERING` takes up to `APREND_MAX_COLOR_TARGETS` color targets, but
-`spudgpu_shader_pipeline_desc` has one `color_attachment_format` and one
-`blend_attachment`, so a pipeline can't describe more than one. Aprend's own
-desc mirrors that. Wanted for any G-buffer or a pass with a second output.
+Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16) (see "State of the code"). SpudGPU's
+pipeline desc has a format and a blend state for each color attachment
+(`color_attachment_formats`, `blend_attachments`, `color_attachment_count`)
+and Aprend's mirrors it (`color_attachment_formats`, `_blends`). A render
+pass takes up to `APREND_MAX_COLOR_TARGETS` targets. Left: nothing checks
+that a fragment shader writes as many outputs as the pipeline has targets
+(item 18's reflection could).
 
 ### 26. Depth bias
 
-No depth bias on the pipeline desc. Shadow maps need it.
+Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16). `_depth_bias_constant`,
+`_depth_bias_slope` and `_depth_bias_clamp` on the pipeline desc, through
+SpudGPU on all three backends; a clamp needs
+`SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp`.
 
 ### 27. MSAA and resolve
 
@@ -1375,9 +1520,23 @@ test or op state on the pipeline. Hazel leaves stencil off as well.
 
 ### 29. GPU timing and debug markers
 
-No timer or pipeline statistics queries and no debug marker calls, so there is
-no per-pass GPU time and no labelled captures. Hazel:
-`RenderCommandBuffer` (`RT_BeginTimerQuery`, `RT_BeginMarker`).
+Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16) (see "State of the code"). Debug labels are
+`APREND_COMMAND_BEGIN_LABEL` and `END_LABEL`; GPU time is an
+`aprend_gpu_timer` (`aprendtimer.h`) whose slots a pass is timed into, read
+`frames_in_flight` frames later. Left:
+
+- **Only whole passes are timed.** SpudGPU writes timestamps at a pass's
+  start and end, the one place Apple GPUs sample them, so compute
+  dispatches and time between passes are in no slot. Timing compute needs
+  a compute pass in SpudGPU (Metal's compute pass descriptor has the same
+  sample buffer attachments), which it doesn't have.
+- **No pipeline statistics.** Vulkan and D3D12 have them and Metal's
+  counters differ; nothing asks.
+- **The Metal conversion is unverified.** GPU ticks are set against
+  `sampleTimestamps:` taken at the set's creation and at each read; whether
+  the CPU side is nanoseconds on every Apple GPU, and how steady the rate
+  is over a short span, are the first things to check.
+- Hazel: `RenderCommandBuffer` (`RT_BeginTimerQuery`, `RT_BeginMarker`).
 
 ### 30. Hardware without dynamic rendering
 
@@ -1521,7 +1680,8 @@ and 5 are closed and their numbers are not reused.
      Not built on Windows.
    - Run it on a device with its own memory as well, for the staged path.
 2. What the release queue made possible and isn't built: freeing staging
-   copies and a shared upload path (items 13 and 6). Rewriting a binding
+   copies (item 13). The shared upload path for textures is written (item
+   6), and staged buffers don't use it yet. Rewriting a binding
    set in place (item 9) is written.
 3. The rest of item 32: what the command list still gets wrong about
    texture layouts.
@@ -1531,13 +1691,17 @@ and 5 are closed and their numbers are not reused.
 5. Items 19, 20, 21: material, pass and draw list. Written and compiled,
    never run on a device (see "State of the code"); what is left of each
    is in its item.
-6. Items 25, 26, 29 and 31 as SpudGPU gains them; then 23 and 24, and 36
-   (post-processing, bloom first) once render passes have run.
+6. Items 25, 26 and 29 are written (2026-10-15, not compiled). Item 31
+   waits on item 22: SpudGPU's blit resamples only on Vulkan, and D3D12
+   has no resampling copy at all, so mips come from a pass Aprend draws
+   with a shader of its own. Then 23 and 24, and 36 (post-processing,
+   bloom first) once render passes have run; each needs a shader Aprend
+   ships (item 22) as well.
 
-Item 37 (the command allocator) is not in this order because it is not
-new work to schedule: it is a leak on D3D12 today, and goes ahead of
-steps 2 to 6. Item 38's points are small and independent; fix each when
-its function is next touched, the division by zero first.
+Item 37 (the command allocator) is written, not compiled; building it and
+running it on D3D12 goes ahead of steps 2 to 6. Item 38's points are small
+and independent; fix each when its function is next touched (the division
+by zero is fixed).
 
 Item 2 is closed and its D3D12 heap has never run: it belongs to step 1's
 "run it on a device with its own memory", on an integrated GPU under

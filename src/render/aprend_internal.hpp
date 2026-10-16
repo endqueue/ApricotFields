@@ -16,6 +16,7 @@
 #include "render/aprendpipeline.h"
 #include "render/aprendswapchain.h"
 #include "render/aprendtransient.h"
+#include "render/aprendtimer.h"
 
 #include "aprendpools_internal.hpp"
 #include "aprendreflect_internal.hpp"
@@ -122,7 +123,44 @@ typedef struct aprend_instance_t {
 	~aprend_instance_t();
 
 	aprend_instance_desc desc{};
-	spudgpu_command_allocator cmd_allocator{nullptr};
+	/* What every recording of one frame index is made into: an allocator,
+	 * and the SpudGPU lists recorded from it. aprend_instance_next_frame
+	 * resets the allocator once it has waited for the frame that last used
+	 * the index, which is when its memory comes back, and every list is free
+	 * again. Before that, a list handed out stays handed out: one recording
+	 * may still be running, and Vulkan can't reopen a pending command
+	 * buffer. So a frame takes a list for each recording, and the vector
+	 * holds as many as the busiest turn of the index needed. */
+	struct command_frame {
+		spudgpu_command_allocator allocator{nullptr};
+		std::vector<spudgpu_command_list> lists{};
+		/* lists[0, used) are handed out in this turn of the index. */
+		size_t used{0};
+	};
+	command_frame frame_commands[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	/* Counts aprend_instance_next_frame calls. A recording is made in one
+	 * frame and submitted in the same one, which this tells apart from the
+	 * next turn of the same index. */
+	uint64_t frame_number{0};
+	/* The upload batch: a list from the current frame's commands, open for
+	 * recording, that texture updates, readbacks and framebuffer clears are
+	 * recorded into instead of each being a submission (item 6). It goes
+	 * ahead of the lists of the next submission, in that submission, and
+	 * aprend_instance_next_frame and aprend_instance_wait_idle submit it if
+	 * nothing else has. NULL with nothing recorded. upload_batch_open is
+	 * false once it has been closed for a submission that then failed: it
+	 * waits, closed, to go with the next. */
+	spudgpu_command_list upload_batch{nullptr};
+	bool upload_batch_open{false};
+	/* The queue the batch's first call named; every later one names the
+	 * same, and so does the submission that takes it. */
+	spudgpu_command_queue upload_batch_queue{nullptr};
+	/* Whether there is a batch waiting, for aprend_instance_retire on any
+	 * thread: what is destroyed while one waits may be used by it, so it is
+	 * released after the submission that will carry the batch. Written
+	 * under release_mutex, with submit_serial, on the thread using the
+	 * instance. */
+	bool upload_batch_waiting{false};
 	/* SPUDGPU_DEVICE_PROPERTIES::unified_memory of desc.device, read once at
 	 * creation. Decides where vertex, index and storage buffers are kept
 	 * (aprend_buffer_store). */
@@ -151,7 +189,8 @@ typedef struct aprend_instance_t {
 	 * at 0, has already reached. */
 	spudgpu_fence frame_fence{nullptr};
 	/* Atomic because a destroy call reads it from whatever thread it is
-	 * made on (aprend_instance_retire); only a submission writes it. */
+	 * made on (aprend_instance_retire); only a submission writes it, under
+	 * release_mutex, with upload_batch_waiting. */
 	std::atomic<uint64_t> submit_serial{0};
 	uint64_t frame_last_serial[APREND_MAX_FRAMES_IN_FLIGHT]{};
 	/* The one queue everything of this instance is submitted on: the queue
@@ -178,16 +217,20 @@ typedef struct aprend_instance_t {
 	 * by the thread using the instance, by creating a layout and by releasing
 	 * a core's last holder. */
 	std::vector<aprend_binding_layout_core *> binding_layout_cores{};
-	/* Guards release_queue and release_head, and nothing else. It is what
+	/* Guards release_queue, release_head and upload_batch_waiting, and makes
+	 * a new submit_serial and the batch it carried change together for
+	 * aprend_instance_retire. It is what
 	 * lets a destroy call come from any thread: retiring only pushes an
 	 * entry under it. It is never held while a release function runs. */
 	std::mutex release_mutex{};
 } aprend_instance_t;
 
 /* Queues [object], a handle of [instance] or something one owns, to be
- * released with [release] once every submission made so far has finished.
- * Every destroy call of a GPU-backed handle goes through this, so the caller
- * of one doesn't have to know the GPU is finished with it.
+ * released with [release] once every submission made so far has finished,
+ * and with an upload batch waiting, once the submission that carries it has
+ * too: the batch may have recorded work on the object. Every destroy call of
+ * a GPU-backed handle goes through this, so the caller of one doesn't have
+ * to know the GPU is finished with it.
  *
  * Safe from any thread, at the same time as anything else on the instance:
  * it takes the serial and pushes the entry under release_mutex and does
@@ -231,13 +274,20 @@ inline void aprend_release_spudgpu_image_view(void *object) { spudgpu_destroy_im
 inline void aprend_release_spudgpu_command_list(void *object) { spudgpu_destroy_command_list((spudgpu_command_list)object); }
 inline void aprend_release_spudgpu_command_allocator(void *object) { spudgpu_destroy_command_allocator((spudgpu_command_allocator)object); }
 
+/* The most lists one aprend_instance_submit takes from its caller: a command
+ * list's upload list and its own. The upload batch is added to them. */
+#define APREND_SUBMIT_MAX_LISTS 2
+
 /* The one way anything of [instance] reaches a queue. Refuses, with
  * SPUDRESULT_GPU_INVALID_COMMAND_QUEUE and nothing submitted, a [queue] that
- * is not the one the instance's first submission went on. Submits [lists] on
- * [queue], synchronized with [swap_chain] if it isn't NULL, and signals the
- * instance's frame fence to the next serial, which it records against the
- * current frame index and hands back through [out_serial] (NULL to skip). A
- * failed submission takes no serial. */
+ * is not the one the instance's first submission went on, or not the one the
+ * waiting upload batch was recorded for. Submits the upload batch, if one is
+ * waiting, and then [lists] (at most APREND_SUBMIT_MAX_LISTS, and none only
+ * when a batch waits) on [queue], synchronized with [swap_chain] if
+ * it isn't NULL, and signals the instance's frame fence to the next serial,
+ * which it records against the current frame index and hands back through
+ * [out_serial] (NULL to skip). A failed submission takes no serial, and
+ * leaves the batch waiting, closed, for the next. */
 SPUDRESULT aprend_instance_submit(
     aprend_instance instance,
     spudgpu_command_queue queue,
@@ -250,6 +300,34 @@ SPUDRESULT aprend_instance_submit(
 SPUDRESULT aprend_instance_wait_serial(
     aprend_instance instance,
     uint64_t serial);
+
+/* A SpudGPU list of the current frame's allocator, for one recording to be
+ * submitted in this frame. Not handed out again until
+ * aprend_instance_next_frame has come round to this index and waited, so it
+ * is never reopened while its recording may run. Made if the frame has none
+ * left. */
+SPUDRESULT aprend_instance_take_command_list(
+    aprend_instance instance,
+    spudgpu_command_list *out_list);
+
+/* The upload batch, open for recording, for work to go on [queue]: the one
+ * waiting, or a new one from the current frame's commands. Refuses, with
+ * SPUDRESULT_GPU_INVALID_COMMAND_QUEUE, a queue that is not the instance's
+ * or not the batch's. A batch left closed by a failed submission is
+ * submitted first, and its failure is this call's. What is recorded runs
+ * after everything submitted before it and ahead of everything submitted
+ * after. */
+SPUDRESULT aprend_instance_open_upload_batch(
+    aprend_instance instance,
+    spudgpu_command_queue queue,
+    spudgpu_command_list *out_list);
+
+/* Submits the upload batch on its own, if one is waiting, and hands back
+ * through [out_serial] the serial to wait for to know it has run: the
+ * batch's, or with none waiting the last one taken. */
+SPUDRESULT aprend_instance_flush_upload_batch(
+    aprend_instance instance,
+    uint64_t *out_serial);
 
 /* Where the bytes of a vertex, index or storage buffer are kept, chosen from
  * the device's memory model when the buffer is created.
@@ -311,6 +389,24 @@ SPUDRESULT aprend_buffer_store_write(
     uint64_t size,
     const void *data);
 
+typedef struct aprend_gpu_timer_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_gpu_timer_t() = default;
+	~aprend_gpu_timer_t();
+	aprend_instance instance{nullptr};
+	uint32_t slot_count{0};
+	/* One SpudGPU timestamp set for each frame index, of two entries a slot:
+	 * slot i's start at 2i and its end at 2i + 1. */
+	spudgpu_timestamp_set sets[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	/* For each frame index and slot (index * slot_count + slot), the frame
+	 * number of the last submission whose pass timed it; UINT64_MAX for
+	 * none. aprend_gpu_timer_get_ms reads a slot only when this is the frame
+	 * `frames_in_flight` before the current one. */
+	std::vector<uint64_t> written_frame{};
+} aprend_gpu_timer_t;
+
 typedef struct aprend_command_list_t {
 #if _DEBUG
 	char *debug_name{nullptr};
@@ -318,12 +414,15 @@ typedef struct aprend_command_list_t {
 	aprend_command_list_t() = default;
 	~aprend_command_list_t();
 	aprend_instance instance{nullptr};
+	/* The SpudGPU list the last compile recorded into: one of the instance's
+	 * frame commands, taken in the frame the list was compiled in
+	 * (compiled_frame_number), and the instance's, not the list's. NULL
+	 * before the first compile and after a submit, since a submitted
+	 * recording may still be running and the next compile takes another. A
+	 * compile in the same frame that finds one not submitted records into it
+	 * again. The copies of the staged buffers the list uses are recorded at
+	 * submit into another list taken there, and submitted ahead of it. */
 	spudgpu_command_list cmd_list{nullptr};
-	/* Recorded at submit with the copies of whatever staged buffers the list
-	 * uses have been written since they were last copied, and submitted ahead
-	 * of cmd_list. Never recording while cmd_list is: the two share the
-	 * instance's allocator. */
-	spudgpu_command_list upload_list{nullptr};
 	/* Every staged buffer store the last compile found in use, once each. */
 	std::vector<aprend_buffer_store *> staged_stores{};
 	/* The state of each multi-state buffer store as the compile walks the
@@ -338,15 +437,24 @@ typedef struct aprend_command_list_t {
 		SPUDGPU_RESOURCE_STATE state;
 	};
 	std::vector<buffer_state> buffer_states{};
-	/* The instance's frame index at the last compile, and whether the list
-	 * binds a set that has a descriptor set for each frame. Such a list
-	 * reads that frame's copies and is only submittable while the frame index
-	 * is still the one it was compiled in. */
+	/* The instance's frame index and frame number at the last compile. A
+	 * list is submittable only in the frame it was compiled in: its
+	 * recording is made into that frame's allocator, which the next turn of
+	 * the index resets, and a list that binds a per-frame set or a transient
+	 * span reads that frame's copies and memory as well. */
 	uint32_t compiled_frame{0};
-	bool uses_frame_sets{false};
-	/* Whether the list binds a transient span, which is memory of the frame
-	 * it was compiled in and no other. */
-	bool uses_transient{false};
+	uint64_t compiled_frame_number{0};
+	/* The timer slots the last compile's passes time: submit marks each as
+	 * written in the compiled frame. */
+	struct timer_use {
+		aprend_gpu_timer timer;
+		uint32_t slot;
+	};
+	std::vector<timer_use> timer_uses{};
+	/* A copy of each BEGIN_LABEL's text, so recorded commands never point at
+	 * caller memory. A deque, as a vector's growth would move a short
+	 * string's characters along with it. */
+	std::deque<std::string> label_storage{};
 	/* Every material a SET_MATERIAL of the last compile names, once each:
 	 * submit writes their uniform values into the frame's copy first. */
 	std::vector<aprend_material> materials{};

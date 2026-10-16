@@ -121,6 +121,8 @@ bool aprend_render_pass_expand(aprend_command_list cmd_list, aprend_render_pass 
 	// below covers too.
 	cmd._params._begin_rendering._width  = 0;
 	cmd._params._begin_rendering._height = 0;
+	cmd._params._begin_rendering._timer      = desc._timer;
+	cmd._params._begin_rendering._timer_slot = desc._timer_slot;
 	aprend_send_command(cmd_list, cmd);
 
 	cmd                                        = {};
@@ -197,13 +199,21 @@ aprend_render_pass aprend_render_pass_create(
 		printf("apricot: %s: _pipeline is of another instance\n", who);
 		return nullptr;
 	}
+	if (desc->_timer && desc->_timer->instance != instance) {
+		printf("apricot: %s: _timer is of another instance\n", who);
+		return nullptr;
+	}
+	if (desc->_timer && desc->_timer_slot >= desc->_timer->slot_count) {
+		printf("apricot: %s: _timer_slot %u is at or above the timer's %u slots\n", who, desc->_timer_slot, desc->_timer->slot_count);
+		return nullptr;
+	}
 	if (desc->_color_target_count > APREND_RENDER_PASS_MAX_COLOR_TARGETS) {
 		printf("apricot: %s: _color_target_count %u is above APREND_RENDER_PASS_MAX_COLOR_TARGETS\n", who, desc->_color_target_count);
 		return nullptr;
 	}
-	const SPUDGPU_FORMAT color_format = pipeline->desc.color_attachment_format;
-	const SPUDGPU_FORMAT depth_format = pipeline->desc.depth_format;
-	const uint32_t wanted_colors      = color_format == SPUDGPU_FORMAT_UNKNOWN ? 0 : 1;
+	const SPUDGPU_FORMAT *color_formats = pipeline->desc.color_attachment_formats;
+	const SPUDGPU_FORMAT depth_format   = pipeline->desc.depth_format;
+	const uint32_t wanted_colors        = pipeline->desc.color_attachment_count;
 	if (desc->_color_target_count != wanted_colors) {
 		printf("apricot: %s: _color_target_count is %u, and the pipeline renders to %u color targets\n", who, desc->_color_target_count,
 		       wanted_colors);
@@ -236,9 +246,9 @@ aprend_render_pass aprend_render_pass_create(
 				printf("apricot: %s: _color_targets[%u] has a view, and the pass renders to _framebuffer\n", who, i);
 				return nullptr;
 			}
-			if (aprend_framebuffer_attachment_format(framebuffer, i) != color_format) {
-				printf("apricot: %s: attachment %u of _framebuffer is of format %u, and the pipeline renders to %u\n", who, i,
-				       (unsigned)aprend_framebuffer_attachment_format(framebuffer, i), (unsigned)color_format);
+			if (aprend_framebuffer_attachment_format(framebuffer, i) != color_formats[i]) {
+				printf("apricot: %s: attachment %u of _framebuffer is of format %u, and the pipeline renders %u there\n", who, i,
+				       (unsigned)aprend_framebuffer_attachment_format(framebuffer, i), (unsigned)color_formats[i]);
 				return nullptr;
 			}
 		}
@@ -258,7 +268,7 @@ aprend_render_pass aprend_render_pass_create(
 				return nullptr;
 			}
 			if (!aprend_pass_target_valid(who, "a color target", instance, desc->_color_targets[i].view, APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET,
-			                              color_format))
+			                              color_formats[i]))
 				return nullptr;
 		}
 		if (depth_format == SPUDGPU_FORMAT_UNKNOWN && desc->_depth_target.view) {

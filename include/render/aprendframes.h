@@ -144,8 +144,9 @@ bool aprend_framebuffer_resize(
 /**
  * @brief Clears every color attachment of a framebuffer to one color.
  *
- * Submitted at once on @p queue and not waited for, under the same rules as
- * aprend_texture2d_update() (aprendimages.h): the clear runs after
+ * Recorded into the frame's batch of updates and clears and not waited
+ * for, under the same rules as aprend_texture2d_update() (aprendimages.h;
+ * aprendcontext.h, "Texture updates and clears"): the clear runs after
  * everything submitted before it and ahead of everything after, and the
  * attachments are left in the image layout they were found in.
  *
@@ -156,8 +157,8 @@ bool aprend_framebuffer_resize(
  * @param[in] b           Blue.
  * @param[in] a           Alpha.
  *
- * @return false if @p framebuffer or @p queue is NULL or the submission
- *         fails.
+ * @return false if @p framebuffer or @p queue is NULL or the clears can't
+ *         be recorded.
  */
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
@@ -171,7 +172,7 @@ bool aprend_framebuffer_clear_colors(
  * @brief Clears the depth, the stencil or both of a framebuffer's depth
  * attachment.
  *
- * Submitted as aprend_framebuffer_clear_colors() is.
+ * Recorded as aprend_framebuffer_clear_colors() is.
  *
  * @param[in] framebuffer   Framebuffer to clear.
  * @param[in] queue         Queue to submit on. Never NULL.
@@ -181,7 +182,7 @@ bool aprend_framebuffer_clear_colors(
  * @param[in] stencil       Stencil value.
  *
  * @return false if @p framebuffer or @p queue is NULL, the framebuffer has
- *         no depth attachment, or the submission fails. true with nothing
+ *         no depth attachment, or the clear can't be recorded. true with nothing
  *         done if neither @p clear_depth nor @p clear_stencil is set.
  */
 bool aprend_framebuffer_clear_depth(

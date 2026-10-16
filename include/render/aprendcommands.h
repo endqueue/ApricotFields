@@ -5,6 +5,7 @@
 #include "aprendcontext.h"
 #include "aprendimages.h"
 #include "aprendtransient.h"
+#include "aprendtimer.h"
 
 /**
  * @file aprendcommands.h
@@ -21,10 +22,10 @@
  *   destroyed by another thread meanwhile.
  * - aprend_command_list_create(), aprend_command_list_compile(),
  *   aprend_command_list_submit() and aprend_command_list_destroy() are not
- *   part of that. Every list of an instance is created from and compiled
- *   through the instance's one SpudGPU command allocator; compiling reads
- *   the layouts a submission writes; and a submission takes the next place
- *   in the instance's order. They are made by one thread at a time across
+ *   part of that. Every list of an instance compiles into the instance's
+ *   command memory for the frame (aprendcontext.h); compiling reads the
+ *   layouts a submission writes; and a submission takes the next place in
+ *   the instance's order and carries the instance's batch of updates. They are made by one thread at a time across
  *   the whole instance, not only one list.
  */
 
@@ -293,13 +294,26 @@ enum {
 	 * slot, stays there after it.
 	 */
 	APREND_COMMAND_DRAW_LIST                   = 25,
+	/**
+	 * Opens a labelled region of the list, for a capture or profiling tool
+	 * to show around the commands until the matching END_LABEL. It changes
+	 * nothing the GPU does. The text is copied. Regions nest, and one
+	 * opened inside a pass closes inside the same pass, one opened outside
+	 * every pass closes outside every pass; every region is closed by the
+	 * end of the list. aprend_command_list_compile() fails on any
+	 * violation.
+	 */
+	APREND_COMMAND_BEGIN_LABEL                 = 26,
+	/** Closes the region the last BEGIN_LABEL opened. Reads nothing. */
+	APREND_COMMAND_END_LABEL                   = 27,
 };
 
 /**
  * @brief One command of a command list.
  *
  * Every array a command points at (`_vertex_buffers`, `_viewports`,
- * `_scissor_rects`, `_color_targets`, the `_data` of PUSH_CONSTANTS) is
+ * `_scissor_rects`, `_color_targets`, the `_data` of PUSH_CONSTANTS, the
+ * `_label` of BEGIN_LABEL) is
  * copied into the command list by aprend_send_command(), so the caller's
  * array only has to live for that call. What the entries refer to - buffers,
  * views - must stay alive until the list's submission has completed.
@@ -373,6 +387,13 @@ typedef struct APREND_COMMAND {
 			 */
 			int32_t _x, _y;
 			uint32_t _width, _height;
+			/**
+			 * A GPU timer (aprendtimer.h) the pass is timed into, at slot
+			 * `_timer_slot`; NULL to time nothing. Of the list's instance,
+			 * with `_timer_slot` below its slot count.
+			 */
+			aprend_gpu_timer _timer;
+			uint32_t _timer_slot;
 		} _begin_rendering;
 		/** APREND_COMMAND_SET_BINDING_SET. */
 		struct {
@@ -444,6 +465,11 @@ typedef struct APREND_COMMAND {
 			aprend_draw_list _list;
 			uint32_t _material_slot;
 		} _draw_list;
+		/** APREND_COMMAND_BEGIN_LABEL. END_LABEL reads nothing. */
+		struct {
+			/** Null-terminated text. NULL is an empty label. */
+			const char *_label;
+		} _begin_label;
 	} _params;
 } APREND_COMMAND;
 
@@ -458,8 +484,9 @@ typedef struct aprend_command_list_t *aprend_command_list;
  * @param[in] instance Instance the list records, compiles and submits
  *                     through.
  *
- * @return The list, or NULL if @p instance is NULL or the device refuses
- *         it.
+ * @return The list, or NULL if @p instance is NULL or there is no memory
+ *         for it. It holds no SpudGPU list of its own: each compile records
+ *         into one of the instance's for the frame (aprendcontext.h).
  *
  * @see aprend_command_list_destroy()
  */
@@ -536,10 +563,14 @@ void aprend_send_command(
  * @brief Compiles a command list.
  *
  * Translates every command recorded since the last
- * aprend_command_list_reset() into the underlying spudgpu_command_list and
- * closes it for submission (spudgpu_begin_command_list() / ... /
+ * aprend_command_list_reset() into a spudgpu_command_list and closes it for
+ * submission (spudgpu_begin_command_list() / ... /
  * spudgpu_end_command_list()). Only compiles; submit with
- * aprend_command_list_submit(). Compiling has no effect on any texture's
+ * aprend_command_list_submit(), in the same frame. The SpudGPU list is one
+ * of the instance's for the current frame, recorded through that frame's
+ * command allocator: a compile after the list's last submit takes a fresh
+ * one, since the last may still be running, and a compile in the same
+ * frame with no submit in between records over its own. Compiling has no effect on any texture's
  * tracked layout, so a list that's compiled but never submitted (or fails
  * to compile) leaves nothing out of sync.
  *
@@ -583,7 +614,9 @@ void aprend_send_command(
  *           read as floats (aprendshader.h);
  *         - a SET_MATERIAL whose material is not complete
  *           (aprend_material_is_complete()) or whose binding set can't be
- *           built.
+ *           built;
+ *         - no SpudGPU command list to record into, if one has to be made
+ *           and the device refuses it.
  *
  *         Compiling builds the binding set of every material a SET_MATERIAL
  *         names, when it has none or a resource was set since its last
@@ -598,7 +631,12 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * the image layouts it leaves its textures in.
  *
  * The submission counts towards the current frame, which
- * aprend_instance_next_frame() (aprendcontext.h) waits for.
+ * aprend_instance_next_frame() (aprendcontext.h) waits for. A list is
+ * submitted in the frame it was compiled in: the next
+ * aprend_instance_next_frame() refuses every compile made before it. Texture
+ * updates and framebuffer clears recorded since the last submission go
+ * first, in the same submission (aprendcontext.h, "Texture updates and
+ * clears").
  *
  * @p queue is the instance's one queue (aprendcontext.h): the queue of the
  * instance's first submission, and every one after it. Another is refused.
@@ -632,11 +670,11 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  *         successfully since it was last submitted, if @p queue is not the queue the instance already
  *         submits on, if a texture it uses has changed layout since it was
  *         compiled (another list touching the same texture was submitted in
- *         between), or if it binds a set holding a buffer set and
- *         aprend_instance_next_frame() has moved the frame on since it was
- *         compiled. In the last two cases, recompile it and submit again.
- *         false too if transient memory can't be taken for a material's
- *         block.
+ *         between), or if aprend_instance_next_frame() has moved the frame
+ *         on since it was compiled. In the last two cases, recompile it and
+ *         submit again. false too if transient memory can't be taken for a
+ *         material's block, or a SpudGPU list for the list's buffer copies
+ *         can't be made.
  */
 bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_queue queue);
 

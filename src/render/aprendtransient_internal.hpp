@@ -72,6 +72,17 @@ bool aprend_transient_span_valid(
     const aprend_transient_span *span,
     const char *who);
 
+/* aprend_transient_allocate for staging an upload, which has a buffer of
+ * its own to fall back on: false, printing nothing, if the instance has no
+ * transient memory or the span would pass transient_memory_limit. The span's
+ * chunk is a copy source, and its bytes are flushed by the submission that
+ * reads them, which is in the current frame. */
+bool aprend_transient_allocate_staging(
+    aprend_instance instance,
+    uint64_t size,
+    uint64_t alignment,
+    aprend_transient_span *out_span);
+
 /* A view of [span] with elements of [stride] bytes, for a command list to
  * bind. It is the arena's: destroyed when the span's frame is rewound.
  * [span] has passed aprend_transient_span_valid. */

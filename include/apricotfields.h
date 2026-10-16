@@ -15,6 +15,7 @@
 #include "render/aprendcommands.h"
 #include "render/aprendswapchain.h"
 #include "render/aprendtransient.h"
+#include "render/aprendtimer.h"
 #include "render/aprendmaterial.h"
 #include "render/aprendpass.h"
 #include "render/aprenddrawlist.h"

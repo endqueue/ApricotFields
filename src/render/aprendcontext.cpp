@@ -29,11 +29,20 @@ aprend_instance_t::~aprend_instance_t() {
 	aprend_material_arena_destroy(this);
 	// Nothing reads a transient span any more.
 	aprend_transient_arena_destroy(this);
-	// An instance that failed to create may have neither.
+	// An instance that failed to create may have neither. A batch that was
+	// never submitted is dropped with the lists, which go before their
+	// allocators.
 	if (this->frame_fence)
 		spudgpu_destroy_fence(this->frame_fence);
-	if (this->cmd_allocator)
-		spudgpu_destroy_command_allocator(this->cmd_allocator);
+	// Closed first: a Metal encoder is ended before it goes.
+	if (this->upload_batch && this->upload_batch_open)
+		spudgpu_end_command_list(this->upload_batch);
+	for (command_frame &frame : this->frame_commands) {
+		for (spudgpu_command_list list : frame.lists)
+			spudgpu_destroy_command_list(list);
+		if (frame.allocator)
+			spudgpu_destroy_command_allocator(frame.allocator);
+	}
 }
 
 SPUDRESULT aprend_instance_submit(
@@ -51,6 +60,29 @@ SPUDRESULT aprend_instance_submit(
 		printf("apricot: submission refused: this instance submits on one queue, and this is not the queue of its first submission\n");
 		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
 	}
+	// The batch was recorded for its queue, and is the instance's first
+	// submission when no queue is chosen yet.
+	if (instance->upload_batch && queue != instance->upload_batch_queue) {
+		printf("apricot: submission refused: texture updates or clears are waiting to go on another queue, and this instance submits on one\n");
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	}
+	assert(list_count <= APREND_SUBMIT_MAX_LISTS);
+	assert(list_count > 0 || instance->upload_batch);
+
+	// The batch goes first, in this submission: what it writes is what the
+	// lists after it read.
+	spudgpu_command_list all[APREND_SUBMIT_MAX_LISTS + 1];
+	uint32_t all_count = 0;
+	if (instance->upload_batch) {
+		if (instance->upload_batch_open) {
+			spudgpu_end_command_list(instance->upload_batch);
+			instance->upload_batch_open = false;
+		}
+		all[all_count++] = instance->upload_batch;
+	}
+	for (uint32_t i = 0; i < list_count; ++i)
+		all[all_count++] = lists[i];
+
 	// What was written into the frame's transient spans, which the lists
 	// may read. A failed flush fails the submission: the GPU would read
 	// bytes that may not have reached it.
@@ -59,8 +91,8 @@ SPUDRESULT aprend_instance_submit(
 		return flushed;
 	const uint64_t serial = instance->submit_serial.load() + 1;
 	spudgpu_submit_desc submit{};
-	submit.cmd_lists          = lists;
-	submit.cmd_list_count     = list_count;
+	submit.cmd_lists          = all;
+	submit.cmd_list_count     = all_count;
 	submit.signal_fence       = instance->frame_fence;
 	submit.signal_fence_value = serial;
 	submit.swap_chain         = swap_chain;
@@ -68,8 +100,15 @@ SPUDRESULT aprend_instance_submit(
 	if (SPUDFAIL(sr))
 		return sr;
 	// Taken only by a submission that went in, so the fence's value never
-	// has a gap a wait could hang on.
-	instance->submit_serial                            = serial;
+	// has a gap a wait could hang on. With the batch gone in, what is
+	// retired from now on waits for this serial and no later one.
+	{
+		std::lock_guard<std::mutex> lock(instance->release_mutex);
+		instance->submit_serial        = serial;
+		instance->upload_batch_waiting = false;
+	}
+	instance->upload_batch                             = nullptr;
+	instance->upload_batch_queue                       = nullptr;
 	instance->frame_last_serial[instance->frame_index] = serial;
 	// Set by a submission that went in: a failed first one binds nothing.
 	instance->submit_queue = queue;
@@ -84,6 +123,74 @@ SPUDRESULT aprend_instance_wait_serial(
     aprend_instance instance,
     uint64_t serial) {
 	return spudgpu_wait_for_fences(instance->desc.device, &instance->frame_fence, &serial, 1, true, UINT64_MAX);
+}
+
+SPUDRESULT aprend_instance_take_command_list(
+    aprend_instance instance,
+    spudgpu_command_list *out_list) {
+	aprend_instance_t::command_frame &frame = instance->frame_commands[instance->frame_index];
+	if (frame.used == frame.lists.size()) {
+		spudgpu_command_list list = nullptr;
+		SPUDRESULT sr             = spudgpu_create_command_list(frame.allocator, &list);
+		if (SPUDFAIL(sr))
+			return sr;
+		// The push can only fail for want of memory. No exception leaves a
+		// C entry point, and this is reached from one.
+		try {
+			frame.lists.push_back(list);
+		} catch (...) {
+			spudgpu_destroy_command_list(list);
+			return SPUDRESULT_OUT_OF_MEMORY;
+		}
+	}
+	*out_list = frame.lists[frame.used++];
+	return SPUD_SUCCESS;
+}
+
+SPUDRESULT aprend_instance_flush_upload_batch(
+    aprend_instance instance,
+    uint64_t *out_serial) {
+	if (!instance->upload_batch) {
+		*out_serial = instance->submit_serial.load();
+		return SPUD_SUCCESS;
+	}
+	return aprend_instance_submit(instance, instance->upload_batch_queue, nullptr, 0, nullptr, out_serial);
+}
+
+SPUDRESULT aprend_instance_open_upload_batch(
+    aprend_instance instance,
+    spudgpu_command_queue queue,
+    spudgpu_command_list *out_list) {
+	if (instance->submit_queue && queue != instance->submit_queue) {
+		printf("apricot: refused: this instance submits on one queue, and this is not the queue of its first submission\n");
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	}
+	if (instance->upload_batch && queue != instance->upload_batch_queue) {
+		printf("apricot: refused: texture updates or clears are waiting to go on another queue, and this instance submits on one\n");
+		return SPUDRESULT_GPU_INVALID_COMMAND_QUEUE;
+	}
+	// Closed by a submission that failed: nothing more can be recorded into
+	// it, so it goes on its own now.
+	if (instance->upload_batch && !instance->upload_batch_open) {
+		uint64_t unused = 0;
+		SPUDRESULT sr   = aprend_instance_flush_upload_batch(instance, &unused);
+		if (SPUDFAIL(sr))
+			return sr;
+	}
+	if (!instance->upload_batch) {
+		spudgpu_command_list list = nullptr;
+		SPUDRESULT sr             = aprend_instance_take_command_list(instance, &list);
+		if (SPUDFAIL(sr))
+			return sr;
+		spudgpu_begin_command_list(list);
+		instance->upload_batch       = list;
+		instance->upload_batch_open  = true;
+		instance->upload_batch_queue = queue;
+		std::lock_guard<std::mutex> lock(instance->release_mutex);
+		instance->upload_batch_waiting = true;
+	}
+	*out_list = instance->upload_batch;
+	return SPUD_SUCCESS;
 }
 
 void aprend_instance_collect(aprend_instance instance) {
@@ -135,8 +242,9 @@ void aprend_instance_retire(
     void (*release)(void *object)) {
 	std::lock_guard<std::mutex> lock(instance->release_mutex);
 	// Read under the lock, so entries go on in the order of their serials
-	// whichever threads they come from.
-	const uint64_t serial = instance->submit_serial;
+	// whichever threads they come from. A waiting upload batch will take the
+	// next serial, and may use the object.
+	const uint64_t serial = instance->submit_serial + (instance->upload_batch_waiting ? 1 : 0);
 	try {
 		instance->release_queue.push_back({release, object, serial});
 	} catch (const std::bad_alloc &) {
@@ -177,13 +285,19 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 
-	spudgpu_command_allocator_desc aDesc = {};
-	aDesc.flags                          = 0;
-	aDesc.type                           = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
+	// One allocator for each frame index, so that one can be reset while
+	// the GPU still runs what the others recorded.
+	for (uint32_t i = 0; i < desc->frames_in_flight; ++i) {
+		spudgpu_command_allocator_desc aDesc = {};
+		aDesc.flags                          = 0;
+		aDesc.type                           = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
 
-	sr = spudgpu_create_command_allocator(desc->device, &aDesc, &result->cmd_allocator);
-	if (SPUDFAIL(sr))
-		goto failedattempt;
+		sr = spudgpu_create_command_allocator(desc->device, &aDesc, &result->frame_commands[i].allocator);
+		if (SPUDFAIL(sr)) {
+			result->frame_commands[i].allocator = nullptr;
+			goto failedattempt;
+		}
+	}
 
 	{
 		SPUDGPU_DEVICE_PROPERTIES properties{};
@@ -221,7 +335,30 @@ bool aprend_instance_get_desc(
 uint32_t aprend_instance_next_frame(aprend_instance instance) {
 	if (!instance)
 		return 0;
+	// The batch is the frame's, recorded into its allocator and reading its
+	// transient memory: it goes before the frame ends, if nothing has taken
+	// it. If it can't, it is dropped, since the next turn of this index
+	// resets what it was recorded into, and what it would have done is lost.
+	{
+		uint64_t unused = 0;
+		SPUDRESULT sr   = aprend_instance_flush_upload_batch(instance, &unused);
+		if (SPUDFAIL(sr)) {
+			printf("apricot: aprend_instance_next_frame: texture updates or clears waiting to be submitted could not be, and are dropped: %s\n",
+			       spudresult_str(sr));
+			if (instance->upload_batch_open)
+				spudgpu_end_command_list(instance->upload_batch);
+			instance->upload_batch       = nullptr;
+			instance->upload_batch_open  = false;
+			instance->upload_batch_queue = nullptr;
+			// What was retired while it waited waits a serial longer than
+			// it needs: never too short.
+			std::lock_guard<std::mutex> lock(instance->release_mutex);
+			instance->upload_batch_waiting = false;
+		}
+	}
+
 	instance->frame_index = (instance->frame_index + 1) % instance->desc.frames_in_flight;
+	++instance->frame_number;
 
 	// Everything submitted the last time this index was current must have
 	// finished before its buffer set copies are written again.
@@ -230,17 +367,35 @@ uint32_t aprend_instance_next_frame(aprend_instance instance) {
 	if (SPUDFAIL(sr))
 		printf("apricot: aprend_instance_next_frame: waiting for frame %u failed: %s\n", instance->frame_index, spudresult_str(sr));
 	// The transient spans taken the last time this index was current are
-	// read by nothing now. After a failed wait that isn't known, and the
-	// memory is left as it is: the frame's spans go on from where they were.
-	if (!SPUDFAIL(sr))
+	// read by nothing now, and nothing recorded into the index's allocator
+	// runs. After a failed wait that isn't known, and both are left as they
+	// are: the frame's spans go on from where they were, and its recordings
+	// take lists it hasn't handed out yet, so none still running is
+	// reopened. Its command memory then grows until a wait succeeds.
+	if (!SPUDFAIL(sr)) {
 		aprend_transient_arena_begin_frame(instance);
+		aprend_instance_t::command_frame &frame = instance->frame_commands[instance->frame_index];
+		SPUDRESULT reset                         = spudgpu_reset_command_allocator(frame.allocator);
+		if (SPUDFAIL(reset))
+			printf("apricot: aprend_instance_next_frame: resetting frame %u's command allocator failed: %s\n", instance->frame_index,
+			       spudresult_str(reset));
+		frame.used = 0;
+	}
 	return instance->frame_index;
 }
 uint32_t aprend_instance_get_frame_index(aprend_instance instance) { return instance ? instance->frame_index : 0; }
 bool aprend_instance_wait_idle(aprend_instance instance) {
 	if (!instance)
 		return false;
-	SPUDRESULT sr = aprend_instance_wait_serial(instance, instance->submit_serial.load());
+	// Waiting for everything includes what is recorded and not yet
+	// submitted.
+	uint64_t serial = 0;
+	SPUDRESULT sr   = aprend_instance_flush_upload_batch(instance, &serial);
+	if (SPUDFAIL(sr)) {
+		printf("apricot: aprend_instance_wait_idle: texture updates or clears waiting to be submitted could not be: %s\n", spudresult_str(sr));
+		return false;
+	}
+	sr = aprend_instance_wait_serial(instance, serial);
 	aprend_instance_collect(instance);
 	if (SPUDFAIL(sr)) {
 		printf("apricot: aprend_instance_wait_idle failed: %s\n", spudresult_str(sr));

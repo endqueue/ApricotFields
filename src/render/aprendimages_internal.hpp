@@ -2,61 +2,43 @@
 #include "render/aprendimages.h"
 #include "render/aprendframes.h"
 #include "aprend_internal.hpp"
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
-/* Records `record` onto a throwaway command list and submits it on [queue] as
- * one of the instance's submissions (aprend_instance_submit).
+/* Records `record` into the instance's upload batch for [queue]
+ * (aprend_instance_open_upload_batch): it goes ahead of the lists of the
+ * next submission, in that submission, and aprend_instance_next_frame or
+ * aprend_instance_wait_idle submits it if nothing has by then. So it runs
+ * after everything submitted before it and ahead of everything submitted
+ * after, as a submission of its own would, and a frame's updates and clears
+ * cost one list between them. What the commands read (a staging buffer) is
+ * the caller's to retire after this returns, which holds it until the batch
+ * has run. False, with nothing recorded, if no batch can be opened.
  *
- * With [wait], blocks until it has finished: a wait on the instance's fence
- * for this submission's serial, not on the whole queue. For work whose
- * result the caller reads back.
- *
- * Without, returns once it is submitted. The list and its allocator go on
- * the instance's release queue, and whatever the commands read (a staging
- * buffer) is the caller's to retire the same way, after this returns. The
- * work runs in submission order, ahead of anything submitted later.
- *
- * Not for hot paths: it makes an allocator and a list each time. Only used
- * for one-shot texture update/readback/clear operations. Shared by
+ * Used for texture updates, readbacks and framebuffer clears. Shared by
  * aprendimages.cpp and aprendframes.cpp. */
-template <typename Fn> static bool aprend_submit_immediate(aprend_instance instance, spudgpu_command_queue queue, bool wait, Fn &&record) {
-	spudgpu_command_allocator_desc alloc_desc{};
-	alloc_desc.type = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
-
-	spudgpu_command_allocator allocator;
-	if (spudgpu_create_command_allocator(instance->desc.device, &alloc_desc, &allocator) != SPUD_SUCCESS)
-		return false;
-
-	spudgpu_command_list cmd;
-	if (spudgpu_create_command_list(allocator, &cmd) != SPUD_SUCCESS) {
-		spudgpu_destroy_command_allocator(allocator);
+template <typename Fn> static bool aprend_record_immediate(aprend_instance instance, spudgpu_command_queue queue, Fn &&record) {
+	spudgpu_command_list cmd = nullptr;
+	SPUDRESULT sr            = aprend_instance_open_upload_batch(instance, queue, &cmd);
+	if (SPUDFAIL(sr)) {
+		printf("apricot: no upload batch to record into: %s\n", spudresult_str(sr));
 		return false;
 	}
-
-	spudgpu_begin_command_list(cmd);
 	record(cmd);
-	spudgpu_end_command_list(cmd);
+	return true;
+}
 
-	spudgpu_command_list cmd_lists[] = {cmd};
-	uint64_t serial                  = 0;
-	bool ok                          = !SPUDFAIL(aprend_instance_submit(instance, queue, cmd_lists, 1, nullptr, &serial));
-	if (!wait) {
-		// Released once the submission has run; at once if it was refused,
-		// since nothing was submitted. The list goes before its allocator.
-		aprend_instance_retire(instance, cmd, &aprend_release_spudgpu_command_list);
-		aprend_instance_retire(instance, allocator, &aprend_release_spudgpu_command_allocator);
-		return ok;
-	}
-	// The list and its allocator are destroyed below, and the caller reads
-	// what the commands wrote: both need them to have run.
-	if (ok)
-		ok = !SPUDFAIL(aprend_instance_wait_serial(instance, serial));
-
-	spudgpu_destroy_command_list(cmd);
-	spudgpu_destroy_command_allocator(allocator);
-	return ok;
+/* Submits the upload batch now and blocks until it has run: a wait on the
+ * instance's fence for that submission's serial, not on the whole queue. For
+ * work whose result the caller reads back. If it fails, what was recorded
+ * may still run with a later submission. */
+static inline bool aprend_wait_immediate(aprend_instance instance) {
+	uint64_t serial = 0;
+	if (SPUDFAIL(aprend_instance_flush_upload_batch(instance, &serial)))
+		return false;
+	return !SPUDFAIL(aprend_instance_wait_serial(instance, serial));
 }
 
 /* One side of mip [level] of a texture whose level 0 is [size] along it. */
@@ -148,12 +130,12 @@ inline SPUDGPU_IMAGE_LAYOUT aprend_immediate_final_layout(SPUDGPU_IMAGE_LAYOUT f
 	return found == SPUDGPU_IMAGE_LAYOUT_UNDEFINED ? if_undefined : found;
 }
 
-/* aprend_submit_immediate for work on one mip of one layer of a texture
+/* aprend_record_immediate for work on one mip of one layer of a texture
  * (aprend_texture2d_t or aprend_texture3d_t): moves that subresource into
  * [working], runs [record], and moves it to aprend_immediate_final_layout.
- * The rest of the texture is not touched. The tracked layout is only written
- * once the submission has succeeded - a failed one ran nothing, so the layout
- * is still what it was. */
+ * The rest of the texture is not touched. The tracked layout is written once
+ * the barriers are recorded, since the batch that holds them goes ahead of
+ * every later submission. With [wait], aprend_wait_immediate follows. */
 template <typename Texture, typename Fn>
 static bool aprend_immediate_on_texture(
     Texture *texture,
@@ -174,15 +156,15 @@ static bool aprend_immediate_on_texture(
 	range.base_array_layer  = layer;
 	range.array_layer_count = 1;
 
-	bool ok = aprend_submit_immediate(texture->instance, queue, wait, [&](spudgpu_command_list cmd) {
-		spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, found, working);
-		record(cmd);
-		if (final_layout != working)
-			spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, working, final_layout);
-	});
-	if (ok)
-		*tracked = final_layout;
-	return ok;
+	if (!aprend_record_immediate(texture->instance, queue, [&](spudgpu_command_list cmd) {
+		    spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, found, working);
+		    record(cmd);
+		    if (final_layout != working)
+			    spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, working, final_layout);
+	    }))
+		return false;
+	*tracked = final_layout;
+	return !wait || aprend_wait_immediate(texture->instance);
 }
 
 typedef struct aprend_texture2d_t

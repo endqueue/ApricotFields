@@ -51,6 +51,7 @@
 
 #include "aprendframes.h"
 #include "aprendpipeline.h"
+#include "aprendtimer.h"
 
 #if __cplusplus
 extern "C" {
@@ -62,11 +63,10 @@ extern "C" {
 typedef struct aprend_render_pass_t *aprend_render_pass;
 
 /**
- * @brief Upper bound on the color targets of a render pass: one, until a
- * pipeline can describe more (aprend_graphics_pipeline_desc has one color
- * format).
+ * @brief Upper bound on the color targets of a render pass: as many as a
+ * pipeline can describe (aprend_graphics_pipeline_desc::color_attachment_count).
  */
-#define APREND_RENDER_PASS_MAX_COLOR_TARGETS 1
+#define APREND_RENDER_PASS_MAX_COLOR_TARGETS SPUDGPU_MAX_COLOR_ATTACHMENTS
 
 /**
  * @brief Configuration descriptor for a render pass.
@@ -92,12 +92,12 @@ typedef struct aprend_render_pass_desc {
 	 * The color targets, as BEGIN_RENDERING takes them (aprendimages.h): the
 	 * first #_color_target_count are read. Each `view` is of type
 	 * APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET, of a 2D texture whose format is
-	 * the pipeline's `color_attachment_format`, and `resolve_view` is NULL.
+	 * the pipeline's `color_attachment_formats` at the same index, and
+	 * `resolve_view` is NULL.
 	 */
 	aprend_color_target _color_targets[APREND_RENDER_PASS_MAX_COLOR_TARGETS];
 	/**
-	 * How many color targets: 0 for a pipeline whose
-	 * `color_attachment_format` is SPUDGPU_FORMAT_UNKNOWN, 1 for any other.
+	 * How many color targets: the pipeline's `color_attachment_count`.
 	 */
 	uint32_t _color_target_count;
 	/**
@@ -115,6 +115,14 @@ typedef struct aprend_render_pass_desc {
 	 * `_binding_layout_count` are NULL. The sets must outlive the pass.
 	 */
 	aprend_binding_set _binding_sets[APREND_MAX_BINDING_LAYOUTS];
+	/**
+	 * A GPU timer (aprendtimer.h) each recording of the pass is timed into,
+	 * at slot #_timer_slot; NULL to time nothing. Of the pass's instance,
+	 * with #_timer_slot below its slot count. It must outlive the pass.
+	 */
+	aprend_gpu_timer _timer;
+	/** The slot of #_timer. Read only with a timer. */
+	uint32_t _timer_slot;
 } aprend_render_pass_desc;
 
 /**
@@ -126,14 +134,15 @@ typedef struct aprend_render_pass_desc {
  * @return The pass, or NULL if @p instance or @p desc is NULL, `_pipeline`
  *         is NULL or of another instance, `_color_target_count` is above
  *         APREND_RENDER_PASS_MAX_COLOR_TARGETS or doesn't match the
- *         pipeline's color format (or, with a framebuffer, its attachment
- *         count), a target has the wrong type, shape or format or a
+ *         pipeline's color target count (or, with a framebuffer, its
+ *         attachment count), a target has the wrong type, shape or format or a
  *         `resolve_view`, a depth target is given for a pipeline without
  *         depth or missing for one with it, a view is given alongside a
  *         framebuffer, the pass would have no target, the targets differ in
- *         shape or layer count, or a binding set is of another layout than
- *         the pipeline's at its slot, or is given past the pipeline's last
- *         slot.
+ *         shape or layer count, a binding set is of another layout than
+ *         the pipeline's at its slot or is given past the pipeline's last
+ *         slot, or `_timer` is of another instance or `_timer_slot` past its
+ *         slots.
  *
  * @see aprend_render_pass_destroy()
  */

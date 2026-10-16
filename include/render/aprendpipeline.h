@@ -370,16 +370,38 @@ typedef struct aprend_graphics_pipeline_desc {
 	 */
 	bool _wireframe;
 	/**
-	 * How this pipeline's output combines with what the color target
-	 * already holds. Zeroed (`blend_enable` false) writes it as is. The
-	 * presets fill it for the usual cases. A blended pipeline normally
-	 * clears #_depth_write and keeps #_depth_test, and its draws are the
-	 * caller's to order: back to front, or after everything opaque.
+	 * Depth bias: `_depth_bias_constant * r + _depth_bias_slope * m`, added
+	 * to each fragment's depth before the depth test and write, where m is
+	 * the triangle's depth slope and r the depth format's smallest step;
+	 * clamped to #_depth_bias_clamp unless that is 0. All three 0 is no
+	 * bias. What a shadow map is rendered with, so that a surface doesn't
+	 * shadow itself. Bias triangles: what it does to lines and points is
+	 * undefined. The full rule, and how a float depth format's step differs
+	 * between graphics APIs, is spudgpu_shader_pipeline_desc's.
+	 */
+	int32_t _depth_bias_constant;
+	/** The slope's factor in the bias. See #_depth_bias_constant. */
+	float _depth_bias_slope;
+	/**
+	 * The largest bias, if positive, or the smallest, if negative; 0 for no
+	 * clamp. Anything else needs a device that can clamp
+	 * (`SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp`).
+	 */
+	float _depth_bias_clamp;
+	/**
+	 * How each color target's output combines with what it already holds:
+	 * `_blends[i]` for `color_attachment_formats[i]`, the first
+	 * #color_attachment_count read. Zeroed (`blend_enable` false) writes the
+	 * output as is. The presets fill one for the usual cases. Entries that
+	 * differ need a device that blends targets independently
+	 * (`SPUDGPU_DEVICE_PROPERTIES::independent_blend`). A blended pipeline
+	 * normally clears #_depth_write and keeps #_depth_test, and its draws
+	 * are the caller's to order: back to front, or after everything opaque.
 	 * @see aprend_blend_premultiplied()
 	 * @see aprend_blend_alpha()
 	 * @see aprend_blend_additive()
 	 */
-	spudgpu_blend_attachment_desc _blend;
+	spudgpu_blend_attachment_desc _blends[SPUDGPU_MAX_COLOR_ATTACHMENTS];
 	/**
 	 * The vertex stage. Exactly one of this and #mesh_shader is given: NULL
 	 * for a mesh shader pipeline.
@@ -409,8 +431,19 @@ typedef struct aprend_graphics_pipeline_desc {
 	/** The entry point of #mesh_shader, as #_vertex_entry_point. */
 	const char *_mesh_entry_point;
 
-	/** Pixel format of the color render target this pipeline writes to. */
-	SPUDGPU_FORMAT color_attachment_format;
+	/**
+	 * Pixel format of each color target the pipeline writes, in the order
+	 * of the fragment shader's outputs (`location = i` writes target i) and
+	 * of a pass's color targets. The first #color_attachment_count are read,
+	 * and none is SPUDGPU_FORMAT_UNKNOWN.
+	 */
+	SPUDGPU_FORMAT color_attachment_formats[SPUDGPU_MAX_COLOR_ATTACHMENTS];
+	/**
+	 * How many color targets: 0 for a pipeline that renders depth only, at
+	 * most APREND_MAX_COLOR_TARGETS (aprendcommands.h), which is
+	 * SPUDGPU_MAX_COLOR_ATTACHMENTS.
+	 */
+	uint32_t color_attachment_count;
 	/**
 	 * Pixel format of the depth attachment. SPUDGPU_FORMAT_UNKNOWN for no
 	 * depth.
@@ -466,7 +499,7 @@ typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
 
 /**
  * @name Blend presets
- * For aprend_graphics_pipeline_desc::_blend.
+ * For an entry of aprend_graphics_pipeline_desc::_blends.
  *
  * Premultiplied is the convention to prefer: the fragment shader outputs
  * color already multiplied by its alpha, which composites correctly over
@@ -517,6 +550,9 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *         no stages, a size of 0, or an offset or size that is not a
  *         multiple of 4, `_cull_mode` is not a SPUDGPU_CULL_MODE, `_depth_test` is
  *         set with `_depth_compare_op` SPUDGPU_COMPARE_OP_NEVER,
+ *         `color_attachment_count` is above APREND_MAX_COLOR_TARGETS or a
+ *         counted format is SPUDGPU_FORMAT_UNKNOWN, `_depth_bias_clamp` or
+ *         differing `_blends` ask for what the device can't do,
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
  *         counted entry of `_binding_layouts` is NULL or belongs to another
  *         instance, a shader is of another instance, the shaders don't match

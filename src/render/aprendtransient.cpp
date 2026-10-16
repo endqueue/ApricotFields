@@ -166,13 +166,16 @@ SPUDRESULT aprend_transient_span_view(
 	return SPUD_SUCCESS;
 }
 
-extern "C" {
-
-bool aprend_transient_allocate(
+/* aprend_transient_allocate, and aprend_transient_allocate_staging with
+ * [staging] set: then an instance with no transient memory, or a span that
+ * would pass its limit, fails without a word, since the caller has another
+ * way. */
+static bool aprend_transient_take(
     aprend_instance instance,
     uint64_t size,
     uint64_t alignment,
-    aprend_transient_span *out_span) {
+    aprend_transient_span *out_span,
+    bool staging) {
 	static const char *who = "aprend_transient_allocate";
 	if (!out_span) {
 		printf("apricot: %s: out_span is NULL\n", who);
@@ -197,7 +200,8 @@ bool aprend_transient_allocate(
 	}
 	const uint64_t chunk_size = instance->desc.transient_chunk_size;
 	if (chunk_size == 0) {
-		printf("apricot: %s: the instance was created with no transient memory (transient_chunk_size 0)\n", who);
+		if (!staging)
+			printf("apricot: %s: the instance was created with no transient memory (transient_chunk_size 0)\n", who);
 		return false;
 	}
 
@@ -228,6 +232,8 @@ bool aprend_transient_allocate(
 		const uint64_t limit      = instance->desc.transient_memory_limit;
 		const bool over_limit     = limit != 0 && (arena.allocated > limit || new_size > limit - arena.allocated);
 		if (over_limit) {
+			if (staging)
+				return false;
 			printf("apricot: %s: %llu more bytes would pass transient_memory_limit (%llu of %llu in use)\n", who, (unsigned long long)new_size,
 			       (unsigned long long)arena.allocated, (unsigned long long)limit);
 			return false;
@@ -256,6 +262,24 @@ bool aprend_transient_allocate(
 	out_span->_epoch  = frame.epoch;
 	out_span->_frame  = instance->frame_index;
 	return true;
+}
+
+bool aprend_transient_allocate_staging(
+    aprend_instance instance,
+    uint64_t size,
+    uint64_t alignment,
+    aprend_transient_span *out_span) {
+	return aprend_transient_take(instance, size, alignment, out_span, true);
+}
+
+extern "C" {
+
+bool aprend_transient_allocate(
+    aprend_instance instance,
+    uint64_t size,
+    uint64_t alignment,
+    aprend_transient_span *out_span) {
+	return aprend_transient_take(instance, size, alignment, out_span, false);
 }
 
 uint64_t aprend_transient_get_frame_usage(aprend_instance instance) {
