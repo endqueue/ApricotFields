@@ -32,6 +32,8 @@ add_library(ApricotFields STATIC
         src/render/aprendtransient_internal.hpp
         src/render/aprendtransient.cpp
         src/render/aprendtimer.cpp
+        src/render/aprendbuiltin_internal.hpp
+        src/render/aprendbuiltin.cpp
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio.cpp
@@ -147,52 +149,34 @@ target_link_libraries(ApricotFields PRIVATE spirv-cross-core)
 find_package(Threads REQUIRED)
 target_link_libraries(ApricotFields PRIVATE Threads::Threads)
 
-# Vulkan stuff -- only needed on Windows/Linux, where SpudGPU's Vulkan
-# backend is selected and shaders are compiled to SPIR-V via glslc. ApricotFields
-# never includes Vulkan headers directly (it only calls spudgpu.h's
-# backend-agnostic C API), so this must not run on Apple, where SpudGPU
-# uses the Metal backend instead.
-if (WIN32 OR (UNIX AND NOT APPLE))
-    # Manually hint where Vulkan is located on Windows
-    # On Linux, it is automatically /usr/include and /usr/lib64
-    if (WIN32)
-        set(Vulkan_INCLUDE_DIR "C:/VulkanSDK/1.4.341.1/Include")
-        set(Vulkan_LIBRARY "C:/VulkanSDK/1.4.341.1/Lib/vulkan-1.lib")
-        set(Vulkan_GLSLC_EXECUTABLE "C:/VulkanSDK/1.4.341.1/Bin/glslc.exe")
-    endif ()
-
-    find_package(Vulkan REQUIRED)
-    target_include_directories(ApricotFields PRIVATE ${Vulkan_INCLUDE_DIRS})
-    target_link_libraries(ApricotFields PRIVATE Vulkan::Vulkan)
-
-    if (NOT Vulkan_GLSLC_EXECUTABLE)
-        message(FATAL_ERROR "glslc not found. Install the Vulkan SDK.")
-    endif ()
-
-    # Shaders are compiled to the parent project's runtime output directory
-    # (set by whatever project adds this directory).  Fall back to the local
-    # build dir when ApricotFields is built standalone.
-    if (CMAKE_RUNTIME_OUTPUT_DIRECTORY)
-        set(APRICOT_SHADER_OUTDIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
-    else ()
-        set(APRICOT_SHADER_OUTDIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-    endif ()
-
-    function(apricot_compile_shader TARGET SHADER)
-        get_filename_component(NAME ${SHADER} NAME)
-        set(SPV "${APRICOT_SHADER_OUTDIR}/${NAME}.spv")
-        add_custom_command(
-                OUTPUT ${SPV}
-                COMMAND ${CMAKE_COMMAND} -E make_directory "${APRICOT_SHADER_OUTDIR}"
-                COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER} -o ${SPV}
-                DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${SHADER}
-        )
-        target_sources(${TARGET} PRIVATE ${SPV})
-    endfunction()
-
-    apricot_compile_shader(ApricotFields shaders/apricot_default.vert)
-    apricot_compile_shader(ApricotFields shaders/apricot_default.frag)
-endif ()
+# Aprend's own shaders (shaders/*.vert, *.frag), compiled to SPIR-V at build
+# time and embedded in the library as C arrays (glslc -mfmt=c), as
+# trellislib does: there is nothing to deploy or find at run time.
+# src/render/aprendbuiltin.cpp includes them. glslc is needed on every
+# platform, Apple included, since SpudGPU's Metal and D3D12 backends take
+# SPIR-V and cross-compile it.
+find_program(APRICOTFIELDS_GLSLC glslc
+        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" "C:/VulkanSDK/1.4.341.1/Bin"
+        REQUIRED)
+set(APRICOTFIELDS_SHADER_INC_DIR ${CMAKE_CURRENT_BINARY_DIR}/aprend_shaders)
+set(APRICOTFIELDS_SHADERS
+        aprend_fullscreen.vert
+        aprend_downsample.frag
+)
+foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
+    set(shader_inc ${APRICOTFIELDS_SHADER_INC_DIR}/${shader}.spv.inc)
+    add_custom_command(
+            OUTPUT ${shader_inc}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${APRICOTFIELDS_SHADER_INC_DIR}
+            COMMAND ${APRICOTFIELDS_GLSLC} -mfmt=c ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader} -o ${shader_inc}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}
+            COMMENT "Compiling ${shader} to embedded SPIR-V"
+    )
+    list(APPEND APRICOTFIELDS_SHADER_INCS ${shader_inc})
+endforeach ()
+add_custom_target(apricotfields_shaders DEPENDS ${APRICOTFIELDS_SHADER_INCS})
+add_dependencies(ApricotFields apricotfields_shaders)
+target_include_directories(ApricotFields PRIVATE ${APRICOTFIELDS_SHADER_INC_DIR})
 
 # GLM — header-only math library used internally by the C++ backends
 declare_vendored_or_fetch(glm glm https://github.com/g-truc/glm.git 1.0.1)

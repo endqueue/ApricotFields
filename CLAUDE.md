@@ -288,8 +288,12 @@ there is no separate `-debug` configure preset any more.)
   target exists yet. libdeflate is pinned on
   purpose: its DEFLATE output is part of what makes an archive byte-identical.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
-- Shaders are compiled with glslc on Windows and Linux only. That block must not
-  run on Apple.
+- Aprend's own shaders are GLSL in `shaders/`, compiled by glslc at build time
+  on every platform, Apple included, and embedded in the library as C arrays
+  (`-mfmt=c`, into `aprend_shaders/` in the build directory). A new shader is
+  added to `APRICOTFIELDS_SHADERS` and included by `src/render/aprendbuiltin.cpp`,
+  which makes it into the instance's built-in objects on first use. Nothing
+  is written next to the executable and nothing is loaded at run time.
 
 ## Saying what has and hasn't run
 

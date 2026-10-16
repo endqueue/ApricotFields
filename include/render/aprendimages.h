@@ -62,8 +62,9 @@ typedef struct aprend_texture2d_desc {
 
 	/**
 	 * 0 for a full chain, 1 for no mips, N for N levels. Every level starts
-	 * undefined and nothing generates one from another: each level a
-	 * sampler can reach is the caller's to write.
+	 * undefined, and each level a sampler can reach is the caller's to
+	 * write: with aprend_texture2d_update(), or from the level above with
+	 * aprend_texture2d_generate_mips().
 	 */
 	uint32_t mip_levels;
 	/** 1 for a plain 2D texture, more for an array. 0 is taken as 1. */
@@ -235,6 +236,62 @@ bool aprend_texture2d_get_data(
 	uint32_t width,
 	uint32_t height,
 	void **ppData);
+
+/**
+ * @brief Fills the mip levels of a 2D texture below one level from that
+ * level: each from the level above it, at half its size, in every array
+ * layer.
+ *
+ * Each level is rendered by Aprend, in a pass that samples the level above
+ * through @p filter with the edges clamped: with SPUDGPU_FILTER_LINEAR a
+ * texel of an even-sized level is the average of the 2x2 texels above it,
+ * and where a side of the level above is odd its last texel weighs less
+ * than the others (two taps a side, not three). An sRGB texture is filtered
+ * as linear values and stored as sRGB. With SPUDGPU_FILTER_NEAREST each
+ * texel is one of the four above it.
+ *
+ * Recorded into the frame's batch of updates and clears, and not waited for,
+ * as aprend_texture2d_update() is (aprendcontext.h, "Texture updates and
+ * clears"): it runs after everything submitted before the call, updates of
+ * @p base_mip among them, and ahead of everything submitted after it. Each
+ * level is left in the image layout it was found in, as
+ * aprend_texture2d_update() leaves it; a level nothing had written ends in
+ * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. A list compiled against a level
+ * nothing had written is then recompiled before it is submitted.
+ *
+ * @p base_mip must have been written, by an update or a pass, in every
+ * layer. Nothing tells whether that write covered all of it.
+ *
+ * @param[in] texture  Texture to fill. Created with
+ *                     APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE and
+ *                     APREND_TEXTURE_USAGE_BIT_RENDER_TARGET, in a format
+ *                     every backend renders to and filters: R8_UNORM,
+ *                     R8G8_UNORM, R8G8B8A8_UNORM and _UNORM_SRGB,
+ *                     B8G8R8A8_UNORM and _UNORM_SRGB, R10G10B10A2_UNORM,
+ *                     R11G11B10_FLOAT, R16_FLOAT, R16G16_FLOAT or
+ *                     R16G16B16A16_FLOAT.
+ * @param[in] queue    Queue the passes are submitted on: the instance's one
+ *                     queue, as for aprend_texture2d_update(), and one that
+ *                     can render. Never NULL.
+ * @param[in] base_mip The level the others are made from, 0 the largest.
+ *                     Below the texture's mip count; the last level has
+ *                     none below it, and the call does nothing for it.
+ * @param[in] filter   SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST.
+ *
+ * @return true if every level below @p base_mip was recorded, or there is
+ *         none. false, each printed, if @p texture or @p queue is NULL,
+ *         @p base_mip doesn't exist, @p filter is not a SPUDGPU_FILTER, the
+ *         texture lacks a usage bit or its format is not one of those
+ *         above, @p base_mip has not been written in some layer, or the
+ *         passes couldn't be prepared or recorded. Nothing is recorded
+ *         when an argument is refused. A failure while recording leaves
+ *         the levels already recorded, and the rest as they were.
+ */
+bool aprend_texture2d_generate_mips(
+	aprend_texture2d texture,
+	spudgpu_command_queue queue,
+	uint32_t base_mip,
+	SPUDGPU_FILTER filter);
 
 /**
  * @brief Replaces a 2D texture's image with a new one of the given size, the

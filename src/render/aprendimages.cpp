@@ -467,6 +467,197 @@ bool aprend_texture2d_get_data(
 	spudgpu_destroy_buffer(staging_buffer);
 	return true;
 }
+
+/* One level of one layer of a mip generation: a view of the level above to
+ * sample, a view of the level to render, and the set that binds the first. */
+struct aprend_mip_step {
+	aprend_texture_view source{nullptr};
+	aprend_texture_view target{nullptr};
+	aprend_binding_set set{nullptr};
+};
+
+/* Retires what [steps] hold, each set before the views it binds. */
+static void aprend_mip_steps_destroy(std::vector<aprend_mip_step> &steps) {
+	for (aprend_mip_step &step : steps) {
+		aprend_binding_set_destroy(step.set);
+		aprend_destroy_texture_view(step.source);
+		aprend_destroy_texture_view(step.target);
+	}
+	steps.clear();
+}
+
+bool aprend_texture2d_generate_mips(
+    aprend_texture2d texture,
+    spudgpu_command_queue queue,
+    uint32_t base_mip,
+    SPUDGPU_FILTER filter) {
+	if (!texture) {
+		printf("apricot: aprend_texture2d_generate_mips: texture is NULL\n");
+		return false;
+	}
+	if (!queue) {
+		printf("apricot: aprend_texture2d_generate_mips: queue is NULL\n");
+		return false;
+	}
+	if (base_mip >= texture->desc.mip_levels) {
+		printf("apricot: aprend_texture2d_generate_mips: base_mip %u, and the texture has %u levels\n", base_mip, texture->desc.mip_levels);
+		return false;
+	}
+	if (filter != SPUDGPU_FILTER_NEAREST && filter != SPUDGPU_FILTER_LINEAR) {
+		printf("apricot: aprend_texture2d_generate_mips: %d is not a SPUDGPU_FILTER\n", (int)filter);
+		return false;
+	}
+	if (!(texture->desc.usage & APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE)) {
+		printf("apricot: aprend_texture2d_generate_mips: the texture was created without APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE\n");
+		return false;
+	}
+	if (!(texture->desc.usage & APREND_TEXTURE_USAGE_BIT_RENDER_TARGET)) {
+		printf("apricot: aprend_texture2d_generate_mips: the texture was created without APREND_TEXTURE_USAGE_BIT_RENDER_TARGET\n");
+		return false;
+	}
+	if (!aprend_builtin_downsample_format(texture->desc.format)) {
+		printf("apricot: aprend_texture2d_generate_mips: format %d is not one every backend renders to and filters\n", (int)texture->desc.format);
+		return false;
+	}
+	const uint32_t layer_count = texture->desc.array_layers;
+	for (uint32_t layer = 0; layer < layer_count; ++layer) {
+		if (*texture->tracking.at(base_mip, layer) == SPUDGPU_IMAGE_LAYOUT_UNDEFINED) {
+			printf("apricot: aprend_texture2d_generate_mips: level %u of layer %u has never been written\n", base_mip, layer);
+			return false;
+		}
+	}
+	const uint32_t last_mip = texture->desc.mip_levels - 1;
+	if (base_mip == last_mip)
+		return true;
+
+	aprend_instance instance          = texture->instance;
+	aprend_graphics_pipeline pipeline = aprend_builtin_downsample_pipeline(instance, texture->desc.format);
+	if (!pipeline)
+		return false;
+	aprend_binding_layout layout = aprend_builtin_downsample_layout(instance);
+	aprend_sampler sampler       = aprend_builtin_downsample_sampler(instance, filter);
+	if (!sampler)
+		return false;
+
+	// Every view and set is made before anything is recorded, so a failure
+	// records nothing. steps[layer * levels + i] renders level base_mip + 1 + i.
+	const uint32_t levels = last_mip - base_mip;
+	std::vector<aprend_mip_step> steps;
+	try {
+		steps.resize((size_t)layer_count * levels);
+	} catch (...) {
+		printf("apricot: aprend_texture2d_generate_mips: no memory for %u levels of %u layers\n", levels, layer_count);
+		return false;
+	}
+	for (uint32_t layer = 0; layer < layer_count; ++layer) {
+		for (uint32_t i = 0; i < levels; ++i) {
+			aprend_mip_step &step = steps[(size_t)layer * levels + i];
+
+			aprend_texture_view_desc view_desc{};
+			view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
+			view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
+			view_desc.mip_count   = 1;
+			view_desc.base_layer  = layer;
+			view_desc.layer_count = 1;
+			view_desc.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
+			view_desc.base_mip    = base_mip + i;
+			step.source           = aprend_texture_view_create_2d(texture, &view_desc);
+			view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
+			view_desc.base_mip    = base_mip + i + 1;
+			step.target           = aprend_texture_view_create_2d(texture, &view_desc);
+			if (!step.source || !step.target) {
+				printf("apricot: aprend_texture2d_generate_mips: the views of level %u of layer %u can't be created\n", base_mip + i + 1, layer);
+				aprend_mip_steps_destroy(steps);
+				return false;
+			}
+
+			aprend_binding_set_entry entries[2]{};
+			entries[0]._binding                  = 0;
+			entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			entries[0]._resource._image._view    = step.source;
+			entries[1]._binding                  = 1;
+			entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+			entries[1]._resource._image._sampler = sampler;
+			step.set                             = aprend_binding_set_create(layout, entries, 2);
+			if (!step.set) {
+				printf("apricot: aprend_texture2d_generate_mips: the binding set of level %u of layer %u can't be created\n", base_mip + i + 1, layer);
+				aprend_mip_steps_destroy(steps);
+				return false;
+			}
+		}
+	}
+
+	// Each level of each layer: moved into the layout the pass reads or
+	// renders it in, and every level then put back as an immediate
+	// operation leaves it (aprend_immediate_final_layout).
+	const bool ok = aprend_record_immediate(instance, queue, [&](spudgpu_command_list cmd) {
+		auto move = [&](uint32_t mip, uint32_t layer, SPUDGPU_IMAGE_LAYOUT from, SPUDGPU_IMAGE_LAYOUT to) {
+			if (from == to)
+				return;
+			spudgpu_image_view_desc_subresource_range range{};
+			range.base_mip_level    = mip;
+			range.mip_level_count   = 1;
+			range.base_array_layer  = layer;
+			range.array_layer_count = 1;
+			spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, from, to);
+		};
+		for (uint32_t layer = 0; layer < layer_count; ++layer) {
+			move(base_mip, layer, *texture->tracking.at(base_mip, layer), SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+			for (uint32_t i = 0; i < levels; ++i) {
+				const aprend_mip_step &step = steps[(size_t)layer * levels + i];
+				const uint32_t mip          = base_mip + i + 1;
+				const uint32_t width        = aprend_mip_size(texture->desc.width, mip);
+				const uint32_t height       = aprend_mip_size(texture->desc.height, mip);
+				move(mip, layer, *texture->tracking.at(mip, layer), SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+				spudgpu_rendering_begin_desc pass{};
+				pass.color_attachments[0].image_view = step.target->image_view;
+				// Every texel is drawn, so what the level held is not loaded.
+				pass.color_attachments[0].load_op  = SPUDGPU_LOAD_OP_DONT_CARE;
+				pass.color_attachments[0].store_op = SPUDGPU_STORE_OP_STORE;
+				pass.color_attachment_count        = 1;
+				pass.width                         = width;
+				pass.height                        = height;
+				spudgpu_cmd_begin_rendering(cmd, &pass);
+				SPUDGPU_VIEWPORT viewport{};
+				viewport.width    = (float)width;
+				viewport.height   = (float)height;
+				viewport.maxDepth = 1.0f;
+				spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
+				SPUDGPU_SCISSOR_RECT scissor{};
+				scissor.width  = (float)width;
+				scissor.height = (float)height;
+				spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
+				spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
+				spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, 0, &step.set->sets[0], 1);
+				spudgpu_cmd_draw(cmd, 3, 0);
+				spudgpu_cmd_end_rendering(cmd);
+
+				move(mip, layer, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+			}
+			for (uint32_t mip = base_mip; mip <= last_mip; ++mip) {
+				SPUDGPU_IMAGE_LAYOUT *tracked = texture->tracking.at(mip, layer);
+				const SPUDGPU_IMAGE_LAYOUT final_layout =
+				    aprend_immediate_final_layout(*tracked, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+				move(mip, layer, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, final_layout);
+			}
+		}
+	});
+	if (ok) {
+		// The batch that holds the barriers goes ahead of every later
+		// submission, as aprend_immediate_on_texture writes its layout.
+		for (uint32_t layer = 0; layer < layer_count; ++layer) {
+			for (uint32_t mip = base_mip; mip <= last_mip; ++mip) {
+				SPUDGPU_IMAGE_LAYOUT *tracked = texture->tracking.at(mip, layer);
+				*tracked                      = aprend_immediate_final_layout(*tracked, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+			}
+		}
+	}
+	// Released once the batch that reads them has run.
+	aprend_mip_steps_destroy(steps);
+	return ok;
+}
+
 bool aprend_texture2d_resize(
     aprend_texture2d texture,
     uint32_t new_width,

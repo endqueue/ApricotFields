@@ -51,6 +51,9 @@ static void aprend_command_pool_reset(
 }
 
 aprend_instance_t::~aprend_instance_t() {
+	// Onto the release queue first, so the loop below releases them in
+	// order with everything else.
+	aprend_builtins_destroy(this);
 	// Whatever is still queued goes now: the instance is the last thing that
 	// could release it. aprend_instance_destroy has waited for the GPU. A
 	// release may retire something more, which this loop then reaches.

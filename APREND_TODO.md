@@ -562,7 +562,8 @@ unfinished in it.
   been built or run is not recorded) and `tests/aprendreflect_tests.cpp`
   (reflection; passed in a scratch build on Linux, not recorded as run
   through this repo's CMake). The tests that need a device are
-  `../apricottests` (`aprend_gpu_tests`), run on Metal only.
+  `../apricottests` (`aprend_gpu_tests`), run on Metal (macOS) and on D3D12
+  and Vulkan (Windows).
 - **Reviewed by reading on 2026-10-13; nothing compiled or run for it.**
   Every file of `src/render` except `aprendpools.cpp`, `aprendreflect.cpp`
   and most of `aprendpipeline.cpp` was read against this file, and this
@@ -572,9 +573,33 @@ unfinished in it.
   changed.
 - **Multiple render targets, depth bias, debug labels and GPU timers,
   written 2026-10-15; compiled on macOS over Metal through Trellis_macOS, which ran (reported 2026-10-16)** (items 25, 26, 29):
-  - The run used one color target, no bias, no labels and no timer, so
-    it shows the arrays and the new pipeline checks build and pass for
-    what Trellis draws, and no more. Vulkan and D3D12 are not built.
+  - The Trellis run used one color target, no bias, no labels and no
+    timer, so it shows the arrays and the new pipeline checks build and
+    pass for what Trellis draws, and no more.
+  - **Run on Windows on 2026-10-16 by `../apricottests`, all passed:** D3D12
+    on an NVIDIA RTX A2000 Laptop (memory of its own) and an Intel Iris Xe
+    (unified), debug layer clean; Vulkan on both, validation clean.
+    `test_two_targets`, `test_pipeline_must_match_pass`,
+    `test_depth_bias`, `test_labels` and `test_gpu_timer` (a time above 0
+    and below a second) each passed there. The Vulkan run found that a
+    descriptor's image layout and a binding's shader stages reached Vulkan
+    untranslated, which turned every sampled texture black; fixed in
+    SpudGPU.
+  - **Run on macOS on 2026-10-16 by `../apricottests`, all passed:** Apple
+    M5 Pro, Debug under Metal API and shader validation with warnings made
+    fatal, and Release; no leak at exit. The timer read 0.08-0.11 ms for
+    its pass (above 0 and below a second; not compared with a known cost).
+    The run found five things in SpudGPU's Metal backend, all fixed there:
+    samplers made without `supportArgumentBuffers` though every set is an
+    argument buffer; every set bound to the vertex and fragment stages
+    whatever its bindings' stages (a validation error for a stage whose
+    function has no argument there); a depth-stencil state and the
+    rasterizer state set again when the encoder already had them, which
+    two pipelines with equal depth state do; the timestamp counter set
+    used after its autorelease pool had freed it, which crashed creating a
+    timer; and the array of devices from `spudgpu_enumerate_devices` never
+    freed (Vulkan too; it is the instance's now, as on D3D12). Labels have
+    been compiled and submitted, not looked at in RenderDoc, PIX or Xcode.
   - SpudGPU: `spudgpu_shader_pipeline_desc` has `color_attachment_formats`,
     `blend_attachments` and `color_attachment_count` in place of the one
     format and blend, and `depth_bias_constant`, `_slope`, `_clamp`. The
@@ -653,13 +678,50 @@ unfinished in it.
     and `BeginRenderPass` on it faulted in the driver. Each frame index
     now has two pools, `recordings` and `batches`, each an allocator and
     its lists, both reset by `aprend_instance_next_frame`. `spudgpu.h`
-    now says that one list of an allocator is open at a time. Not run on
-    Metal or Vulkan since.
-  - What to check first when it runs: memory flat over many frames on
-    D3D12 (the leak of item 37); a texture updated and drawn in the same
-    frame; an update with no draw after it, carried by
-    `aprend_instance_next_frame`; a readback; and the D3D12 offset of 512
-    inside a transient chunk.
+    now says that one list of an allocator is open at a time. Run on Vulkan
+    on Windows the same day (both devices, validation clean), and on Metal
+    by `aprend_gpu_tests` (validation clean).
+  - **The batch and the per-frame memory, run on Windows on 2026-10-16 by `../apricottests`, all passed:** D3D12
+    on an NVIDIA RTX A2000 Laptop (memory of its own) and an Intel Iris Xe
+    (unified), debug layer clean; Vulkan on both, validation clean.
+    `test_updates_batched` passed there: two updates in order ahead of a
+    pass, staged in transient memory (so D3D12's 512-byte offset rule
+    inside a chunk held), and an update carried across a frame turn by
+    `aprend_instance_next_frame`. What the tests don't show is the leak of
+    item 37 gone: they turn the frame twice. That needs a host running for
+    minutes on D3D12 with memory watched.
+  - **Run on macOS on 2026-10-16 by `../apricottests`, all passed**, with
+    `test_updates_batched`, under Metal validation (see the entry above).
+  - **Memory flat on D3D12, reported 2026-10-16:** Trellis_Avalonia on
+    Windows over D3D12 ran idle for 20 minutes with no growth in memory,
+    the check item 37 was waiting on. Whether its viewport drew frames
+    throughout while idle, and on which device, isn't recorded.
+- **Aprend ships shaders, and generates mips with them; written
+  2026-10-16, not compiled or run** (items 22, 31, 7):
+  - GLSL in `shaders/` is compiled to SPIR-V by glslc at build time and
+    embedded in the library as C arrays (`-mfmt=c`), on every platform, as
+    trellislib and `../apricottests` already do: nothing to deploy or load
+    at run time. glslc is now needed on Apple too. The block that compiled
+    `apricot_default.vert`/`.frag` to `.spv` files on Windows and Linux
+    only, and linked Vulkan for it, is gone with those shaders (item 7);
+    nothing loaded them.
+  - `src/render/aprendbuiltin.cpp` (`aprendbuiltin_internal.hpp`): the
+    instance's built-in objects, made through Aprend's own create calls
+    when first needed and destroyed through the release queue with the
+    instance. So far a full-target vertex shader (`aprend_fullscreen.vert`,
+    three vertices, no buffer), a downsample shader
+    (`aprend_downsample.frag`, a separate texture and sampler since
+    SpudGPU's Metal backend has no combined one), its layout, a clamped
+    sampler for each filter, and a pipeline for each format used.
+  - `aprend_texture2d_generate_mips` (item 31's immediate form): every
+    level below a base level of every layer, a pass each, sampling the
+    level above through a one-mip view; recorded into the upload batch,
+    each level left in the layout it was found in. Refused, printed: a
+    texture without render target and shader resource usage, a format
+    outside the eleven every backend renders to and filters, a base level
+    some layer has never had written.
+  - `../apricottests`' `test_generate_mips` checks a two-layer 8x8 chain
+    level by level and the refusals. Not compiled or run.
 
 ## Wrong things
 
@@ -687,8 +749,9 @@ GPU under D3D12 is the case to test first.
 
 A texture created with `mip_levels` 0 gets every level, and each starts
 undefined. `aprend_texture*_update` writes any one level, so a caller with its
-own mip data can fill the chain. A caller without it can't: nothing generates
-a level from the one above (item 31). Until then such a texture wants
+own mip data can fill the chain. A 2D texture without it can now have the
+chain made from its first level (`aprend_texture2d_generate_mips`, item 31;
+written, not run). A 3D texture still can't: such a texture wants
 `mip_levels` 1, or a sampler whose `max_lod` is 0.
 
 ### 6. Immediate operations: what is left
@@ -718,9 +781,9 @@ staged in the frame's transient memory (see "State of the code",
 
 ### 7. The default shaders are unused
 
-`shaders/apricot_default.vert` and `.frag` are compiled by the build on Windows
-and Linux and loaded by nothing. Either they go, with the glslc block in
-`CMakeLists.txt`, or something uses them; which depends on item 22.
+Closed 2026-10-16 with item 22: `shaders/apricot_default.vert` and `.frag`,
+loaded by nothing, are gone, and with them the block of `CMakeLists.txt`
+that compiled them on Windows and Linux only.
 
 ### 8. Older-generation habits still to convert
 
@@ -769,14 +832,15 @@ today:
 
 ### 37. The instance's command allocator is never reset
 
-Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16) (see "State of the code"). Each frame index
+Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Each frame index
 has its own allocator, reset by `aprend_instance_next_frame` after its wait,
 and a recording takes a list of the current frame's; a list compiled in
 one frame is refused at submit in a later one. SpudGPU needed no new call
 for it: a list stays tied to the allocator it was created on, which is what
-Vulkan requires, and Aprend keeps lists for each frame. Not run: the D3D12
-leak it fixes was found by reading and never measured, so whether memory
-now stays flat on D3D12 is the first thing to see.
+Vulkan requires, and Aprend keeps lists for each frame. The D3D12 leak it
+fixes was found by reading and never measured before the fix; after it,
+Trellis_Avalonia ran idle on D3D12 for 20 minutes with memory flat
+(reported 2026-10-16).
 
 ### 38. Unchecked inputs and stale lists, from the review of 2026-10-13
 
@@ -1310,12 +1374,26 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
 
 ### 22. Shaders are precompiled SPIR-V only
 
-No runtime compilation, includes, macros, cache or reload; the build compiles two
-GLSL files with glslc on Windows and Linux and nothing on Apple. Whether Aprend
-should compile shaders at all, or only take SPIR-V and reflection data from its
-caller, is undecided. Hazel: `VulkanShaderCompiler`, `ShaderPreprocessor`,
-`VulkanShaderCache`, `ShaderPack`. Item 18 settled half of it: Aprend reflects
-the SPIR-V it is given itself, so a caller hands over SPIR-V and nothing more.
+Half settled on 2026-10-16. Aprend ships shaders of its own: GLSL in
+`shaders/`, compiled to SPIR-V by glslc when the library is built and
+embedded in it (see "State of the code"), and the objects made of them kept
+by the instance (`aprendbuiltin_internal.hpp`). A caller's shaders are
+still SPIR-V it hands over: item 18 has Aprend reflect them, so SPIR-V is
+all it needs. Written, not compiled or run. Left:
+
+- **No runtime compilation, includes, macros, cache or reload**, for the
+  caller's shaders or Aprend's. Aprend's shaders share nothing yet; when two
+  do, glslc's `-I` and `#include` (`GL_GOOGLE_include_directive`) at build
+  time are enough, with no compiler at run time. Hazel:
+  `VulkanShaderCompiler`, `ShaderPreprocessor`, `VulkanShaderCache`,
+  `ShaderPack`.
+- **Variants.** One pipeline per target format is made on demand. A
+  shader that needs a variant of itself (an integer format, a different
+  sample count) is a second shader, or a specialization constant SpudGPU
+  doesn't expose.
+- **Built-ins are made on first use**, so the first call that needs one
+  pays for a pipeline. A call to make them ahead of time is for when that
+  shows.
 
 ### 23. No 2D, line, text or debug drawing
 
@@ -1367,10 +1445,9 @@ as a second atlas kind if a caller needs it, as Unreal has both.
   At strong minification it aliases; the shader fades coverage once
   `screenPxRange` drops below 1 rather than relying on a mip chain.
 
-**Needs:** items 9 and 12 as above, uniform data from transient memory, and
-item 22's answer, since the glyph shader is the first shader Aprend would
-have to ship (or the caller supplies it, with Aprend documenting the
-instance layout it expects).
+**Needs:** items 9 and 12 as above, and uniform data from transient memory.
+Item 22 has answered how Aprend ships a shader (embedded SPIR-V, built-ins
+kept by the instance), so the glyph shader is one more in `shaders/`.
 
 **What not to copy from Hazel** (`Renderer/UI/Font.cpp`,
 `Renderer2D::DrawString`, `Renderer2D_Text.glsl`):
@@ -1478,10 +1555,11 @@ What bloom needs deciding or building:
       framebuffer.
 - [ ] **Cost.** Nothing when not recorded. With it, a handful of passes
       at falling resolution every frame: how many levels is a setting.
-- [ ] **Shaders.** SPIR-V, precompiled like every shader here (item 22),
-      and reflected (item 18). They ship inside the library, which
-      nothing does yet (item 7's default shaders are unused): decide how
-      a built-in shader reaches a caller's binary.
+- [ ] **Shaders.** In `shaders/`, embedded in the library and made into
+      built-ins on first use, as the downsample shader is (item 22), and
+      reflected (item 18). Its levels can start from
+      `aprend_texture2d_generate_mips`' shaders, but bloom downsamples a
+      render target inside a list, which is item 31's command form.
 - [ ] **A header and its contract** in the Doxygen style of
       `include/render/`, and the threads it is safe from.
 - [ ] **Run on all three backends**, with a test in `../apricottests`
@@ -1501,7 +1579,7 @@ there, not by this list. These are what Aprend can't do until it does.
 
 ### 25. Multiple render targets per pipeline
 
-Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16) (see "State of the code"). SpudGPU's
+Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). SpudGPU's
 pipeline desc has a format and a blend state for each color attachment
 (`color_attachment_formats`, `blend_attachments`, `color_attachment_count`)
 and Aprend's mirrors it (`color_attachment_formats`, `_blends`). A render
@@ -1511,7 +1589,7 @@ that a fragment shader writes as many outputs as the pipeline has targets
 
 ### 26. Depth bias
 
-Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16). `_depth_bias_constant`,
+Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16). `_depth_bias_constant`,
 `_depth_bias_slope` and `_depth_bias_clamp` on the pipeline desc, through
 SpudGPU on all three backends; a clamp needs
 `SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp`.
@@ -1530,7 +1608,7 @@ test or op state on the pipeline. Hazel leaves stencil off as well.
 
 ### 29. GPU timing and debug markers
 
-Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16) (see "State of the code"). Debug labels are
+Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Debug labels are
 `APREND_COMMAND_BEGIN_LABEL` and `END_LABEL`; GPU time is an
 `aprend_gpu_timer` (`aprendtimer.h`) whose slots a pass is timed into, read
 `frames_in_flight` frames later. Left:
@@ -1542,10 +1620,11 @@ Closed 2026-10-15; compiled on Metal, run in Trellis_macOS (reported 2026-10-16)
   sample buffer attachments), which it doesn't have.
 - **No pipeline statistics.** Vulkan and D3D12 have them and Metal's
   counters differ; nothing asks.
-- **The Metal conversion is unverified.** GPU ticks are set against
-  `sampleTimestamps:` taken at the set's creation and at each read; whether
-  the CPU side is nanoseconds on every Apple GPU, and how steady the rate
-  is over a short span, are the first things to check.
+- **The Metal conversion is checked for sense only.** GPU ticks are set
+  against `sampleTimestamps:` taken at the set's creation and at each read.
+  On an M5 Pro it gives 0.08-0.11 ms for `aprend_gpu_tests`' pass, inside
+  the test's bounds; it hasn't been held against a known cost, nor
+  checked on another Apple GPU or over a long span.
 - Hazel: `RenderCommandBuffer` (`RT_BeginTimerQuery`, `RT_BeginMarker`).
 
 ### 30. Hardware without dynamic rendering
@@ -1556,29 +1635,31 @@ it.
 
 ### 31. Mip generation
 
-Numbered out of order so the other items keep their numbers. It was listed as
-a gap Aprend could close with `spudgpu_cmd_blit_image`, level N into level
-N + 1 at half the size. It can't yet: only SpudGPU's Vulkan backend resamples
-in a blit. The Metal and D3D12 backends copy regions of one size and refuse
-the rest, so a call built on it would do nothing on two backends of three.
+Numbered out of order so the other items keep their numbers. The immediate
+form is written (2026-10-16, not compiled or run):
+`aprend_texture2d_generate_mips` renders each level below a base level of
+every layer, a pass per level sampling the one above through Aprend's own
+downsample shader (item 22). SpudGPU's blit resamples only on Vulkan, so a
+blit-based form would have done nothing on Metal and D3D12. Left:
 
-Two ways it gets built:
-
-- **SpudGPU's blit resamples on every backend.** Then, per level N and for
-  every array layer: N to `TRANSFER_SRC` and N + 1 to `TRANSFER_DST` with
-  `spudgpu_cmd_image_barrier_subresource`, a blit at half the size and never
-  below 1 (a 3D texture halves its depth too), and the whole chain to one
-  layout at the end. Integer and depth formats can't be blitted with a linear
-  filter everywhere, and SpudGPU has no query for it.
-- **Aprend draws each level**: a pass per level that samples the one above.
-  A view of one mip and layout tracking per mip are there now (items 16 and
-  17), so a caller can already do this with its own shader. For Aprend to do
-  it needs a shader Aprend ships, which is item 22's open question.
-
-Either way there are two forms, both asked for by the caller and never done
-by `aprend_texture*_update` on its own: an immediate one for a texture filled
-from the CPU, and a command outside any pass for one just rendered to. The
-filter is an argument.
+- **A command for a texture just rendered to**: the same passes recorded
+  into a command list outside any pass, with the list's layout tracking
+  (`layout_uses`) in place of the immediate path's. Its first use is a
+  render target sampled at a lower level later in the same list, which
+  bloom (item 36) is.
+- **3D textures**: their depth halves too, which a 2D pass can't do; a
+  compute shader or a pass per slice of the target pair.
+- **Formats**: eleven every backend renders to and filters. 32-bit float
+  and snorm formats depend on the device, and SpudGPU has no query for
+  what a format supports; integer formats can't be filtered, and would
+  need a shader that reads texels and averages them itself.
+- **Odd sizes** are filtered with two taps a side, so a level's last texel
+  of an odd side weighs less. A three-tap filter for odd sides is the
+  usual fix, in the shader.
+- **The first call for a format makes a pipeline.**
+- **Each call makes two views and a binding set per level per layer**, all
+  retired after the batch runs: fine for a texture loaded now and then,
+  not for one regenerated every frame, which the command form is for.
 
 Hazel: `Texture2D::GenerateMips`.
 
@@ -1683,12 +1764,19 @@ and 5 are closed and their numbers are not reused.
      on it once destroyed; and a compiled list could not in fact be
      submitted twice (a SpudGPU command list is submitted once per
      recording), so `aprend_command_list_submit()` now takes one compile
-     once and the header says so. Not built on D3D12 or Vulkan.
+     once and the header says so. On 2026-10-16 it ran on Windows, D3D12
+     and Vulkan, on an RTX A2000 (memory of its own, so the staged path
+     ran for the first time) and an Iris Xe, and passed after fixes in
+     Aprend and SpudGPU (`../apricottests/README.md` lists them). The
+     same day every test, the newer ones too, passed on Metal under its
+     validation layers, after five fixes in SpudGPU's Metal backend. Not
+     run on Linux.
    - Vulkan: builds and runs on Linux as of 2026-10-12 (see "State of the
      code"); the Wayland driver issue no longer holds that machine. Write
      its side of each change alongside Metal and D3D12 and build it there.
-     Not built on Windows.
-   - Run it on a device with its own memory as well, for the staged path.
+     Built and run on Windows by `../apricottests` (2026-10-16).
+   - Run it on a device with its own memory as well, for the staged path:
+     done on D3D12 and Vulkan (RTX A2000), 2026-10-16.
 2. What the release queue made possible and isn't built: freeing staging
    copies (item 13). The shared upload path for textures is written (item
    6), and staged buffers don't use it yet. Rewriting a binding
@@ -1701,15 +1789,17 @@ and 5 are closed and their numbers are not reused.
 5. Items 19, 20, 21: material, pass and draw list. Written and compiled,
    never run on a device (see "State of the code"); what is left of each
    is in its item.
-6. Items 25, 26 and 29 are written (2026-10-15, not compiled). Item 31
-   waits on item 22: SpudGPU's blit resamples only on Vulkan, and D3D12
-   has no resampling copy at all, so mips come from a pass Aprend draws
-   with a shader of its own. Then 23 and 24, and 36 (post-processing,
-   bloom first) once render passes have run; each needs a shader Aprend
-   ships (item 22) as well.
+6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
+   Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
+   and item 31's immediate form (mip generation by a pass per level) are
+   written, not compiled or run (2026-10-16): run `test_generate_mips` on
+   all three backends first. Then item 31's command form, then 23 and 24,
+   and 36 (post-processing, bloom first) once render passes have run; each
+   is a shader Aprend ships, as item 22 now allows.
 
-Item 37 (the command allocator) is written, not compiled; building it and
-running it on D3D12 goes ahead of steps 2 to 6. Item 38's points are small
+Item 37 (the command allocator) is written and has run on all three
+backends, and a host's memory stayed flat on D3D12 over 20 minutes
+(reported 2026-10-16); nothing of it is left. Item 38's points are small
 and independent; fix each when its function is next touched (the division
 by zero is fixed).
 

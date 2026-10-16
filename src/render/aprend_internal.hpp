@@ -18,6 +18,7 @@
 #include "render/aprendtransient.h"
 #include "render/aprendtimer.h"
 
+#include "aprendbuiltin_internal.hpp"
 #include "aprendpools_internal.hpp"
 #include "aprendreflect_internal.hpp"
 #include "aprendtransient_internal.hpp"
@@ -230,6 +231,9 @@ typedef struct aprend_instance_t {
 	 * by the thread using the instance, by creating a layout and by releasing
 	 * a core's last holder. */
 	std::vector<aprend_binding_layout_core *> binding_layout_cores{};
+	/* What Aprend draws with itself (aprendbuiltin_internal.hpp), made as
+	 * first needed. */
+	aprend_builtins builtins{};
 	/* Guards release_queue, release_head and upload_batch_waiting, and makes
 	 * a new submit_serial and the batch it carried change together for
 	 * aprend_instance_retire. It is what
