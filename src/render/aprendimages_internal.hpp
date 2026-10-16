@@ -167,6 +167,29 @@ static bool aprend_immediate_on_texture(
 	return !wait || aprend_wait_immediate(texture->instance);
 }
 
+/* One level of one layer of a mip generation: a view of the level above to
+ * sample (a 2D array view of its one layer, as aprend_downsample.frag
+ * declares it), a view of the level to render (a 2D view), and the set that
+ * binds the first with the chain's sampler. */
+struct aprend_mip_step {
+	aprend_texture_view source{nullptr};
+	aprend_texture_view target{nullptr};
+	aprend_binding_set set{nullptr};
+};
+
+/* What renders every level below [base_mip] of every layer of a 2D texture
+ * through [filter]: steps[layer * levels + i], levels being the texture's
+ * mip count - 1 - base_mip, renders level base_mip + 1 + i of that layer.
+ * Kept by the texture (aprend_texture2d_t::mip_chains) from the first
+ * generation that asks for it, by either form, so a list compiled every
+ * frame makes nothing new; released with the texture, before its image,
+ * and retired when a resize replaces the image. */
+struct aprend_mip_chain {
+	uint32_t base_mip{0};
+	SPUDGPU_FILTER filter{SPUDGPU_FILTER_NEAREST};
+	std::vector<aprend_mip_step> steps{};
+};
+
 typedef struct aprend_texture2d_t
 {
 #if _DEBUG
@@ -182,6 +205,8 @@ typedef struct aprend_texture2d_t
     // desc.mip_levels as the caller gave it (0 = full chain). desc holds the
     // count actually allocated, so a resize needs this to know which was asked.
     uint32_t requested_mip_levels{0};
+    // The mip generations made so far; see aprend_mip_chain.
+    std::vector<aprend_mip_chain> mip_chains{};
 } aprend_texture2d_t;
 
 typedef struct aprend_texture3d_t
@@ -274,3 +299,34 @@ typedef struct aprend_framebuffer_t
     aprend_texture_view depth_attachment{nullptr};
     bool has_depth_attachment{false};
 } aprend_framebuffer_t;
+
+/* Whether [texture] can have the levels below [base_mip] generated through
+ * [filter], by either form: the level exists, the filter is a
+ * SPUDGPU_FILTER, the texture has shader resource and render target usage,
+ * and its format is one aprend_builtin_downsample_format takes. False,
+ * printed with [who] in front, if not. Whether the level has contents is
+ * each form's own check. */
+bool aprend_generate_mips_valid(aprend_texture2d texture, uint32_t base_mip, SPUDGPU_FILTER filter, const char *who);
+
+/* The chain of [texture] for [base_mip] and [filter], made if it has none,
+ * and the downsample pipeline for its format. False, printed, if either
+ * can't be made, with nothing kept. The pointer is valid until the next
+ * call for this texture. Not for the last level, which has no chain. */
+bool aprend_texture2d_mip_chain(
+    aprend_texture2d texture,
+    uint32_t base_mip,
+    SPUDGPU_FILTER filter,
+    const aprend_mip_chain **out_chain,
+    aprend_graphics_pipeline *out_pipeline);
+
+/* Records the pass that renders [step]'s target, a level [width] by
+ * [height], from its source with [pipeline]. Both views are already in the
+ * layouts the pass needs: the source in SHADER_READ_ONLY, the target in
+ * COLOR_ATTACHMENT_OPTIMAL. */
+void aprend_record_mip_pass(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    const aprend_mip_step &step,
+    uint32_t width,
+    uint32_t height);
+

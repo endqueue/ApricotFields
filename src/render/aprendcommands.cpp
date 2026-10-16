@@ -455,6 +455,23 @@ void aprend_send_command(
 		cmd_list->push_constant_storage.emplace_back(bytes, bytes + p._size);
 		p._data = cmd_list->push_constant_storage.back().data();
 	}
+	if (cmd._type == APREND_COMMAND_GENERATE_MIPS) {
+		const auto &p = cmd._params._generate_mips;
+		if (!p._texture) {
+			printf("aprend: GENERATE_MIPS with a NULL texture\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._texture->instance != cmd_list->instance) {
+			printf("aprend: GENERATE_MIPS with a texture of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!aprend_generate_mips_valid(p._texture, p._base_mip, p._filter, "aprend: GENERATE_MIPS")) {
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
 
 	cmd_list->commands.emplace_back(cmd);
 }
@@ -1152,6 +1169,61 @@ static bool aprend_cmd_put_binding_set(
 	return true;
 }
 
+/* GENERATE_MIPS, outside a pass: for each layer, the base level into
+ * SHADER_READ_ONLY (nothing if a read left it there), then each level below
+ * rendered from the one above and moved to SHADER_READ_ONLY in turn, all
+ * through the list's own layout tracking. False, printed, if the base level
+ * of a layer has nothing in it as the list reaches the command, or the
+ * texture's chain or pipeline can't be made. */
+static bool aprend_cmd_generate_mips(
+    aprend_command_list cmd_list,
+    aprend_texture2d texture,
+    uint32_t base_mip,
+    SPUDGPU_FILTER filter) {
+	// Checked again: a resize since the command was sent may have changed
+	// the texture's levels.
+	if (!aprend_generate_mips_valid(texture, base_mip, filter, "aprend: GENERATE_MIPS"))
+		return false;
+	const uint32_t layer_count = texture->desc.array_layers;
+	const uint32_t last_mip    = texture->desc.mip_levels - 1;
+	aprend_texture_range one{};
+	one.image       = texture->image;
+	one.tracking    = &texture->tracking;
+	one.mip_count   = 1;
+	one.layer_count = 1;
+	for (uint32_t layer = 0; layer < layer_count; ++layer) {
+		const size_t index = aprend_cmd_layout_use(cmd_list, one, base_mip, layer);
+		if (cmd_list->layout_uses[index].final_layout == SPUDGPU_IMAGE_LAYOUT_UNDEFINED) {
+			printf("aprend: GENERATE_MIPS: level %u of layer %u has nothing in it, from before the list or earlier in it\n", base_mip, layer);
+			return false;
+		}
+	}
+	if (base_mip == last_mip)
+		return true;
+
+	const aprend_mip_chain *chain     = nullptr;
+	aprend_graphics_pipeline pipeline = nullptr;
+	if (!aprend_texture2d_mip_chain(texture, base_mip, filter, &chain, &pipeline))
+		return false;
+	const uint32_t levels = last_mip - base_mip;
+	for (uint32_t layer = 0; layer < layer_count; ++layer) {
+		one.base_layer = layer;
+		one.base_mip   = base_mip;
+		aprend_cmd_transition_range(cmd_list, one, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+		for (uint32_t i = 0; i < levels; ++i) {
+			const uint32_t mip = base_mip + i + 1;
+			one.base_mip       = mip;
+			// A barrier whether or not it is there already, as for a pass's
+			// targets.
+			aprend_cmd_transition_range(cmd_list, one, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
+			aprend_record_mip_pass(cmd_list->cmd_list, pipeline, chain->steps[(size_t)layer * levels + i], aprend_mip_size(texture->desc.width, mip),
+			                       aprend_mip_size(texture->desc.height, mip));
+			aprend_cmd_transition_range(cmd_list, one, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, false);
+		}
+	}
+	return true;
+}
+
 bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return false;
@@ -1599,6 +1671,19 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			aprend_cmd_end_timed(cmd_list, *open_pass);
 			in_pass   = false;
 			open_pass = nullptr;
+			break;
+		}
+		case APREND_COMMAND_GENERATE_MIPS: {
+			const auto &p = command._params._generate_mips;
+			if (in_pass) {
+				printf("aprend: GENERATE_MIPS inside a rendering pass\n");
+				ok = false;
+				break;
+			}
+			ok = aprend_cmd_generate_mips(cmd_list, p._texture, p._base_mip, p._filter);
+			// Its passes bind a pipeline of their own: a compute pipeline is
+			// set again before the next dispatch, as after a pass.
+			bound_compute_pipeline = nullptr;
 			break;
 		}
 		case APREND_COMMAND_BEGIN_LABEL:

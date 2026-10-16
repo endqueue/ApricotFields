@@ -696,6 +696,20 @@ unfinished in it.
     Windows over D3D12 ran idle for 20 minutes with no growth in memory,
     the check item 37 was waiting on. Whether its viewport drew frames
     throughout while idle, and on which device, isn't recorded.
+- **Mip generation in a command list, written 2026-10-16; run on Metal
+  the same day** (item 31): `APREND_COMMAND_GENERATE_MIPS`, outside a pass,
+  checked as it is sent (texture, instance, level, filter, usage, format)
+  and again at compile (a resize since), with the base level's contents
+  taken from the list's own layout tracking. Its views and sets, and those
+  of `aprend_texture2d_generate_mips`, are now kept by the texture
+  (`aprend_mip_chain` in `aprendimages_internal.hpp`) instead of made and
+  retired each call; both forms record through one
+  `aprend_record_mip_pass`. `../apricottests`' `test_generate_mips_command`
+  renders mip 0, generates, and samples mip 3 in one list, twice, and
+  checks three compile failures. **Passed on Metal on 2026-10-16** (Apple
+  M5 Pro) on its first build: Debug under Metal API and shader validation
+  with warnings fatal, and Release; no leak at exit. Not run on D3D12 or
+  Vulkan.
 - **Aprend ships shaders, and generates mips with them; written
   2026-10-16; run on Metal the same day** (items 22, 31, 7):
   - GLSL in `shaders/` is compiled to SPIR-V by glslc at build time and
@@ -732,7 +746,8 @@ unfinished in it.
     with the validation layer clean), after a fix in SpudGPU's D3D12 backend:
     every 2D view there saw layer 0, so layer 1 was rendered into and
     sampled from layer 0. The array-view source came after, and has run on
-    D3D12 and Vulkan only; not yet on Metal.
+    D3D12 and Vulkan, and then on Metal (M5 Pro, 2026-10-16: Debug under
+    validation with warnings fatal, and Release; no leak at exit).
 
 ## Wrong things
 
@@ -1569,8 +1584,11 @@ What bloom needs deciding or building:
 - [ ] **Shaders.** In `shaders/`, embedded in the library and made into
       built-ins on first use, as the downsample shader is (item 22), and
       reflected (item 18). Its levels can start from
-      `aprend_texture2d_generate_mips`' shaders, but bloom downsamples a
-      render target inside a list, which is item 31's command form.
+      `aprend_texture2d_generate_mips`' shaders; bloom downsamples a
+      render target inside a list, which `APREND_COMMAND_GENERATE_MIPS`
+      (item 31, written 2026-10-16) does with a box filter. A bloom
+      downsample wider than a box (13 taps, to keep fireflies down) is a
+      shader of its own on the same chain of views.
 - [ ] **A header and its contract** in the Doxygen style of
       `include/render/`, and the threads it is safe from.
 - [ ] **Run on all three backends**, with a test in `../apricottests`
@@ -1651,13 +1669,16 @@ form is written (2026-10-16; `test_generate_mips` passed on Metal, D3D12 and Vul
 `aprend_texture2d_generate_mips` renders each level below a base level of
 every layer, a pass per level sampling the one above through Aprend's own
 downsample shader (item 22). SpudGPU's blit resamples only on Vulkan, so a
-blit-based form would have done nothing on Metal and D3D12. Left:
-
-- **A command for a texture just rendered to**: the same passes recorded
-  into a command list outside any pass, with the list's layout tracking
-  (`layout_uses`) in place of the immediate path's. Its first use is a
-  render target sampled at a lower level later in the same list, which
-  bloom (item 36) is.
+blit-based form would have done nothing on Metal and D3D12. The command
+form, `APREND_COMMAND_GENERATE_MIPS`, is written (2026-10-16;
+`test_generate_mips_command` passed on Metal, not run on D3D12 or Vulkan): the same passes recorded into a command list outside any pass,
+through the list's layout tracking, for a texture rendered earlier in the
+same list; every level it fills, and the base, ends in
+`SHADER_READ_ONLY` for a later pass. The views and sets both forms render
+through are kept by the texture (`aprend_mip_chain`), one chain per base
+level and filter, made by the first generation and released with the
+texture, or retired with its image by a resize; a list compiled every
+frame makes nothing new. Left:
 - **3D textures**: their depth halves too, which a 2D pass can't do; a
   compute shader or a pass per slice of the target pair.
 - **Formats**: eleven every backend renders to and filters. 32-bit float
@@ -1667,10 +1688,12 @@ blit-based form would have done nothing on Metal and D3D12. Left:
 - **Odd sizes** are filtered with two taps a side, so a level's last texel
   of an odd side weighs less. A three-tap filter for odd sides is the
   usual fix, in the shader.
-- **The first call for a format makes a pipeline.**
-- **Each call makes two views and a binding set per level per layer**, all
-  retired after the batch runs: fine for a texture loaded now and then,
-  not for one regenerated every frame, which the command form is for.
+- **The first generation in a format makes a pipeline**, and a texture's
+  first of a base level and filter its views and sets, inside whatever
+  call or compile it is.
+- **A chain is kept for the texture's life**: a texture generated from
+  several base levels or with both filters keeps one for each. Nothing
+  drops one sooner.
 
 Hazel: `Texture2D::GenerateMips`.
 
@@ -1804,7 +1827,10 @@ and 5 are closed and their numbers are not reused.
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
    and item 31's immediate form (mip generation by a pass per level) are
    written, and `test_generate_mips` passed on Metal, D3D12 and Vulkan
-   (2026-10-16). Next is item 31's command form, then 23 and 24,
+   (2026-10-16). Item 31's command form is written and
+   `test_generate_mips_command` passed on Metal (2026-10-16): run it on
+   D3D12 and Vulkan.
+   Then 23 and 24,
    and 36 (post-processing, bloom first) once render passes have run; each
    is a shader Aprend ships, as item 22 now allows.
 

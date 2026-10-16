@@ -306,6 +306,28 @@ enum {
 	APREND_COMMAND_BEGIN_LABEL                 = 26,
 	/** Closes the region the last BEGIN_LABEL opened. Reads nothing. */
 	APREND_COMMAND_END_LABEL                   = 27,
+	/**
+	 * Fills every level of `_texture` below `_base_mip`, in every array
+	 * layer, from the level above, as aprend_texture2d_generate_mips()
+	 * (aprendimages.h) does and under its rules for the texture's usage, its
+	 * format and `_filter`: a pass per level, sampling the one above. It is
+	 * that call's form for a texture whose base level is written earlier in
+	 * the same list, by a pass or a dispatch, or by anything submitted
+	 * before it: a scene rendered and then reduced, in one list.
+	 *
+	 * Outside a pass. Every level it fills is left in
+	 * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, and the base level too, ready
+	 * for a later pass to sample; layouts are tracked as for a pass. It
+	 * binds a pipeline and sets of its own, so a compute pipeline is set
+	 * again after it before a dispatch, as after a pass; the binding set
+	 * slots are not touched.
+	 *
+	 * The views and sets it renders through are kept by the texture from
+	 * the first generation of the same base level and filter, by this
+	 * command or the call, and released with it. A texture's first
+	 * generation in a format also makes Aprend's pipeline for that format.
+	 */
+	APREND_COMMAND_GENERATE_MIPS               = 28,
 };
 
 /**
@@ -470,6 +492,15 @@ typedef struct APREND_COMMAND {
 			/** Null-terminated text. NULL is an empty label. */
 			const char *_label;
 		} _begin_label;
+		/** APREND_COMMAND_GENERATE_MIPS. */
+		struct {
+			/** The texture, of the list's instance. */
+			aprend_texture2d _texture;
+			/** The level the others are made from; below the texture's mip count. */
+			uint32_t _base_mip;
+			/** SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST. */
+			SPUDGPU_FILTER _filter;
+		} _generate_mips;
 	} _params;
 } APREND_COMMAND;
 
@@ -544,7 +575,10 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   since it was last changed, or one with a draw that has no material when
  *   `_material_slot` is not APREND_DRAW_LIST_NO_MATERIAL, or a
  *   `_material_slot` at or above APREND_MAX_BINDING_LAYOUTS that isn't
- *   APREND_DRAW_LIST_NO_MATERIAL.
+ *   APREND_DRAW_LIST_NO_MATERIAL;
+ * - a GENERATE_MIPS with a NULL texture or one of another instance, or one
+ *   aprend_texture2d_generate_mips() refuses for its usage, its format, its
+ *   level or its filter.
  *
  * BEGIN_RENDER_PASS, SET_COMPUTE_PASS and DRAW_LIST are expanded here into
  * the commands they stand for, read from the pass or list as it is now (see
@@ -615,6 +649,10 @@ void aprend_send_command(
  *         - a SET_MATERIAL whose material is not complete
  *           (aprend_material_is_complete()) or whose binding set can't be
  *           built;
+ *         - a GENERATE_MIPS inside a pass, or whose base level has nothing
+ *           in some layer: written neither by anything submitted before nor
+ *           earlier in the list; or whose views, sets or pipeline can't be
+ *           made;
  *         - no SpudGPU command list to record into, if one has to be made
  *           and the device refuses it.
  *

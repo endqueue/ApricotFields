@@ -126,8 +126,39 @@ static void aprend_upload_staging_release(aprend_instance instance, aprend_uploa
 	*staging = {};
 }
 
+/* Releases what [steps] hold, each set before the views it binds: retired,
+ * for a chain the GPU may still be reading, or at once, from the texture's
+ * destructor, when nothing is. */
+static void aprend_mip_steps_release(std::vector<aprend_mip_step> &steps, bool retire) {
+	for (aprend_mip_step &step : steps) {
+		if (retire) {
+			aprend_binding_set_destroy(step.set);
+			aprend_destroy_texture_view(step.source);
+			aprend_destroy_texture_view(step.target);
+			continue;
+		}
+		if (step.set)
+			aprend_release_handle<aprend_binding_set_t>(step.set);
+		if (step.source)
+			aprend_release_handle<aprend_texture_view_t>(step.source);
+		if (step.target)
+			aprend_release_handle<aprend_texture_view_t>(step.target);
+	}
+	steps.clear();
+}
+
+/* Every chain of [texture], as aprend_mip_steps_release. */
+static void aprend_mip_chains_release(aprend_texture2d texture, bool retire) {
+	for (aprend_mip_chain &chain : texture->mip_chains)
+		aprend_mip_steps_release(chain.steps, retire);
+	texture->mip_chains.clear();
+}
+
 // A texture that failed to create may have no image, and a 3D one no view.
 aprend_texture2d_t::~aprend_texture2d_t() {
+	// Its mip chains' views go before its image, as SpudGPU requires. The
+	// GPU has finished with them: the texture is released only once it has.
+	aprend_mip_chains_release(this, false);
 	if (this->image)
 		spudgpu_destroy_image(this->image);
 	free(this->tracking.layouts);
@@ -468,90 +499,71 @@ bool aprend_texture2d_get_data(
 	return true;
 }
 
-/* One level of one layer of a mip generation: a view of the level above to
- * sample, a view of the level to render, and the set that binds the first. */
-struct aprend_mip_step {
-	aprend_texture_view source{nullptr};
-	aprend_texture_view target{nullptr};
-	aprend_binding_set set{nullptr};
-};
+} // extern "C"
 
-/* Retires what [steps] hold, each set before the views it binds. */
-static void aprend_mip_steps_destroy(std::vector<aprend_mip_step> &steps) {
-	for (aprend_mip_step &step : steps) {
-		aprend_binding_set_destroy(step.set);
-		aprend_destroy_texture_view(step.source);
-		aprend_destroy_texture_view(step.target);
-	}
-	steps.clear();
-}
-
-bool aprend_texture2d_generate_mips(
-    aprend_texture2d texture,
-    spudgpu_command_queue queue,
-    uint32_t base_mip,
-    SPUDGPU_FILTER filter) {
-	if (!texture) {
-		printf("apricot: aprend_texture2d_generate_mips: texture is NULL\n");
-		return false;
-	}
-	if (!queue) {
-		printf("apricot: aprend_texture2d_generate_mips: queue is NULL\n");
-		return false;
-	}
+// Shared by aprend_texture2d_generate_mips and APREND_COMMAND_GENERATE_MIPS
+// (aprendcommands.cpp), declared in aprendimages_internal.hpp with C++
+// linkage, so outside the extern "C" block.
+bool aprend_generate_mips_valid(aprend_texture2d texture, uint32_t base_mip, SPUDGPU_FILTER filter, const char *who) {
 	if (base_mip >= texture->desc.mip_levels) {
-		printf("apricot: aprend_texture2d_generate_mips: base_mip %u, and the texture has %u levels\n", base_mip, texture->desc.mip_levels);
+		printf("%s: base_mip %u, and the texture has %u levels\n", who, base_mip, texture->desc.mip_levels);
 		return false;
 	}
 	if (filter != SPUDGPU_FILTER_NEAREST && filter != SPUDGPU_FILTER_LINEAR) {
-		printf("apricot: aprend_texture2d_generate_mips: %d is not a SPUDGPU_FILTER\n", (int)filter);
+		printf("%s: %d is not a SPUDGPU_FILTER\n", who, (int)filter);
 		return false;
 	}
 	if (!(texture->desc.usage & APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE)) {
-		printf("apricot: aprend_texture2d_generate_mips: the texture was created without APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE\n");
+		printf("%s: the texture was created without APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE\n", who);
 		return false;
 	}
 	if (!(texture->desc.usage & APREND_TEXTURE_USAGE_BIT_RENDER_TARGET)) {
-		printf("apricot: aprend_texture2d_generate_mips: the texture was created without APREND_TEXTURE_USAGE_BIT_RENDER_TARGET\n");
+		printf("%s: the texture was created without APREND_TEXTURE_USAGE_BIT_RENDER_TARGET\n", who);
 		return false;
 	}
 	if (!aprend_builtin_downsample_format(texture->desc.format)) {
-		printf("apricot: aprend_texture2d_generate_mips: format %d is not one every backend renders to and filters\n", (int)texture->desc.format);
+		printf("%s: format %d is not one every backend renders to and filters\n", who, (int)texture->desc.format);
 		return false;
 	}
-	const uint32_t layer_count = texture->desc.array_layers;
-	for (uint32_t layer = 0; layer < layer_count; ++layer) {
-		if (*texture->tracking.at(base_mip, layer) == SPUDGPU_IMAGE_LAYOUT_UNDEFINED) {
-			printf("apricot: aprend_texture2d_generate_mips: level %u of layer %u has never been written\n", base_mip, layer);
-			return false;
-		}
-	}
-	const uint32_t last_mip = texture->desc.mip_levels - 1;
-	if (base_mip == last_mip)
-		return true;
+	return true;
+}
 
+bool aprend_texture2d_mip_chain(
+    aprend_texture2d texture,
+    uint32_t base_mip,
+    SPUDGPU_FILTER filter,
+    const aprend_mip_chain **out_chain,
+    aprend_graphics_pipeline *out_pipeline) {
 	aprend_instance instance          = texture->instance;
 	aprend_graphics_pipeline pipeline = aprend_builtin_downsample_pipeline(instance, texture->desc.format);
 	if (!pipeline)
 		return false;
+	for (const aprend_mip_chain &chain : texture->mip_chains) {
+		if (chain.base_mip == base_mip && chain.filter == filter) {
+			*out_chain    = &chain;
+			*out_pipeline = pipeline;
+			return true;
+		}
+	}
 	aprend_binding_layout layout = aprend_builtin_downsample_layout(instance);
 	aprend_sampler sampler       = aprend_builtin_downsample_sampler(instance, filter);
 	if (!sampler)
 		return false;
 
-	// Every view and set is made before anything is recorded, so a failure
-	// records nothing. steps[layer * levels + i] renders level base_mip + 1 + i.
-	const uint32_t levels = last_mip - base_mip;
-	std::vector<aprend_mip_step> steps;
+	const uint32_t layer_count = texture->desc.array_layers;
+	const uint32_t levels      = texture->desc.mip_levels - 1 - base_mip;
+	aprend_mip_chain chain{};
+	chain.base_mip = base_mip;
+	chain.filter   = filter;
 	try {
-		steps.resize((size_t)layer_count * levels);
+		chain.steps.resize((size_t)layer_count * levels);
 	} catch (...) {
-		printf("apricot: aprend_texture2d_generate_mips: no memory for %u levels of %u layers\n", levels, layer_count);
+		printf("apricot: mip generation: no memory for %u levels of %u layers\n", levels, layer_count);
 		return false;
 	}
 	for (uint32_t layer = 0; layer < layer_count; ++layer) {
 		for (uint32_t i = 0; i < levels; ++i) {
-			aprend_mip_step &step = steps[(size_t)layer * levels + i];
+			aprend_mip_step &step = chain.steps[(size_t)layer * levels + i];
 
 			// The source is a 2D array view of its one layer, as the
 			// downsample shader declares it (aprend_downsample.frag says
@@ -570,8 +582,8 @@ bool aprend_texture2d_generate_mips(
 			view_desc.base_mip    = base_mip + i + 1;
 			step.target           = aprend_texture_view_create_2d(texture, &view_desc);
 			if (!step.source || !step.target) {
-				printf("apricot: aprend_texture2d_generate_mips: the views of level %u of layer %u can't be created\n", base_mip + i + 1, layer);
-				aprend_mip_steps_destroy(steps);
+				printf("apricot: mip generation: the views of level %u of layer %u can't be created\n", base_mip + i + 1, layer);
+				aprend_mip_steps_release(chain.steps, false);
 				return false;
 			}
 
@@ -584,17 +596,93 @@ bool aprend_texture2d_generate_mips(
 			entries[1]._resource._image._sampler = sampler;
 			step.set                             = aprend_binding_set_create(layout, entries, 2);
 			if (!step.set) {
-				printf("apricot: aprend_texture2d_generate_mips: the binding set of level %u of layer %u can't be created\n", base_mip + i + 1, layer);
-				aprend_mip_steps_destroy(steps);
+				printf("apricot: mip generation: the binding set of level %u of layer %u can't be created\n", base_mip + i + 1, layer);
+				aprend_mip_steps_release(chain.steps, false);
 				return false;
 			}
 		}
 	}
+	try {
+		texture->mip_chains.push_back(std::move(chain));
+	} catch (...) {
+		printf("apricot: mip generation: no memory to keep the chain\n");
+		aprend_mip_steps_release(chain.steps, false);
+		return false;
+	}
+	*out_chain    = &texture->mip_chains.back();
+	*out_pipeline = pipeline;
+	return true;
+}
+
+void aprend_record_mip_pass(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    const aprend_mip_step &step,
+    uint32_t width,
+    uint32_t height) {
+	spudgpu_rendering_begin_desc pass{};
+	pass.color_attachments[0].image_view = step.target->image_view;
+	// Every texel is drawn, so what the level held is not loaded.
+	pass.color_attachments[0].load_op  = SPUDGPU_LOAD_OP_DONT_CARE;
+	pass.color_attachments[0].store_op = SPUDGPU_STORE_OP_STORE;
+	pass.color_attachment_count        = 1;
+	pass.width                         = width;
+	pass.height                        = height;
+	spudgpu_cmd_begin_rendering(cmd, &pass);
+	SPUDGPU_VIEWPORT viewport{};
+	viewport.width    = (float)width;
+	viewport.height   = (float)height;
+	viewport.maxDepth = 1.0f;
+	spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
+	SPUDGPU_SCISSOR_RECT scissor{};
+	scissor.width  = (float)width;
+	scissor.height = (float)height;
+	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
+	spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
+	spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, 0, &step.set->sets[0], 1);
+	spudgpu_cmd_draw(cmd, 3, 0);
+	spudgpu_cmd_end_rendering(cmd);
+}
+
+extern "C" {
+bool aprend_texture2d_generate_mips(
+    aprend_texture2d texture,
+    spudgpu_command_queue queue,
+    uint32_t base_mip,
+    SPUDGPU_FILTER filter) {
+	if (!texture) {
+		printf("apricot: aprend_texture2d_generate_mips: texture is NULL\n");
+		return false;
+	}
+	if (!queue) {
+		printf("apricot: aprend_texture2d_generate_mips: queue is NULL\n");
+		return false;
+	}
+	if (!aprend_generate_mips_valid(texture, base_mip, filter, "apricot: aprend_texture2d_generate_mips"))
+		return false;
+	const uint32_t layer_count = texture->desc.array_layers;
+	for (uint32_t layer = 0; layer < layer_count; ++layer) {
+		if (*texture->tracking.at(base_mip, layer) == SPUDGPU_IMAGE_LAYOUT_UNDEFINED) {
+			printf("apricot: aprend_texture2d_generate_mips: level %u of layer %u has never been written\n", base_mip, layer);
+			return false;
+		}
+	}
+	const uint32_t last_mip = texture->desc.mip_levels - 1;
+	if (base_mip == last_mip)
+		return true;
+
+	// The chain is made, or found, before anything is recorded, so a failure
+	// records nothing.
+	const aprend_mip_chain *chain     = nullptr;
+	aprend_graphics_pipeline pipeline = nullptr;
+	if (!aprend_texture2d_mip_chain(texture, base_mip, filter, &chain, &pipeline))
+		return false;
+	const uint32_t levels = last_mip - base_mip;
 
 	// Each level of each layer: moved into the layout the pass reads or
 	// renders it in, and every level then put back as an immediate
 	// operation leaves it (aprend_immediate_final_layout).
-	const bool ok = aprend_record_immediate(instance, queue, [&](spudgpu_command_list cmd) {
+	const bool ok = aprend_record_immediate(texture->instance, queue, [&](spudgpu_command_list cmd) {
 		auto move = [&](uint32_t mip, uint32_t layer, SPUDGPU_IMAGE_LAYOUT from, SPUDGPU_IMAGE_LAYOUT to) {
 			if (from == to)
 				return;
@@ -608,35 +696,10 @@ bool aprend_texture2d_generate_mips(
 		for (uint32_t layer = 0; layer < layer_count; ++layer) {
 			move(base_mip, layer, *texture->tracking.at(base_mip, layer), SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 			for (uint32_t i = 0; i < levels; ++i) {
-				const aprend_mip_step &step = steps[(size_t)layer * levels + i];
-				const uint32_t mip          = base_mip + i + 1;
-				const uint32_t width        = aprend_mip_size(texture->desc.width, mip);
-				const uint32_t height       = aprend_mip_size(texture->desc.height, mip);
+				const uint32_t mip = base_mip + i + 1;
 				move(mip, layer, *texture->tracking.at(mip, layer), SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-				spudgpu_rendering_begin_desc pass{};
-				pass.color_attachments[0].image_view = step.target->image_view;
-				// Every texel is drawn, so what the level held is not loaded.
-				pass.color_attachments[0].load_op  = SPUDGPU_LOAD_OP_DONT_CARE;
-				pass.color_attachments[0].store_op = SPUDGPU_STORE_OP_STORE;
-				pass.color_attachment_count        = 1;
-				pass.width                         = width;
-				pass.height                        = height;
-				spudgpu_cmd_begin_rendering(cmd, &pass);
-				SPUDGPU_VIEWPORT viewport{};
-				viewport.width    = (float)width;
-				viewport.height   = (float)height;
-				viewport.maxDepth = 1.0f;
-				spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
-				SPUDGPU_SCISSOR_RECT scissor{};
-				scissor.width  = (float)width;
-				scissor.height = (float)height;
-				spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
-				spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
-				spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, 0, &step.set->sets[0], 1);
-				spudgpu_cmd_draw(cmd, 3, 0);
-				spudgpu_cmd_end_rendering(cmd);
-
+				aprend_record_mip_pass(cmd, pipeline, chain->steps[(size_t)layer * levels + i], aprend_mip_size(texture->desc.width, mip),
+				                       aprend_mip_size(texture->desc.height, mip));
 				move(mip, layer, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 			}
 			for (uint32_t mip = base_mip; mip <= last_mip; ++mip) {
@@ -657,8 +720,6 @@ bool aprend_texture2d_generate_mips(
 			}
 		}
 	}
-	// Released once the batch that reads them has run.
-	aprend_mip_steps_destroy(steps);
 	return ok;
 }
 
@@ -700,7 +761,9 @@ bool aprend_texture2d_resize(
 
 	// The old image goes only now that its replacement exists, so a failed
 	// resize leaves the texture exactly as it was. Submitted work may still
-	// be using it, so it is released when that has finished.
+	// be using it, so it is released when that has finished. Its mip chains
+	// are views of it, retired first so they go before it.
+	aprend_mip_chains_release(texture, true);
 	aprend_instance_retire(texture->instance, texture->image, &aprend_release_spudgpu_image);
 	texture->image           = new_image;
 	texture->desc.width      = new_width;

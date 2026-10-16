@@ -262,6 +262,16 @@ bool aprend_texture2d_get_data(
  * @p base_mip must have been written, by an update or a pass, in every
  * layer. Nothing tells whether that write covered all of it.
  *
+ * The views and binding sets the passes go through are kept by the texture,
+ * from the first generation of @p base_mip with @p filter, and used again by
+ * every later one, this call's or APREND_COMMAND_GENERATE_MIPS's
+ * (aprendcommands.h). They go with the texture, or with its image when it is
+ * resized. The first generation in a format also makes Aprend's pipeline for
+ * that format, which the instance keeps.
+ *
+ * For a texture whose base level is rendered in a command list, the same
+ * passes are a command of that list: APREND_COMMAND_GENERATE_MIPS.
+ *
  * @param[in] texture  Texture to fill. Created with
  *                     APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE and
  *                     APREND_TEXTURE_USAGE_BIT_RENDER_TARGET, in a format
