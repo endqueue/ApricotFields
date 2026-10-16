@@ -697,7 +697,7 @@ unfinished in it.
     the check item 37 was waiting on. Whether its viewport drew frames
     throughout while idle, and on which device, isn't recorded.
 - **Aprend ships shaders, and generates mips with them; written
-  2026-10-16, not compiled or run** (items 22, 31, 7):
+  2026-10-16; run on Metal the same day** (items 22, 31, 7):
   - GLSL in `shaders/` is compiled to SPIR-V by glslc at build time and
     embedded in the library as C arrays (`-mfmt=c`), on every platform, as
     trellislib and `../apricottests` already do: nothing to deploy or load
@@ -721,7 +721,10 @@ unfinished in it.
     outside the eleven every backend renders to and filters, a base level
     some layer has never had written.
   - `../apricottests`' `test_generate_mips` checks a two-layer 8x8 chain
-    level by level and the refusals. Not compiled or run.
+    level by level and the refusals. **Passed on Metal on 2026-10-16** (Apple
+    M5 Pro, unified memory), on its first run: Debug under Metal API and
+    shader validation with warnings fatal, and Release; no leak at exit.
+    Not run on D3D12 or Vulkan.
 
 ## Wrong things
 
@@ -1379,7 +1382,7 @@ Half settled on 2026-10-16. Aprend ships shaders of its own: GLSL in
 embedded in it (see "State of the code"), and the objects made of them kept
 by the instance (`aprendbuiltin_internal.hpp`). A caller's shaders are
 still SPIR-V it hands over: item 18 has Aprend reflect them, so SPIR-V is
-all it needs. Written, not compiled or run. Left:
+all it needs. Written 2026-10-16 and run on Metal by `../apricottests`; not run on D3D12 or Vulkan. Left:
 
 - **No runtime compilation, includes, macros, cache or reload**, for the
   caller's shaders or Aprend's. Aprend's shaders share nothing yet; when two
@@ -1636,7 +1639,7 @@ it.
 ### 31. Mip generation
 
 Numbered out of order so the other items keep their numbers. The immediate
-form is written (2026-10-16, not compiled or run):
+form is written (2026-10-16; `test_generate_mips` passed on Metal, not run on D3D12 or Vulkan):
 `aprend_texture2d_generate_mips` renders each level below a base level of
 every layer, a pass per level sampling the one above through Aprend's own
 downsample shader (item 22). SpudGPU's blit resamples only on Vulkan, so a
@@ -1792,8 +1795,8 @@ and 5 are closed and their numbers are not reused.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
    and item 31's immediate form (mip generation by a pass per level) are
-   written, not compiled or run (2026-10-16): run `test_generate_mips` on
-   all three backends first. Then item 31's command form, then 23 and 24,
+   written, and `test_generate_mips` passed on Metal (2026-10-16): run it
+   on D3D12 and Vulkan first. Then item 31's command form, then 23 and 24,
    and 36 (post-processing, bloom first) once render passes have run; each
    is a shader Aprend ships, as item 22 now allows.
 
