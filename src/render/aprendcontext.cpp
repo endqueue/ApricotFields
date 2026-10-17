@@ -54,6 +54,7 @@ aprend_instance_t::~aprend_instance_t() {
 	// Onto the release queue first, so the loop below releases them in
 	// order with everything else.
 	aprend_builtins_destroy(this);
+	aprend_render_target_pool_destroy(this);
 	// Whatever is still queued goes now: the instance is the last thing that
 	// could release it. aprend_instance_destroy has waited for the GPU. A
 	// release may retire something more, which this loop then reaches.
@@ -405,6 +406,7 @@ uint32_t aprend_instance_next_frame(aprend_instance instance) {
 	// reopened. Its command memory then grows until a wait succeeds.
 	if (!SPUDFAIL(sr)) {
 		aprend_transient_arena_begin_frame(instance);
+		aprend_render_target_pool_begin_frame(instance);
 		aprend_instance_t::command_frame &frame = instance->frame_commands[instance->frame_index];
 		aprend_command_pool_reset(frame.recordings, instance->frame_index);
 		aprend_command_pool_reset(frame.batches, instance->frame_index);

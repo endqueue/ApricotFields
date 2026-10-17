@@ -6,7 +6,6 @@
  * zero-cost GLM conversion helpers. */
 
 #include "aprimath.h"
-#include "render/aprendbloom.h"
 #include "render/aprendbuffers.h"
 #include "render/aprendcommands.h"
 #include "render/aprendcontext.h"
@@ -21,6 +20,7 @@
 
 #include "aprendbuiltin_internal.hpp"
 #include "aprendpools_internal.hpp"
+#include "aprendrendertargets_internal.hpp"
 #include "aprendreflect_internal.hpp"
 #include "aprendtransient_internal.hpp"
 
@@ -235,6 +235,9 @@ typedef struct aprend_instance_t {
 	/* What Aprend draws with itself (aprendbuiltin_internal.hpp), made as
 	 * first needed. */
 	aprend_builtins builtins{};
+	/* Render targets a built-in effect's command takes at compile
+	 * (aprendrendertargets_internal.hpp). */
+	aprend_render_target_pool render_targets{};
 	/* Guards release_queue, release_head and upload_batch_waiting, and makes
 	 * a new submit_serial and the batch it carried change together for
 	 * aprend_instance_retire. It is what
@@ -470,6 +473,10 @@ typedef struct aprend_command_list_t {
 		uint32_t slot;
 	};
 	std::vector<timer_use> timer_uses{};
+	/* What the last compile took from the instance's render target pool,
+	 * given back if that compile is never submitted (compiled again, reset,
+	 * failed, destroyed) and kept by the submission if it is. */
+	std::vector<aprend_pool_take> pool_takes{};
 	/* A copy of each BEGIN_LABEL's text, so recorded commands never point at
 	 * caller memory. A deque, as a vector's growth would move a short
 	 * string's characters along with it. */
@@ -977,25 +984,6 @@ typedef struct aprend_draw_list_t {
 	/* The list was built and nothing was added or reset since. */
 	bool built{false};
 } aprend_draw_list_t;
-
-typedef struct aprend_bloom_t {
-#if _DEBUG
-	char *debug_name{nullptr};
-#endif
-	aprend_bloom_t() = default;
-	~aprend_bloom_t() = default;
-	aprend_instance instance{nullptr};
-	/* As the caller gave it, at the size of the last resize. */
-	aprend_bloom_desc desc{};
-	/* The chain: R16G16B16A16_FLOAT, desc.levels mips, level 0 half the
-	 * desc's size. Created by the bloom and retired with it. */
-	aprend_texture2d chain{nullptr};
-	/* For each level, a 2D view to render it and one to read it, each of
-	 * that one level. The read views keep the sets that bind them
-	 * (aprend_texture_view_bloom_set). Retired before the chain. */
-	std::vector<aprend_texture_view> level_targets{};
-	std::vector<aprend_texture_view> level_sources{};
-} aprend_bloom_t;
 
 /* The set of Aprend's bloom layout that reads [view] through the linear
  * sampler, kept by the view (aprend_texture_view_t::bloom_set) from the

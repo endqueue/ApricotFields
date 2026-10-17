@@ -124,6 +124,21 @@
  * them. A readback submits the batch itself, since it waits for the result.
  * Destroying a texture the batch writes is safe as anything else is: it is
  * released once the submission that carries the batch has finished.
+ *
+ * @par Textures a command uses in between
+ * A command that records several passes through textures of its own
+ * (APREND_COMMAND_BLOOM, aprendcommands.h) takes them from a pool the
+ * instance keeps, when the list holding it is compiled. Nothing is made or
+ * sized by the caller: a source of a new size takes textures of the new
+ * size at the next compile. A texture taken in one frame is taken again
+ * only once that frame has finished on the GPU, which
+ * aprend_instance_next_frame() waits for, and two commands compiled in one
+ * frame never share one. A compile that is not submitted (compiled again,
+ * failed, reset, or its list destroyed, in the same frame) gives back what
+ * it took. A texture nobody has taken for 120 frames is destroyed, so sizes
+ * no longer used don't stay; until then the pool holds a texture for every
+ * size taken lately, for each command compiled in a frame and each frame
+ * in flight.
  */
 
 #if __cplusplus

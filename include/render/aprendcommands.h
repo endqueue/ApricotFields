@@ -2,7 +2,6 @@
 #ifndef APREND_COMMANDS_H
 #define APREND_COMMANDS_H
 
-#include "aprendbloom.h"
 #include "aprendcontext.h"
 #include "aprendimages.h"
 #include "aprendtransient.h"
@@ -330,32 +329,61 @@ enum {
 	 */
 	APREND_COMMAND_GENERATE_MIPS               = 28,
 	/**
-	 * Blooms `_source` onto `_target` through `_bloom` (aprendbloom.h): a
-	 * glow spread out from the source through the bloom's chain, added to
-	 * what the target holds, color and alpha alike. Outside a pass.
+	 * Blooms `_source` onto `_target`: a soft glow spread out from the
+	 * source and added to what the target holds, color and alpha alike.
+	 * Outside a pass.
+	 *
+	 * What glows is the caller's. Every texel of the source glows unless
+	 * `_threshold` is set: a caller that wants only some things to glow
+	 * draws those alone into a source of their own and blooms that with a
+	 * threshold of 0, and one blooming a whole HDR picture sets the
+	 * brightness that should start to glow. Aprend never decides what is
+	 * worth glowing.
+	 *
+	 * It records a chain of passes at falling sizes through a
+	 * SPUDGPU_FORMAT_R16G16B16A16_FLOAT texture of `_levels` levels, taken
+	 * from the instance's pool (aprendcontext.h, "Textures a command uses
+	 * in between"), its level 0 half the size of the source's first mip, so
+	 * that sums don't clip or band:
+	 *
+	 * 1. the source, read through 13 taps and weighted by `_threshold` and
+	 *    `_knee`, into level 0;
+	 * 2. each further level from the one above, through the same 13 taps;
+	 * 3. each level read back up through a tent of taps `_radius` texels
+	 *    apart and added into the level above, from the smallest up, so
+	 *    level 0 ends holding the sum of them all;
+	 * 4. level 0 spread over the target through the same tent, times
+	 *    `_intensity`, and added to what the target holds.
+	 *
+	 * With a premultiplied source the glow carries the source's coverage,
+	 * so a glow over a clear target is seen once the target is composited
+	 * over something else.
 	 *
 	 * `_source` is a SHADER_RESOURCE view, 2D, of color, written by
-	 * anything submitted before or earlier in the list; it is read at its
-	 * first mip and moved into SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY.
-	 * `_target` is a RENDER_TAGET view, 2D, in a format a bloom renders onto
-	 * (the formats aprend_texture2d_generate_mips() takes), of any size; it
-	 * is left in SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, as a pass's
+	 * anything submitted before or earlier in the list; its first mip is
+	 * read, and moved into SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target`
+	 * is a RENDER_TAGET view, 2D, in a format a bloom renders onto (the
+	 * formats aprend_texture2d_generate_mips() takes), of any size; it is
+	 * left in SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, as a pass's
 	 * target is. The two share no mip of a layer.
 	 *
-	 * `_threshold` is the brightness (the largest of red, green and blue)
-	 * a source texel needs before it glows, and `_knee` how far below it
-	 * the glow fades in rather than starting at once; 0 and 0 make every
-	 * texel glow. `_radius` is how far apart, in texels of each level, the
-	 * taps reading a level back up are: 1 is the usual, more is a wider and
-	 * fainter glow. `_intensity` scales what is added to the target. None is
-	 * negative or not a number, and `_radius` is above 0.
+	 * `_levels` is from 1 to as many as halving the source's size twice
+	 * over allows (a level's sides stop at 1 texel); more is a wider glow
+	 * and two more passes a level. `_threshold` is the brightness (the
+	 * largest of red, green and blue) a source texel needs before it glows,
+	 * and `_knee` how far below it the glow fades in rather than starting
+	 * at once; 0 and 0 make every texel glow. `_radius` is how far apart, in
+	 * texels of each level, the taps reading a level back up are: 1 is the
+	 * usual, more is a wider and fainter glow. `_intensity` scales what is
+	 * added to the target. None is negative or not a number, and `_radius`
+	 * is above 0.
 	 *
 	 * It binds pipelines and sets of its own, so a compute pipeline is set
 	 * again after it before a dispatch, as after a pass; the binding set
 	 * slots are not touched. The first bloom of an instance makes its bloom
-	 * pipelines, and the first onto a target format the composite for it;
-	 * the first that reads a view makes the set that reads it, which the
-	 * view keeps.
+	 * pipelines, the first onto a target format the composite for it, the
+	 * first of a size a pooled texture, and the first that reads a view the
+	 * set that reads it, which the view keeps.
 	 */
 	APREND_COMMAND_BLOOM                       = 29,
 };
@@ -524,8 +552,6 @@ typedef struct APREND_COMMAND {
 		} _begin_label;
 		/** APREND_COMMAND_BLOOM. */
 		struct {
-			/** The bloom whose chain the passes go through, of the list's instance. */
-			aprend_bloom _bloom;
 			/** What glows. */
 			aprend_texture_view _source;
 			/** What the glow is added onto. */
@@ -534,6 +560,8 @@ typedef struct APREND_COMMAND {
 			float _knee;
 			float _radius;
 			float _intensity;
+			/** How many levels the glow is spread through. */
+			uint32_t _levels;
 		} _bloom;
 		/** APREND_COMMAND_GENERATE_MIPS. */
 		struct {
@@ -622,11 +650,11 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  * - a GENERATE_MIPS with a NULL texture or one of another instance, or one
  *   aprend_texture2d_generate_mips() refuses for its usage, its format, its
  *   level or its filter;
- * - a BLOOM with a NULL bloom, source or target, one of another instance,
- *   a source or target view of the wrong type, shape or aspect, a target
- *   in a format a bloom doesn't render onto, a source and target that share
- *   a mip of a layer, or a setting that is negative or not a number, or a
- *   `_radius` of 0.
+ * - a BLOOM with a NULL source or target, one of another instance, a
+ *   source or target view of the wrong type, shape or aspect, a target in
+ *   a format a bloom doesn't render onto, a source and target that share a
+ *   mip of a layer, `_levels` 0 or more than the source's size allows, a
+ *   setting that is negative or not a number, or a `_radius` of 0.
  *
  * BEGIN_RENDER_PASS, SET_COMPUTE_PASS and DRAW_LIST are expanded here into
  * the commands they stand for, read from the pass or list as it is now (see
@@ -697,9 +725,10 @@ void aprend_send_command(
  *         - a SET_MATERIAL whose material is not complete
  *           (aprend_material_is_complete()) or whose binding set can't be
  *           built;
- *         - a BLOOM inside a pass, or whose source has nothing in it
- *           (written neither before the list nor earlier in it), or whose
- *           pipelines or sets can't be made;
+ *         - a BLOOM inside a pass, whose source has nothing in it
+ *           (written neither before the list nor earlier in it) or no
+ *           longer holds `_levels` (resized since it was sent), or whose
+ *           pipelines, sets or pooled texture can't be made;
  *         - a GENERATE_MIPS inside a pass, or whose base level has nothing
  *           in some layer: written neither by anything submitted before nor
  *           earlier in the list; or whose views, sets or pipeline can't be

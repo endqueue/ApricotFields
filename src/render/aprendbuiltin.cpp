@@ -1,6 +1,7 @@
 
 #include "aprend_internal.hpp"
 #include "aprendbuiltin_internal.hpp"
+#include "aprendimages_internal.hpp"
 
 #include <cstdio>
 
@@ -252,6 +253,25 @@ aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDG
 	if (!sampler)
 		printf("apricot: Aprend's downsample sampler can't be created\n");
 	return sampler;
+}
+
+aprend_binding_set aprend_texture_view_bloom_set(aprend_texture_view view) {
+	if (view->bloom_set)
+		return view->bloom_set;
+	aprend_sampler sampler = aprend_builtin_downsample_sampler(view->instance, SPUDGPU_FILTER_LINEAR);
+	if (!sampler)
+		return nullptr;
+	aprend_binding_set_entry entries[2]{};
+	entries[0]._binding                  = 0;
+	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	entries[0]._resource._image._view    = view;
+	entries[1]._binding                  = 1;
+	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+	entries[1]._resource._image._sampler = sampler;
+	view->bloom_set                      = aprend_binding_set_create(aprend_builtin_bloom_layout(view->instance), entries, 2);
+	if (!view->bloom_set)
+		printf("apricot: bloom: the binding set that reads a view can't be created\n");
+	return view->bloom_set;
 }
 
 void aprend_record_fullscreen_pass(

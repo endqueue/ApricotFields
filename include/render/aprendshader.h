@@ -134,17 +134,19 @@ void aprend_shader_destroy(aprend_shader shader);
 /**
  * @brief Aprend's own full-target vertex shader, for a pass over the whole
  * of a target with a fragment shader of the caller's: a blur, a tone curve,
- * an outline, any pass that makes one picture from another.
+ * an outline, any pass that makes one picture from another. Such a pass is
+ * the commands any pass is made of (aprendcommands.h): BEGIN_RENDERING on
+ * the destination, a pipeline made with this shader and the caller's
+ * fragment shader, a binding set of the source, a DRAW of 3 vertices.
  *
  * It draws one triangle that covers the target from the vertex index alone,
  * so a pipeline made with it has no vertex input (`_vertex_binding_count`
- * 0) and is drawn with APREND_COMMAND_DRAW of 3 vertices, its entry point
- * `main`. It writes no output but the position. The fragment shader takes
- * its place from `gl_FragCoord.xy`, in pixels of the target with the first
- * row at the top on every backend, divided by the target's size for a
- * place in [0, 1] to sample at; a texture's rows start at the top as well.
- * An interpolated coordinate would not read the same way up on every
- * backend, which is why there is none.
+ * 0), its entry point `main`. It writes no output but the position. The
+ * fragment shader takes its place from `gl_FragCoord.xy`, in pixels of the
+ * target with the first row at the top on every backend, divided by the
+ * target's size for a place in [0, 1] to sample at; a texture's rows start
+ * at the top as well. An interpolated coordinate would not read the same
+ * way up on every backend, which is why there is none.
  *
  * The shader is the instance's, made on the first call (or the first time
  * Aprend needs it itself) and destroyed with the instance. Don't pass it to

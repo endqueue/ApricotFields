@@ -34,7 +34,8 @@ add_library(ApricotFields STATIC
         src/render/aprendtimer.cpp
         src/render/aprendbuiltin_internal.hpp
         src/render/aprendbuiltin.cpp
-        src/render/aprendbloom.cpp
+        src/render/aprendrendertargets_internal.hpp
+        src/render/aprendrendertargets.cpp
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio.cpp
@@ -58,7 +59,6 @@ add_library(ApricotFields STATIC
         include/render/aprendswapchain.h
         include/render/aprendtransient.h
         include/render/aprendtimer.h
-        include/render/aprendbloom.h
         include/archive/aparchive.h
         include/audio/apaudio.h
         include/audio/apaudiocues.h

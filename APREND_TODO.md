@@ -696,17 +696,26 @@ unfinished in it.
     Windows over D3D12 ran idle for 20 minutes with no growth in memory,
     the check item 37 was waiting on. Whether its viewport drew frames
     throughout while idle, and on which device, isn't recorded.
-- **Bloom, written 2026-10-16; not compiled or run** (item 36):
-  `aprendbloom.h` (`aprend_bloom_create`, `_resize`, `_destroy`,
-  `_get_desc`) and `APREND_COMMAND_BLOOM` (source, target, threshold,
-  knee, radius, intensity), outside a pass: four fragment passes in
-  `shaders/aprend_bloom_*.frag` over the bloom's float chain, added onto
-  the target. Built-in pipelines per stage and target format
-  (`aprendbuiltin.cpp`), a shared `aprend_record_fullscreen_pass` (mip
-  generation records through it too), and each view keeping the set that
-  reads it. `aprend_get_fullscreen_vertex_shader` (`aprendshader.h`) hands
-  the built-in vertex shader to a caller's own pass over a texture.
-  `../apricottests`' `test_bloom`. Not compiled or run.
+- **Bloom and post-processing, written 2026-10-16; run on Metal the same
+  day**
+  (item 36): `APREND_COMMAND_BLOOM` (source, target, threshold, knee,
+  radius, intensity, levels), outside a pass: four fragment passes in
+  `shaders/aprend_bloom_*.frag` over a float chain taken from the
+  instance's new render target pool (`aprendrendertargets.cpp`), added
+  onto the target. No bloom handle and no header of its own: the command's
+  doc in `aprendcommands.h` describes bloom, `aprendcontext.h` ("Textures a
+  command uses in between") the pool, and
+  `aprend_get_fullscreen_vertex_shader` (`aprendshader.h`) hands the
+  built-in vertex shader to a caller's own pass over a texture.
+  Built-in pipelines per stage and target format (`aprendbuiltin.cpp`), a
+  shared `aprend_record_fullscreen_pass` (mip generation records through
+  it too), each view keeping the set that reads it, and a command list
+  keeping what its compile took from the pool until it is submitted.
+  `../apricottests`' `test_bloom` **passed on Metal on 2026-10-16** (Apple
+  M5 Pro) on its first build: Debug under Metal API and shader validation
+  with warnings fatal, and Release; no leak at exit. The white square read
+  255 at its centre, 34 ten texels out on both sides (white, alpha the
+  same), 2 in the corner. Not run on D3D12 or Vulkan.
 - **Mip generation in a command list, written 2026-10-16; run on Metal
   the same day** (item 31): `APREND_COMMAND_GENERATE_MIPS`, outside a pass,
   checked as it is sent (texture, instance, level, filter, usage, format)
@@ -1530,9 +1539,26 @@ Post-processing, with bloom first, is split out as item 36.
 
 ### 36. Post-processing, and bloom first
 
-**Bloom written 2026-10-16, not compiled or run** (see "State of the
-code"). What was decided:
+**Bloom written 2026-10-16, run on Metal the same day** (see "State of
+the code"). What was decided:
 
+- **No module of its own.** In Hazel bloom is a step of `SceneRenderer`
+  (`BloomSettings` beside `DOFSettings`, its textures members of the scene
+  renderer), and in Unreal one stage of `AddPostProcessingPasses`, its
+  settings fields of `FPostProcessSettings` and its textures taken from the
+  render graph's pool for the frame. In both, each effect is a building
+  block that records its passes into the frame, and the order and settings
+  of the effects are the scene renderer's (`SceneRenderer`,
+  `AddPostProcessingPasses`). Aprend's building blocks are commands; the
+  order and settings belong to whatever owns the caller's frame
+  (trellislib's renderer), not to Aprend. The textures an effect needs in
+  between come from a pool the instance keeps (as Unreal's), not from a
+  handle the caller makes. No header of its own: the command's doc
+  describes bloom, `aprendcontext.h` the pool.
+- **A temporal effect will need a handle** (TAA, auto-exposure, motion
+  blur): history that lasts from one frame to the next, which a pool that
+  lends textures within a frame can't hold. Unreal keeps it per view
+  (`FSceneViewState`), Hazel in `SceneRenderer`. Not before one is wanted.
 - **A pass over a texture** needed one thing Aprend didn't hand out: a
   full-target vertex shader. `aprend_get_fullscreen_vertex_shader`
   (`aprendshader.h`) gives the instance's own; with it a caller's pass
@@ -1548,9 +1574,12 @@ code"). What was decided:
 - **Fragment passes, not compute**, so the chain renders through the
   machinery mip generation already runs, and a source needs no storage
   usage.
-- **One mipped R16G16B16A16_FLOAT texture** held by an `aprend_bloom`
-  (`aprendbloom.h`), level 0 half the size it was made for, resized by the
-  caller as a framebuffer is. Prefilter (13 taps and the soft threshold),
+- **One mipped R16G16B16A16_FLOAT texture** of `_levels` levels from the
+  instance's render target pool (`aprendrendertargets_internal.hpp`), level
+  0 half the source's first mip: taken at compile, free again once the
+  frame it was taken in has finished (aprend_instance_next_frame's wait),
+  never shared by two takes of a frame, given back by a compile that is
+  not submitted, retired after 120 frames untaken. Prefilter (13 taps and the soft threshold),
   downsample (13 taps, Jimenez), upsample (a tent `_radius` texels wide,
   added into the level above), composite (the same tent, times
   `_intensity`, added onto the target). Places from `gl_FragCoord` with
@@ -1558,17 +1587,18 @@ code"). What was decided:
   right.
 - **Alpha**: the glow carries the source's coverage, weighted with its
   color, and is added to the target's alpha.
-- **Sets live on views.** The set that reads a view (a level of the
+- **Sets live on views.** The set that reads a view (a level of a pooled
   chain, or the caller's source) is kept by the view
   (`aprend_texture_view_t::bloom_set`) and released with it. A set kept by
-  the bloom or the list could outlive the view, or be taken for a new view
+  the pool or the list could outlive the view, or be taken for a new view
   made at the same address; and updating a set at compile retires
   descriptors a compiled, unsubmitted list may still bind.
 
 Left:
 
-- [ ] **Run on all three backends.** `../apricottests`' `test_bloom`
-      blooms a white square onto a clear target and reads it back.
+- [ ] **Run on D3D12 and Vulkan.** `../apricottests`' `test_bloom` passed
+      on Metal; nothing in it is backend-specific beyond what mip
+      generation already ran there.
 - [ ] **Exposure and a tone curve** belong with an HDR pipeline (item 24),
       in the composite or after it.
 - [ ] **A lens dirt texture** (Hazel's) and a mask texture weighting the
@@ -1576,11 +1606,17 @@ Left:
 - [ ] **Cost** is two passes a level and two more, every time the command
       is compiled in. Fewer levels is the caller's setting. Nothing is
       skipped for a source that has nothing in it.
-- [ ] **The first bloom makes four pipelines**, and the first onto a
-      target format another, inside a compile.
-- [ ] **A view a bloom read keeps its set until it is destroyed**, also
-      after the bloom is gone.
-- [ ] **The level count is fixed at creation**; a resize keeps it.
+- [ ] **The first bloom makes four pipelines**, the first onto a target
+      format another, and the first of a size a pooled texture, inside a
+      compile.
+- [ ] **A view a bloom read keeps its set until it is destroyed.**
+- [ ] **The pool's memory**: a pooled texture for every size and level
+      count taken in the last 120 frames, and one per bloom compiled in a
+      frame, times the frames in flight. Nothing reports it or lets a
+      caller trim it. The idle count is a constant.
+- [ ] **The pool is bloom's alone so far.** A blur or an outline that
+      needs a texture in between takes one the same way
+      (aprend_render_target_take).
 
 Hazel: `SceneRenderer::BloomCompute`, `Resources/Shaders/PostProcessing/Bloom.glsl`,
 `SceneComposite.glsl`.
@@ -1814,8 +1850,8 @@ and 5 are closed and their numbers are not reused.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
    and item 31 (mip generation, both forms) are written and have run on
-   all three. Bloom (item 36) is written, not compiled or run
-   (2026-10-16): `test_bloom` first. Then 23 and 24, each a shader Aprend
+   all three. Bloom (item 36) is written and `test_bloom` passed on
+   Metal (2026-10-16). Then 23 and 24, each a shader Aprend
    ships, as item 22 allows; and trellislib's half of the selective glow
    (`../trellislib/TODO.md`).
 

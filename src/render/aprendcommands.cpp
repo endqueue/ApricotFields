@@ -23,6 +23,22 @@ static void aprend_cmd_use_store(
 	cmd_list->staged_stores.push_back(store);
 }
 
+/* The most levels a bloom of [source] spreads through: its level 0 is half
+ * the size of the source's first mip, and each level halves again down to
+ * 1 texel. */
+static uint32_t aprend_bloom_max_levels(aprend_texture_view source) {
+	const aprend_texture2d texture = source->texture._t2d;
+	const uint32_t width           = aprend_mip_size(aprend_mip_size(texture->desc.width, source->desc.base_mip), 1);
+	const uint32_t height          = aprend_mip_size(aprend_mip_size(texture->desc.height, source->desc.base_mip), 1);
+	uint32_t side                  = width > height ? width : height;
+	uint32_t levels                = 1;
+	while (side > 1) {
+		side >>= 1;
+		++levels;
+	}
+	return levels;
+}
+
 /* Records into an upload list, taken from the instance's current frame,
  * what has to happen ahead of the list's own commands: a copy of the dirty range of every staged store the
  * list uses, each buffer moved into COPY_DEST for the copy and into the state
@@ -105,6 +121,10 @@ aprend_command_list aprend_command_list_create(aprend_instance instance) {
 void aprend_command_list_destroy(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return;
+	// A compile it never submitted gives back what it took from the render
+	// target pool. Here and not in its release, which may come after the
+	// instance's destructor has freed the pool.
+	aprend_render_target_give_back(cmd_list);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(cmd_list->instance, cmd_list, &aprend_release_handle<aprend_command_list_t>);
 }
@@ -126,6 +146,7 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	cmd_list->staged_stores.clear();
 	cmd_list->buffer_states.clear();
 	cmd_list->materials.clear();
+	aprend_render_target_give_back(cmd_list);
 	cmd_list->compiled           = false;
 	cmd_list->present_swap_chain = nullptr;
 }
@@ -458,16 +479,6 @@ void aprend_send_command(
 	}
 	if (cmd._type == APREND_COMMAND_BLOOM) {
 		const auto &p = cmd._params._bloom;
-		if (!p._bloom) {
-			printf("aprend: BLOOM with a NULL bloom\n");
-			cmd_list->recording_error = true;
-			return;
-		}
-		if (p._bloom->instance != cmd_list->instance) {
-			printf("aprend: BLOOM with a bloom of another instance\n");
-			cmd_list->recording_error = true;
-			return;
-		}
 		if (!p._source) {
 			printf("aprend: BLOOM with a NULL source\n");
 			cmd_list->recording_error = true;
@@ -541,6 +552,17 @@ void aprend_send_command(
 		}
 		if (!(std::isfinite(p._intensity) && p._intensity >= 0.0f)) {
 			printf("aprend: BLOOM with an _intensity that is negative or not a number\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._levels == 0) {
+			printf("aprend: BLOOM with _levels 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		const uint32_t most = aprend_bloom_max_levels(p._source);
+		if (p._levels > most) {
+			printf("aprend: BLOOM with _levels %u, and its source's size allows at most %u\n", p._levels, most);
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -1323,10 +1345,15 @@ static bool aprend_cmd_generate_mips(
  * or set can't be made. */
 static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND &command) {
 	const auto &p            = command._params._bloom;
-	aprend_bloom bloom       = p._bloom;
 	aprend_instance instance = cmd_list->instance;
 	spudgpu_command_list cmd = cmd_list->cmd_list;
 
+	// Checked again: a resize since the command was sent may have changed
+	// the source's size.
+	if (p._levels > aprend_bloom_max_levels(p._source)) {
+		printf("aprend: BLOOM: the source's size no longer allows _levels %u\n", p._levels);
+		return false;
+	}
 	const aprend_texture_range source = aprend_texture_view_range(p._source);
 	for (uint32_t layer = 0; layer < source.layer_count; ++layer) {
 		for (uint32_t mip = 0; mip < source.mip_count; ++mip) {
@@ -1338,29 +1365,37 @@ static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND 
 		}
 	}
 
-	const SPUDGPU_FORMAT chain_format         = bloom->chain->desc.format;
-	const SPUDGPU_FORMAT target_format        = p._target->texture._t2d->desc.format;
-	aprend_graphics_pipeline prefilter        = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_PREFILTER, chain_format);
-	aprend_graphics_pipeline downsample       = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_DOWNSAMPLE, chain_format);
-	aprend_graphics_pipeline upsample         = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_UPSAMPLE, chain_format);
-	aprend_graphics_pipeline composite        = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_COMPOSITE, target_format);
+	// The chain: level 0 half the source's first mip.
+	const SPUDGPU_FORMAT chain_format  = SPUDGPU_FORMAT_R16G16B16A16_FLOAT;
+	const SPUDGPU_FORMAT target_format = p._target->texture._t2d->desc.format;
+	const aprend_texture2d source_tex  = p._source->texture._t2d;
+	const uint32_t chain_width         = aprend_mip_size(aprend_mip_size(source_tex->desc.width, p._source->desc.base_mip), 1);
+	const uint32_t chain_height        = aprend_mip_size(aprend_mip_size(source_tex->desc.height, p._source->desc.base_mip), 1);
+	const uint32_t levels              = p._levels;
+
+	aprend_graphics_pipeline prefilter  = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_PREFILTER, chain_format);
+	aprend_graphics_pipeline downsample = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_DOWNSAMPLE, chain_format);
+	aprend_graphics_pipeline upsample   = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_UPSAMPLE, chain_format);
+	aprend_graphics_pipeline composite  = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_COMPOSITE, target_format);
 	if (!prefilter || !downsample || !upsample || !composite)
 		return false;
-	const uint32_t levels = bloom->desc.levels;
+	aprend_pooled_target *chain = aprend_render_target_take(cmd_list, chain_width, chain_height, chain_format, levels);
+	if (!chain)
+		return false;
 	aprend_binding_set source_set = aprend_texture_view_bloom_set(p._source);
 	if (!source_set)
 		return false;
 	for (uint32_t level = 0; level < levels; ++level)
-		if (!aprend_texture_view_bloom_set(bloom->level_sources[level]))
+		if (!aprend_texture_view_bloom_set(chain->level_sources[level]))
 			return false;
 
 	aprend_bloom_params params{};
-	params.threshold = p._threshold;
-	params.knee      = p._knee;
-	params.radius    = p._radius;
-	params.intensity = p._intensity;
-	auto level_width  = [&](uint32_t level) { return aprend_mip_size(bloom->chain->desc.width, level); };
-	auto level_height = [&](uint32_t level) { return aprend_mip_size(bloom->chain->desc.height, level); };
+	params.threshold  = p._threshold;
+	params.knee       = p._knee;
+	params.radius     = p._radius;
+	params.intensity  = p._intensity;
+	auto level_width  = [&](uint32_t level) { return aprend_mip_size(chain_width, level); };
+	auto level_height = [&](uint32_t level) { return aprend_mip_size(chain_height, level); };
 	auto set_target   = [&](uint32_t width, uint32_t height) {
 		params.target_size[0] = (float)width;
 		params.target_size[1] = (float)height;
@@ -1369,7 +1404,7 @@ static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND 
 	aprend_cmd_transition_range(cmd_list, source, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
 	// Down: level 0 from the source, then each level from the one above.
 	for (uint32_t level = 0; level < levels; ++level) {
-		aprend_texture_view target = bloom->level_targets[level];
+		aprend_texture_view target = chain->level_targets[level];
 		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 		set_target(level_width(level), level_height(level));
 		if (level == 0)
@@ -1377,16 +1412,16 @@ static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND 
 			                              &params, sizeof(params));
 		else
 			aprend_record_fullscreen_pass(cmd, downsample, target->image_view, level_width(level), level_height(level), SPUDGPU_LOAD_OP_DONT_CARE,
-			                              bloom->level_sources[level - 1]->bloom_set, nullptr, 0);
+			                              chain->level_sources[level - 1]->bloom_set, nullptr, 0);
 		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 	}
 	// Up: each level added into the one above, from the smallest.
 	for (uint32_t level = levels - 1; level > 0; --level) {
-		aprend_texture_view target = bloom->level_targets[level - 1];
+		aprend_texture_view target = chain->level_targets[level - 1];
 		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 		set_target(level_width(level - 1), level_height(level - 1));
 		aprend_record_fullscreen_pass(cmd, upsample, target->image_view, level_width(level - 1), level_height(level - 1), SPUDGPU_LOAD_OP_LOAD,
-		                              bloom->level_sources[level]->bloom_set, &params, sizeof(params));
+		                              chain->level_sources[level]->bloom_set, &params, sizeof(params));
 		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 	}
 	// Onto the target, at its own size: the size of the mip its view is of.
@@ -1395,7 +1430,7 @@ static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND 
 	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	set_target(target_width, target_height);
 	aprend_record_fullscreen_pass(cmd, composite, p._target->image_view, target_width, target_height, SPUDGPU_LOAD_OP_LOAD,
-	                              bloom->level_sources[0]->bloom_set, &params, sizeof(params));
+	                              chain->level_sources[0]->bloom_set, &params, sizeof(params));
 	return true;
 }
 
@@ -1419,6 +1454,9 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	cmd_list->staged_stores.clear();
 	cmd_list->buffer_states.clear();
 	cmd_list->present_swap_chain = nullptr;
+	// The last compile was not submitted, or this one would find nothing:
+	// what it took from the render target pool goes back first.
+	aprend_render_target_give_back(cmd_list);
 	// Every buffer set this compile reads is read at this frame's copy, and
 	// it is recorded into this frame's allocator.
 	cmd_list->compiled_frame        = instance->frame_index;
@@ -1931,6 +1969,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 
 	spudgpu_end_command_list(cmd);
 	if (!ok) {
+		aprend_render_target_give_back(cmd_list);
 		cmd_list->timer_uses.clear();
 		cmd_list->layout_uses.clear();
 		cmd_list->staged_stores.clear();
@@ -2038,6 +2077,9 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 	// A compile is one recording of the SpudGPU list, and SpudGPU submits a
 	// recording once. The recording may now be running, so the next compile
 	// records into another list.
+	// What it took from the pool is the submission's now, free again once
+	// this frame has finished.
+	cmd_list->pool_takes.clear();
 	cmd_list->compiled = false;
 	cmd_list->cmd_list = nullptr;
 	return true;
