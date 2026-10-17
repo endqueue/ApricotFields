@@ -238,6 +238,10 @@ static APREND_TEXTURE_USAGE_BITS aprend_texture_view_type_usage(APREND_TEXTURE_V
 }
 
 aprend_texture_view_t::~aprend_texture_view_t() {
+	// The set that binds it goes first. The GPU has finished with both: the
+	// view is released only once it has.
+	if (this->bloom_set)
+		aprend_release_handle<aprend_binding_set_t>(this->bloom_set);
 	// A view that failed to create has nothing to destroy.
 	if (this->image_view)
 		spudgpu_destroy_image_view(this->image_view);
@@ -620,28 +624,8 @@ void aprend_record_mip_pass(
     const aprend_mip_step &step,
     uint32_t width,
     uint32_t height) {
-	spudgpu_rendering_begin_desc pass{};
-	pass.color_attachments[0].image_view = step.target->image_view;
 	// Every texel is drawn, so what the level held is not loaded.
-	pass.color_attachments[0].load_op  = SPUDGPU_LOAD_OP_DONT_CARE;
-	pass.color_attachments[0].store_op = SPUDGPU_STORE_OP_STORE;
-	pass.color_attachment_count        = 1;
-	pass.width                         = width;
-	pass.height                        = height;
-	spudgpu_cmd_begin_rendering(cmd, &pass);
-	SPUDGPU_VIEWPORT viewport{};
-	viewport.width    = (float)width;
-	viewport.height   = (float)height;
-	viewport.maxDepth = 1.0f;
-	spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
-	SPUDGPU_SCISSOR_RECT scissor{};
-	scissor.width  = (float)width;
-	scissor.height = (float)height;
-	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
-	spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
-	spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, 0, &step.set->sets[0], 1);
-	spudgpu_cmd_draw(cmd, 3, 0);
-	spudgpu_cmd_end_rendering(cmd);
+	aprend_record_fullscreen_pass(cmd, pipeline, step.target->image_view, width, height, SPUDGPU_LOAD_OP_DONT_CARE, step.set, nullptr, 0);
 }
 
 extern "C" {

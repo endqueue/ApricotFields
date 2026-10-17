@@ -12,19 +12,42 @@ static const uint32_t s_fullscreen_vert_spv[] =
 static const uint32_t s_downsample_frag_spv[] =
 #include "aprend_downsample.frag.spv.inc"
     ;
+static const uint32_t s_bloom_prefilter_frag_spv[] =
+#include "aprend_bloom_prefilter.frag.spv.inc"
+    ;
+static const uint32_t s_bloom_downsample_frag_spv[] =
+#include "aprend_bloom_downsample.frag.spv.inc"
+    ;
+static const uint32_t s_bloom_upsample_frag_spv[] =
+#include "aprend_bloom_upsample.frag.spv.inc"
+    ;
+static const uint32_t s_bloom_composite_frag_spv[] =
+#include "aprend_bloom_composite.frag.spv.inc"
+    ;
+
+extern "C" aprend_shader aprend_get_fullscreen_vertex_shader(aprend_instance instance) {
+	if (!instance)
+		return nullptr;
+	return aprend_builtin_fullscreen_vert(instance);
+}
+
+aprend_shader aprend_builtin_fullscreen_vert(aprend_instance instance) {
+	aprend_builtins &builtins = instance->builtins;
+	if (!builtins.fullscreen_vert) {
+		builtins.fullscreen_vert = aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX);
+		if (!builtins.fullscreen_vert)
+			printf("apricot: Aprend's full-target vertex shader can't be created\n");
+	}
+	return builtins.fullscreen_vert;
+}
 
 // The shaders and layout of the downsample pipelines, made together the
 // first time a pipeline is asked for. False, printed, if any can't be;
 // what was made is kept for the next try.
 static bool aprend_builtin_downsample_prepare(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
-	if (!builtins.fullscreen_vert) {
-		builtins.fullscreen_vert = aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX);
-		if (!builtins.fullscreen_vert) {
-			printf("apricot: Aprend's full-target vertex shader can't be created\n");
-			return false;
-		}
-	}
+	if (!aprend_builtin_fullscreen_vert(instance))
+		return false;
 	if (!builtins.downsample_frag) {
 		builtins.downsample_frag = aprend_shader_create_spirv(instance, s_downsample_frag_spv, sizeof(s_downsample_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
 		if (!builtins.downsample_frag) {
@@ -113,6 +136,94 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 
 aprend_binding_layout aprend_builtin_downsample_layout(aprend_instance instance) { return instance->builtins.downsample_layout; }
 
+// The bloom shaders and their layout, made together the first time a bloom
+// pipeline is asked for, as aprend_builtin_downsample_prepare.
+static bool aprend_builtin_bloom_prepare(aprend_instance instance) {
+	aprend_builtins &builtins = instance->builtins;
+	if (!aprend_builtin_fullscreen_vert(instance))
+		return false;
+	static const struct {
+		const uint32_t *code;
+		uint64_t size;
+	} spirv[4] = {
+	    {s_bloom_prefilter_frag_spv, sizeof(s_bloom_prefilter_frag_spv)},
+	    {s_bloom_downsample_frag_spv, sizeof(s_bloom_downsample_frag_spv)},
+	    {s_bloom_upsample_frag_spv, sizeof(s_bloom_upsample_frag_spv)},
+	    {s_bloom_composite_frag_spv, sizeof(s_bloom_composite_frag_spv)},
+	};
+	for (uint32_t stage = 0; stage < 4; ++stage) {
+		if (builtins.bloom_frags[stage])
+			continue;
+		builtins.bloom_frags[stage] = aprend_shader_create_spirv(instance, spirv[stage].code, spirv[stage].size, SPUDGPU_SHADER_STAGE_FRAGMENT);
+		if (!builtins.bloom_frags[stage]) {
+			printf("apricot: Aprend's bloom shader for stage %u can't be created\n", stage);
+			return false;
+		}
+	}
+	if (!builtins.bloom_layout) {
+		builtins.bloom_layout = aprend_binding_layout_create_from_shaders(instance, builtins.bloom_frags, 4, 0);
+		if (!builtins.bloom_layout) {
+			printf("apricot: the binding layout of Aprend's bloom shaders can't be created\n");
+			return false;
+		}
+	}
+	return true;
+}
+
+aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance, uint32_t stage, SPUDGPU_FORMAT format) {
+	aprend_builtins &builtins = instance->builtins;
+	for (const aprend_builtins::bloom_pipeline &entry : builtins.bloom_pipelines)
+		if (entry.stage == stage && entry.format == format)
+			return entry.pipeline;
+	if (!aprend_builtin_bloom_prepare(instance))
+		return nullptr;
+
+	aprend_graphics_pipeline_desc desc{};
+#ifdef _DEBUG
+	desc._debug_name = "aprend bloom";
+#endif
+	desc._vertex_binding_count       = 0;
+	desc._topology                   = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc._cull_mode                  = SPUDGPU_CULL_MODE_NONE;
+	desc._front_face_ccw             = true;
+	desc._depth_test                 = false;
+	desc._depth_write                = false;
+	desc._depth_compare_op           = SPUDGPU_COMPARE_OP_NEVER;
+	desc.vertex_shader               = builtins.fullscreen_vert;
+	desc.fragment_shader             = builtins.bloom_frags[stage];
+	desc._vertex_entry_point         = "main";
+	desc._fragment_entry_point       = "main";
+	desc.color_attachment_formats[0] = format;
+	desc.color_attachment_count      = 1;
+	desc.depth_format                = SPUDGPU_FORMAT_UNKNOWN;
+	// The upsample adds into the level it renders, and the composite onto
+	// the caller's target: color and alpha alike.
+	if (stage == APREND_BLOOM_STAGE_UPSAMPLE || stage == APREND_BLOOM_STAGE_COMPOSITE)
+		desc._blends[0] = aprend_blend_additive();
+	desc._binding_layouts[0]                   = builtins.bloom_layout;
+	desc._binding_layout_count                 = 1;
+	desc._push_constant_ranges[0].stage_flags  = SPUDGPU_SHADER_STAGE_FRAGMENT;
+	desc._push_constant_ranges[0].offset       = 0;
+	desc._push_constant_ranges[0].size         = sizeof(aprend_bloom_params);
+	desc._push_constant_range_count            = 1;
+
+	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, desc);
+	if (!pipeline) {
+		printf("apricot: Aprend's bloom pipeline for stage %u can't be created for format %d\n", stage, (int)format);
+		return nullptr;
+	}
+	try {
+		builtins.bloom_pipelines.push_back({stage, format, pipeline});
+	} catch (...) {
+		aprend_graphics_pipeline_destroy(pipeline);
+		printf("apricot: no memory to keep Aprend's bloom pipeline\n");
+		return nullptr;
+	}
+	return pipeline;
+}
+
+aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance) { return instance->builtins.bloom_layout; }
+
 aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDGPU_FILTER filter) {
 	if (filter != SPUDGPU_FILTER_NEAREST && filter != SPUDGPU_FILTER_LINEAR) {
 		printf("apricot: %d is not a SPUDGPU_FILTER\n", (int)filter);
@@ -143,6 +254,41 @@ aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDG
 	return sampler;
 }
 
+void aprend_record_fullscreen_pass(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    spudgpu_image_view target,
+    uint32_t width,
+    uint32_t height,
+    SPUDGPU_LOAD_OP load_op,
+    aprend_binding_set set,
+    const void *push,
+    uint32_t push_size) {
+	spudgpu_rendering_begin_desc pass{};
+	pass.color_attachments[0].image_view = target;
+	pass.color_attachments[0].load_op    = load_op;
+	pass.color_attachments[0].store_op   = SPUDGPU_STORE_OP_STORE;
+	pass.color_attachment_count          = 1;
+	pass.width                           = width;
+	pass.height                          = height;
+	spudgpu_cmd_begin_rendering(cmd, &pass);
+	SPUDGPU_VIEWPORT viewport{};
+	viewport.width    = (float)width;
+	viewport.height   = (float)height;
+	viewport.maxDepth = 1.0f;
+	spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
+	SPUDGPU_SCISSOR_RECT scissor{};
+	scissor.width  = (float)width;
+	scissor.height = (float)height;
+	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
+	spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
+	spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, 0, &set->sets[0], 1);
+	if (push)
+		spudgpu_cmd_push_constants(cmd, pipeline->pipeline, 0, push_size, push);
+	spudgpu_cmd_draw(cmd, 3, 0);
+	spudgpu_cmd_end_rendering(cmd);
+}
+
 void aprend_builtins_destroy(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
 	// Pipelines go before the layout they declare, and the release queue
@@ -150,6 +296,15 @@ void aprend_builtins_destroy(aprend_instance instance) {
 	for (const aprend_builtins::downsample_pipeline &entry : builtins.downsample_pipelines)
 		aprend_graphics_pipeline_destroy(entry.pipeline);
 	builtins.downsample_pipelines.clear();
+	for (const aprend_builtins::bloom_pipeline &entry : builtins.bloom_pipelines)
+		aprend_graphics_pipeline_destroy(entry.pipeline);
+	builtins.bloom_pipelines.clear();
+	aprend_binding_layout_destroy(builtins.bloom_layout);
+	builtins.bloom_layout = nullptr;
+	for (aprend_shader &shader : builtins.bloom_frags) {
+		aprend_shader_destroy(shader);
+		shader = nullptr;
+	}
 	aprend_binding_layout_destroy(builtins.downsample_layout);
 	builtins.downsample_layout = nullptr;
 	for (aprend_sampler &sampler : builtins.downsample_samplers) {

@@ -6,6 +6,7 @@
  * zero-cost GLM conversion helpers. */
 
 #include "aprimath.h"
+#include "render/aprendbloom.h"
 #include "render/aprendbuffers.h"
 #include "render/aprendcommands.h"
 #include "render/aprendcontext.h"
@@ -976,6 +977,37 @@ typedef struct aprend_draw_list_t {
 	/* The list was built and nothing was added or reset since. */
 	bool built{false};
 } aprend_draw_list_t;
+
+typedef struct aprend_bloom_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_bloom_t() = default;
+	~aprend_bloom_t() = default;
+	aprend_instance instance{nullptr};
+	/* As the caller gave it, at the size of the last resize. */
+	aprend_bloom_desc desc{};
+	/* The chain: R16G16B16A16_FLOAT, desc.levels mips, level 0 half the
+	 * desc's size. Created by the bloom and retired with it. */
+	aprend_texture2d chain{nullptr};
+	/* For each level, a 2D view to render it and one to read it, each of
+	 * that one level. The read views keep the sets that bind them
+	 * (aprend_texture_view_bloom_set). Retired before the chain. */
+	std::vector<aprend_texture_view> level_targets{};
+	std::vector<aprend_texture_view> level_sources{};
+} aprend_bloom_t;
+
+/* The set of Aprend's bloom layout that reads [view] through the linear
+ * sampler, kept by the view (aprend_texture_view_t::bloom_set) from the
+ * first call and released with it. The bloom layout must exist
+ * (aprend_builtin_bloom_pipeline has been asked for a pipeline). NULL,
+ * printed, if the set can't be made. */
+aprend_binding_set aprend_texture_view_bloom_set(aprend_texture_view view);
+
+/* Whether a bloom can render onto targets of [format]: the formats
+ * aprend_builtin_downsample_format takes, which every backend renders to
+ * and blends. */
+inline bool aprend_bloom_target_format(SPUDGPU_FORMAT format) { return aprend_builtin_downsample_format(format); }
 
 /* Whether [set] can sit where a pipeline declares [layout]: whether the set
  * is of [layout]'s core, which is whether the layout it was made through has

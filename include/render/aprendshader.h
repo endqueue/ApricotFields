@@ -132,6 +132,32 @@ aprend_shader aprend_shader_create_spirv(
 void aprend_shader_destroy(aprend_shader shader);
 
 /**
+ * @brief Aprend's own full-target vertex shader, for a pass over the whole
+ * of a target with a fragment shader of the caller's: a blur, a tone curve,
+ * an outline, any pass that makes one picture from another.
+ *
+ * It draws one triangle that covers the target from the vertex index alone,
+ * so a pipeline made with it has no vertex input (`_vertex_binding_count`
+ * 0) and is drawn with APREND_COMMAND_DRAW of 3 vertices, its entry point
+ * `main`. It writes no output but the position. The fragment shader takes
+ * its place from `gl_FragCoord.xy`, in pixels of the target with the first
+ * row at the top on every backend, divided by the target's size for a
+ * place in [0, 1] to sample at; a texture's rows start at the top as well.
+ * An interpolated coordinate would not read the same way up on every
+ * backend, which is why there is none.
+ *
+ * The shader is the instance's, made on the first call (or the first time
+ * Aprend needs it itself) and destroyed with the instance. Don't pass it to
+ * aprend_shader_destroy().
+ *
+ * @param[in] instance Instance the shader is of.
+ *
+ * @return The shader, or NULL if @p instance is NULL or it can't be
+ *         created (printed).
+ */
+aprend_shader aprend_get_fullscreen_vertex_shader(aprend_instance instance);
+
+/**
  * @brief The kind of number a shader reads or writes.
  */
 typedef uint32_t APREND_SHADER_SCALAR_TYPE;

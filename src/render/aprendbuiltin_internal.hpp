@@ -36,7 +36,53 @@ struct aprend_builtins {
 		aprend_graphics_pipeline pipeline;
 	};
 	std::vector<downsample_pipeline> downsample_pipelines{};
+
+	/* Bloom's shaders (aprend_bloom_*.frag), one per stage, and the layout
+	 * of their set 0, which all four share: a texture at binding 0 and a
+	 * sampler at binding 1. */
+	aprend_shader bloom_frags[4]{};
+	aprend_binding_layout bloom_layout{nullptr};
+	/* A pipeline for each stage and target format used. */
+	struct bloom_pipeline {
+		uint32_t stage;
+		SPUDGPU_FORMAT format;
+		aprend_graphics_pipeline pipeline;
+	};
+	std::vector<bloom_pipeline> bloom_pipelines{};
 };
+
+/* The stages of a bloom, each a pass with its own fragment shader. */
+enum {
+	/* The source into level 0 of the chain, with the threshold. */
+	APREND_BLOOM_STAGE_PREFILTER = 0,
+	/* A level of the chain from the one above. */
+	APREND_BLOOM_STAGE_DOWNSAMPLE = 1,
+	/* A level read up into the one above, added to it. */
+	APREND_BLOOM_STAGE_UPSAMPLE = 2,
+	/* Level 0 added onto the caller's target. */
+	APREND_BLOOM_STAGE_COMPOSITE = 3
+};
+
+/* The push constant block every bloom shader declares (BloomParams), whole
+ * or in part: the bytes a bloom pass pushes. */
+struct aprend_bloom_params {
+	float threshold;
+	float knee;
+	float radius;
+	float intensity;
+	float target_size[2];
+};
+
+/* The full-target vertex shader, made if it doesn't exist. NULL, printed,
+ * if it can't be. */
+aprend_shader aprend_builtin_fullscreen_vert(aprend_instance instance);
+
+/* The bloom pipeline of [stage] rendering to [format], made if it doesn't
+ * exist, with the bloom shaders and layout. The upsample and composite
+ * stages blend additively. NULL, printed, if it can't be made. */
+aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance, uint32_t stage, SPUDGPU_FORMAT format);
+/* The bloom layout; made by aprend_builtin_bloom_pipeline, NULL before it. */
+aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance);
 
 /* The downsample pipeline rendering to [format], made if it doesn't exist,
  * with its shaders and layout. NULL, printed, if one can't be made. */
@@ -44,14 +90,33 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 /* The downsample layout; made by aprend_builtin_downsample_pipeline, NULL
  * before it. */
 aprend_binding_layout aprend_builtin_downsample_layout(aprend_instance instance);
-/* The downsample sampler for [filter], made if it doesn't exist. NULL,
- * printed, if [filter] is not a SPUDGPU_FILTER or it can't be made. */
+/* The downsample sampler for [filter], made if it doesn't exist; bloom
+ * reads through the linear one. NULL, printed, if [filter] is not a
+ * SPUDGPU_FILTER or it can't be made. */
 aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDGPU_FILTER filter);
 
 /* Whether a mip can be rendered from the one above in [format]: a color
  * format every backend renders to and filters, as a float, unorm or sRGB
  * value. */
 bool aprend_builtin_downsample_format(SPUDGPU_FORMAT format);
+
+/* Records a pass over the whole of [target], a view [width] by [height],
+ * drawing the full-target triangle with [pipeline], [set] at set slot 0,
+ * and [push_size] bytes of [push] as its push constants (none if [push] is
+ * NULL). The target is in COLOR_ATTACHMENT_OPTIMAL and what [set] reads in
+ * SHADER_READ_ONLY already; layouts are the caller's. [load_op] is
+ * SPUDGPU_LOAD_OP_LOAD to draw over what the target holds (a blending
+ * pipeline), SPUDGPU_LOAD_OP_DONT_CARE when every texel is replaced. */
+void aprend_record_fullscreen_pass(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    spudgpu_image_view target,
+    uint32_t width,
+    uint32_t height,
+    SPUDGPU_LOAD_OP load_op,
+    aprend_binding_set set,
+    const void *push,
+    uint32_t push_size);
 
 /* From the instance's destructor, before its release queue is emptied:
  * destroys every built-in object, pipelines before the layout they

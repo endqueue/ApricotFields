@@ -34,6 +34,7 @@ add_library(ApricotFields STATIC
         src/render/aprendtimer.cpp
         src/render/aprendbuiltin_internal.hpp
         src/render/aprendbuiltin.cpp
+        src/render/aprendbloom.cpp
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio.cpp
@@ -57,6 +58,7 @@ add_library(ApricotFields STATIC
         include/render/aprendswapchain.h
         include/render/aprendtransient.h
         include/render/aprendtimer.h
+        include/render/aprendbloom.h
         include/archive/aparchive.h
         include/audio/apaudio.h
         include/audio/apaudiocues.h
@@ -162,6 +164,10 @@ set(APRICOTFIELDS_SHADER_INC_DIR ${CMAKE_CURRENT_BINARY_DIR}/aprend_shaders)
 set(APRICOTFIELDS_SHADERS
         aprend_fullscreen.vert
         aprend_downsample.frag
+        aprend_bloom_prefilter.frag
+        aprend_bloom_downsample.frag
+        aprend_bloom_upsample.frag
+        aprend_bloom_composite.frag
 )
 foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
     set(shader_inc ${APRICOTFIELDS_SHADER_INC_DIR}/${shader}.spv.inc)

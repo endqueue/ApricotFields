@@ -2,6 +2,7 @@
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
 
+#include <cmath>
 #include <cstdio>
 
 aprend_command_list_t::~aprend_command_list_t() {
@@ -454,6 +455,95 @@ void aprend_send_command(
 		const uint8_t *bytes = (const uint8_t *)p._data;
 		cmd_list->push_constant_storage.emplace_back(bytes, bytes + p._size);
 		p._data = cmd_list->push_constant_storage.back().data();
+	}
+	if (cmd._type == APREND_COMMAND_BLOOM) {
+		const auto &p = cmd._params._bloom;
+		if (!p._bloom) {
+			printf("aprend: BLOOM with a NULL bloom\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._bloom->instance != cmd_list->instance) {
+			printf("aprend: BLOOM with a bloom of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!p._source) {
+			printf("aprend: BLOOM with a NULL source\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->instance != cmd_list->instance) {
+			printf("aprend: BLOOM with a source of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE) {
+			printf("aprend: BLOOM with a source that is not a SHADER_RESOURCE view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D) {
+			printf("aprend: BLOOM with a source that is not a 2D view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR) {
+			printf("aprend: BLOOM with a source that is not a view of color\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!p._target) {
+			printf("aprend: BLOOM with a NULL target\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._target->instance != cmd_list->instance) {
+			printf("aprend: BLOOM with a target of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET) {
+			printf("aprend: BLOOM with a target that is not a RENDER_TAGET view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D) {
+			printf("aprend: BLOOM with a target that is not a 2D view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		// A 2D render target view is of a 2D texture.
+		if (!aprend_bloom_target_format(p._target->texture._t2d->desc.format)) {
+			printf("aprend: BLOOM with a target in format %d, which a bloom doesn't render onto\n", (int)p._target->texture._t2d->desc.format);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (aprend_texture_ranges_overlap(aprend_texture_view_range(p._source), aprend_texture_view_range(p._target))) {
+			printf("aprend: BLOOM with a source and a target that share a mip of a layer\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!(std::isfinite(p._threshold) && p._threshold >= 0.0f)) {
+			printf("aprend: BLOOM with a _threshold that is negative or not a number\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!(std::isfinite(p._knee) && p._knee >= 0.0f)) {
+			printf("aprend: BLOOM with a _knee that is negative or not a number\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!(std::isfinite(p._radius) && p._radius > 0.0f)) {
+			printf("aprend: BLOOM with a _radius that is not above 0, or not a number\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!(std::isfinite(p._intensity) && p._intensity >= 0.0f)) {
+			printf("aprend: BLOOM with an _intensity that is negative or not a number\n");
+			cmd_list->recording_error = true;
+			return;
+		}
 	}
 	if (cmd._type == APREND_COMMAND_GENERATE_MIPS) {
 		const auto &p = cmd._params._generate_mips;
@@ -1224,6 +1314,91 @@ static bool aprend_cmd_generate_mips(
 	return true;
 }
 
+/* BLOOM, outside a pass: the source into SHADER_READ_ONLY; the chain's
+ * level 0 prefiltered from it, each further level downsampled from the one
+ * above, each level but the last added back up into the one above; then
+ * level 0 added onto the target, left in COLOR_ATTACHMENT_OPTIMAL. Each
+ * level is moved to SHADER_READ_ONLY once rendered. False, printed, if the
+ * source has nothing in it as the list reaches the command, or a pipeline
+ * or set can't be made. */
+static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p            = command._params._bloom;
+	aprend_bloom bloom       = p._bloom;
+	aprend_instance instance = cmd_list->instance;
+	spudgpu_command_list cmd = cmd_list->cmd_list;
+
+	const aprend_texture_range source = aprend_texture_view_range(p._source);
+	for (uint32_t layer = 0; layer < source.layer_count; ++layer) {
+		for (uint32_t mip = 0; mip < source.mip_count; ++mip) {
+			const size_t index = aprend_cmd_layout_use(cmd_list, source, source.base_mip + mip, source.base_layer + layer);
+			if (cmd_list->layout_uses[index].final_layout == SPUDGPU_IMAGE_LAYOUT_UNDEFINED) {
+				printf("aprend: BLOOM: the source has nothing in it, from before the list or earlier in it\n");
+				return false;
+			}
+		}
+	}
+
+	const SPUDGPU_FORMAT chain_format         = bloom->chain->desc.format;
+	const SPUDGPU_FORMAT target_format        = p._target->texture._t2d->desc.format;
+	aprend_graphics_pipeline prefilter        = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_PREFILTER, chain_format);
+	aprend_graphics_pipeline downsample       = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_DOWNSAMPLE, chain_format);
+	aprend_graphics_pipeline upsample         = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_UPSAMPLE, chain_format);
+	aprend_graphics_pipeline composite        = aprend_builtin_bloom_pipeline(instance, APREND_BLOOM_STAGE_COMPOSITE, target_format);
+	if (!prefilter || !downsample || !upsample || !composite)
+		return false;
+	const uint32_t levels = bloom->desc.levels;
+	aprend_binding_set source_set = aprend_texture_view_bloom_set(p._source);
+	if (!source_set)
+		return false;
+	for (uint32_t level = 0; level < levels; ++level)
+		if (!aprend_texture_view_bloom_set(bloom->level_sources[level]))
+			return false;
+
+	aprend_bloom_params params{};
+	params.threshold = p._threshold;
+	params.knee      = p._knee;
+	params.radius    = p._radius;
+	params.intensity = p._intensity;
+	auto level_width  = [&](uint32_t level) { return aprend_mip_size(bloom->chain->desc.width, level); };
+	auto level_height = [&](uint32_t level) { return aprend_mip_size(bloom->chain->desc.height, level); };
+	auto set_target   = [&](uint32_t width, uint32_t height) {
+		params.target_size[0] = (float)width;
+		params.target_size[1] = (float)height;
+	};
+
+	aprend_cmd_transition_range(cmd_list, source, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	// Down: level 0 from the source, then each level from the one above.
+	for (uint32_t level = 0; level < levels; ++level) {
+		aprend_texture_view target = bloom->level_targets[level];
+		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		set_target(level_width(level), level_height(level));
+		if (level == 0)
+			aprend_record_fullscreen_pass(cmd, prefilter, target->image_view, level_width(0), level_height(0), SPUDGPU_LOAD_OP_DONT_CARE, source_set,
+			                              &params, sizeof(params));
+		else
+			aprend_record_fullscreen_pass(cmd, downsample, target->image_view, level_width(level), level_height(level), SPUDGPU_LOAD_OP_DONT_CARE,
+			                              bloom->level_sources[level - 1]->bloom_set, nullptr, 0);
+		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	}
+	// Up: each level added into the one above, from the smallest.
+	for (uint32_t level = levels - 1; level > 0; --level) {
+		aprend_texture_view target = bloom->level_targets[level - 1];
+		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		set_target(level_width(level - 1), level_height(level - 1));
+		aprend_record_fullscreen_pass(cmd, upsample, target->image_view, level_width(level - 1), level_height(level - 1), SPUDGPU_LOAD_OP_LOAD,
+		                              bloom->level_sources[level]->bloom_set, &params, sizeof(params));
+		aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	}
+	// Onto the target, at its own size: the size of the mip its view is of.
+	const uint32_t target_width  = aprend_mip_size(p._target->texture._t2d->desc.width, p._target->desc.base_mip);
+	const uint32_t target_height = aprend_mip_size(p._target->texture._t2d->desc.height, p._target->desc.base_mip);
+	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	set_target(target_width, target_height);
+	aprend_record_fullscreen_pass(cmd, composite, p._target->image_view, target_width, target_height, SPUDGPU_LOAD_OP_LOAD,
+	                              bloom->level_sources[0]->bloom_set, &params, sizeof(params));
+	return true;
+}
+
 bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return false;
@@ -1671,6 +1846,18 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			aprend_cmd_end_timed(cmd_list, *open_pass);
 			in_pass   = false;
 			open_pass = nullptr;
+			break;
+		}
+		case APREND_COMMAND_BLOOM: {
+			if (in_pass) {
+				printf("aprend: BLOOM inside a rendering pass\n");
+				ok = false;
+				break;
+			}
+			ok = aprend_cmd_bloom(cmd_list, command);
+			// Its passes bind pipelines of their own: a compute pipeline is
+			// set again before the next dispatch, as after a pass.
+			bound_compute_pipeline = nullptr;
 			break;
 		}
 		case APREND_COMMAND_GENERATE_MIPS: {

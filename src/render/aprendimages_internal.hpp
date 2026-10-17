@@ -244,6 +244,12 @@ typedef struct aprend_texture_view_t
 	/* The desc the view was created with, its two counts resolved from
 	 * APREND_TEXTURE_VIEW_REMAINING to real numbers. */
 	aprend_texture_view_desc desc{};
+	/* The set of Aprend's bloom layout that reads this view
+	 * (aprend_texture_view_bloom_set), made the first time a bloom reads
+	 * it; NULL until then. Kept by the view, not by a bloom or a list, so
+	 * it can't outlive the view or be confused with a new view made at the
+	 * same address. Released with the view, before its image view. */
+	aprend_binding_set bloom_set{nullptr};
 } aprend_texture_view_t;
 
 /* The mips and layers [view] covers, with the image and where that

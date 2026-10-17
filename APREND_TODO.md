@@ -696,6 +696,17 @@ unfinished in it.
     Windows over D3D12 ran idle for 20 minutes with no growth in memory,
     the check item 37 was waiting on. Whether its viewport drew frames
     throughout while idle, and on which device, isn't recorded.
+- **Bloom, written 2026-10-16; not compiled or run** (item 36):
+  `aprendbloom.h` (`aprend_bloom_create`, `_resize`, `_destroy`,
+  `_get_desc`) and `APREND_COMMAND_BLOOM` (source, target, threshold,
+  knee, radius, intensity), outside a pass: four fragment passes in
+  `shaders/aprend_bloom_*.frag` over the bloom's float chain, added onto
+  the target. Built-in pipelines per stage and target format
+  (`aprendbuiltin.cpp`), a shared `aprend_record_fullscreen_pass` (mip
+  generation records through it too), and each view keeping the set that
+  reads it. `aprend_get_fullscreen_vertex_shader` (`aprendshader.h`) hands
+  the built-in vertex shader to a caller's own pass over a texture.
+  `../apricottests`' `test_bloom`. Not compiled or run.
 - **Mip generation in a command list, written 2026-10-16; run on Metal
   the same day** (item 31): `APREND_COMMAND_GENERATE_MIPS`, outside a pass,
   checked as it is sent (texture, instance, level, filter, usage, format)
@@ -1519,89 +1530,64 @@ Post-processing, with bloom first, is split out as item 36.
 
 ### 36. Post-processing, and bloom first
 
-**A big one. Added 2026-10-12; nothing of it is written.** Aprend has no
-post-processing: nothing takes a rendered texture and makes another from
-it. A caller that wants a glow, a blur, a tone curve or an outline round
-what it drew has no way to get one short of writing the passes and shaders
-itself, and those are the same for every caller. Bloom is wanted first.
+**Bloom written 2026-10-16, not compiled or run** (see "State of the
+code"). What was decided:
 
-Hazel: `SceneRenderer::BloomCompute` and
-`Resources/Shaders/PostProcessing/Bloom.glsl`, then `SceneComposite.glsl`.
-One compute shader in four modes over the mips of two or three float
-textures: prefilter (a threshold with a soft knee), downsample through the
-mips, then upsample back up adding each level in. `BloomSettings` is
-threshold, knee, upsample scale, intensity and a lens dirt texture's
-intensity. The composite pass adds the result to the scene with exposure
-and tone mapping. The same folder has the rest of what "post-processing"
-means there: depth of field, edge detection, GTAO, SSR.
+- **A pass over a texture** needed one thing Aprend didn't hand out: a
+  full-target vertex shader. `aprend_get_fullscreen_vertex_shader`
+  (`aprendshader.h`) gives the instance's own; with it a caller's pass
+  over a texture is the commands that exist already (a pass on the
+  destination, a pipeline with no vertex input and its fragment shader, a
+  binding set of the source, a draw of 3). No further command.
+- **What glows is the caller's.** `APREND_COMMAND_BLOOM` blooms whatever
+  source it is given onto a target; a threshold and knee of 0 make every
+  texel glow, which is what a caller drawing only what should glow into a
+  source of its own wants. The composite adds onto the target with an
+  additive blend, so the source is what glows and the target is the
+  picture: no third texture.
+- **Fragment passes, not compute**, so the chain renders through the
+  machinery mip generation already runs, and a source needs no storage
+  usage.
+- **One mipped R16G16B16A16_FLOAT texture** held by an `aprend_bloom`
+  (`aprendbloom.h`), level 0 half the size it was made for, resized by the
+  caller as a framebuffer is. Prefilter (13 taps and the soft threshold),
+  downsample (13 taps, Jimenez), upsample (a tent `_radius` texels wide,
+  added into the level above), composite (the same tent, times
+  `_intensity`, added onto the target). Places from `gl_FragCoord` with
+  the target size pushed, so odd sizes and a source of another size read
+  right.
+- **Alpha**: the glow carries the source's coverage, weighted with its
+  color, and is added to the target's alpha.
+- **Sets live on views.** The set that reads a view (a level of the
+  chain, or the caller's source) is kept by the view
+  (`aprend_texture_view_t::bloom_set`) and released with it. A set kept by
+  the bloom or the list could outlive the view, or be taken for a new view
+  made at the same address; and updating a set at compile retires
+  descriptors a compiled, unsubmitted list may still bind.
 
-Two halves, the first of which the second and every later effect stand on:
+Left:
 
-- **A way to run a pass over a texture.** A source view, a destination
-  view, a shader and its parameters: one call to record it into a command
-  list, with a full-target triangle drawn (or a compute dispatch) and the
-  layouts handled. Chains of these are what every post-process is. Nothing
-  about it is bloom's.
-- **Bloom on top of it.** A handle created for a size, holding its mip
-  chain and pipelines, and a call that records "bloom this source into
-  that destination" with its settings in a plain desc.
+- [ ] **Run on all three backends.** `../apricottests`' `test_bloom`
+      blooms a white square onto a clear target and reads it back.
+- [ ] **Exposure and a tone curve** belong with an HDR pipeline (item 24),
+      in the composite or after it.
+- [ ] **A lens dirt texture** (Hazel's) and a mask texture weighting the
+      glow are not there.
+- [ ] **Cost** is two passes a level and two more, every time the command
+      is compiled in. Fewer levels is the caller's setting. Nothing is
+      skipped for a source that has nothing in it.
+- [ ] **The first bloom makes four pipelines**, and the first onto a
+      target format another, inside a compile.
+- [ ] **A view a bloom read keeps its set until it is destroyed**, also
+      after the bloom is gone.
+- [ ] **The level count is fixed at creation**; a resize keeps it.
 
-What bloom needs deciding or building:
-
-- [ ] **What glows is the caller's.** Hazel blooms what is brighter than a
-      threshold in an HDR scene. That is one policy. The source is
-      whatever texture the caller gives: a caller that wants only some
-      things to glow draws those into a texture of its own and blooms
-      that, with the threshold at nothing. Aprend never decides what in a
-      picture is worth glowing. The threshold and knee are settings, and
-      0 means "all of the source".
-- [ ] **Fragment shaders or compute.** Hazel's is compute. Compute here is
-      written and compiled and has never been dispatched on any backend
-      (item 14), so a bloom built on it debugs both at once. A chain of
-      fragment passes (downsample, blur, upsample, add) runs on what has
-      already drawn. Decide which first; the other can follow.
-- [ ] **The mip chain.** One texture with a view per mip, each a render
-      target in its turn and then sampled by the next pass. That leans on
-      views of a range (item 16) and on layout tracking across a chain
-      that reads one mip while writing another (items 17 and 32).
-      Separate textures per level avoid both, at more memory.
-- [ ] **Formats.** A float target (RGBA16F) for the chain, so the adds
-      don't clip or band. Check it is renderable and filterable on all
-      three backends before designing around it, and what an 8-bit source
-      and destination do to the result.
-- [ ] **Alpha.** A source and destination may carry premultiplied alpha
-      for a caller that composites its picture over something else. A
-      glow added to color alone then has no coverage where the picture
-      was clear, and shows wrong or not at all once composited. Say what
-      the composite writes to alpha - most likely the glow's own
-      coverage, added - and test it over a clear destination.
-- [ ] **The composite.** Add, with an intensity. Whether exposure and a
-      tone curve belong in the same pass or a later one is a question for
-      when there is an HDR pipeline to feed it (item 24).
-- [ ] **Sizes changing.** The chain is rebuilt when the source's size
-      does; say who notices - the caller, with a resize call, like a
-      framebuffer.
-- [ ] **Cost.** Nothing when not recorded. With it, a handful of passes
-      at falling resolution every frame: how many levels is a setting.
-- [ ] **Shaders.** In `shaders/`, embedded in the library and made into
-      built-ins on first use, as the downsample shader is (item 22), and
-      reflected (item 18). Its levels can start from
-      `aprend_texture2d_generate_mips`' shaders; bloom downsamples a
-      render target inside a list, which `APREND_COMMAND_GENERATE_MIPS`
-      (item 31, written 2026-10-16) does with a box filter. A bloom
-      downsample wider than a box (13 taps, to keep fireflies down) is a
-      shader of its own on the same chain of views.
-- [ ] **A header and its contract** in the Doxygen style of
-      `include/render/`, and the threads it is safe from.
-- [ ] **Run on all three backends**, with a test in `../apricottests`
-      that blooms a known source and reads the destination back.
+Hazel: `SceneRenderer::BloomCompute`, `Resources/Shaders/PostProcessing/Bloom.glsl`,
+`SceneComposite.glsl`.
 
 After bloom, in the order a caller is likeliest to want them: a separable
 blur on its own (it falls out of the chain), an outline from a mask, a
 tone curve, then the lit pipeline's stages under item 24.
-
-Leans on: render passes (item 20), binding sets (item 9), push constants
-(item 10), views of a range (item 16) if one mipped texture is used.
 
 ## Needs something SpudGPU doesn't expose yet
 
@@ -1827,13 +1813,11 @@ and 5 are closed and their numbers are not reused.
    is in its item.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
-   and item 31's immediate form (mip generation by a pass per level) are
-   written, and `test_generate_mips` passed on Metal, D3D12 and Vulkan
-   (2026-10-16). Item 31's command form is written and
-   `test_generate_mips_command` passed on Metal, D3D12 and Vulkan
-   (2026-10-16). Next are 23 and 24,
-   and 36 (post-processing, bloom first) once render passes have run; each
-   is a shader Aprend ships, as item 22 now allows.
+   and item 31 (mip generation, both forms) are written and have run on
+   all three. Bloom (item 36) is written, not compiled or run
+   (2026-10-16): `test_bloom` first. Then 23 and 24, each a shader Aprend
+   ships, as item 22 allows; and trellislib's half of the selective glow
+   (`../trellislib/TODO.md`).
 
 Item 37 (the command allocator) is written and has run on all three
 backends, and a host's memory stayed flat on D3D12 over 20 minutes
