@@ -696,6 +696,15 @@ unfinished in it.
     Windows over D3D12 ran idle for 20 minutes with no growth in memory,
     the check item 37 was waiting on. Whether its viewport drew frames
     throughout while idle, and on which device, isn't recorded.
+    **It showed less than it seemed** (found 2026-10-17): trellislib never
+    called `aprend_instance_next_frame` - it waits for the GPU after every
+    render and kept one frame in flight, so it saw no need - and an idle
+    window doesn't render. So the per-frame allocators were never reset
+    under a host, and every compile took a new SpudGPU list. It came to
+    light when a viewport glow's bloom took a new pooled chain every frame
+    and ran out of memory. trellislib now turns the frame after each render
+    call's wait. Memory over minutes of rendering, not idling, is still to
+    be watched.
 - **Bloom and post-processing, written 2026-10-16; run on Metal the same
   day**
   (item 36): `APREND_COMMAND_BLOOM` (source, target, threshold, knee,
@@ -888,7 +897,9 @@ for it: a list stays tied to the allocator it was created on, which is what
 Vulkan requires, and Aprend keeps lists for each frame. The D3D12 leak it
 fixes was found by reading and never measured before the fix; after it,
 Trellis_Avalonia ran idle on D3D12 for 20 minutes with memory flat
-(reported 2026-10-16).
+(reported 2026-10-16) - which showed little, as trellislib didn't turn the
+frame until 2026-10-17 (see "State of the code"). Left: memory watched
+over minutes of a host rendering.
 
 ### 38. Unchecked inputs and stale lists, from the review of 2026-10-13
 
@@ -1856,8 +1867,9 @@ and 5 are closed and their numbers are not reused.
    (`../trellislib/TODO.md`).
 
 Item 37 (the command allocator) is written and has run on all three
-backends, and a host's memory stayed flat on D3D12 over 20 minutes
-(reported 2026-10-16); nothing of it is left. Item 38's points are small
+backends. The 20-minute D3D12 check (2026-10-16) was of an idle host that
+never turned Aprend's frame; trellislib turns it since 2026-10-17, and
+memory over minutes of rendering is still to be watched. Item 38's points are small
 and independent; fix each when its function is next touched (the division
 by zero is fixed).
 
