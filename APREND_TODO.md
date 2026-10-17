@@ -381,8 +381,8 @@ unfinished in it.
   type-checked only: GCC 11 on
   Linux with `-fsyntax-only -Wall -Wextra`, with and without `_DEBUG`, over
   every file in `src/render`, and `apricotfields.h` as C11: no errors and
-  no new warnings. They are linked into the library now, and nothing of
-  them has run. Doxygen has
+  no new warnings. They are linked into the library now, and have run on
+  Metal (last bullet). Doxygen has
   not been run over the three new headers, so "no warnings over
   `include/render`" above is not known to hold for them.
   - `aprendmaterial.h`, `aprendmaterial.cpp` (item 19): `aprend_material`
@@ -422,10 +422,28 @@ unfinished in it.
     then for each batch SET_MATERIAL, SET_VERTEX_BUFFERS and
     SET_INDEX_BUFFER where they change, and DRAW_INSTANCED[_INDEXED] with
     the batch's first instance as `_start_instance_location`.
-  - Never run. No material has been bound, no pass begun and no draw list
-    drawn on any backend. The first things to check: the per-instance
-    binding read from `_start_instance_location` past 0 on Metal and D3D12,
-    and a material's uniform values reaching the frame that set them.
+  - **Run on Metal only** (2026-10-17, Apple M5 Pro, unified memory):
+    `../apricottests`' `test_material`, `test_render_pass` and
+    `test_draw_list` passed on their first build, Debug under the Metal
+    validation settings and Release, with no validation message and no
+    leak. Nothing in Aprend needed fixing. What they covered: a layout made
+    from two shaders and found by name; materials set by member name (a
+    bare path, and `u_material.layers[1].add` qualified by its binding),
+    a texture and a sampler; a value changed between two submissions of
+    one frame, each submission drawing its own; a texture swapped, the
+    set rebuilt at the next compile; an incomplete material refused at the
+    compile; instanced draws from `_start_instance_location` 1 (the first
+    of the two checks this entry asked for). A render pass over a view,
+    over a framebuffer with a borrowed texture, with a fixed set changed
+    after a recording (the recording keeps the old set) and with its slot
+    left open; five descs refused; a compute pass with a fixed set. A draw
+    list in both orders: three batches from four draws, one of them
+    indexed, replayed into two passes of one list; the last added on top
+    in submission order; a list changed since its build, a draw with no
+    material and a list built in the frame before, each refused. Not run
+    on D3D12 or Vulkan, so the per-instance binding past instance 0 there
+    is still to see, and not on a device with its own memory, where the
+    material arena's copies are the only path a block takes.
 - **Shader reflection, written 2026-10-11 and compiled on all three
   backends** (item 18; closes item 1). Type-checked with GCC 11 as the
   entry above before that. Part of it has run without a device: see the
@@ -1855,9 +1873,11 @@ and 5 are closed and their numbers are not reused.
 4. Item 18, which settles item 1 and unblocks 19. Written and compiled;
    its reflection and the logic over it have run without a device only
    (see "State of the code").
-5. Items 19, 20, 21: material, pass and draw list. Written and compiled,
-   never run on a device (see "State of the code"); what is left of each
-   is in its item.
+5. Items 19, 20, 21: material, pass and draw list. Written, compiled, and
+   run on Metal by `../apricottests` (2026-10-17, see "State of the
+   code"); left of this step, running those three tests on D3D12 and
+   Vulkan, on the RTX A2000 for the staged path. What is left of each
+   item is in its item.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
    and item 31 (mip generation, both forms) are written and have run on
