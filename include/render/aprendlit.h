@@ -253,13 +253,13 @@ typedef struct aprend_lit_instance {
  * pipeline with Aprend's lit vertex shaders. Its elements are Aprend's own,
  * static, so the layout may be kept as long as anything likes.
  */
-aprend_buffer_layout aprend_lit_vertex_layout(void);
+aprend_vertex_layout aprend_lit_vertex_layout(void);
 
 /**
  * @brief The vertex layout of aprend_lit_instance (four VEC4 columns), for
  * vertex binding 1, per instance.
  */
-aprend_buffer_layout aprend_lit_instance_layout(void);
+aprend_vertex_layout aprend_lit_instance_layout(void);
 
 /* ---- Materials ---------------------------------------------------------- */
 

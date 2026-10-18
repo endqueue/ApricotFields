@@ -16,11 +16,13 @@
 static const char *aprend_pool_element_name(const aprend_pool_core *core) { return core->is_index ? "indices" : "vertices"; }
 
 // A block's buffer of [count] elements, unwritten. NULL if the device
-// refuses it.
+// refuses it. Written once a range, by the pool alone: a ONCE store stages
+// each range in a buffer of its own and keeps no staging copy of the block,
+// and refuses the caller's update calls.
 static void *aprend_pool_buffer_create(aprend_pool_core *core, uint32_t count) {
 	if (core->is_index)
-		return aprend_index_buffer_create(core->instance, core->index_stride, count, nullptr);
-	return aprend_vertex_buffer_create(core->instance, &core->vertex_layout, count, nullptr);
+		return aprend_index_buffer_create(core->instance, core->index_stride, count, APREND_BUFFER_WRITES_ONCE, nullptr);
+	return aprend_vertex_buffer_create(core->instance, (uint64_t)count * core->element_size, APREND_BUFFER_WRITES_ONCE, nullptr);
 }
 
 // Released once the GPU has finished everything submitted so far, as any
@@ -347,61 +349,46 @@ static void aprend_pool_destroy_blocks(aprend_pool_core *core) {
 	core->used_bytes    = 0;
 }
 
-aprend_vertex_pool_t::~aprend_vertex_pool_t() {
-	aprend_pool_destroy_blocks(&this->core);
-	free(this->core.vertex_layout.elements);
-}
+aprend_vertex_pool_t::~aprend_vertex_pool_t() { aprend_pool_destroy_blocks(&this->core); }
 
 aprend_index_pool_t::~aprend_index_pool_t() { aprend_pool_destroy_blocks(&this->core); }
 
 extern "C" {
 
 aprend_vertex_pool aprend_vertex_pool_create(aprend_instance instance, const aprend_vertex_pool_desc *desc) {
-	if (!instance)
-		return nullptr;
-	if (!desc)
-		return nullptr;
-	if (!desc->vertex_layout.elements) {
-		printf("apricot: aprend_vertex_pool_create: vertex_layout has no elements\n");
+	static const char *who = "aprend_vertex_pool_create";
+	if (!instance) {
+		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
 	}
-	if (desc->vertex_layout.count == 0) {
-		printf("apricot: aprend_vertex_pool_create: vertex_layout has no elements\n");
+	if (!desc) {
+		printf("apricot: %s: desc is NULL\n", who);
 		return nullptr;
 	}
-	const uint32_t vertex_stride = aprend_buffer_layout_get_total_size(&desc->vertex_layout);
-	if (vertex_stride == 0) {
-		printf("apricot: aprend_vertex_pool_create: vertex_layout has a stride of 0\n");
+	if (desc->vertex_stride == 0) {
+		printf("apricot: %s: vertex_stride is 0\n", who);
 		return nullptr;
 	}
 	if (desc->block_vertex_count == 0) {
-		printf("apricot: aprend_vertex_pool_create: block_vertex_count is 0\n");
+		printf("apricot: %s: block_vertex_count is 0\n", who);
 		return nullptr;
 	}
-	const uint64_t block_bytes = (uint64_t)desc->block_vertex_count * vertex_stride;
+	const uint64_t block_bytes = (uint64_t)desc->block_vertex_count * desc->vertex_stride;
 	if (desc->memory_limit != 0 && desc->memory_limit < block_bytes) {
-		printf("apricot: aprend_vertex_pool_create: memory_limit is below one block's %llu bytes\n", (unsigned long long)block_bytes);
+		printf("apricot: %s: memory_limit is below one block's %llu bytes\n", who, (unsigned long long)block_bytes);
 		return nullptr;
 	}
 
 	aprend_vertex_pool_t *result = (aprend_vertex_pool_t *)malloc(sizeof(aprend_vertex_pool_t));
-	if (!result)
-		return nullptr;
-	result = new (result) aprend_vertex_pool_t();
-
-	const size_t layout_bytes           = (size_t)desc->vertex_layout.count * sizeof(aprend_buffer_element);
-	result->core.vertex_layout.elements = (aprend_buffer_element *)malloc(layout_bytes);
-	if (!result->core.vertex_layout.elements) {
-		result->~aprend_vertex_pool_t();
-		free(result);
+	if (!result) {
+		printf("apricot: %s: out of memory\n", who);
 		return nullptr;
 	}
-	memcpy(result->core.vertex_layout.elements, desc->vertex_layout.elements, layout_bytes);
-	result->core.vertex_layout.count = desc->vertex_layout.count;
+	result = new (result) aprend_vertex_pool_t();
 
 	result->core.instance            = instance;
 	result->core.is_index            = false;
-	result->core.element_size        = vertex_stride;
+	result->core.element_size        = desc->vertex_stride;
 	result->core.block_element_count = desc->block_vertex_count;
 	result->core.memory_limit        = desc->memory_limit;
 	return result;

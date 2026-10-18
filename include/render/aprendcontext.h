@@ -45,9 +45,9 @@
  * What several threads may do at once:
  *
  * - Call the functions that take no handle: aprend_uniform_type_get_size(),
- *   aprend_buffer_element_type_get_size(),
- *   aprend_buffer_layout_get_element_index(),
- *   aprend_buffer_layout_get_total_size() and the aprend_blend_ presets.
+ *   aprend_uniform_layout_get_uniform_index(),
+ *   aprend_vertex_element_type_get_size(),
+ *   aprend_vertex_layout_get_element_index() and the aprend_blend_ presets.
  * - Read a handle, with its get_ calls, while no thread is in a call that
  *   changes or destroys that handle. aprend_instance_get_frame_index() is
  *   not one of these while another thread may call
@@ -98,10 +98,14 @@
  * Two things this does not cover:
  *
  * - A command list compiled against an object and submitted after the
- *   object was destroyed. Compiling a list records nothing about what it
- *   uses for this purpose: only a submission does. So destroy an object
- *   after the last submission that uses it, not after the last compile, and
- *   reset or recompile any list that still names it.
+ *   object was destroyed. The release waits for submissions, not compiles.
+ *   For a texture (2D or 3D), a vertex, index or storage buffer, a material
+ *   and a GPU timer, aprend_command_list_submit() refuses such a list, and
+ *   the same after a texture is resized; for anything else (a view, a
+ *   sampler, a pipeline, a binding set) nothing checks it and the GPU would
+ *   use what is gone. Either way, destroy an object after the last
+ *   submission that uses it, not after the last compile, and reset or
+ *   recompile any list that still names it.
  * - Work the caller submits to SpudGPU itself, which the instance never
  *   sees.
  *

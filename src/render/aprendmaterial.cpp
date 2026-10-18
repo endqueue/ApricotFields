@@ -17,28 +17,29 @@ static bool aprend_material_arena_take(
     uint32_t size,
     aprend_material_arena_buffer **out_buffer,
     uint32_t *out_offset) {
-	const uint32_t units = (size + APREND_MATERIAL_BLOCK_ALIGNMENT - 1) / APREND_MATERIAL_BLOCK_ALIGNMENT;
+	const uint32_t alignment = instance->material_block_alignment;
+	const uint32_t units     = (size + alignment - 1) / alignment;
 	std::vector<aprend_material_arena_buffer *> &buffers = instance->material_arena.buffers;
-	if ((uint64_t)units * APREND_MATERIAL_BLOCK_ALIGNMENT <= APREND_MATERIAL_ARENA_BUFFER_SIZE) {
+	if ((uint64_t)units * alignment <= APREND_MATERIAL_ARENA_BUFFER_SIZE) {
 		for (aprend_material_arena_buffer *buffer : buffers) {
 			uint32_t unit = 0;
 			if (buffer->dedicated || !buffer->ranges.take(units, &unit))
 				continue;
 			*out_buffer = buffer;
-			*out_offset = unit * APREND_MATERIAL_BLOCK_ALIGNMENT;
+			*out_offset = unit * alignment;
 			return true;
 		}
 	}
 	// A buffer more: an arena buffer, or one the size of a block too large
 	// for one.
-	const bool dedicated      = (uint64_t)units * APREND_MATERIAL_BLOCK_ALIGNMENT > APREND_MATERIAL_ARENA_BUFFER_SIZE;
-	const uint32_t buffer_size = dedicated ? units * APREND_MATERIAL_BLOCK_ALIGNMENT : APREND_MATERIAL_ARENA_BUFFER_SIZE;
+	const bool dedicated      = (uint64_t)units * alignment > APREND_MATERIAL_ARENA_BUFFER_SIZE;
+	const uint32_t buffer_size = dedicated ? units * alignment : APREND_MATERIAL_ARENA_BUFFER_SIZE;
 	aprend_material_arena_buffer *buffer = (aprend_material_arena_buffer *)malloc(sizeof(aprend_material_arena_buffer));
 	if (!buffer)
 		throw std::bad_alloc();
 	buffer = new (buffer) aprend_material_arena_buffer();
 	try {
-		buffer->ranges.reset(buffer_size / APREND_MATERIAL_BLOCK_ALIGNMENT);
+		buffer->ranges.reset(buffer_size / alignment);
 		buffers.reserve(buffers.size() + 1);
 	} catch (...) {
 		buffer->~aprend_material_arena_buffer();
@@ -56,7 +57,7 @@ static bool aprend_material_arena_take(
 	buffer->ranges.take(units, &unit);
 	buffers.push_back(buffer); // room was reserved above
 	*out_buffer = buffer;
-	*out_offset = unit * APREND_MATERIAL_BLOCK_ALIGNMENT;
+	*out_offset = unit * alignment;
 	return true;
 }
 
@@ -70,14 +71,15 @@ static void aprend_material_arena_give(
     aprend_material_arena_buffer *buffer,
     uint32_t offset,
     uint32_t size) {
-	const uint32_t units = (size + APREND_MATERIAL_BLOCK_ALIGNMENT - 1) / APREND_MATERIAL_BLOCK_ALIGNMENT;
+	const uint32_t alignment = instance->material_block_alignment;
+	const uint32_t units     = (size + alignment - 1) / alignment;
 	std::vector<aprend_material_arena_buffer *> &buffers = instance->material_arena.buffers;
 	if (!buffer->dedicated) {
 		// Next to a free span, or a span between two, it needs no memory;
 		// with none it may, and without it the range is lost to the arena,
 		// which is all that is lost.
 		try {
-			if (!buffer->ranges.give(offset / APREND_MATERIAL_BLOCK_ALIGNMENT, units))
+			if (!buffer->ranges.give(offset / alignment, units))
 				printf("aprend: a material's range of the arena was given back twice\n");
 		} catch (const std::bad_alloc &) {
 			printf("aprend: out of memory: a material's range of the arena is lost until the instance goes\n");
@@ -170,10 +172,82 @@ static aprend_binding_set_entry *aprend_material_slot_entry(
 	return &material->entries[slot->first_entry + array_element];
 }
 
+// The first element of [material] that lacks what its type reads: its slot
+// and element, and whether it is the sampler it lacks. False if there is
+// none.
+static bool aprend_material_find_empty(
+    aprend_material material,
+    const aprend_material_slot **out_slot,
+    uint32_t *out_element,
+    bool *out_sampler) {
+	for (uint32_t s = 0; s < material->slot_count; ++s) {
+		const aprend_material_slot &slot = material->slots[s];
+		for (uint32_t element = 0; element < slot.binding._count; ++element) {
+			const uint32_t i                   = slot.first_entry + element;
+			const SPUDGPU_DESCRIPTOR_TYPE type = material->entries[i]._type;
+			// A sampler binding reads a sampler and nothing else.
+			const bool needs_resource = type != SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+			const bool needs_sampler  = aprend_material_type_reads_sampler(type);
+			const bool lacks_resource = needs_resource && !material->has_resource[i];
+			const bool lacks_sampler  = needs_sampler && !material->has_sampler[i];
+			if (!lacks_resource && !lacks_sampler)
+				continue;
+			*out_slot    = &slot;
+			*out_element = element;
+			*out_sampler = !lacks_resource;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Gives [slot] of [material], an owned block of [block_size] bytes, its
+// bytes ([initial], or zeroes if NULL) and a range of the instance's
+// material arena, and points its entry at the range. The bytes go across
+// at the first submission: a new range's contents are undefined. False,
+// printed for [who], with the slot holding what it got as far as, for the
+// material's destructor to give back.
+static bool aprend_material_own_block(
+    aprend_material material,
+    aprend_material_slot &slot,
+    uint32_t block_size,
+    const uint8_t *initial,
+    const char *who) {
+	slot.bytes = (uint8_t *)calloc(block_size, 1);
+	if (!slot.bytes) {
+		printf("apricot: %s: out of memory\n", who);
+		return false;
+	}
+	if (initial)
+		memcpy(slot.bytes, initial, block_size);
+	bool taken = false;
+	try {
+		taken = aprend_material_arena_take(material->instance, block_size, &slot.arena, &slot.offset);
+	} catch (const std::bad_alloc &) {
+		printf("apricot: %s: out of memory\n", who);
+	}
+	if (!taken)
+		return false;
+	slot.block_size                          = block_size;
+	slot.dirty                               = true;
+	aprend_binding_set_entry &entry          = material->entries[slot.first_entry];
+	entry._resource._uniform._buffer         = slot.arena->buffer;
+	entry._resource._uniform._set            = nullptr;
+	entry._resource._uniform._offset         = slot.offset;
+	entry._resource._uniform._range          = block_size;
+	material->has_resource[slot.first_entry] = true;
+	return true;
+}
 
 bool aprend_material_prepare(aprend_material material) {
-	if (!aprend_material_is_complete(material)) {
-		printf("aprend: SET_MATERIAL with a material that has a binding with nothing in it (aprend_material_is_complete)\n");
+	const aprend_material_slot *empty = nullptr;
+	uint32_t element                  = 0;
+	bool sampler                      = false;
+	if (aprend_material_find_empty(material, &empty, &element, &sampler)) {
+		const char *missing = sampler ? "sampler" : aprend_material_type_reads_view(empty->binding._type) ? "texture view" : "buffer";
+		printf("aprend: SET_MATERIAL with a material whose binding \"%s\" (element %u) has no %s: set it, or start the material as a copy of one "
+		       "that has every binding set (aprend_material_copy)\n",
+		       empty->name, element, missing);
 		return false;
 	}
 	if (!material->set) {
@@ -345,30 +419,65 @@ aprend_material aprend_material_create(
 			return nullptr;
 		}
 		const uint32_t block_size = uniforms.size ? (uniforms.size + 15) & ~15u : 16u;
-		slot.bytes                = (uint8_t *)calloc(block_size, 1);
-		if (!slot.bytes) {
+		if (!aprend_material_own_block(result, slot, block_size, nullptr, who)) {
 			APREND_DESTRUCT__T(result, aprend_material_t);
 			return nullptr;
 		}
-		bool taken = false;
-		try {
-			taken = aprend_material_arena_take(instance, block_size, &slot.arena, &slot.offset);
-		} catch (const std::bad_alloc &) {
-			printf("apricot: %s: out of memory\n", who);
-		}
-		if (!taken) {
+	}
+	return result;
+}
+
+aprend_material aprend_material_copy(aprend_material source) {
+	static const char *who = "aprend_material_copy";
+	if (!source) {
+		printf("apricot: %s: source is NULL\n", who);
+		return nullptr;
+	}
+
+	APREND_MALLOC__T(result, aprend_material_t);
+	if (!result)
+		return nullptr;
+	APREND_CONSTRUCT__T(result, aprend_material_t);
+	result->instance    = source->instance;
+	result->layout      = source->layout;
+	result->entry_count = source->entry_count;
+	// Not the source's binding set, nor its lit scene: a set of its own is
+	// built at the first compile that binds the copy, and a lit scene's
+	// material is the scene's alone.
+
+	result->entries      = (aprend_binding_set_entry *)calloc(result->entry_count, sizeof(aprend_binding_set_entry));
+	result->has_resource = (bool *)calloc(result->entry_count, sizeof(bool));
+	result->has_sampler  = (bool *)calloc(result->entry_count, sizeof(bool));
+	if (!result->entries || !result->has_resource || !result->has_sampler) {
+		printf("apricot: %s: out of memory\n", who);
+		APREND_DESTRUCT__T(result, aprend_material_t);
+		return nullptr;
+	}
+	// Every resource the source holds, the same handles: they are the
+	// caller's, shared by both.
+	memcpy(result->entries, source->entries, sizeof(aprend_binding_set_entry) * result->entry_count);
+	memcpy(result->has_resource, source->has_resource, sizeof(bool) * result->entry_count);
+	memcpy(result->has_sampler, source->has_sampler, sizeof(bool) * result->entry_count);
+
+	for (uint32_t i = 0; i < source->slot_count; ++i) {
+		const aprend_material_slot &from = source->slots[i];
+		aprend_material_slot &slot       = result->slots[i];
+		// slot_count goes up first, so the destructor gives back what this
+		// slot has taken if a later step fails.
+		++result->slot_count;
+		slot.name         = from.name;
+		slot.block_name   = from.block_name;
+		slot.binding      = from.binding;
+		slot.first_entry  = from.first_entry;
+		slot.members      = from.members;
+		slot.member_count = from.member_count;
+		if (!from.arena)
+			continue;
+		// An owned block: the source's values, in a range of its own.
+		if (!aprend_material_own_block(result, slot, from.block_size, from.bytes, who)) {
 			APREND_DESTRUCT__T(result, aprend_material_t);
 			return nullptr;
 		}
-		slot.block_size = block_size;
-		// A new buffer's contents are undefined: the zeroes go across at the
-		// first submission.
-		slot.dirty = true;
-		aprend_binding_set_entry &entry        = result->entries[slot.first_entry];
-		entry._resource._uniform._buffer       = slot.arena->buffer;
-		entry._resource._uniform._offset       = slot.offset;
-		entry._resource._uniform._range        = block_size;
-		result->has_resource[slot.first_entry] = true;
 	}
 	return result;
 }
@@ -376,6 +485,8 @@ aprend_material aprend_material_create(
 void aprend_material_destroy(aprend_material material) {
 	if (!material)
 		return;
+	// A list compiled against it and not submitted would write its blocks.
+	aprend_instance_forget(material->instance, material);
 	// The whole material goes through the release queue: its ranges of the
 	// arena are given back once the GPU has finished with everything
 	// submitted up to now, which may read them.
@@ -387,17 +498,10 @@ aprend_binding_layout aprend_material_get_layout(aprend_material material) { ret
 bool aprend_material_is_complete(aprend_material material) {
 	if (!material)
 		return false;
-	for (uint32_t i = 0; i < material->entry_count; ++i) {
-		const SPUDGPU_DESCRIPTOR_TYPE type = material->entries[i]._type;
-		const bool needs_sampler           = aprend_material_type_reads_sampler(type);
-		// A sampler binding reads a sampler and nothing else.
-		const bool needs_resource = type != SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
-		if (needs_resource && !material->has_resource[i])
-			return false;
-		if (needs_sampler && !material->has_sampler[i])
-			return false;
-	}
-	return true;
+	const aprend_material_slot *slot = nullptr;
+	uint32_t element                 = 0;
+	bool sampler                     = false;
+	return !aprend_material_find_empty(material, &slot, &element, &sampler);
 }
 
 // Whether binding [index] of [layout] is a block a material of it can own:

@@ -315,7 +315,7 @@ bool aprend_lit_prepare_resources(aprend_instance instance) {
 	if (!aprend_lit_placeholder(instance, APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY, true, &lit.placeholder_depth, &lit.placeholder_depth_view))
 		return false;
 	if (!lit.placeholder_tiles) {
-		lit.placeholder_tiles = aprend_storage_buffer_create(instance, 64, APREND_STORAGE_BUFFER_USAGE_NONE, nullptr);
+		lit.placeholder_tiles = aprend_storage_buffer_create(instance, 64, APREND_STORAGE_BUFFER_USAGE_NONE, APREND_BUFFER_WRITES_ONCE, nullptr);
 		if (!lit.placeholder_tiles) {
 			printf("apricot: Aprend's lit placeholder tiles can't be created\n");
 			return false;
@@ -671,32 +671,34 @@ static void aprend_lit_write_block(aprend_material material, const char *name, c
 
 // ---- Vertex layouts -----------------------------------------------------------------
 
-static aprend_buffer_element s_lit_vertex_elements[] = {
-    {"in_position", APREND_BUFFER_ELEMENT_TYPE_VEC3, 12, (uint32_t)offsetof(aprend_lit_vertex, position)},
-    {"in_normal", APREND_BUFFER_ELEMENT_TYPE_VEC3, 12, (uint32_t)offsetof(aprend_lit_vertex, normal)},
-    {"in_uv", APREND_BUFFER_ELEMENT_TYPE_VEC2, 8, (uint32_t)offsetof(aprend_lit_vertex, uv)},
-    {"in_tangent", APREND_BUFFER_ELEMENT_TYPE_VEC4, 16, (uint32_t)offsetof(aprend_lit_vertex, tangent)},
+static aprend_vertex_element s_lit_vertex_elements[] = {
+    {"in_position", APREND_VERTEX_ELEMENT_TYPE_VEC3, (uint32_t)offsetof(aprend_lit_vertex, position)},
+    {"in_normal", APREND_VERTEX_ELEMENT_TYPE_VEC3, (uint32_t)offsetof(aprend_lit_vertex, normal)},
+    {"in_uv", APREND_VERTEX_ELEMENT_TYPE_VEC2, (uint32_t)offsetof(aprend_lit_vertex, uv)},
+    {"in_tangent", APREND_VERTEX_ELEMENT_TYPE_VEC4, (uint32_t)offsetof(aprend_lit_vertex, tangent)},
 };
-static aprend_buffer_element s_lit_instance_elements[] = {
-    {"in_transform0", APREND_BUFFER_ELEMENT_TYPE_VEC4, 16, 0},
-    {"in_transform1", APREND_BUFFER_ELEMENT_TYPE_VEC4, 16, 16},
-    {"in_transform2", APREND_BUFFER_ELEMENT_TYPE_VEC4, 16, 32},
-    {"in_transform3", APREND_BUFFER_ELEMENT_TYPE_VEC4, 16, 48},
+static aprend_vertex_element s_lit_instance_elements[] = {
+    {"in_transform0", APREND_VERTEX_ELEMENT_TYPE_VEC4, 0},
+    {"in_transform1", APREND_VERTEX_ELEMENT_TYPE_VEC4, 16},
+    {"in_transform2", APREND_VERTEX_ELEMENT_TYPE_VEC4, 32},
+    {"in_transform3", APREND_VERTEX_ELEMENT_TYPE_VEC4, 48},
 };
 
 extern "C" {
 
-aprend_buffer_layout aprend_lit_vertex_layout(void) {
-	aprend_buffer_layout layout{};
+aprend_vertex_layout aprend_lit_vertex_layout(void) {
+	aprend_vertex_layout layout{};
 	layout.count    = 4;
 	layout.elements = s_lit_vertex_elements;
+	layout.stride   = (uint32_t)sizeof(aprend_lit_vertex);
 	return layout;
 }
 
-aprend_buffer_layout aprend_lit_instance_layout(void) {
-	aprend_buffer_layout layout{};
+aprend_vertex_layout aprend_lit_instance_layout(void) {
+	aprend_vertex_layout layout{};
 	layout.count    = 4;
 	layout.elements = s_lit_instance_elements;
+	layout.stride   = (uint32_t)sizeof(aprend_lit_instance);
 	return layout;
 }
 
@@ -1237,7 +1239,7 @@ bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *vi
 		aprend_storage_buffer_set tiles = nullptr;
 		if (tiled) {
 			const uint64_t size = (uint64_t)tiles_x * tiles_y * (APREND_LIT_MAX_TILE_LIGHTS + 1) * sizeof(uint32_t);
-			tiles               = aprend_storage_buffer_set_create(scene->instance, size, APREND_STORAGE_BUFFER_USAGE_NONE, nullptr);
+			tiles               = aprend_storage_buffer_set_create(scene->instance, size, APREND_STORAGE_BUFFER_USAGE_NONE, APREND_BUFFER_WRITES_ONCE, nullptr);
 			if (!tiles) {
 				printf("apricot: %s: the view's light tiles can't be created\n", who);
 				return false;

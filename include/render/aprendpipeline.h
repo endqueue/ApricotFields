@@ -20,8 +20,10 @@
  * everything else of their instance. A binding layout's sets share the
  * layout's descriptor pools, and a destroyed set is given back to them
  * inside a later call on the instance, so sets of different layouts are not
- * independent of each other across threads. The blend presets take no
- * handle and are safe from any thread.
+ * independent of each other across threads. The blend presets,
+ * aprend_vertex_element_type_get_size() and
+ * aprend_vertex_layout_get_element_index() take no handle and are safe from
+ * any thread.
  */
 
 #include "aprendbuffers.h"
@@ -291,18 +293,115 @@ void aprend_binding_layout_destroy(aprend_binding_layout layout);
 #define APREND_MAX_PUSH_CONSTANT_RANGES SPUDGPU_MAX_PUSH_CONSTANT_RANGES
 
 /**
+ * @brief The type of one element of a vertex layout: what a vertex shader
+ * input of that element reads.
+ *
+ * Values are only ever appended.
+ */
+typedef uint32_t APREND_VERTEX_ELEMENT_TYPE;
+enum {
+	/** One float: a `float` input. */
+	APREND_VERTEX_ELEMENT_TYPE_FLOAT = 0,
+	/** Two floats: a `vec2` input. */
+	APREND_VERTEX_ELEMENT_TYPE_VEC2  = 1,
+	/** Three floats: a `vec3` input. */
+	APREND_VERTEX_ELEMENT_TYPE_VEC3  = 2,
+	/** Four floats: a `vec4` input, or one column of a `mat4`. */
+	APREND_VERTEX_ELEMENT_TYPE_VEC4  = 3,
+	/** One signed 32-bit integer: an `int` input. */
+	APREND_VERTEX_ELEMENT_TYPE_INT   = 4,
+	/** Two signed 32-bit integers: an `ivec2` input. */
+	APREND_VERTEX_ELEMENT_TYPE_INT2  = 5,
+	/** Three signed 32-bit integers: an `ivec3` input. */
+	APREND_VERTEX_ELEMENT_TYPE_INT3  = 6,
+	/** Four signed 32-bit integers: an `ivec4` input. */
+	APREND_VERTEX_ELEMENT_TYPE_INT4  = 7,
+	/** One unsigned 32-bit integer: a `uint` input. */
+	APREND_VERTEX_ELEMENT_TYPE_UINT  = 8,
+	/** Two unsigned 32-bit integers: a `uvec2` input. */
+	APREND_VERTEX_ELEMENT_TYPE_UINT2 = 9,
+	/** Three unsigned 32-bit integers: a `uvec3` input. */
+	APREND_VERTEX_ELEMENT_TYPE_UINT3 = 10,
+	/** Four unsigned 32-bit integers: a `uvec4` input. */
+	APREND_VERTEX_ELEMENT_TYPE_UINT4 = 11,
+};
+
+/**
+ * @brief Gets the size of one element of a type.
+ *
+ * @param[in] type The type.
+ *
+ * @return Its size in bytes, or 0 for a value that isn't an
+ *         APREND_VERTEX_ELEMENT_TYPE.
+ */
+uint32_t aprend_vertex_element_type_get_size(APREND_VERTEX_ELEMENT_TYPE type);
+
+/**
+ * @brief One element of a vertex layout: one attribute of a vertex.
+ */
+typedef struct aprend_vertex_element {
+	/**
+	 * The element's name, for a pipeline that meets the shader's inputs by
+	 * name (aprend_graphics_pipeline_desc::_vertex_inputs_by_name). May be
+	 * NULL otherwise. Copied by the pipeline.
+	 */
+	const char *name;
+	/** What the element is; its size follows from it. */
+	APREND_VERTEX_ELEMENT_TYPE type;
+	/**
+	 * Where the element starts in one vertex, in bytes. A multiple of 4,
+	 * and the element ends inside the layout's `stride`.
+	 */
+	uint32_t offset;
+} aprend_vertex_element;
+
+/**
+ * @brief How a pipeline reads one vertex of a vertex buffer slot.
+ *
+ * A vertex buffer is bytes (aprendbuffers.h); this says what they are, for
+ * one pipeline. Two pipelines may read one buffer through different
+ * layouts, a depth pass reading only the positions of vertices a main pass
+ * reads whole, say: the same `stride`, fewer elements.
+ */
+typedef struct aprend_vertex_layout {
+	/** How many elements. Not 0. */
+	uint32_t count;
+	/** The elements, #count of them. */
+	aprend_vertex_element *elements;
+	/**
+	 * The distance in bytes from one vertex to the next. Not 0, a multiple
+	 * of 4, and no less than where the furthest element ends: bytes past it
+	 * are padding the pipeline doesn't read, as a C struct's `sizeof` may
+	 * have.
+	 */
+	uint32_t stride;
+} aprend_vertex_layout;
+
+/**
+ * @brief Finds an element of a layout by name.
+ *
+ * @param[in] layout Layout to search.
+ * @param[in] name   The element's name, case-sensitive.
+ *
+ * @return Index of the first element of @p layout named @p name, or
+ *         UINT32_MAX if there is none, or if @p layout, its elements or
+ *         @p name is NULL.
+ */
+uint32_t aprend_vertex_layout_get_element_index(
+    const aprend_vertex_layout *layout,
+    const char *name);
+
+/**
  * @brief The attributes a pipeline reads from one vertex buffer slot, and how
  * often it steps to the next element of that buffer.
  */
 typedef struct aprend_vertex_binding_desc {
 	/**
-	 * The attributes, with their offsets inside one element of the buffer.
-	 * Never empty. The buffer's stride is the end of the furthest element
-	 * (aprend_buffer_layout_get_total_size()). The `elements` array is not
-	 * copied: it must outlive the pipeline for
-	 * aprend_graphics_pipeline_get_desc() to return it.
+	 * The attributes, with their offsets inside one vertex, and the stride.
+	 * Copied by the pipeline, names included:
+	 * aprend_graphics_pipeline_get_desc() hands back the pipeline's copy.
 	 */
-	aprend_buffer_layout _layout;
+	aprend_vertex_layout _layout;
 	/**
 	 * false to step once per vertex, true to step once per instance: every
 	 * vertex of one instance reads the same element, and the element is
@@ -543,7 +642,10 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *         without mesh shading,
  *         either entry point is NULL or an empty string,
  *         `_vertex_binding_count` is above APREND_MAX_VERTEX_BINDINGS, a
- *         counted vertex binding has no elements or a stride of 0, the
+ *         counted vertex binding has no elements, a `stride` of 0 or not a
+ *         multiple of 4, or an element whose type is not an
+ *         APREND_VERTEX_ELEMENT_TYPE, whose `offset` is not a multiple of
+ *         4, or that ends past the `stride`, the
  *         bindings hold more than SPUDGPU_MAX_VERTEX_ATTRIBUTES elements in
  *         all, `_push_constant_range_count` is above
  *         APREND_MAX_PUSH_CONSTANT_RANGES, a counted push constant range has
@@ -597,8 +699,9 @@ void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p);
  *
  * @return The descriptor as it was passed to
  *         aprend_graphics_pipeline_create(), pointers included, except that
- *         the entry point names are the pipeline's own copies, valid until
- *         it is destroyed, and the one of `_vertex_entry_point` and
+ *         the vertex layouts' elements and their names, and the entry point
+ *         names, are the pipeline's own copies, valid until it is
+ *         destroyed, and the one of `_vertex_entry_point` and
  *         `_mesh_entry_point` the pipeline doesn't use is NULL; zeroed if
  *         @p p is NULL.
  */
@@ -749,7 +852,12 @@ typedef struct aprend_binding_set_entry {
 		struct {
 			/** A single buffer. Exactly one of this and `_set` is given. */
 			aprend_uniform_buffer _buffer;
-			/** First byte of the buffer the slot sees. Inside the buffer. */
+			/**
+			 * First byte of the buffer the slot sees. Inside the buffer, and
+			 * a multiple of the device's
+			 * SPUDGPU_DEVICE_PROPERTIES::uniform_buffer_offset_alignment
+			 * (spudgpu.h); 0 always is.
+			 */
 			uint64_t _offset;
 			/**
 			 * How many bytes the slot sees, from `_offset`. 0 is to the end
@@ -767,7 +875,12 @@ typedef struct aprend_binding_set_entry {
 		struct {
 			/** A single buffer. Exactly one of this and `_set` is given. */
 			aprend_storage_buffer _buffer;
-			/** First byte of the buffer the slot sees. Inside the buffer. */
+			/**
+			 * First byte of the buffer the slot sees. Inside the buffer, and
+			 * a multiple of the device's
+			 * SPUDGPU_DEVICE_PROPERTIES::storage_buffer_offset_alignment;
+			 * 0 always is.
+			 */
 			uint64_t _offset;
 			/**
 			 * How many bytes the slot sees, from `_offset`. 0 is to the end
@@ -820,8 +933,10 @@ typedef struct aprend_binding_set_entry {
  *         don't fill the layout exactly, an entry's `_type` is not the
  *         layout's, a handle its `_type` reads is NULL, a buffer entry gives
  *         both `_buffer` and `_set` or a `_set` of another instance, a view
- *         is of the wrong type for its slot, a buffer's `_offset` and `_range` run past its
- *         end, or the set can't be allocated.
+ *         is of the wrong type for its slot, a buffer's `_offset` is not a
+ *         multiple of the device's offset alignment for its type or its
+ *         `_offset` and `_range` run past its end, or the set can't be
+ *         allocated.
  *
  * @see aprend_binding_set_destroy()
  */

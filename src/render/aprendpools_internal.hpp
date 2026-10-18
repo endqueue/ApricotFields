@@ -70,8 +70,6 @@ struct aprend_pool_core {
 	aprend_instance instance{nullptr};
 	/* An index pool; a vertex pool otherwise. */
 	bool is_index{false};
-	/* A vertex pool's layout. The elements are the pool's own copy. */
-	aprend_buffer_layout vertex_layout{};
 	/* An index pool's index size. */
 	APREND_INDEX_STRIDE index_stride{APREND_INDEX_STRIDE_NONE};
 	/* Bytes in one vertex or one index. */

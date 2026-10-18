@@ -64,6 +64,17 @@
  * a resource is set before the compile of every list that is to see it.
  * Every binding must hold something by then: aprend_material_is_complete().
  *
+ * @par Copying, and what an unset binding holds
+ * aprend_material_copy() makes a material that starts as another is: its
+ * values, and the same resources. Aprend puts nothing in a binding the
+ * caller leaves empty, and a material with one can't be drawn: what an
+ * empty slot should read (white, black, a flat normal, a texture of the
+ * right shape and type) depends on what the slot is for, which the caller
+ * knows and Aprend doesn't. A caller that wants every material of a layout
+ * to start from defaults of its choosing makes one material with them and
+ * copies it. (aprend_lit_material_create(), aprendlit.h, is such a start for
+ * Aprend's own lit layout, whose slots Aprend does know.)
+ *
  * @par When uniform values take effect
  * A value set is seen by every submission made after it of a list that
  * binds the material, and by none made before. At the submission of such a
@@ -154,13 +165,45 @@ aprend_material aprend_material_create(
  * the ranges are handed out again only once everything submitted up to now
  * has finished.
  *
- * @warning No later submission may bind @p material, and no command list
- * that binds it may be compiled or submitted again: submitting one copies
- * the material's blocks.
+ * A copy made from it (aprend_material_copy()) is not affected. A command
+ * list compiled with it and not yet submitted is refused at submit
+ * (aprend_command_list_submit(), aprendcommands.h).
+ *
+ * @warning No command list that binds @p material may be compiled after
+ * this.
  *
  * @param[in] material Material to destroy. NULL is accepted and does nothing.
  */
 void aprend_material_destroy(aprend_material material);
+
+/**
+ * @brief Creates a material that starts as another is.
+ *
+ * The new material fills the same layout, owns the same blocks (those the
+ * source was not told to leave external), and holds the source's values in
+ * them in blocks of its own. Every resource the source holds - a view, a
+ * sampler, a uniform or storage buffer or buffer set - it holds too: the
+ * same handles, shared, not duplicated, so each must outlive both
+ * materials or be replaced in each before its next compile. A binding the
+ * source leaves empty is empty in the copy. After the call the two are
+ * independent: setting a value or a resource of one does not change the
+ * other, and either may be destroyed first.
+ *
+ * Costs what aprend_material_create() does - a range of the material arena
+ * for each owned block - and, at the first submission that binds the copy,
+ * the copy of its blocks to the GPU, as for a new material. Its binding set
+ * is built at the first compile that binds it. A copy of a lit material
+ * (aprend_lit_material_create(), aprendlit.h) is a lit material.
+ *
+ * @param[in] source Material to copy. Only read during the call.
+ *
+ * @return The copy, or NULL if @p source is NULL, there is no memory, or the
+ *         material arena needs another buffer and the device refuses it.
+ *         Each is printed.
+ *
+ * @see aprend_material_destroy()
+ */
+aprend_material aprend_material_copy(aprend_material source);
 
 /**
  * @brief Gets the layout a material fills.
@@ -176,7 +219,8 @@ aprend_binding_layout aprend_material_get_layout(aprend_material material);
  * command list that binds it can't be compiled until it does.
  *
  * Owned blocks always do. A combined image sampler binding needs a texture
- * and a sampler.
+ * and a sampler. A compile that finds one missing prints which binding and
+ * element it is.
  *
  * @param[in] material Material to read.
  *
@@ -323,7 +367,8 @@ bool aprend_material_get_uniform_value(
  * itself.
  *
  * @param[in] material Material to write.
- * @param[in] name     The binding's name in the layout.
+ * @param[in] name     The binding's name in the layout, or its block
+ *                     name.
  * @param[in] offset   Where in the block the bytes go.
  * @param[in] size     How many bytes. Not 0.
  * @param[in] data     The bytes.
@@ -347,7 +392,8 @@ bool aprend_material_set_uniform_bytes(
  * set read at the copy of the frame a list is compiled in.
  *
  * @param[in] material      Material to change.
- * @param[in] name          The binding's name in the layout.
+ * @param[in] name          The binding's name in the layout, or for a
+ *                          uniform buffer binding its block name.
  * @param[in] array_element Index into the binding's array; 0 where its
  *                          `_count` is 1.
  * @param[in] buffer        The buffer, or NULL.
@@ -400,8 +446,9 @@ bool aprend_material_set_storage_buffer(
  *                          APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS for a
  *                          storage image binding,
  *                          APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE for the
- *                          other two. It must outlive the material, or be
- *                          replaced before the next compile after it goes.
+ *                          other two. It must outlive every material that
+ *                          holds it, or be replaced in each before its next
+ *                          compile after it goes.
  *
  * @return false, with nothing changed, if an argument is NULL, no binding has
  *         that name, the binding is of none of those types,
@@ -420,8 +467,8 @@ bool aprend_material_set_texture(
  * @param[in] material      Material to change.
  * @param[in] name          The binding's name in the layout.
  * @param[in] array_element Index into the binding's array.
- * @param[in] sampler       The sampler. It must outlive the material, or be
- *                          replaced before the next compile after it goes.
+ * @param[in] sampler       The sampler. As @p view of
+ *                          aprend_material_set_texture().
  *
  * @return false, with nothing changed, if an argument is NULL, no binding has
  *         that name, the binding is of neither type, @p array_element is not

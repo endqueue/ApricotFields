@@ -7,26 +7,35 @@
 #include <cstring>
 #include <utility>
 
-// Maps an Aprend vertex-attribute element type onto the SpudGPU format used
-// to describe it in a vertex_attribute_desc.
-static SPUDGPU_FORMAT aprend_buffer_element_type_to_format(APREND_BUFFER_ELEMENT_TYPE type) {
+// Maps a vertex element type onto the SpudGPU format used to describe it in
+// a vertex_attribute_desc. Every type has one: the pipeline refuses any
+// other value before this is reached.
+static SPUDGPU_FORMAT aprend_vertex_element_type_to_format(APREND_VERTEX_ELEMENT_TYPE type) {
 	switch (type) {
-	case APREND_BUFFER_ELEMENT_TYPE_FLOAT:
+	case APREND_VERTEX_ELEMENT_TYPE_FLOAT:
 		return SPUDGPU_FORMAT_R32_FLOAT;
-	case APREND_BUFFER_ELEMENT_TYPE_VEC2:
+	case APREND_VERTEX_ELEMENT_TYPE_VEC2:
 		return SPUDGPU_FORMAT_R32G32_FLOAT;
-	case APREND_BUFFER_ELEMENT_TYPE_VEC3:
+	case APREND_VERTEX_ELEMENT_TYPE_VEC3:
 		return SPUDGPU_FORMAT_R32G32B32_FLOAT;
-	case APREND_BUFFER_ELEMENT_TYPE_VEC4:
+	case APREND_VERTEX_ELEMENT_TYPE_VEC4:
 		return SPUDGPU_FORMAT_R32G32B32A32_FLOAT;
-	case APREND_BUFFER_ELEMENT_TYPE_INT:
+	case APREND_VERTEX_ELEMENT_TYPE_INT:
 		return SPUDGPU_FORMAT_R32_SINT;
-	case APREND_BUFFER_ELEMENT_TYPE_INT2:
+	case APREND_VERTEX_ELEMENT_TYPE_INT2:
 		return SPUDGPU_FORMAT_R32G32_SINT;
-	case APREND_BUFFER_ELEMENT_TYPE_INT3:
+	case APREND_VERTEX_ELEMENT_TYPE_INT3:
 		return SPUDGPU_FORMAT_R32G32B32_SINT;
-	case APREND_BUFFER_ELEMENT_TYPE_INT4:
+	case APREND_VERTEX_ELEMENT_TYPE_INT4:
 		return SPUDGPU_FORMAT_R32G32B32A32_SINT;
+	case APREND_VERTEX_ELEMENT_TYPE_UINT:
+		return SPUDGPU_FORMAT_R32_UINT;
+	case APREND_VERTEX_ELEMENT_TYPE_UINT2:
+		return SPUDGPU_FORMAT_R32G32_UINT;
+	case APREND_VERTEX_ELEMENT_TYPE_UINT3:
+		return SPUDGPU_FORMAT_R32G32B32_UINT;
+	case APREND_VERTEX_ELEMENT_TYPE_UINT4:
+		return SPUDGPU_FORMAT_R32G32B32A32_UINT;
 	default:
 		return SPUDGPU_FORMAT_UNKNOWN;
 	}
@@ -38,6 +47,7 @@ aprend_graphics_pipeline_t::~aprend_graphics_pipeline_t() {
 	if (this->pipeline)
 		spudgpu_destroy_shader_pipeline(this->pipeline);
 	free(this->entry_points);
+	free(this->vertex_elements);
 }
 aprend_compute_pipeline_t::~aprend_compute_pipeline_t() {
 	// A pipeline that failed to create has nothing to destroy.
@@ -193,9 +203,15 @@ static bool aprend_binding_set_entry_resource_valid(const char *who, aprend_inst
 			printf("apricot: %s: entry %u (binding %u) has a uniform buffer set of another instance\n", who, index, entry._binding);
 			return false;
 		}
+		// The device's rule for where a uniform buffer range may start.
+		if (r._offset % instance->uniform_buffer_offset_alignment != 0) {
+			printf("apricot: %s: entry %u (binding %u) has a uniform buffer _offset of %llu, which is not a multiple of the device's %u\n", who,
+			       index, entry._binding, (unsigned long long)r._offset, instance->uniform_buffer_offset_alignment);
+			return false;
+		}
 		// Every copy of a set is the same size.
 		const aprend_uniform_buffer buffer = r._set ? r._set->buffers[0] : r._buffer;
-		if (!aprend_binding_range_valid(r._offset, r._range, buffer->total_size)) {
+		if (!aprend_binding_range_valid(r._offset, r._range, buffer->size)) {
 			printf("apricot: %s: entry %u (binding %u) has an _offset and _range outside its buffer\n", who, index, entry._binding);
 			return false;
 		}
@@ -213,6 +229,12 @@ static bool aprend_binding_set_entry_resource_valid(const char *who, aprend_inst
 		}
 		if (r._set && r._set->instance != instance) {
 			printf("apricot: %s: entry %u (binding %u) has a storage buffer set of another instance\n", who, index, entry._binding);
+			return false;
+		}
+		// The device's rule for where a storage buffer range may start.
+		if (r._offset % instance->storage_buffer_offset_alignment != 0) {
+			printf("apricot: %s: entry %u (binding %u) has a storage buffer _offset of %llu, which is not a multiple of the device's %u\n", who,
+			       index, entry._binding, (unsigned long long)r._offset, instance->storage_buffer_offset_alignment);
 			return false;
 		}
 		const aprend_storage_buffer buffer = r._set ? r._set->buffers[0] : r._buffer;
@@ -344,8 +366,9 @@ static const char *aprend_stage_name(SPUDGPU_SHADER_STAGE stage) {
 
 // Checks [shader] against what a pipeline declares for it: [entry_point],
 // the [layout_count] [layouts] and the [range_count] push constant [ranges].
-// Adds the images it uses to [images]. False, printed for [who], at the
-// first mismatch. Throws std::bad_alloc from [images].
+// Adds the images it uses to [images] and the storage bindings it writes to
+// [writes]. False, printed for [who], at the first mismatch. Throws
+// std::bad_alloc from [images] or [writes].
 static bool aprend_pipeline_check_shader(
     const char *who,
     aprend_shader shader,
@@ -354,7 +377,8 @@ static bool aprend_pipeline_check_shader(
     uint32_t layout_count,
     const spudgpu_push_constant_range_desc *ranges,
     uint32_t range_count,
-    std::vector<aprend_image_expectation> &images) {
+    std::vector<aprend_image_expectation> &images,
+    std::vector<aprend_storage_write> &writes) {
 	const aprend_shader_reflection &reflection = shader->reflection.view;
 	const char *stage                          = aprend_stage_name(shader->stage);
 	if (reflection.entry_point && strcmp(reflection.entry_point, entry_point) != 0) {
@@ -395,6 +419,9 @@ static bool aprend_pipeline_check_shader(
 		}
 		if (resource.image_shape != APREND_TEXTURE_VIEW_SHAPE_NONE)
 			images.push_back({resource.set, resource.binding, resource.image_shape, resource.image_scalar_type});
+		const bool storage = resource.type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE || resource.type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		if (storage && !resource.read_only && !aprend_storage_writes_hold(writes, resource.set, resource.binding))
+			writes.push_back({resource.set, resource.binding});
 	}
 
 	if (reflection.has_push_constants) {
@@ -422,20 +449,39 @@ static bool aprend_pipeline_check_shader(
 }
 
 // The kind of number an element of [type] gives a vertex shader.
-static APREND_SHADER_SCALAR_TYPE aprend_element_scalar_type(APREND_BUFFER_ELEMENT_TYPE type) {
+static APREND_SHADER_SCALAR_TYPE aprend_element_scalar_type(APREND_VERTEX_ELEMENT_TYPE type) {
 	switch (type) {
-	case APREND_BUFFER_ELEMENT_TYPE_FLOAT:
-	case APREND_BUFFER_ELEMENT_TYPE_VEC2:
-	case APREND_BUFFER_ELEMENT_TYPE_VEC3:
-	case APREND_BUFFER_ELEMENT_TYPE_VEC4:
+	case APREND_VERTEX_ELEMENT_TYPE_FLOAT:
+	case APREND_VERTEX_ELEMENT_TYPE_VEC2:
+	case APREND_VERTEX_ELEMENT_TYPE_VEC3:
+	case APREND_VERTEX_ELEMENT_TYPE_VEC4:
 		return APREND_SHADER_SCALAR_TYPE_FLOAT;
-	case APREND_BUFFER_ELEMENT_TYPE_INT:
-	case APREND_BUFFER_ELEMENT_TYPE_INT2:
-	case APREND_BUFFER_ELEMENT_TYPE_INT3:
-	case APREND_BUFFER_ELEMENT_TYPE_INT4:
+	case APREND_VERTEX_ELEMENT_TYPE_INT:
+	case APREND_VERTEX_ELEMENT_TYPE_INT2:
+	case APREND_VERTEX_ELEMENT_TYPE_INT3:
+	case APREND_VERTEX_ELEMENT_TYPE_INT4:
 		return APREND_SHADER_SCALAR_TYPE_INT;
+	case APREND_VERTEX_ELEMENT_TYPE_UINT:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT2:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT3:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT4:
+		return APREND_SHADER_SCALAR_TYPE_UINT;
 	default:
 		return APREND_SHADER_SCALAR_TYPE_NONE;
+	}
+}
+
+// A kind of number, for messages.
+static const char *aprend_scalar_type_name(APREND_SHADER_SCALAR_TYPE type) {
+	switch (type) {
+	case APREND_SHADER_SCALAR_TYPE_FLOAT:
+		return "float";
+	case APREND_SHADER_SCALAR_TYPE_INT:
+		return "int";
+	case APREND_SHADER_SCALAR_TYPE_UINT:
+		return "uint";
+	default:
+		return "no kind a vertex element gives";
 	}
 }
 
@@ -443,7 +489,7 @@ static APREND_SHADER_SCALAR_TYPE aprend_element_scalar_type(APREND_BUFFER_ELEMEN
 // shader doesn't read.
 struct aprend_vertex_attribute_plan {
 	uint32_t binding;
-	const aprend_buffer_element *element;
+	const aprend_vertex_element *element;
 	uint32_t location;
 };
 
@@ -459,9 +505,9 @@ static bool aprend_pipeline_plan_vertex_input(
 	const aprend_shader_reflection &reflection = vertex_shader->reflection.view;
 	uint32_t position                          = 0;
 	for (uint32_t binding = 0; binding < desc._vertex_binding_count; ++binding) {
-		const aprend_buffer_layout &layout = desc._vertex_bindings[binding]._layout;
+		const aprend_vertex_layout &layout = desc._vertex_bindings[binding]._layout;
 		for (uint32_t i = 0; i < layout.count; ++i) {
-			const aprend_buffer_element &element = layout.elements[i];
+			const aprend_vertex_element &element = layout.elements[i];
 			uint32_t location                    = position++;
 			if (desc._vertex_inputs_by_name) {
 				if (!element.name) {
@@ -492,8 +538,10 @@ static bool aprend_pipeline_plan_vertex_input(
 		const aprend_shader_input &input = reflection.inputs[k];
 		if (!input.used)
 			continue;
-		if (input.scalar_type != APREND_SHADER_SCALAR_TYPE_FLOAT && input.scalar_type != APREND_SHADER_SCALAR_TYPE_INT) {
-			printf("apricot: %s: vertex input \"%s\" is read as a kind of number no vertex element type gives (only float and int)\n", who,
+		const bool fed_kind = input.scalar_type == APREND_SHADER_SCALAR_TYPE_FLOAT || input.scalar_type == APREND_SHADER_SCALAR_TYPE_INT ||
+		                      input.scalar_type == APREND_SHADER_SCALAR_TYPE_UINT;
+		if (!fed_kind) {
+			printf("apricot: %s: vertex input \"%s\" is read as a kind of number no vertex element type gives (float, int or uint)\n", who,
 			       input.name);
 			return false;
 		}
@@ -509,8 +557,7 @@ static bool aprend_pipeline_plan_vertex_input(
 			}
 			if (aprend_element_scalar_type(fed->element->type) != input.scalar_type) {
 				printf("apricot: %s: vertex input \"%s\" at location %u is read as %s, and its element is %s\n", who, input.name, location,
-				       input.scalar_type == APREND_SHADER_SCALAR_TYPE_FLOAT ? "float" : "int",
-				       aprend_element_scalar_type(fed->element->type) == APREND_SHADER_SCALAR_TYPE_FLOAT ? "float" : "int");
+				       aprend_scalar_type_name(input.scalar_type), aprend_scalar_type_name(aprend_element_scalar_type(fed->element->type)));
 				return false;
 			}
 		}
@@ -892,7 +939,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	}
 	uint32_t vertex_attribute_count = 0;
 	for (uint32_t i = 0; i < desc._vertex_binding_count; ++i) {
-		const aprend_buffer_layout &layout = desc._vertex_bindings[i]._layout;
+		const aprend_vertex_layout &layout = desc._vertex_bindings[i]._layout;
 		if (layout.count == 0) {
 			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has no elements\n", i);
 			return nullptr;
@@ -901,9 +948,34 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has a NULL elements array\n", i);
 			return nullptr;
 		}
-		if (aprend_buffer_layout_get_total_size(&layout) == 0) {
+		if (layout.stride == 0) {
 			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has a stride of 0\n", i);
 			return nullptr;
+		}
+		// Every format is 32-bit, which each API reads from 4-byte offsets.
+		if (layout.stride % 4 != 0) {
+			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has a stride of %u, not a multiple of 4\n", i, layout.stride);
+			return nullptr;
+		}
+		for (uint32_t e = 0; e < layout.count; ++e) {
+			const aprend_vertex_element &element = layout.elements[e];
+			const uint32_t size                  = aprend_vertex_element_type_get_size(element.type);
+			if (size == 0) {
+				printf("apricot: aprend_graphics_pipeline_create: element %u of _vertex_bindings[%u] has type %u, which is not an "
+				       "APREND_VERTEX_ELEMENT_TYPE\n",
+				       e, i, (unsigned)element.type);
+				return nullptr;
+			}
+			if (element.offset % 4 != 0) {
+				printf("apricot: aprend_graphics_pipeline_create: element %u of _vertex_bindings[%u] has an offset of %u, not a multiple of 4\n", e,
+				       i, element.offset);
+				return nullptr;
+			}
+			if ((uint64_t)element.offset + size > layout.stride) {
+				printf("apricot: aprend_graphics_pipeline_create: element %u of _vertex_bindings[%u] ends at %llu, past the stride of %u\n", e, i,
+				       (unsigned long long)element.offset + size, layout.stride);
+				return nullptr;
+			}
 		}
 		if (layout.count > SPUDGPU_MAX_VERTEX_ATTRIBUTES - vertex_attribute_count) {
 			printf("apricot: aprend_graphics_pipeline_create: the vertex bindings hold more than SPUDGPU_MAX_VERTEX_ATTRIBUTES elements\n");
@@ -981,6 +1053,46 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	result->desc     = desc;
 	result->instance = instance;
 
+	// The vertex layouts' elements and their names, copied into one block:
+	// every binding's elements, then every name. The desc then points at the
+	// copies, so aprend_graphics_pipeline_get_desc never hands back the
+	// caller's memory, and everything below reads them.
+	{
+		size_t element_count = 0;
+		size_t name_bytes    = 0;
+		for (uint32_t i = 0; i < desc._vertex_binding_count; ++i) {
+			const aprend_vertex_layout &layout = desc._vertex_bindings[i]._layout;
+			element_count += layout.count;
+			for (uint32_t e = 0; e < layout.count; ++e)
+				if (layout.elements[e].name)
+					name_bytes += strlen(layout.elements[e].name) + 1;
+		}
+		if (element_count > 0) {
+			result->vertex_elements = (char *)malloc(element_count * sizeof(aprend_vertex_element) + name_bytes);
+			if (!result->vertex_elements) {
+				printf("apricot: aprend_graphics_pipeline_create: out of memory\n");
+				APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
+				return nullptr;
+			}
+			aprend_vertex_element *elements = (aprend_vertex_element *)result->vertex_elements;
+			char *names                     = result->vertex_elements + element_count * sizeof(aprend_vertex_element);
+			for (uint32_t i = 0; i < desc._vertex_binding_count; ++i) {
+				aprend_vertex_layout &layout = result->desc._vertex_bindings[i]._layout;
+				memcpy(elements, layout.elements, layout.count * sizeof(aprend_vertex_element));
+				for (uint32_t e = 0; e < layout.count; ++e) {
+					if (!elements[e].name)
+						continue;
+					const size_t length = strlen(elements[e].name) + 1;
+					memcpy(names, elements[e].name, length);
+					elements[e].name = names;
+					names += length;
+				}
+				layout.elements = elements;
+				elements += layout.count;
+			}
+		}
+	}
+
 	// The desc against what the shaders declare, and the locations each
 	// vertex element is read at.
 	std::vector<aprend_vertex_attribute_plan> plan;
@@ -989,12 +1101,13 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		aprend_shader geometry      = desc.mesh_shader ? desc.mesh_shader : desc.vertex_shader;
 		const char *geometry_entry  = desc.mesh_shader ? desc._mesh_entry_point : desc._vertex_entry_point;
 		bool ok = aprend_pipeline_check_shader(who, geometry, geometry_entry, desc._binding_layouts, desc._binding_layout_count,
-		                                       desc._push_constant_ranges, desc._push_constant_range_count, result->images) &&
+		                                       desc._push_constant_ranges, desc._push_constant_range_count, result->images,
+		                                       result->storage_writes) &&
 		          aprend_pipeline_check_shader(who, desc.fragment_shader, desc._fragment_entry_point, desc._binding_layouts,
 		                                       desc._binding_layout_count, desc._push_constant_ranges, desc._push_constant_range_count,
-		                                       result->images);
+		                                       result->images, result->storage_writes);
 		if (ok && !desc.mesh_shader)
-			ok = aprend_pipeline_plan_vertex_input(who, desc, desc.vertex_shader, plan);
+			ok = aprend_pipeline_plan_vertex_input(who, result->desc, desc.vertex_shader, plan);
 		if (!ok) {
 			APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
 			return nullptr;
@@ -1039,8 +1152,14 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	pd.fragment_entry_point = result->desc._fragment_entry_point;
 
 	for (uint32_t binding = 0; binding < desc._vertex_binding_count; ++binding) {
-		const aprend_vertex_binding_desc &vb = desc._vertex_bindings[binding];
-		result->vertex_strides[binding]      = aprend_buffer_layout_get_total_size(&vb._layout);
+		const aprend_vertex_binding_desc &vb = result->desc._vertex_bindings[binding];
+		result->vertex_strides[binding]      = vb._layout.stride;
+		for (uint32_t e = 0; e < vb._layout.count; ++e) {
+			const aprend_vertex_element &element = vb._layout.elements[e];
+			const uint32_t end                   = element.offset + aprend_vertex_element_type_get_size(element.type);
+			if (end > result->vertex_extents[binding])
+				result->vertex_extents[binding] = end;
+		}
 
 		pd.vertex_bindings[binding].binding      = binding;
 		pd.vertex_bindings[binding].stride       = result->vertex_strides[binding];
@@ -1056,7 +1175,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		spudgpu_vertex_attribute_desc &attribute = pd.vertex_attributes[pd.vertex_attribute_count];
 		attribute.location                       = planned.location;
 		attribute.binding                        = planned.binding;
-		attribute.format                         = aprend_buffer_element_type_to_format(planned.element->type);
+		attribute.format                         = aprend_vertex_element_type_to_format(planned.element->type);
 		attribute.offset                         = planned.element->offset;
 		++pd.vertex_attribute_count;
 	}
@@ -1111,6 +1230,44 @@ void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p) {
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_graphics_pipeline_t>);
 }
 aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p) { return p ? p->desc : aprend_graphics_pipeline_desc{}; }
+
+uint32_t aprend_vertex_element_type_get_size(APREND_VERTEX_ELEMENT_TYPE type) {
+	switch (type) {
+	case APREND_VERTEX_ELEMENT_TYPE_FLOAT:
+	case APREND_VERTEX_ELEMENT_TYPE_INT:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT:
+		return 4;
+	case APREND_VERTEX_ELEMENT_TYPE_VEC2:
+	case APREND_VERTEX_ELEMENT_TYPE_INT2:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT2:
+		return 8;
+	case APREND_VERTEX_ELEMENT_TYPE_VEC3:
+	case APREND_VERTEX_ELEMENT_TYPE_INT3:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT3:
+		return 12;
+	case APREND_VERTEX_ELEMENT_TYPE_VEC4:
+	case APREND_VERTEX_ELEMENT_TYPE_INT4:
+	case APREND_VERTEX_ELEMENT_TYPE_UINT4:
+		return 16;
+	default:
+		return 0;
+	}
+}
+
+uint32_t aprend_vertex_layout_get_element_index(const aprend_vertex_layout *layout, const char *name) {
+	if (!layout)
+		return UINT32_MAX;
+	if (!layout->elements)
+		return UINT32_MAX;
+	if (!name)
+		return UINT32_MAX;
+	for (uint32_t i = 0; i < layout->count; ++i) {
+		const char *element_name = layout->elements[i].name;
+		if (element_name && strcmp(element_name, name) == 0)
+			return i;
+	}
+	return UINT32_MAX;
+}
 
 aprend_compute_pipeline aprend_compute_pipeline_create(
     aprend_instance instance,
@@ -1193,7 +1350,7 @@ aprend_compute_pipeline aprend_compute_pipeline_create(
 	try {
 		if (!aprend_pipeline_check_shader("aprend_compute_pipeline_create", desc.compute_shader, desc._entry_point, desc._binding_layouts,
 		                                  desc._binding_layout_count, desc._push_constant_ranges, desc._push_constant_range_count,
-		                                  result->images)) {
+		                                  result->images, result->storage_writes)) {
 			APREND_DESTRUCT__T(result, aprend_compute_pipeline_t);
 			return nullptr;
 		}
@@ -1398,10 +1555,10 @@ aprend_binding_layout aprend_binding_layout_create_from_shaders(
 				// block can be written by name through.
 				if (resource.type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER && member.type != APREND_UNIFORM_TYPE_UNKNOWN) {
 					aprend_uniform uniform{};
-					uniform.name   = member.name;
-					uniform.type   = member.type;
-					uniform.size   = member.array_count;
-					uniform.offset = member.offset;
+					uniform.name        = member.name;
+					uniform.type        = member.type;
+					uniform.array_count = member.array_count;
+					uniform.offset      = member.offset;
 					result->uniforms.push_back(uniform);
 				}
 			}
@@ -1623,7 +1780,8 @@ aprend_binding_set aprend_binding_set_create(
 	// Room for every entry of every frame's set: at most each one is a
 	// staged storage buffer.
 	result->storage_store_capacity = entry_count;
-	result->storage_stores         = (aprend_buffer_store **)calloc((size_t)entry_count * frame_set_count, sizeof(aprend_buffer_store *));
+	result->storage_stores =
+	    (aprend_binding_set_t::storage_store *)calloc((size_t)entry_count * frame_set_count, sizeof(aprend_binding_set_t::storage_store));
 	if (!result->storage_stores) {
 		APREND_DESTRUCT__T(result, aprend_binding_set_t);
 		free(writes);
@@ -1647,7 +1805,7 @@ aprend_binding_set aprend_binding_set_create(
 	}
 
 	for (uint32_t frame = 0; frame < frame_set_count; ++frame) {
-		aprend_buffer_store **frame_stores = result->storage_stores + (size_t)frame * entry_count;
+		aprend_binding_set_t::storage_store *frame_stores = result->storage_stores + (size_t)frame * entry_count;
 		for (uint32_t i = 0; i < entry_count; ++i) {
 			const aprend_binding_set_entry &entry = entries[i];
 			spudgpu_write_descriptor_set &write   = writes[i];
@@ -1663,8 +1821,8 @@ aprend_binding_set aprend_binding_set_create(
 				const auto &r                      = entry._resource._uniform;
 				const aprend_uniform_buffer buffer = r._set ? r._set->buffers[frame] : r._buffer;
 				infos[i].buffer.buffer             = buffer->buffer;
-				infos[i].buffer.offset             = buffer->buffer_view_desc.offset_from_parent_buffer + r._offset;
-				infos[i].buffer.range              = r._range ? r._range : buffer->total_size - r._offset;
+				infos[i].buffer.offset             = r._offset;
+				infos[i].buffer.range              = r._range ? r._range : buffer->size - r._offset;
 				write.buffer_info                  = &infos[i].buffer;
 				continue;
 			}
@@ -1677,7 +1835,7 @@ aprend_binding_set aprend_binding_set_create(
 				write.buffer_info                  = &infos[i].buffer;
 				// Every storage buffer, staged or not; the same one in two
 				// slots is listed twice, and a command list takes each once.
-				frame_stores[result->storage_store_counts[frame]++] = &buffer->store;
+				frame_stores[result->storage_store_counts[frame]++] = {&buffer->store, entry._binding};
 				continue;
 			}
 
@@ -1693,7 +1851,7 @@ aprend_binding_set aprend_binding_set_create(
 
 				// The same textures in every frame's set: recorded once.
 				if (frame == 0)
-					result->image_uses[result->image_use_count++] = {r._view, image_layout};
+					result->image_uses[result->image_use_count++] = {r._view, image_layout, entry._binding};
 			}
 			if (aprend_descriptor_type_reads_sampler(entry._type))
 				write.sampler = r._sampler->sampler;

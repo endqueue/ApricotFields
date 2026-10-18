@@ -329,6 +329,8 @@ failedattempt:
 void aprend_texture2d_destroy(aprend_texture2d texture) {
 	if (!texture)
 		return;
+	// A list compiled against it and not submitted would read its layouts.
+	aprend_instance_forget(texture->instance, &texture->tracking);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture2d_t>);
 }
@@ -745,6 +747,10 @@ bool aprend_texture2d_resize(
 		return false;
 	}
 
+	// A list compiled against the old image would barrier it and commit
+	// layouts for the new one: it is refused at submit.
+	aprend_instance_forget(texture->instance, &texture->tracking);
+
 	// The old image goes only now that its replacement exists, so a failed
 	// resize leaves the texture exactly as it was. Submitted work may still
 	// be using it, so it is released when that has finished. Its mip chains
@@ -817,6 +823,8 @@ failedattempt:
 void aprend_texture3d_destroy(aprend_texture3d texture) {
 	if (!texture)
 		return;
+	// As aprend_texture2d_destroy.
+	aprend_instance_forget(texture->instance, &texture->tracking);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture3d_t>);
 }
@@ -1047,6 +1055,9 @@ bool aprend_texture3d_resize(
 		spudgpu_destroy_image(new_image);
 		return false;
 	}
+
+	// As aprend_texture2d_resize.
+	aprend_instance_forget(texture->instance, &texture->tracking);
 
 	// The old image and its view go only now that their replacements exist,
 	// so a failed resize leaves the texture exactly as it was. Submitted

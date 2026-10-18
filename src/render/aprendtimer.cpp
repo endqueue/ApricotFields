@@ -65,6 +65,8 @@ aprend_gpu_timer aprend_gpu_timer_create(
 void aprend_gpu_timer_destroy(aprend_gpu_timer timer) {
 	if (!timer)
 		return;
+	// A list compiled against it and not submitted would mark its slots.
+	aprend_instance_forget(timer->instance, timer);
 	aprend_instance_retire(timer->instance, timer, &aprend_release_handle<aprend_gpu_timer_t>);
 }
 

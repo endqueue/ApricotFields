@@ -20,10 +20,8 @@
  * a submission of a list that uses the buffer are never made from two
  * threads at once: the update writes what the submission reads. A buffer
  * set's update calls also read the instance's frame index. The size and
- * layout functions that take no buffer (aprend_uniform_type_get_size(),
- * aprend_buffer_element_type_get_size(),
- * aprend_buffer_layout_get_element_index() and
- * aprend_buffer_layout_get_total_size()) are safe from any thread.
+ * layout functions that take no buffer (aprend_uniform_type_get_size() and
+ * aprend_uniform_layout_get_uniform_index()) are safe from any thread.
  *
  * @par Where a buffer is kept
  * Where a vertex, index or storage buffer is kept follows the device's
@@ -35,16 +33,31 @@
  * write goes straight into it; a storage buffer needs the device to have
  * SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE for that. On a device with memory of
  * its own, or for a storage buffer without that kind, the buffer is in the
- * device's memory and a write goes into a staging copy Aprend keeps beside
- * it; the next aprend_command_list_submit() of a list that uses the buffer
- * copies what was written across, ahead of the list's own commands.
+ * device's memory and a write goes into a staging copy; the next
+ * aprend_command_list_submit() of a list that uses the buffer copies the
+ * bytes written since the last such submission across, ahead of the list's
+ * own commands. Only those bytes are copied: two writes far apart are two
+ * copies, not one over everything between them.
+ *
+ * What the staging copy is depends on #APREND_BUFFER_WRITES, given at
+ * creation. A buffer written many times keeps a staging buffer of its own
+ * size for life. A buffer written once, at creation, has the bytes it was
+ * created with staged in a buffer of their own, which is released once the
+ * submission that copies them has run; one created with no bytes has no
+ * staging at all. Either way the buffer itself is the same.
  *
  * The rule for the caller is one rule: a write (at creation or by an update
  * call) is seen by any submission made after it, and must not be made while
  * submitted work that uses the buffer has yet to finish. A buffer written
- * and never used by a submitted list is never copied.
+ * and never used by a submitted list is never copied, and keeps its staging
+ * copy until it is.
  *
- * A uniform buffer is mapped and written directly on every device.
+ * A uniform buffer is mapped and written directly on every device. The same
+ * rule holds, and more sharply: a write lands in the memory the GPU reads,
+ * so a uniform buffer written while a submitted frame still reads it
+ * changes what that frame sees. A block rewritten every frame belongs in a
+ * uniform buffer set ("Buffer sets", below), whose copies the frames in
+ * flight never share.
  */
 
 #if __cplusplus
@@ -150,15 +163,18 @@ uint32_t aprend_uniform_type_get_size(APREND_UNIFORM_TYPE type);
  * @brief One uniform of a uniform block.
  */
 typedef struct aprend_uniform {
-	/** The uniform's name, for aprend_uniform_buffer_update_by_name(). May be NULL. */
+	/**
+	 * The uniform's name, for aprend_uniform_layout_get_uniform_index() and
+	 * aprend_uniform_buffer_update_by_name(). May be NULL.
+	 */
 	const char *name;
 	/** @see APREND_UNIFORM_TYPE */
 	APREND_UNIFORM_TYPE type;
 	/**
-	 * Array element count, NOT a byte size; use 1 (or 0) for a non-array
-	 * uniform.
+	 * How many elements, for an array; 1 (or 0) for a uniform that is not
+	 * one. Not a size in bytes.
 	 */
-	uint32_t size;
+	uint32_t array_count;
 	/** Where the uniform starts in the block, in bytes. The caller's. */
 	uint32_t offset;
 } aprend_uniform;
@@ -187,6 +203,29 @@ typedef struct aprend_uniform_layout {
 } aprend_uniform_layout;
 
 /**
+ * @brief Finds a uniform of a layout by name, once: the index
+ * aprend_uniform_buffer_update_uniform() takes.
+ *
+ * The index is the uniform's place in @p layout's `uniforms`, so it serves
+ * every buffer and buffer set made from that layout, and a caller that wrote
+ * the layout knows it already. A uniform written every frame is found once,
+ * when its layout is made, rather than by name at every write.
+ *
+ * @param[in] layout Layout to search.
+ * @param[in] name   The uniform's name, case-sensitive.
+ *
+ * @return Index of the first uniform of @p layout named @p name, or
+ *         UINT32_MAX if there is none, or if @p layout, its uniforms or
+ *         @p name is NULL.
+ *
+ * @see aprend_vertex_layout_get_element_index(), the same for a vertex
+ *      layout.
+ */
+uint32_t aprend_uniform_layout_get_uniform_index(
+    const aprend_uniform_layout *layout,
+    const char *name);
+
+/**
  * @brief Creates a buffer for one std140 uniform block.
  *
  * Nothing is placed: each uniform's `offset` is the caller's and must be
@@ -194,17 +233,20 @@ typedef struct aprend_uniform_layout {
  * aprend_binding_layout_get_uniform_layout() always is. The buffer ends at
  * the layout's `size`, or where the furthest uniform does if that is
  * further, rounded up to 16. std140 is assumed for what takes room: an array
- * (a `size` above 1) takes 16 bytes an element, or the type's size rounded
- * up to 16 if that is larger, and a matrix takes 16 bytes a column. The
+ * (an `array_count` above 1) takes 16 bytes an element, or the type's size
+ * rounded up to 16 if that is larger, and a matrix takes 16 bytes a column. The
  * block starts as zeroes: a uniform reads 0 until it is written.
  *
  * @param[in] instance Instance whose device the buffer is created on.
  * @param[in] layout   The block's uniforms. Copied, names included: it
  *                     doesn't have to outlive the call.
  *
- * @return The buffer, or NULL if @p instance or @p layout is NULL, a
- *         uniform ends past what 32 bits can address, or the device refuses
- *         the buffer.
+ * @return The buffer, or NULL if @p instance or @p layout is NULL, the
+ *         layout's `uniforms` is NULL with a `count` above 0, a uniform's
+ *         `type` is not an APREND_UNIFORM_TYPE, the layout has no uniforms
+ *         and a `size` of 0, the block ends past what 32 bits can address,
+ *         there is no memory, or the device refuses or can't map the
+ *         buffer. Each is printed.
  *
  * @see aprend_uniform_buffer_destroy()
  */
@@ -224,16 +266,35 @@ aprend_uniform_buffer aprend_uniform_buffer_create(
 void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer);
 
 /**
- * @brief Gets the SpudGPU buffer view of a uniform buffer's whole block.
+ * @brief Reads a uniform buffer's layout: the buffer's own copy of the one
+ * it was created with, for aprend_uniform_layout_get_uniform_index().
+ *
+ * Nothing is written if @p buffer or @p out_layout is NULL.
+ *
+ * @param[in]  buffer     Buffer to read.
+ * @param[out] out_layout Receives the layout. Its `uniforms` and their
+ *                        names are the buffer's, valid as long as it, and
+ *                        not to be written.
+ */
+void aprend_uniform_buffer_get_layout(
+    aprend_uniform_buffer buffer,
+    aprend_uniform_layout *out_layout);
+
+/**
+ * @brief Gets a uniform buffer's size: its block's, rounded up to 16.
  *
  * @param[in] buffer Buffer to read.
  *
- * @return The view, or NULL if @p buffer is NULL.
+ * @return The size in bytes, or 0 if @p buffer is NULL.
  */
-spudgpu_buffer_view aprend_uniform_buffer_get_spudgpu_buffer_view(aprend_uniform_buffer buffer);
+uint32_t aprend_uniform_buffer_get_size(aprend_uniform_buffer buffer);
 
 /**
  * @brief Writes bytes into a uniform buffer's block.
+ *
+ * Into the memory the GPU reads: not while a submission that reads the
+ * buffer is unfinished ("Where a buffer is kept", at the top of this
+ * header). The same holds for every uniform buffer update call.
  *
  * @param[in] buffer       Buffer to write.
  * @param[in] local_offset Where in the block the bytes go.
@@ -248,187 +309,157 @@ bool aprend_uniform_buffer_update(
     aprend_uniform_buffer buffer,
     uint32_t local_offset,
     uint32_t size,
-    void *pData);
+    const void *pData);
+
+/**
+ * @brief Writes one uniform of a uniform buffer, found beforehand with
+ * aprend_uniform_layout_get_uniform_index().
+ *
+ * Writes the uniform at the offset its layout entry gives, with no search.
+ * An array's elements are written where std140 puts them, 16 bytes apart or
+ * the type's size rounded up to 16 if that is larger, and a matrix's
+ * columns 16 bytes apart.
+ *
+ * @param[in] buffer        Buffer to write.
+ * @param[in] uniform_index The uniform's index in the layout the buffer was
+ *                          created with.
+ * @param[in] pData         The whole uniform: the type's size times its
+ *                          element count, tightly packed. A `bool` is 4
+ *                          bytes: pass a `uint32_t`, never a C `bool`.
+ *
+ * @return false, with nothing written, if @p buffer or @p pData is NULL,
+ *         @p uniform_index is not below the layout's `count`, the uniform's
+ *         type is not an APREND_UNIFORM_TYPE, or it doesn't fit inside the
+ *         buffer. false too if the write can't be flushed to the device.
+ */
+bool aprend_uniform_buffer_update_uniform(
+    aprend_uniform_buffer buffer,
+    uint32_t uniform_index,
+    const void *pData);
 
 /**
  * @brief Writes one uniform of a uniform buffer, by name.
  *
- * Writes the uniform named @p name (case-sensitive; the first one, if the
- * layout repeats a name) at the offset its layout entry gives. An array's
- * elements are written where std140 puts them, 16 bytes apart or the type's
- * size rounded up to 16 if that is larger, and a matrix's columns 16 bytes
- * apart. Names are copied at aprend_uniform_buffer_create(), so the layout
- * passed there doesn't have to outlive the buffer.
+ * aprend_uniform_layout_get_uniform_index() on the buffer's copy of its
+ * layout (case-sensitive; the first uniform of that name), then
+ * aprend_uniform_buffer_update_uniform(). Names are copied at
+ * aprend_uniform_buffer_create(), so the layout passed there doesn't have to
+ * outlive the buffer. For a uniform written every frame, find its index
+ * once and use aprend_uniform_buffer_update_uniform().
  *
  * @param[in] buffer Buffer to write.
  * @param[in] name   The uniform's name.
- * @param[in] pData  The whole uniform: the type's size times its element
- *                   count, tightly packed.
+ * @param[in] pData  The whole uniform, as
+ *                   aprend_uniform_buffer_update_uniform() takes it.
  *
- * @return false if an argument is NULL, no uniform has that name, the type
- *         is unknown, or the uniform doesn't fit inside the buffer.
+ * @return false, with nothing written, if an argument is NULL, no uniform
+ *         has that name, or aprend_uniform_buffer_update_uniform() would
+ *         return false.
  */
 bool aprend_uniform_buffer_update_by_name(
     aprend_uniform_buffer buffer,
     const char *name,
-    void *pData);
+    const void *pData);
 
 /**
- * @brief The type of one element of a vertex layout.
+ * @brief How often the CPU writes a vertex, index or storage buffer, given
+ * when it is created.
+ *
+ * It decides what a write is staged in on a device with memory of its own
+ * ("Where a buffer is kept", at the top of this header); on a device whose
+ * memory is the system's the buffer is written directly either way. A GPU
+ * that writes the buffer (a storage buffer written by a shader) is not
+ * counted: only the CPU's writes are.
  */
-typedef uint32_t APREND_BUFFER_ELEMENT_TYPE;
+typedef uint32_t APREND_BUFFER_WRITES;
 enum {
-	/** One float. */
-	APREND_BUFFER_ELEMENT_TYPE_FLOAT     = 0,
-	/** Two floats. */
-	APREND_BUFFER_ELEMENT_TYPE_VEC2      = 1,
-	/** Three floats. */
-	APREND_BUFFER_ELEMENT_TYPE_VEC3      = 2,
-	/** Four floats. */
-	APREND_BUFFER_ELEMENT_TYPE_VEC4      = 3,
-	/** One 32-bit integer. */
-	APREND_BUFFER_ELEMENT_TYPE_INT       = 4,
-	/** Two 32-bit integers. */
-	APREND_BUFFER_ELEMENT_TYPE_INT2      = 5,
-	/** Three 32-bit integers. */
-	APREND_BUFFER_ELEMENT_TYPE_INT3      = 6,
-	/** Four 32-bit integers. */
-	APREND_BUFFER_ELEMENT_TYPE_INT4      = 7,
+	/**
+	 * Written at creation, with the bytes the create call is given, and
+	 * never again: the buffer's update call refuses it. The staging copy of
+	 * those bytes is released once the submission that copies them has
+	 * run, so a buffer of meshes loaded once costs its own size and no more.
+	 * Created with no bytes, the buffer is never staged: right for one only
+	 * a shader writes.
+	 */
+	APREND_BUFFER_WRITES_ONCE = 1,
+	/**
+	 * Written at creation and by the update call, as often as needed. The
+	 * buffer keeps a staging buffer of its own size for life.
+	 */
+	APREND_BUFFER_WRITES_MANY = 2
 };
 
 /**
- * @brief Gets the size of one element of a type.
+ * @brief Creates a vertex buffer: bytes a pipeline reads its vertices or
+ * instances from.
  *
- * @param[in] type The type.
+ * The buffer holds no layout and no stride. What its bytes are is the
+ * pipeline's to say (aprend_vertex_binding_desc, aprendpipeline.h), so one
+ * buffer can be read by pipelines that read different parts of the same
+ * vertices: a depth pass that reads only positions, say. Where it is kept
+ * and when a write is seen are under "Where a buffer is kept" at the top of
+ * this header.
  *
- * @return Its size in bytes, or 0 for a value that isn't an
- *         APREND_BUFFER_ELEMENT_TYPE.
- */
-uint32_t aprend_buffer_element_type_get_size(APREND_BUFFER_ELEMENT_TYPE type);
-
-/**
- * @brief One element of a vertex layout: one attribute of a vertex.
- */
-typedef struct aprend_buffer_element {
-	/** The element's name. May be NULL. */
-	const char *name;
-	/** @see APREND_BUFFER_ELEMENT_TYPE */
-	APREND_BUFFER_ELEMENT_TYPE type;
-	/** The element's size in bytes, and where it starts in the vertex. */
-	uint32_t size, offset;
-} aprend_buffer_element;
-
-/**
- * @brief The elements of one vertex. Its stride is where its furthest
- * element ends (aprend_buffer_layout_get_total_size()).
- */
-typedef struct aprend_buffer_layout {
-	/** How many elements. */
-	uint32_t count;
-	/** The elements, #count of them. */
-	aprend_buffer_element *elements;
-} aprend_buffer_layout;
-
-/**
- * @brief Finds an element of a layout by name.
+ * @param[in] instance Instance whose device the buffer is created on.
+ * @param[in] size     The buffer's size in bytes. Not 0.
+ * @param[in] writes   How often the CPU writes the buffer: ONCE or MANY.
+ *                     There is no default.
+ * @param[in] pData    @p size bytes to copy in, or NULL to leave the buffer
+ *                     unwritten.
  *
- * @param[in] layout Layout to search.
- * @param[in] name   The element's name, case-sensitive.
- *
- * @return Index of the first element of @p layout named @p name, or
- *         UINT32_MAX if there is none, or if @p layout, its elements or
- *         @p name is NULL.
- */
-uint32_t aprend_buffer_layout_get_element_index(
-    const aprend_buffer_layout *layout,
-    const char *name);
-
-/**
- * @brief Gets the size of one vertex of a layout: its stride.
- *
- * @param[in] layout Layout to measure.
- *
- * @return Where the furthest element ends, in bytes. 0 if @p layout or its
- *         elements is NULL.
- */
-uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout);
-
-/**
- * @brief Creates a vertex buffer.
- *
- * Where it is kept and when a write is seen are under "Where a buffer is
- * kept" at the top of this header.
- *
- * @param[in] instance      Instance whose device the buffer is created on.
- * @param[in] vertex_layout The layout of one vertex. Copied.
- * @param[in] vertex_count  How many vertices the buffer holds. Not 0.
- * @param[in] pData         @p vertex_count vertices to copy in, or NULL to
- *                          leave the buffer unwritten.
- *
- * @return The buffer, or NULL if @p instance or @p vertex_layout is NULL,
- *         the layout has no elements or a stride of 0, @p vertex_count is
- *         0, or the device refuses the buffer.
+ * @return The buffer, or NULL if @p instance is NULL, @p size is 0,
+ *         @p writes is not ONCE or MANY, or the device refuses the buffer.
+ *         Each is printed.
  *
  * @see aprend_vertex_buffer_destroy()
  */
 aprend_vertex_buffer aprend_vertex_buffer_create(
     aprend_instance instance,
-    const aprend_buffer_layout *vertex_layout,
-    uint32_t vertex_count,
-    void *pData);
+    uint64_t size,
+    APREND_BUFFER_WRITES writes,
+    const void *pData);
 
 /**
  * @brief Destroys a vertex buffer.
  *
  * The GPU doesn't have to be finished with it (aprendcontext.h,
- * "Destroying"). No later submission may use it.
+ * "Destroying"). A command list compiled with it and not yet submitted is
+ * refused at submit (aprendcommands.h).
  *
  * @param[in] buffer Buffer to destroy. NULL is accepted and does nothing.
  */
 void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer);
 
 /**
- * @brief Gets the SpudGPU buffer view of a whole vertex buffer.
+ * @brief Gets a vertex buffer's size.
  *
  * @param[in] buffer Buffer to read.
  *
- * @return The view, or NULL if @p buffer is NULL.
+ * @return The size in bytes, or 0 if @p buffer is NULL.
  */
-spudgpu_buffer_view aprend_vertex_buffer_get_spudgpu_buffer_view(aprend_vertex_buffer buffer);
+uint64_t aprend_vertex_buffer_get_size(aprend_vertex_buffer buffer);
 
 /**
- * @brief Writes vertices into a vertex buffer.
+ * @brief Writes bytes into a vertex buffer.
  *
- * @param[in] buffer        Buffer to write.
- * @param[in] vertex_offset The first vertex written.
- * @param[in] vertex_count  How many vertices. Not 0.
- * @param[in] pData         The vertices.
+ * Not while a submission that reads the buffer is unfinished ("Where a
+ * buffer is kept", at the top of this header).
+ *
+ * @param[in] buffer Buffer to write.
+ * @param[in] offset Where in the buffer the bytes go.
+ * @param[in] size   How many bytes. Not 0.
+ * @param[in] pData  The bytes.
  *
  * @return false, with nothing written, if @p buffer or @p pData is NULL,
- *         @p vertex_count is 0, or the range runs past the end of the
- *         buffer.
+ *         @p size is 0, @p offset + @p size runs past the end of the
+ *         buffer, the buffer was created APREND_BUFFER_WRITES_ONCE, or there
+ *         is no memory to note the write. Each is printed.
  */
 bool aprend_vertex_buffer_update(
     aprend_vertex_buffer buffer,
-    uint32_t vertex_offset,
-    uint32_t vertex_count,
-    void *pData);
-
-/**
- * @brief Reads a vertex buffer's layout and vertex count.
- *
- * Nothing is written if @p buffer is NULL.
- *
- * @param[in]  buffer           Buffer to read.
- * @param[out] out_layout       Receives the layout. Its `elements` points
- *                              at the buffer's own copy, which lasts as
- *                              long as the buffer. May be NULL.
- * @param[out] out_vertex_count Receives the vertex count. May be NULL.
- */
-void aprend_vertex_buffer_get_layout(
-    aprend_vertex_buffer buffer,
-    aprend_buffer_layout *out_layout,
-    uint32_t *out_vertex_count);
+    uint64_t offset,
+    uint64_t size,
+    const void *pData);
 
 /**
  * @brief The size of one index of an index buffer, in bytes.
@@ -443,12 +474,13 @@ typedef enum APREND_INDEX_STRIDE { APREND_INDEX_STRIDE_NONE = 0, APREND_INDEX_ST
  * @param[in] instance    Instance whose device the buffer is created on.
  * @param[in] stride      The size of one index: UINT16 or UINT32.
  * @param[in] index_count How many indices the buffer holds. Not 0.
+ * @param[in] writes      How often the CPU writes the buffer: ONCE or MANY.
  * @param[in] pData       @p index_count indices to copy in, or NULL to
  *                        leave the buffer unwritten.
  *
  * @return The buffer, or NULL if @p instance is NULL, @p stride is not
- *         UINT16 or UINT32, @p index_count is 0, or the device refuses the
- *         buffer.
+ *         UINT16 or UINT32, @p index_count is 0, @p writes is not ONCE or
+ *         MANY, or the device refuses the buffer.
  *
  * @see aprend_index_buffer_destroy()
  */
@@ -456,7 +488,8 @@ aprend_index_buffer aprend_index_buffer_create(
     aprend_instance instance,
     APREND_INDEX_STRIDE stride,
     uint32_t index_count,
-    void *pData);
+    APREND_BUFFER_WRITES writes,
+    const void *pData);
 
 /**
  * @brief Destroys an index buffer.
@@ -486,14 +519,15 @@ spudgpu_buffer_view aprend_index_buffer_get_spudgpu_buffer_view(aprend_index_buf
  * @param[in] pData        The indices.
  *
  * @return false, with nothing written, if @p buffer or @p pData is NULL,
- *         @p index_count is 0, or the range runs past the end of the
- *         buffer.
+ *         @p index_count is 0, the range runs past the end of the buffer,
+ *         the buffer was created APREND_BUFFER_WRITES_ONCE, or there is no
+ *         memory to note the write.
  */
 bool aprend_index_buffer_update(
     aprend_index_buffer buffer,
     uint32_t index_offset,
     uint32_t index_count,
-    void *pData);
+    const void *pData);
 
 /**
  * @brief Gets the size of one index of an index buffer.
@@ -541,12 +575,15 @@ enum {
  * @param[in] instance Instance whose device the buffer is created on.
  * @param[in] size     The buffer's size in bytes. Not 0.
  * @param[in] usage    What the buffer is used for beyond a storage slot.
+ * @param[in] writes   How often the CPU writes the buffer: ONCE or MANY.
+ *                     A buffer only a shader writes is ONCE, with no
+ *                     @p pData.
  * @param[in] pData    @p size bytes to copy in, or NULL to leave the buffer
  *                     unwritten.
  *
  * @return The buffer, or NULL if @p instance is NULL, @p size is 0,
- *         @p usage has a bit that is not an APREND_STORAGE_BUFFER_USAGE, or
- *         the device refuses the buffer.
+ *         @p usage has a bit that is not an APREND_STORAGE_BUFFER_USAGE,
+ *         @p writes is not ONCE or MANY, or the device refuses the buffer.
  *
  * @see aprend_storage_buffer_destroy()
  */
@@ -554,7 +591,8 @@ aprend_storage_buffer aprend_storage_buffer_create(
     aprend_instance instance,
     uint64_t size,
     APREND_STORAGE_BUFFER_USAGE usage,
-    void *pData);
+    APREND_BUFFER_WRITES writes,
+    const void *pData);
 
 /**
  * @brief Gets the usage a storage buffer was created with.
@@ -595,14 +633,15 @@ void aprend_storage_buffer_destroy(aprend_storage_buffer buffer);
  * @param[in] pData        The bytes.
  *
  * @return false, with nothing written, if @p buffer or @p pData is NULL,
- *         @p size is 0, or @p local_offset + @p size runs past the end of
- *         the buffer.
+ *         @p size is 0, @p local_offset + @p size runs past the end of the
+ *         buffer, the buffer was created APREND_BUFFER_WRITES_ONCE, or there
+ *         is no memory to note the write.
  */
 bool aprend_storage_buffer_update(
     aprend_storage_buffer buffer,
     uint64_t local_offset,
     uint64_t size,
-    void *pData);
+    const void *pData);
 
 /**
  * @name Buffer sets: one buffer for each frame in flight
@@ -679,7 +718,7 @@ bool aprend_uniform_buffer_set_update(
     aprend_uniform_buffer_set set,
     uint32_t local_offset,
     uint32_t size,
-    void *pData);
+    const void *pData);
 
 /**
  * @brief aprend_uniform_buffer_update_by_name() on the current frame's
@@ -695,7 +734,25 @@ bool aprend_uniform_buffer_set_update(
 bool aprend_uniform_buffer_set_update_by_name(
     aprend_uniform_buffer_set set,
     const char *name,
-    void *pData);
+    const void *pData);
+
+/**
+ * @brief aprend_uniform_buffer_update_uniform() on the current frame's copy.
+ *
+ * Every copy of a set is made from the one layout, so one index serves them
+ * all.
+ *
+ * @param[in] set           Set to write.
+ * @param[in] uniform_index The uniform's index in the set's layout.
+ * @param[in] pData         The whole uniform.
+ *
+ * @return false if @p set is NULL, or as
+ *         aprend_uniform_buffer_update_uniform().
+ */
+bool aprend_uniform_buffer_set_update_uniform(
+    aprend_uniform_buffer_set set,
+    uint32_t uniform_index,
+    const void *pData);
 
 /**
  * @brief Creates a set of storage buffers of one size, as
@@ -704,6 +761,9 @@ bool aprend_uniform_buffer_set_update_by_name(
  * @param[in] instance Instance whose device the buffers are created on.
  * @param[in] size     Each copy's size in bytes. Not 0.
  * @param[in] usage    Every copy's usage.
+ * @param[in] writes   How often the CPU writes each copy. A set the CPU
+ *                     rewrites each frame is MANY; one only a shader writes
+ *                     is ONCE, with no @p pData.
  * @param[in] pData    @p size bytes every copy starts with, or NULL to
  *                     leave them unwritten.
  *
@@ -716,7 +776,8 @@ aprend_storage_buffer_set aprend_storage_buffer_set_create(
     aprend_instance instance,
     uint64_t size,
     APREND_STORAGE_BUFFER_USAGE usage,
-    void *pData);
+    APREND_BUFFER_WRITES writes,
+    const void *pData);
 
 /**
  * @brief Destroys a storage buffer set and its buffers, as
@@ -754,7 +815,7 @@ bool aprend_storage_buffer_set_update(
     aprend_storage_buffer_set set,
     uint64_t local_offset,
     uint64_t size,
-    void *pData);
+    const void *pData);
 
 /** @} */
 
@@ -804,8 +865,11 @@ bool aprend_storage_buffer_set_update(
  *
  * Where a block is kept and how a write reaches the device are as for any
  * vertex or index buffer ("Where a buffer is kept", at the top of this
- * header): on a device with memory of its own each block has a staging copy
- * beside it, which `memory_limit` does not count.
+ * header), for a buffer written once: on a device with memory of its own a
+ * block keeps no staging copy, and each range's vertices or indices are
+ * staged in a buffer of their own until the submission that copies them
+ * has run. `memory_limit` does not count that staging. The block buffers a
+ * range names are written by the pool alone; their update calls refuse.
  *
  * Threads: a pool is used by one thread at a time with everything else of
  * its instance (aprendcontext.h, "Threads"). That includes the free calls,
@@ -823,10 +887,11 @@ typedef struct aprend_index_pool_t *aprend_index_pool;
  */
 typedef struct aprend_vertex_pool_desc {
 	/**
-	 * The layout of every vertex in the pool. Copied: it doesn't have to
-	 * outlive the call.
+	 * The size of one vertex in bytes: what the pool counts its ranges in.
+	 * Not 0. The vertices' layout is the pipeline's that reads them
+	 * (aprendpipeline.h), with this as its binding's `stride`.
 	 */
-	aprend_buffer_layout vertex_layout;
+	uint32_t vertex_stride;
 	/** Vertices in one block. Not 0. */
 	uint32_t block_vertex_count;
 	/**
@@ -873,9 +938,9 @@ typedef struct aprend_vertex_range {
  * @param[in] desc     Pool configuration. Copied: only read during the
  *                     call.
  *
- * @return The pool, or NULL if @p instance or @p desc is NULL, the layout
- *         has no elements or a stride of 0, `block_vertex_count` is 0, or
- *         `memory_limit` is not 0 and below one block's bytes.
+ * @return The pool, or NULL if @p instance or @p desc is NULL,
+ *         `vertex_stride` or `block_vertex_count` is 0, or `memory_limit` is
+ *         not 0 and below one block's bytes. Each is printed.
  *
  * @see aprend_vertex_pool_destroy()
  */
@@ -898,7 +963,8 @@ void aprend_vertex_pool_destroy(aprend_vertex_pool pool);
  *
  * @param[in]  pool         Pool to take from.
  * @param[in]  vertex_count How many vertices. Not 0.
- * @param[in]  data         @p vertex_count vertices of the pool's layout.
+ * @param[in]  data         @p vertex_count vertices of the pool's
+ *                          `vertex_stride` each.
  * @param[out] out_range    Receives the range. Zeroed on failure.
  *
  * @return false, with nothing taken, if @p pool, @p data or @p out_range is

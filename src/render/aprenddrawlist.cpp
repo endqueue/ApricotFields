@@ -44,9 +44,8 @@ bool aprend_draw_list_expand(aprend_command_list cmd_list, aprend_draw_list list
 	APREND_COMMAND cmd{};
 	if (list->desc._instance_stride > 0) {
 		cmd._type                                        = APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER;
-		cmd._params._set_transient_vertex_buffer._span   = list->span;
-		cmd._params._set_transient_vertex_buffer._slot   = list->desc._instance_slot;
-		cmd._params._set_transient_vertex_buffer._stride = list->desc._instance_stride;
+		cmd._params._set_transient_vertex_buffer._span = list->span;
+		cmd._params._set_transient_vertex_buffer._slot = list->desc._instance_slot;
 		aprend_send_command(cmd_list, cmd);
 	}
 

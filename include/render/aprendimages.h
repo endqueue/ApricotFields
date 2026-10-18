@@ -315,8 +315,9 @@ bool aprend_texture2d_generate_mips(
  *
  * @warning Before calling, destroy every aprend_texture_view made from
  * @p texture. Afterwards, recompile any command list that used it, and make
- * the views again. A submission already made that uses the old image is
- * safe: the old image is released when that work has finished.
+ * the views again: aprend_command_list_submit() refuses one compiled before
+ * the resize. A submission already made that uses the old image is safe:
+ * the old image is released when that work has finished.
  *
  * @param[in] texture    Texture to resize.
  * @param[in] new_width  New width of mip 0. Never 0.

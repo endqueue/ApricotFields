@@ -86,10 +86,6 @@ inline ApriMat4 from_glm(const glm::mat4 &m) {
 
 struct aprend_binding_layout_core;
 
-/* The alignment of a material's uniform block in the arena: the largest
- * uniform buffer offset alignment of the three APIs (D3D12's 256). SpudGPU
- * doesn't report the device's own. */
-#define APREND_MATERIAL_BLOCK_ALIGNMENT 256u
 /* The size of one buffer of the material arena. A block larger than this
  * gets a buffer of its own. 64 KiB is also the most one uniform buffer
  * descriptor can see on D3D12. */
@@ -97,7 +93,8 @@ struct aprend_binding_layout_core;
 
 /* One buffer of the material arena: device-local uniform memory, written
  * only by copies recorded at submit (aprend_material_stage_uploads), and the
- * ranges of it handed out, in units of APREND_MATERIAL_BLOCK_ALIGNMENT. */
+ * ranges of it handed out, in units of the instance's
+ * material_block_alignment. */
 struct aprend_material_arena_buffer {
 	aprend_uniform_buffer buffer{nullptr};
 	aprend_range_list ranges{};
@@ -180,6 +177,18 @@ typedef struct aprend_instance_t {
 	 * with it: whether a buffer a shader may write can be written directly
 	 * too (SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE). */
 	bool device_mappable_memory{false};
+	/* SPUDGPU_DEVICE_PROPERTIES::uniform_buffer_offset_alignment and
+	 * ::storage_buffer_offset_alignment of desc.device, read with it: what a
+	 * binding set entry's `_offset` into a uniform or storage buffer is a
+	 * multiple of. Powers of two. */
+	uint32_t uniform_buffer_offset_alignment{0};
+	uint32_t storage_buffer_offset_alignment{0};
+	/* Where a material's uniform block may start in the arena, and what each
+	 * block's range is a multiple of: uniform_buffer_offset_alignment, or 16
+	 * where that is less, since std140 rounds a block to 16. It divides
+	 * APREND_MATERIAL_ARENA_BUFFER_SIZE, which every power of two up to 256
+	 * does. */
+	uint32_t material_block_alignment{0};
 	/* SPUDGPU_DEVICE_PROPERTIES::layered_rendering of desc.device, read once
 	 * at creation: whether a pass may render to the layers of 2D array
 	 * views. */
@@ -238,9 +247,16 @@ typedef struct aprend_instance_t {
 	/* Render targets a built-in effect's command takes at compile
 	 * (aprendrendertargets_internal.hpp). */
 	aprend_render_target_pool render_targets{};
+	/* Every command list compiled and not yet submitted, reset or compiled
+	 * again: what a destroy call, from any thread, and a resize look through
+	 * for lists that use what they take away (aprend_instance_forget). A
+	 * list here is not changed by its own thread until it is taken off, so
+	 * what it uses can be read under release_mutex. Under release_mutex. */
+	std::vector<aprend_command_list> compiled_lists{};
 	/* Guards release_queue, release_head and upload_batch_waiting, and makes
 	 * a new submit_serial and the batch it carried change together for
-	 * aprend_instance_retire. It is what
+	 * aprend_instance_retire; and compiled_lists, with each list's
+	 * listed and stale. It is what
 	 * lets a destroy call come from any thread: retiring only pushes an
 	 * entry under it. It is never held while a release function runs. */
 	std::mutex release_mutex{};
@@ -266,14 +282,28 @@ typedef struct aprend_instance_t {
  * outcome that can't make things worse.
  *
  * What it can't see is a command list that was compiled against the object
- * and not yet submitted. Compiling records nothing here; the serial is taken
- * at retirement, so such a list, submitted afterwards, runs after the object
- * may already be gone. Not using a destroyed object in a later submission
- * stays the caller's. */
+ * and not yet submitted: the serial is taken at retirement, so such a list,
+ * submitted afterwards, runs after the object may already be gone. For what
+ * a submission reads on the CPU - a texture's tracked layouts, a buffer's
+ * staged writes, a material, a GPU timer - the destroy call also calls
+ * aprend_instance_forget, and the submission is refused. For the rest (a
+ * pipeline, a binding set, a view, which only the recorded commands name),
+ * not using a destroyed object in a later submission stays the caller's. */
 void aprend_instance_retire(
     aprend_instance instance,
     void *object,
     void (*release)(void *object));
+
+/* Marks stale every compiled, unsubmitted command list that uses [used]: a
+ * texture's aprend_texture_layouts, a buffer's aprend_buffer_store, a
+ * material or a GPU timer. aprend_command_list_submit refuses a stale list,
+ * so it never reads [used] again; compiling it again clears the mark.
+ * Called by the destroy calls of those four, from any thread, and by a
+ * texture's resize, which replaces what its layouts describe. Takes
+ * release_mutex. Needs no memory. */
+void aprend_instance_forget(
+    aprend_instance instance,
+    const void *used);
 /* Releases every queued entry whose serial the fence has reached, each
  * outside release_mutex. Only for the thread using the instance under the
  * one-thread rule: called after each submission and each wait, never from a
@@ -363,29 +393,55 @@ SPUDRESULT aprend_instance_flush_upload_batch(
  *
  * On a device with memory of its own, [buffer] is SPUDGPU_MEMORY_KIND_DEVICE:
  * in that memory, where the GPU reads it without crossing the bus, and never
- * mapped. A write goes into [staging], an UPLOAD buffer of the same size that
- * holds everything ever written, and widens the dirty range. The next
- * aprend_command_list_submit of a list that uses the buffer copies the dirty
- * range across ahead of the list's own commands.
+ * mapped ([staged]). A write is staged in an UPLOAD buffer and noted in
+ * [uploads]; the next aprend_command_list_submit of a list that uses the
+ * buffer copies each across ahead of the list's own commands, and empties
+ * the list once the submission has gone in.
+ *
+ * What a write is staged in follows APREND_BUFFER_WRITES:
+ * - MANY: [staging], an UPLOAD buffer of the same size that holds
+ *   everything ever written, for life. An upload names a range of it, and a
+ *   write merges into the ranges it overlaps or touches, so the list stays
+ *   sorted and disjoint; bytes between two ranges are never copied.
+ * - ONCE: no [staging]. Each write makes an UPLOAD buffer of its own size,
+ *   which its upload owns: after the submission that copies it, it is
+ *   retired, and released once that submission has run. Writes are not
+ *   merged, and are copied in the order they were made. A pool's blocks are
+ *   stores of this kind, written by the pool once a range.
  *
  * Every write is flushed (spudgpu_flush_buffer), whichever buffer it lands
  * in.
  *
  * Uniform buffers don't use this: they are small and rewritten every frame,
  * and are UPLOAD memory, mapped for life, on every device. */
+struct aprend_buffer_upload {
+	/* Where the bytes are: [staging] for a MANY store, a buffer the upload
+	 * owns for a ONCE store. */
+	spudgpu_buffer source{nullptr};
+	uint64_t source_offset{0};
+	/* Where they go in the store's [buffer]. */
+	uint64_t offset{0};
+	uint64_t size{0};
+};
+
 struct aprend_buffer_store {
 	aprend_instance instance{nullptr};
 	/* What the GPU reads, and what views and descriptors are made of. */
 	spudgpu_buffer buffer{nullptr};
-	/* NULL when [buffer] is written directly. */
+	/* [buffer] is in the device's memory and written through uploads. */
+	bool staged{false};
+	/* APREND_BUFFER_WRITES_ONCE: the buffer's update call refuses. */
+	bool written_once{false};
+	/* A MANY store's staging buffer; NULL for a ONCE store and for one
+	 * written directly. */
 	spudgpu_buffer staging{nullptr};
 	uint64_t size{0};
 	/* The state [buffer] is used in, which a copy into it leaves it in. */
 	SPUDGPU_RESOURCE_STATE use_state{SPUDGPU_RESOURCE_STATE_COMMON};
-	/* Bytes written to [staging] and not yet copied: [dirty_begin,
-	 * dirty_end), empty when the two are equal. */
-	uint64_t dirty_begin{0};
-	uint64_t dirty_end{0};
+	/* Writes staged and not yet copied. A MANY store's are sorted by
+	 * offset, and no two overlap or touch; a ONCE store's are in the order
+	 * they were written. */
+	std::vector<aprend_buffer_upload> uploads{};
 	/* The buffer is used in more than one state: a storage buffer that is
 	 * also an indirect argument buffer. A command list tracks the state of
 	 * such a store and moves it (aprend_command_list_t::buffer_states); a
@@ -393,23 +449,31 @@ struct aprend_buffer_store {
 	bool multi_state{false};
 };
 
-/* Creates [store]'s buffers, of [size] bytes and for [usage]. On failure the
- * store holds nothing. */
+/* Creates [store]'s buffers, of [size] bytes, for [usage], and written as
+ * [writes] says (ONCE or MANY, checked by the caller). On failure the store
+ * holds nothing. */
 SPUDRESULT aprend_buffer_store_create(
     aprend_buffer_store *store,
     aprend_instance instance,
     uint64_t size,
     SPUDGPU_BUFFER_USAGE usage,
-    SPUDGPU_RESOURCE_STATE use_state);
-/* Destroys whatever [store] holds. Views of its buffer go first. */
+    SPUDGPU_RESOURCE_STATE use_state,
+    APREND_BUFFER_WRITES writes);
+/* Destroys whatever [store] holds, the buffers its uploads own included.
+ * Views of its buffer go first. */
 void aprend_buffer_store_destroy(aprend_buffer_store *store);
 /* Copies [size] bytes from [data] to [offset]. The range is the caller's to
- * have checked against the store's size. */
+ * have checked against the store's size. SPUDRESULT_OUT_OF_MEMORY, with
+ * nothing written, if there is no memory to note the write. Doesn't look at
+ * [written_once]: that is the update calls' to refuse. */
 SPUDRESULT aprend_buffer_store_write(
     aprend_buffer_store *store,
     uint64_t offset,
     uint64_t size,
     const void *data);
+/* After a submission that copies [store]'s uploads has gone in: every
+ * buffer an upload owns is retired, and the list emptied. */
+void aprend_buffer_store_uploads_submitted(aprend_buffer_store *store);
 
 typedef struct aprend_gpu_timer_t {
 #if _DEBUG
@@ -447,6 +511,9 @@ typedef struct aprend_command_list_t {
 	spudgpu_command_list cmd_list{nullptr};
 	/* Every staged buffer store the last compile found in use, once each. */
 	std::vector<aprend_buffer_store *> staged_stores{};
+	/* Every buffer store the last compile found in use, staged or not, once
+	 * each: what aprend_instance_forget looks for. */
+	std::vector<aprend_buffer_store *> used_stores{};
 	/* The state of each multi-state buffer store as the compile walks the
 	 * list, from the first point the list uses it. Every such store starts
 	 * the list in its use_state: aprend_command_list_submit puts it there
@@ -512,12 +579,38 @@ typedef struct aprend_command_list_t {
 		uint32_t layer;
 		/* The texture's tracked layout for (mip, layer), 2D or 3D. */
 		SPUDGPU_IMAGE_LAYOUT *tracked;
+		/* What [tracked] is in: the texture's, for aprend_instance_forget
+		 * to find. */
+		const void *tracking;
 		SPUDGPU_IMAGE_LAYOUT initial_layout;
 		SPUDGPU_IMAGE_LAYOUT final_layout;
+		/* Since the last barrier the list recorded on the subresource: a
+		 * shader may have used it through a storage slot, and may have
+		 * written it. Both start true, since a submission before this one
+		 * may have; a barrier clears both. A storage use needs a barrier
+		 * first if [storage_written], or if it writes and
+		 * [storage_accessed]. */
+		bool storage_accessed;
+		bool storage_written;
 	};
 	std::vector<layout_use> layout_uses{};
+	/* The same for each storage buffer store the list uses through a set,
+	 * from the first point it does. */
+	struct storage_hazard {
+		aprend_buffer_store *store;
+		bool accessed;
+		bool written;
+	};
+	std::vector<storage_hazard> storage_hazards{};
 	/* The last compile succeeded, so the spudgpu list is closed and submittable. */
 	bool compiled{false};
+	/* In the instance's compiled_lists: from a successful compile until the
+	 * list is submitted, reset, compiled again or destroyed. Under the
+	 * instance's release_mutex. */
+	bool listed{false};
+	/* Something the listed compile uses was destroyed or resized since
+	 * (aprend_instance_forget): submit refuses it. Under release_mutex. */
+	bool stale{false};
 	/* Set by a compiled APREND_COMMAND_PRESENT_TEXTURE: the swap chain and the
 	 * back buffer index the list copies into. Submit uses the swap-chain-
 	 * synchronized path for such a list. */
@@ -550,12 +643,19 @@ typedef struct aprend_uniform_buffer_t {
 	~aprend_uniform_buffer_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
 	aprend_instance instance{nullptr};
+	/* The whole block, bound by binding sets with an offset and range. */
 	spudgpu_buffer buffer{nullptr};
-	spudgpu_buffer_view buffer_view{nullptr};
-	spudgpu_buffer_view_desc buffer_view_desc{};
+	/* The block's size in bytes, a multiple of 16. */
+	uint32_t size{0};
+	/* The buffer's own copy of its layout: the uniforms and their names in
+	 * one allocation, NULL with no uniforms. Empty for one of the device's
+	 * memory. */
 	aprend_uniform_layout layout{};
-	uint32_t total_size{0};
-	void *uniform_data_ptr{nullptr};
+	/* Where the CPU writes the block: UPLOAD memory mapped for the buffer's
+	 * life (aprend_uniform_buffer_create). NULL for one in the device's own
+	 * memory (aprend_uniform_buffer_create_device, the material arena's),
+	 * which only the GPU's copies write and every update call refuses. */
+	void *mapped{nullptr};
 } aprend_uniform_buffer_t;
 
 typedef struct aprend_vertex_buffer_t {
@@ -567,12 +667,27 @@ typedef struct aprend_vertex_buffer_t {
 	/* For aprend_instance_retire when the handle is destroyed. */
 	aprend_instance instance{nullptr};
 	aprend_buffer_store store{};
-	spudgpu_buffer_view buffer_view{nullptr};
-	spudgpu_buffer_view_desc buffer_view_desc{};
-	aprend_buffer_layout vertex_layout{};
-	uint32_t vertex_count{0};
-	uint32_t vertex_stride{0};
+	/* The buffer's size in bytes. */
+	uint64_t size{0};
+	/* A SpudGPU view of the whole buffer for each stride a pipeline has read
+	 * it at, made by the first compile that binds it at that stride
+	 * (aprend_vertex_buffer_view): a SpudGPU vertex buffer view carries its
+	 * stride (D3D12's does), and the stride is the pipeline's. Usually one.
+	 * Destroyed with the buffer. */
+	struct stride_view {
+		uint32_t stride;
+		spudgpu_buffer_view view;
+	};
+	std::vector<stride_view> views{};
 } aprend_vertex_buffer_t;
+
+/* The view of [buffer] at [stride], made the first time it is asked for.
+ * On the thread using the instance. SPUDRESULT_OUT_OF_MEMORY, or SpudGPU's
+ * failure, with nothing made. */
+SPUDRESULT aprend_vertex_buffer_view(
+    aprend_vertex_buffer buffer,
+    uint32_t stride,
+    spudgpu_buffer_view *out_view);
 
 typedef struct aprend_index_buffer_t {
 #if _DEBUG
@@ -655,6 +770,24 @@ struct aprend_image_expectation {
 	APREND_SHADER_SCALAR_TYPE scalar_type;
 };
 
+/* A storage image or storage buffer binding a pipeline's shaders write:
+ * declared without `readonly` by a shader whose entry point uses it. A
+ * command list orders the next use of what a set holds there after this
+ * pipeline's draws or dispatch; one no shader writes is only read, and two
+ * reads in a row need no barrier. */
+struct aprend_storage_write {
+	uint32_t set;
+	uint32_t binding;
+};
+
+/* Whether [writes] holds [binding] of the set at [slot]. */
+inline bool aprend_storage_writes_hold(const std::vector<aprend_storage_write> &writes, uint32_t slot, uint32_t binding) {
+	for (const aprend_storage_write &write : writes)
+		if (write.set == slot && write.binding == binding)
+			return true;
+	return false;
+}
+
 /* False, printed, if a texture view [set] holds is not what [expected]
  * declares at its binding, for a pipeline that has [set] at [slot]: another
  * shape, or a stencil read as anything but an unsigned integer, or a depth
@@ -678,16 +811,24 @@ typedef struct aprend_graphics_pipeline_t {
 	 * fragment's, each with its terminator. desc's two entry point pointers
 	 * point into it, not at the caller's strings. */
 	char *entry_points{nullptr};
-	/* Stride of each counted vertex binding, for a draw to check the vertex
-	 * buffer in that slot against. */
+	/* Stride of each counted vertex binding: what a draw binds the vertex
+	 * buffer in that slot at, and checks its vertices against. */
 	uint32_t vertex_strides[APREND_MAX_VERTEX_BINDINGS]{};
+	/* Where each counted binding's furthest element ends in one vertex: the
+	 * last vertex a draw reads ends that far past its start. */
+	uint32_t vertex_extents[APREND_MAX_VERTEX_BINDINGS]{};
 	/* Where the furthest push constant range ends; 0 with no ranges. */
 	uint32_t push_constant_end{0};
+	/* One allocation holding every vertex binding's elements, then their
+	 * names: desc's layouts point into it. NULL with no vertex input. */
+	char *vertex_elements{nullptr};
 	/* Created with a mesh shader in place of a vertex shader: it is run
 	 * with DISPATCH_MESH and reads no vertex buffers. */
 	bool is_mesh{false};
 	/* The images its shaders use, from their reflection. */
 	std::vector<aprend_image_expectation> images{};
+	/* The storage bindings its shaders write, from their reflection. */
+	std::vector<aprend_storage_write> storage_writes{};
 } aprend_graphics_pipeline_t;
 
 typedef struct aprend_compute_pipeline_t {
@@ -706,6 +847,8 @@ typedef struct aprend_compute_pipeline_t {
 	uint32_t push_constant_end{0};
 	/* The images its shader uses, from its reflection. */
 	std::vector<aprend_image_expectation> images{};
+	/* The storage bindings its shader writes, from its reflection. */
+	std::vector<aprend_storage_write> storage_writes{};
 } aprend_compute_pipeline_t;
 
 /* The part of a binding layout SpudGPU sees: its bindings without names,
@@ -816,6 +959,8 @@ typedef struct aprend_binding_set_t {
 	struct image_use {
 		aprend_texture_view view;
 		SPUDGPU_IMAGE_LAYOUT layout;
+		/* The binding the view is in, for a pipeline's storage_writes. */
+		uint32_t binding;
 	};
 	image_use *image_uses{nullptr};
 	uint32_t image_use_count{0};
@@ -826,7 +971,12 @@ typedef struct aprend_binding_set_t {
 	 * storage_store_capacity slots for each of the frame_set_count sets, run
 	 * f holding storage_store_counts[f] stores: what sets[f] reads. The same
 	 * buffer in two slots is listed twice. */
-	aprend_buffer_store **storage_stores{nullptr};
+	struct storage_store {
+		aprend_buffer_store *store;
+		/* The binding it is in, for a pipeline's storage_writes. */
+		uint32_t binding;
+	};
+	storage_store *storage_stores{nullptr};
 	uint32_t storage_store_capacity{0};
 	uint32_t storage_store_counts[APREND_MAX_FRAMES_IN_FLIGHT]{};
 } aprend_binding_set_t;

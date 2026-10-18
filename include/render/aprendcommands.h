@@ -120,9 +120,14 @@ enum {
 	/**
 	 * Puts `_vertex_buffers[i]` at vertex buffer slot `_start_slot` + i.
 	 * Slot N is what a pipeline's `_vertex_bindings[N]` reads
-	 * (aprendpipeline.h), per vertex or per instance as that binding says.
-	 * At each draw, every slot the bound pipeline reads must hold a buffer
-	 * whose stride is the binding's.
+	 * (aprendpipeline.h), per vertex or per instance as that binding says,
+	 * at the binding's `stride`: a buffer is bytes, and the pipeline of
+	 * each draw says what they are. At each draw, every slot the bound
+	 * pipeline reads must hold a buffer or a span, and a draw whose
+	 * vertices or instances are known (DRAW, DRAW_INSTANCED, and the
+	 * instances of DRAW_INSTANCED_INDEXED) must read inside it at that
+	 * stride. An indexed draw's vertices, and an indirect draw's, are read
+	 * where the indices or arguments say, which the compile can't see.
 	 */
 	APREND_COMMAND_SET_VERTEX_BUFFERS     = 1,
 	/**
@@ -246,7 +251,12 @@ enum {
 	 * dispatch every texture in those sets is moved into the layout its
 	 * binding reads it in, and every storage buffer and storage image in
 	 * them is ordered after the writes of earlier dispatches and draws, so a
-	 * dispatch reads what the one before it wrote. The same mip of the same
+	 * dispatch reads what the one before it wrote, and a write after earlier
+	 * reads. What a shader writes is what it declares without `readonly`
+	 * (GLSL) and its entry point uses; two dispatches or passes that only
+	 * read a storage resource, with no write between them, get no barrier
+	 * between them. The first use of one in a list always gets one, for
+	 * what a submission before it may have written. The same mip of the same
 	 * layer can't be in a sampled slot and a storage image slot of one
 	 * dispatch; two different mips of one texture can, so a dispatch can
 	 * read one mip and write the next.
@@ -289,9 +299,9 @@ enum {
 	/**
 	 * Puts a span of transient memory (aprendtransient.h) in vertex buffer
 	 * slot `_slot` for the following draws, as SET_VERTEX_BUFFERS puts a
-	 * buffer there, until either puts something else. `_stride` is the size
-	 * of one vertex, not 0, and has to be the stride of the pipeline's
-	 * binding at that slot at each draw. The span was taken in the frame the
+	 * buffer there, until either puts something else, and read as a buffer
+	 * is: at the stride of the pipeline's binding at that slot, and inside
+	 * the span's `size`. The span was taken in the frame the
 	 * list is compiled in, and its bytes are written before the list is
 	 * submitted, in any order with recording and compiling.
 	 */
@@ -640,7 +650,6 @@ typedef struct APREND_COMMAND {
 		struct {
 			aprend_transient_span _span;
 			uint32_t _slot;
-			uint32_t _stride;
 		} _set_transient_vertex_buffer;
 		/** APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER. */
 		struct {
@@ -792,7 +801,7 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   `_stride` smaller than one entry, or entries that run past the end of
  *   the buffer;
  * - a SET_TRANSIENT_VERTEX_BUFFER with a `_slot` at or above
- *   APREND_MAX_VERTEX_BINDINGS or a `_stride` of 0;
+ *   APREND_MAX_VERTEX_BINDINGS;
  * - a SET_TRANSIENT_INDEX_BUFFER with an `_index_size` that is not 2 or 4;
  * - a SET_MATERIAL with a NULL material, one of another instance, or a
  *   `_slot` at or above APREND_MAX_BINDING_LAYOUTS;
@@ -876,8 +885,9 @@ void aprend_send_command(
  *           binding set the pass's draws read;
  *         - a draw command with a mesh shader pipeline, or a DISPATCH_MESH
  *           with any other;
- *         - a draw whose pipeline reads a vertex buffer slot that is empty
- *           or holds a buffer of another stride;
+ *         - a draw whose pipeline reads a vertex buffer slot that is
+ *           empty, or whose known vertices or instances run past the end
+ *           of a buffer or span at the binding's stride;
  *         - a PUSH_CONSTANTS with no pipeline set in its pass (or, outside
  *           a pass, no compute pipeline set) or with bytes outside the
  *           pipeline's push constant ranges;
@@ -950,9 +960,14 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * same submission (aprendbuffers.h). So are the uniform blocks of every
  * material the list binds that changed since they were last copied, through
  * the current frame's transient memory (aprendmaterial.h, "When uniform
- * values take effect"). Those buffers must still exist:
- * destroying one and then submitting a list compiled against it is a use
- * after free.
+ * values take effect").
+ *
+ * A list is refused if a texture, vertex, index or storage buffer,
+ * material or GPU timer it was compiled against has been destroyed since,
+ * from any thread, or a texture it uses resized: its barriers and copies
+ * name what is gone. Recompile it once what it names exists again. Nothing
+ * of a refused list is read. Views, samplers, pipelines and binding sets
+ * are not checked (aprendcontext.h, "Destroying").
  *
  * A compile is submitted once. To run the same recorded commands again,
  * compile the list again and submit that: a SpudGPU command list is
@@ -972,9 +987,10 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  *         successfully since it was last submitted, if @p queue is not the queue the instance already
  *         submits on, if a texture it uses has changed layout since it was
  *         compiled (another list touching the same texture was submitted in
- *         between), or if aprend_instance_next_frame() has moved the frame
- *         on since it was compiled. In the last two cases, recompile it and
- *         submit again. false too if transient memory can't be taken for a
+ *         between), if aprend_instance_next_frame() has moved the frame
+ *         on since it was compiled, or if something it uses was destroyed
+ *         or resized since it was compiled (above). In the last three cases,
+ *         recompile it and submit again. false too if transient memory can't be taken for a
  *         material's block, or a SpudGPU list for the list's buffer copies
  *         can't be made.
  */

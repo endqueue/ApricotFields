@@ -558,6 +558,288 @@ unfinished in it.
     validation, Release, no leak), 2026-10-17, and the same day on D3D12
     and Vulkan (Intel Iris Xe and NVIDIA RTX A2000, Debug, debug and
     validation layers clean).
+- **Exact staged ranges and buffers written once, written 2026-10-18;
+  run on Metal, where neither is staged** (item 13, step 2 of "Suggested
+  order"). A staged store's one dirty range is now a list of uploads
+  (`aprend_buffer_upload` in `aprend_internal.hpp`), each copied on its own
+  by `aprend_command_list_submit`, and `APREND_BUFFER_WRITES` is a new
+  required argument of `aprend_vertex_buffer_create`,
+  `aprend_index_buffer_create`, `aprend_storage_buffer_create` and
+  `aprend_storage_buffer_set_create` (0 is refused: there is no default).
+  - `APREND_BUFFER_WRITES_MANY`: the staging buffer of the buffer's size,
+    for life, as before. A write merges with the ranges it overlaps or
+    touches and no others, so two writes far apart are two copies and
+    nothing between them crosses the bus.
+  - `APREND_BUFFER_WRITES_ONCE`: written at creation only; the update calls
+    refuse it. No staging buffer for life: each write is staged in an
+    `UPLOAD` buffer of its own size, copied by the next submission that
+    uses the buffer, and retired then, so it is released once that
+    submission has run. Created with no data, the buffer is never staged.
+  - A pool's blocks are `ONCE` buffers written by the pool, a write a
+    range: each range is staged on its own and copied exactly, and a block
+    keeps no staging copy. The update calls on a block now refuse, as the
+    pool's header already said they are not for the caller.
+  - The lit scene's light tiles and its placeholder, written by a shader
+    only, are `ONCE` with no data: on a device with memory of its own they
+    had a staging copy each that was never written.
+  - Callers changed in the same change: trellislib's four vertex buffers
+    (`src/trellisscene.cpp`) and latran's four mesh buffers
+    (`core/src/latranrender.cpp`) are `ONCE`; none is ever updated.
+    `../apricottests` passes `MANY` for the one buffer it updates and
+    `ONCE` for the rest.
+  - `../apricottests`' `test_buffer_writes`: a `MANY` buffer written in two
+    ranges with a gap and then the gap; a `ONCE` buffer drawn in two frames
+    and refused an update; a create with `writes` 0 refused; two pool
+    ranges of one block drawn from where the pool put them, and the block
+    refusing an update. Passed on Metal (Apple M5 Pro, Debug), 2026-10-18,
+    with every other test, and trellislib's and latran's tests pass over
+    it. That device is unified, so the buffers were written directly and
+    none of the new staged code ran: it runs only on a device with memory
+    of its own, D3D12 or Vulkan on the RTX A2000. Not built on Windows or
+    Linux.
+- **Stale lists refused, and storage barriers from what shaders write,
+  written 2026-10-18; run on Metal** (item 32, step 3 of "Suggested order").
+  - The instance keeps every command list compiled and not yet submitted
+    (`compiled_lists`, under `release_mutex`). Destroying a texture, a
+    vertex, index or storage buffer, a material or a GPU timer, from any
+    thread, and resizing a texture call `aprend_instance_forget`, which
+    marks each such list that uses it stale; `aprend_command_list_submit`
+    refuses a stale list before it reads anything of it. Before, a destroy
+    was a use after free at submit, and a resize was refused only when the
+    tracked layout happened to differ. A list records every buffer store it
+    uses (`used_stores`), staged or not, so the refusal is the same on every
+    device.
+  - A pipeline records the storage bindings its shaders write
+    (`storage_writes`: declared without `readonly`, used by the entry
+    point), and a binding set the binding of each storage image and buffer
+    it holds. The list keeps, for each subresource and each storage buffer,
+    whether a shader may have used and written it since its last barrier
+    (`layout_use::storage_accessed` / `storage_written`, `storage_hazards`;
+    both start true, for the submission before). A use needs the ordering
+    barrier if it was written since, or if this use writes and it was used
+    since. Before, every storage image and buffer of a pass or dispatch got
+    one. The lit light cull's dispatch goes through the same preparation
+    now, in place of its own barrier, so the tiles it writes are known
+    written.
+  - The compile walk is inside a `try`: a vector growing out of memory in
+    it could throw out of `aprend_command_list_compile`, a C entry point.
+    The loop is indented one more tab for it; nothing else in it changed.
+  - SpudGPU, found by the new test: Metal set the compute pipeline state on
+    the encoder at every bind, and its validation refuses setting the same
+    state twice. It sets it only when it differs now (spudlib).
+  - `../apricottests`: `test_storage_ordering` (add, copy, copy, add, copy
+    over r32f storage images: a write, two reads with none between, a write
+    after reads, a read; the values checked) and `test_stale_lists` (a
+    target resized, a target destroyed, a vertex buffer destroyed, each
+    after a compile and refused at submit, and a list that goes). Every
+    test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
+    validation with warnings fatal, and Release under `leaks` (none).
+    trellislib's and latran's tests pass over it. Not built on Windows or
+    Linux; on Metal the barriers do nothing, so only Vulkan's
+    synchronization validation and D3D12's debug layer can show that a
+    barrier left out was not needed.
+- **`aprend_material_copy`, and no default resources by decision,
+  written 2026-10-18; run on Metal** (from "Next, from the review", its
+  first step).
+  - `aprend_material_copy(source)` makes a material of the same layout and
+    owned blocks, its own arena ranges holding the source's values, and
+    the same resource handles (shared, not duplicated). The two are
+    independent after; either may be destroyed first. No binding set and
+    no lit scene are copied; the copy's blocks go across at its first
+    submission. Create and copy share the owned block's setup
+    (`aprend_material_own_block`).
+  - Compared: Hazel's `Material::Copy` copies the uniform bytes and the
+    slot assignments, sharing the resources, and leaves the flags to
+    `Init`; Unreal's material instances read what they don't override
+    from a parent, live, and its `CopyParameterOverrides` copies values
+    once. Aprend's is Hazel's shape (a material carries no flags here),
+    and not Unreal's inheritance (item 19).
+  - Default resources for empty slots are decided against, not left
+    undone. Hazel fills every sampled 2D slot with one white texture,
+    every cube with a black one and every sampler with one sampler
+    (`DescriptorSetManager.cpp`, with its flag forced on); Unreal has no
+    empty slot, since every parameter has a default its author gave it.
+    What an empty slot should read depends on what it is for (white for
+    a base color, black for emission, a flat normal), which Aprend
+    doesn't know, and a placeholder would have to match each slot's
+    shape and scalar type to pass the compile's view checks. So the
+    default is the author's, as in Unreal, and the author is the caller:
+    a base material with its own choices, copied. Aprend's lit material
+    is the one place Aprend is the author, and it fills its maps.
+  - A compile that finds an empty binding names it, its element and what
+    is missing (a texture view, a buffer or a sampler), and points at the
+    copy. `aprend_material_is_complete` is the same search.
+  - `aprendmaterial.h`, reviewed for the copy: a "Copying" section at the
+    top; `aprend_material_destroy`'s warning was stale since the stale-list
+    check (a list compiled with a destroyed material is refused at submit
+    now); the two uniform-buffer setters take a block name as well as a
+    binding name, which the code did and the docs didn't say; a view or
+    sampler outlives every material that holds it. Nothing renamed or
+    removed: the calls were consistent with each other and with the rest
+    of Aprend.
+  - `../apricottests`' `test_material_copy`: a complete base copied, the
+    copy's values read back, both drawn, each changed alone and drawn,
+    the base destroyed and the copy drawn, a copy of NULL refused, and a
+    copy of a lit material with its values. Passed on Metal (Apple M5
+    Pro), Debug under Metal API and shader validation with warnings
+    fatal and Release under `leaks` (none), with every other test.
+    latran's 26 suites pass over it, and trellislib's 10. Of trellislib's,
+    `trellislib_model_tests` failed once, in the first run after the
+    relink, with its output lost; nine runs since passed, and it calls
+    no material code. Not built on Windows or Linux.
+- **A uniform buffer's uniforms found once, written 2026-10-18; run on
+  Metal** (from "Next, from the review", its first step).
+  - `aprend_uniform_layout_get_uniform_index(layout, name)` finds a uniform
+    of an `aprend_uniform_layout` by name, once, and
+    `aprend_uniform_buffer_update_uniform(buffer, index, data)` and
+    `aprend_uniform_buffer_set_update_uniform(set, index, data)` write it
+    with no search. `aprend_uniform_buffer_update_by_name` is the lookup on
+    the buffer's copy of its layout and then the write, as before (the
+    first uniform of the name).
+  - The handle is the uniform's index in its layout, not a struct as the
+    material's `aprend_material_uniform` is. A uniform buffer's layout is a
+    plain struct the caller writes or reads from shaders and passes at
+    create, not a handle, so the index is what names a uniform of it: it
+    serves every buffer and buffer set of the layout, a caller that wrote
+    the layout knows it already, and it has the shape of
+    `aprend_buffer_layout_get_element_index` for a vertex layout. It is
+    checked against the buffer's layout's count at each write.
+  - Every data argument of `aprendbuffers.h` is `const void *` now (the
+    create and update calls of every buffer and buffer set); each was
+    only read. The same symbol and the same ABI, and source-compatible.
+  - `../apricottests`' `test_uniform_buffer_index`: a uniform buffer and a
+    buffer set made from the material shader's uniform layout, written by
+    index, bound through two materials' external blocks, drawn green and
+    blue, then swapped (the buffer by name, the set by index); unknown
+    names find `UINT32_MAX`, an index past the layout and NULL data are
+    refused. Passed on Metal (Apple M5 Pro), Debug under Metal API and
+    shader validation with warnings fatal and Release under `leaks`
+    (none), with every other test; latran's and trellislib's tests pass
+    over it. Not built on Windows or Linux.
+- **The uniform buffer cleaned up, written 2026-10-18; run on Metal.**
+  From a review of `aprend_uniform_buffer_t`:
+  - `aprend_uniform_buffer_create` checks a layout's `uniforms` against its
+    `count` (it read through NULL), refuses a uniform whose type is no
+    `APREND_UNIFORM_TYPE` (accepted before, and every write of it refused
+    later) and a layout of no uniforms and no size, copies nothing for a
+    layout of no uniforms (a `malloc(0)` that may return NULL failed the
+    call), and prints each failure on its own line with what it was (it
+    printed the result string bare, "success" for a failed `malloc`).
+    Checks one to a line; the newer conventions throughout the section.
+  - A buffer in the device's memory (the material arena's, which only the
+    GPU's copies write) is the same struct with no mapping; every update
+    call refuses one now, where it would have written through NULL. None
+    can reach a caller, so this guards Aprend's own code.
+  - `aprend_uniform_buffer_get_layout` and `aprend_uniform_buffer_get_size`,
+    as a vertex buffer and a storage buffer have: the layout is what
+    `aprend_uniform_layout_get_uniform_index` reads, for a caller that
+    holds only the buffer.
+  - Removed: `aprend_uniform_buffer_get_spudgpu_buffer_view` and the view
+    behind it (made for every buffer and every copy of a set, read by
+    nothing: binding sets bind the buffer with an offset and range; no
+    caller in the workspace called it), and the stored
+    `spudgpu_buffer_view_desc`, whose offset was always 0 and was added
+    into every write. The struct is the buffer, its size, its layout and
+    its mapping.
+  - `aprendbuffers.h` says for uniform buffers what it said for the others:
+    a write lands where the GPU reads, so not while a submission that reads
+    the buffer is unfinished; a block rewritten every frame belongs in a
+    buffer set.
+  - `../apricottests`' `test_uniform_buffer_index` checks the getters (the
+    buffer's own layout finds the same indices), the three refused
+    creates, and a block of no uniforms made with a size and written as
+    bytes. Every test passed on Metal (Apple M5 Pro), Debug under Metal
+    API and shader validation with warnings fatal and Release under
+    `leaks` (none); latran's and trellislib's tests pass over it. Not
+    built on Windows or Linux.
+- **Buffer offsets follow the device's alignment, written 2026-10-18; run
+  on Metal** (the rest of the uniform buffer review).
+  - SpudGPU reports `uniform_buffer_offset_alignment` and
+    `storage_buffer_offset_alignment` in `SPUDGPU_DEVICE_PROPERTIES`:
+    Vulkan's `minUniformBufferOffsetAlignment` and
+    `minStorageBufferOffsetAlignment`; D3D12's 256 and 16 (a constant buffer
+    view's placement, a raw buffer view's first byte); 256 for both on
+    Metal, which has no query. The Vulkan and D3D12 halves are written and
+    not compiled: this Mac has neither API's headers.
+  - `aprend_binding_set_create` (and `_update`) refuses a uniform or storage
+    buffer entry whose `_offset` is not a multiple of the device's
+    alignment for its type, naming the entry and the alignment. Before,
+    any offset inside the buffer was taken, and one that wasn't aligned
+    was outside Vulkan's and D3D12's rules. Every caller bound at 0.
+  - The material arena places blocks at the device's uniform alignment
+    (16 at the least), not at 256 everywhere (item 19).
+  - The uniform buffer update calls, and the set's create and update calls,
+    print each refusal, as create does and as the material's calls do;
+    they returned false silently.
+  - `aprend_uniform::size` is `array_count`: it was an element count named
+    a size. Source-compatible for a caller that fills the struct by
+    position (trellislib does); one that names the field changes the name.
+  - `../apricottests`' `test_uniform_buffer_index`: the alignments SpudGPU
+    reports are powers of two up to 256, an entry at the device's own
+    alignment is taken and one at 4 refused (both, on Metal's 256). Every
+    test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
+    validation with warnings fatal and Release under `leaks` (none);
+    latran's and trellislib's tests pass over it. Not built on Windows or
+    Linux.
+- **Vertex buffers are bytes and vertex layouts the pipeline's, written
+  2026-10-18; run on Metal.** As Unreal (`FVertexBuffer` and the vertex
+  declaration), Hazel 2025 (`VertexBuffer` is a size and its bytes; the
+  layouts are in `PipelineSpecification`) and all three APIs have it.
+  - `aprend_vertex_buffer_create(instance, size, writes, pData)`,
+    `aprend_vertex_buffer_update(buffer, offset, size, pData)` and
+    `aprend_vertex_buffer_get_size`, in bytes, as the storage buffer's.
+    The buffer holds no layout, no stride and no names: the copied layout's
+    names pointed at the caller's strings (a use after free for a caller
+    that freed them), and that is gone with it.
+    `aprend_vertex_buffer_get_layout` and
+    `aprend_vertex_buffer_get_spudgpu_buffer_view` are removed; nothing in
+    the workspace called either.
+  - `aprend_vertex_layout` (in `aprendpipeline.h`, was `aprend_buffer_layout`
+    in `aprendbuffers.h`): `count`, `elements` and a required `stride`.
+    `aprend_vertex_element` is `name`, `type` and `offset`; its size follows
+    from the type (the `size` field, which nothing kept in step with the
+    type, is gone). `APREND_VERTEX_ELEMENT_TYPE` (was
+    `APREND_BUFFER_ELEMENT_TYPE`) gains `UINT` to `UINT4`, appended, so a
+    `uint` vertex input can be fed. `aprend_vertex_element_type_get_size`
+    and `aprend_vertex_layout_get_element_index` are the renamed calls;
+    `aprend_buffer_layout_get_total_size` is gone with the computed stride.
+    An explicit stride lets a vertex have padding after its last element
+    and a pipeline read part of a larger vertex.
+  - A graphics pipeline checks each layout (a stride not 0 and a multiple of
+    4, each element's type valid, offset a multiple of 4, and ending inside
+    the stride) and copies it, names included, so
+    `aprend_graphics_pipeline_get_desc` hands back the pipeline's copy, not
+    the caller's array.
+  - The command list binds vertex buffers at each draw, at the bound
+    pipeline's binding strides: a SpudGPU vertex view carries its stride,
+    as D3D12's does, so each buffer keeps a view for each stride a pipeline
+    has read it at (usually one), and a span's view is made at the first
+    draw that reads it. A slot is bound again only where its view changes;
+    the views survive a pipeline change, as vertex bindings do on every
+    API, and are taken as unbound at each pass.
+  - The stride check is replaced by a bounds check: a draw's vertices, an
+    instanced draw's instances and the one instance any other draw reads
+    must end inside the buffer or span, at the binding's stride and its
+    furthest element's end. `SET_TRANSIENT_VERTEX_BUFFER` has no `_stride`;
+    the span is read at the pipeline's.
+  - A vertex pool's desc takes `vertex_stride` in place of a layout.
+    Aprend's lit layouts have their strides (`sizeof(aprend_lit_vertex)`,
+    `sizeof(aprend_lit_instance)`).
+  - Callers in the same change: trellislib (its four layouts,
+    `src/trellisrenderresources.cpp`; four vertex buffers sized in bytes,
+    `src/trellisscene.cpp`; the solid pool's stride, `src/trellissolids.cpp`),
+    latran (`core/src/latranrender.cpp`) and `../apricottests`.
+  - `../apricottests`' `test_vertex_layouts`: six refused pipelines (stride
+    0, stride 10, an offset of 2, an element past the stride, an unknown
+    type, a `uint` input fed by an `INT` element); the pipeline's copy of a
+    layout whose caller overwrote its array and names; a padded,
+    interleaved vertex (32 bytes, elements to 24) read for its positions
+    alone; a `uint` input that draws for 7 and not for 3; two draws past
+    the end of a 6-vertex buffer refused. Every test passed on Metal (Apple
+    M5 Pro), Debug under Metal API and shader validation with warnings
+    fatal and Release under `leaks` (none); latran's and trellislib's tests
+    pass over it. Not built on Windows or Linux, and D3D12, whose vertex
+    view's stride is what the per-stride views are for, has not run it.
 - **Shader reflection, written 2026-10-11 and compiled on all three
   backends** (item 18; closes item 1). Type-checked with GCC 11 as the
   entry above before that. Part of it has run without a device: see the
@@ -986,10 +1268,9 @@ copy in `aprend_vertex_buffer_create`, the file buffer in
 `aprend_shader_read_from_file_spirv`) are checked now.
 
 Where the vector growth matters most: `aprend_send_command` (every array
-it copies), `aprend_framebuffer_create` and `_resize`, and
-`aprend_command_list_compile`, which guards its loop over materials and
-nothing after it. A `std::bad_alloc` from the rest of the compile leaves
-the function with the SpudGPU list still open.
+it copies), and `aprend_framebuffer_create` and `_resize`.
+`aprend_command_list_compile` catches it over its whole walk since
+2026-10-18, and closes the SpudGPU list on the way out.
 
 In the command list: vertex buffers, the index buffer, viewports and
 scissor rects sent before a pass are passed to SpudGPU where they stand,
@@ -1004,10 +1285,6 @@ today:
   with no braces only the destructor is guarded:
   `aprend_swap_chain_destroy` is the one such use, and is saved by
   `free(NULL)` being allowed.
-- **`aprend_uniform_buffer_create` prints a bare result string** on
-  failure, with no prefix and no newline, and prints the string for
-  success when it was `malloc` or the size check that failed. Its
-  `layout->uniforms` is not checked for NULL.
 - **Two comments name a function of a caller**
   (`create_offscreen_color_target`, in `aprendframes.cpp` and
   `aprendimages_internal.hpp`), which `CLAUDE.md` rules out. They mean "the
@@ -1119,8 +1396,29 @@ or per instance (see "State of the code"). Left over:
   is location N. `_vertex_inputs_by_name` (item 18) gives them from the
   shader's input names instead, and a shader that skips a location can be
   fed that way.
-- **No unsigned element type**: a `uint` vertex input is refused at
-  pipeline creation, since no `APREND_BUFFER_ELEMENT_TYPE` feeds it.
+- **Only 32-bit element types.** No normalized 8- or 16-bit formats (a
+  color in four bytes, a packed normal), no half floats: vertices are two to
+  four times larger than they need be. Appended to
+  `APREND_VERTEX_ELEMENT_TYPE` when they come, with the pipeline's format
+  map, scalar-type check and the multiple-of-4 rule (a 16-bit format reads
+  from 2-byte offsets on every API) changed with them.
+- **What a draw reads is checked only where the compile can see it**
+  (2026-10-18): a draw's vertices, an instanced draw's instances, and the
+  one instance a draw that isn't instanced reads. An indexed draw's
+  vertices and an indirect draw's anything are read where the indices or
+  arguments say.
+- **Nothing checks how the bytes were packed.** A vertex buffer is bytes and
+  the pipeline says what they are, so a buffer packed at one stride and
+  read at another draws garbage inside its bounds, as on every API. A draw
+  list's `_instance_stride` is the stride it packs instances at, and is not
+  compared with the pipeline's binding (the transient command had a
+  `_stride` that was, until 2026-10-18).
+- **A compile that fails inside a pass after a PUSH_CONSTANTS** leaves a
+  Metal encoder with push constants no draw used, and Metal's validation,
+  run with warnings fatal, stops at that encoder's end even though the list
+  is never submitted. SpudGPU's Metal backend sends render push constants
+  as they are pushed; sending them at the next draw (as its compute path
+  does at the dispatch) would end it, and is SpudGPU's to change.
 
 ### 12. Frames in flight: what is left
 
@@ -1225,28 +1523,30 @@ the code"). Left over:
   is submitted in a later frame (a buffer written and not drawn yet), since
   the frame's spans are taken back at the next turn. That needs spans that
   are counted, or the staging buffer kept for those.
-- **A staged buffer keeps its staging copy for life**, so on a device with
-  its own memory a buffer written once costs its size twice. The release
-  queue (item 12) can now free a staging buffer once its copy has run, and
-  that is not built, because of what a store promises: its staging buffer
-  holds everything ever written, so one merged dirty range is always right.
-  A staging buffer made again for a later write holds only that write. It
-  needs either exact ranges in place of the one merged range, or a store
-  that is told at creation it will be written once. A shared staging buffer
-  for many small writes is the same decision.
+- **A buffer written once gives its staging back; one written many times
+  doesn't** (written 2026-10-18, see "State of the code"; the staged path
+  has not run). An `APREND_BUFFER_WRITES_ONCE` buffer, and every pool
+  block, stages each write in a buffer of its own and retires it after
+  the submission that copies it. An `APREND_BUFFER_WRITES_MANY` buffer
+  keeps a staging buffer of its own size for life, so it costs its size
+  twice on a device with its own memory. That is the right price for one
+  rewritten often; one rewritten rarely would be cheaper staged a write at
+  a time, as `ONCE` is, and nothing chooses that.
+- **Each `ONCE` write and each pool range makes a SpudGPU buffer of its
+  own.** Many small ranges allocated together (a scene's meshes loaded at
+  once) are as many buffer creations. A shared staging buffer, written
+  through by many small writes and retired whole once the last copy from
+  it has run, would make them one. Not built.
 - **A write must not be made while submitted work that uses the buffer is
   unfinished.** On a unified device the write lands under the GPU; on a staged
   one the copy that hasn't run yet reads the new bytes. The same rule either
   way. Buffer sets lift it for uniform and storage buffers (item 12); the
   release queue doesn't, since nothing is destroyed.
-- **One dirty range per buffer.** Two small writes far apart copy everything
-  between them. Correct, and more than is needed.
-- **A pool block is staged like any buffer.** On a device with its own
-  memory each block keeps a staging copy for life and has one dirty range,
-  so two ranges allocated far apart in a block copy everything between them.
-  A pool range is written exactly once, which is the "store that is told it
-  will be written once" above: a pool could take a transient span for each
-  write, record an exact copy, and keep no staging copy at all. Not built.
+- **Every staged write is its own copy command.** A `MANY` buffer's
+  ranges merge only where they overlap or touch, so a thousand scattered
+  small writes are a thousand copies in the upload list. Nothing merges
+  ranges whose gap is small, which would copy a little more for fewer
+  commands; that threshold would be a choice nothing has measured.
 - **A pool is never compacted and frees nothing by itself.** Ranges don't
   move. A pool's table of allocations only grows: an entry is used again,
   never removed, so a pool that once held a million ranges keeps a million
@@ -1262,9 +1562,9 @@ the code"). Left over:
 - **A texture upload is staged in transient memory** and recorded into the
   frame's batch (item 6); where it falls back to a buffer of its own is
   item 6's.
-- **A compiled list holds a pointer to each staged buffer it uses**, as it
-  does to each texture (item 32). Destroying the buffer and then submitting
-  the list is a use after free.
+- **A compiled list holds a pointer to each buffer it uses**, as it does
+  to each texture. Destroying the buffer and then submitting the list is
+  refused since 2026-10-18 (item 32).
 - **How SpudGPU's memory kinds land**, for whoever touches this next. The
   contract of each is in `spudgpu.h` (`SPUDGPU_MEMORY_KIND`); this is only
   what is underneath:
@@ -1418,18 +1718,20 @@ the sets its draws read (see "State of the code").
   it is the pass's depth target, with depth writes off, needs a read-only
   depth layout, which `SPUDGPU_IMAGE_LAYOUT` doesn't have, and a rule for when
   it is used.
-- **A storage image gets a barrier at every pass**, written or not, because
-  the set doesn't know whether the shader writes it. Correct, and more than a
-  read-only use needs.
-- **A compiled list holds a pointer into each texture it uses**, to the
-  texture's tracked layout, and the SpudGPU image it had at compile. Destroying
-  a texture before submitting a list compiled against it is a use after free.
-  After a resize the submit check usually refuses the list, since the tracked
-  layout goes back to `UNDEFINED`, but not if the list also found it
-  `UNDEFINED`: then it submits barriers for an image that no longer exists.
-  The release queue doesn't help: it sees submissions, not compiles (item
-  12). Wanted: a texture knows it has changed (a generation count the list
-  compares), or the header's "recompile after a resize" is checked.
+- **Storage barriers follow what the shaders write** (written 2026-10-18,
+  see "State of the code"). A storage image or buffer no pipeline has
+  written since its last barrier in the list, used by one that only reads
+  it, gets no barrier. Left: the first use in each list always gets one,
+  since the list doesn't know what the submission before it did; a texture
+  could carry "written since the last barrier" from one submission to the
+  next, as it carries its layout, and the submit check would compare it.
+- **A list's other handles are not checked at submit.** A destroyed or
+  resized texture, a destroyed buffer, material or GPU timer is refused
+  (written 2026-10-18). A view, sampler, pipeline or binding set destroyed
+  before submitting a list compiled against it is not: only the recorded
+  commands name them, and the GPU would use what is gone. The same
+  aprend_instance_forget would cover them, if each recorded which list
+  names it.
 - **A list leaves a sampled texture in `SHADER_READ_ONLY` and a storage image
   in `GENERAL`.** Nothing puts it back. Right for most uses; written down
   because the immediate operations do put a texture back.
@@ -1479,11 +1781,14 @@ Left over:
   is always bound whole: no `_offset` or `_range` through the material.
 - **No push constants in a material.** Hazel's materials can be push
   constant blocks; here a material is a binding set.
-- **No copy.** Hazel's `Material::Copy` has no counterpart; a second
-  material of the same desc is made from scratch and its values set again.
-- **A material destroyed while a list that binds it is still compiled**
-  is a use after free at that list's next submit, since the submit copies
-  the material's blocks. The header says so; nothing checks.
+- **A copy is a copy, not an instance of a parent** (2026-10-18). Unreal's
+  material instances read every parameter they don't override from their
+  parent, live; `aprend_material_copy` takes the values once. A caller
+  that wants a parent's later changes to reach its children propagates
+  them itself: inheritance needs change tracking and ties the parent's
+  life to its children's, an asset system's concern, not a renderer's.
+  Nor is there a call that copies values into a material that exists
+  (Unreal's `CopyParameterOverrides`); nothing asks for one.
 - **The arena keeps one empty buffer, and no more** (2026-10-11;
   run in the stub harness only). When a material's range comes back
   and leaves its buffer empty, the buffer goes if another is empty
@@ -1495,10 +1800,10 @@ Left over:
   (`aprend_vertex_pool_trim` has no counterpart for the arena); nothing
   compacts, by design, since moving a block means a copy and a rebuilt
   descriptor set. Item 35 may replace the range list underneath.
-- **Every owned block takes at least 256 bytes**, the largest alignment of
-  the three APIs, since SpudGPU doesn't report the device's own. A
-  device-reported alignment (Vulkan's is often 64) would pack small blocks
-  four times tighter.
+- **An owned block takes at least the device's uniform buffer offset
+  alignment** (`SPUDGPU_DEVICE_PROPERTIES::uniform_buffer_offset_alignment`,
+  16 at the least) since 2026-10-18: 256 on D3D12 and Metal, often 64 on
+  Vulkan. Before, 256 everywhere, since SpudGPU didn't report it.
 - **A changed block is copied whole**, not the changed bytes.
 - **A material of a frequently changing block** (one written every frame)
   pays a copy and a barrier on its arena buffer each submission; a block
@@ -2038,15 +2343,25 @@ and 5 are closed and their numbers are not reused.
      Built and run on Windows by `../apricottests` (2026-10-16).
    - Run it on a device with its own memory as well, for the staged path:
      done on D3D12 and Vulkan (RTX A2000), 2026-10-16.
-2. What the release queue made possible and isn't built: freeing staging
-   copies (item 13). The shared upload path for textures is written (item
-   6), and staged buffers don't use it yet. Rewriting a binding
-   set in place (item 9) is written.
-3. The rest of item 32: what the command list still gets wrong about
-   texture layouts.
-4. Item 18, which settles item 1 and unblocks 19. Written and compiled;
-   its reflection and the logic over it have run without a device only
-   (see "State of the code").
+2. Freeing staging copies (item 13): written 2026-10-18, with exact
+   staged ranges and `APREND_BUFFER_WRITES`, and run on Metal only, where
+   nothing is staged. Left of this step: run `test_buffer_writes` on a
+   device with memory of its own (D3D12 and Vulkan on the RTX A2000),
+   which is the first time that code runs. The shared upload path for
+   textures is written (item 6), and staged buffers don't use it: a
+   transient span is taken back at the next frame, and a buffer may be
+   created a frame or more before a list that uses it is submitted.
+   Rewriting a binding set in place (item 9) is written.
+3. The rest of item 32: written 2026-10-18 and run on Metal (see "State
+   of the code"), except reading a depth texture while it is the pass's
+   depth target, which needs a read-only depth layout SpudGPU doesn't
+   have and a test of what Metal allows; nothing asks for it yet. Left of
+   this step: run `test_storage_ordering` under Vulkan's synchronization
+   validation and D3D12's debug layer, which is what shows that a barrier
+   left out was not needed.
+4. Item 18, which settles item 1 and unblocks 19. Written, and run on
+   all three backends through the materials and passes made from it
+   (`../apricottests`, 2026-10-17). What is left is item 18's own list.
 5. Items 19, 20, 21: material, pass and draw list. Written, compiled, and
    run on Metal, D3D12 and Vulkan by `../apricottests` (2026-10-17, see
    "State of the code"). What is left of each item is in its item, and
@@ -2083,18 +2398,9 @@ From the review of the reflection and the material against Hazel on
 and record what was done under "State of the code" and in the item it
 belongs to.
 
-1. **What Hazel's material has and Aprend's doesn't:** a copy
-   (`Material::Copy`), and default resources for slots left empty.
-   Without defaults an incomplete material fails the compile, which is
-   stricter than Hazel and arguably right, but every slot has to be set
-   before the first draw. (Reading a value back is done: see "Uniforms
-   found once" under "State of the code".)
-2. **`aprend_uniform_buffer_update_by_name` searches by name at every
-   call**, as the material did: a uniform buffer's layout is a short list,
-   but the same find-once handle would serve it. Not started.
-3. **Reflection limits**: the list is item 18's "what is left", and is
+1. **Reflection limits**: the list is item 18's "what is left", and is
    kept there only.
-4. **The arena's remaining policy** (item 19): place a new block in the
+2. **The arena's remaining policy** (item 19): place a new block in the
    fullest buffer that has room, so lightly used buffers drain, and a trim
    that releases the spare buffer. Held until item 35 decides what the
    arena's bookkeeping is.
