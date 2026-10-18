@@ -490,8 +490,12 @@ unfinished in it.
     reads it (from Metal's pipeline reflection), and emits every declared
     resource into a shader's argument buffer struct, so a shader that uses
     some of a set's bindings reads the right ones (spudlib/CLAUDE.md has
-    what is still a gap). Vulkan's and D3D12's sides are written, not
-    compiled or run.
+    what is still a gap). Vulkan's and D3D12's sides have run, in the
+    D3D12 and Vulkan runs below. On 2026-10-17 Trellis_Avalonia also built
+    and ran over them on Windows, D3D12 and Vulkan, and Trellis_macOS over
+    the Metal changes (reported); Trellis uses no lit surface, comparison
+    sampler or depth-only pass, so that shows only that they break nothing
+    there.
   - **What has run.** `../apricottests`, on an Apple M5 Pro (2026-10-17),
     Debug under the Metal validation settings with warnings fatal and
     Release, no leak: `test_lit_surface`, `test_lit_mesh_shadow`,
@@ -1700,8 +1704,12 @@ them, so a caller that frames its own keeps doing so.
 
 Left:
 
-- [ ] **Run on D3D12 and Vulkan**, with SpudGPU's comparison samplers and
-      D3D12 depth-only passes, both written blind.
+- [x] **Run on D3D12 and Vulkan.** `../apricottests` passed on both, on
+      an Intel Iris Xe and an NVIDIA RTX A2000, on 2026-10-17: its shadow
+      tests the first use there of SpudGPU's comparison samplers and of
+      D3D12's depth-only passes. One fix came of it, the clear value of an
+      environment never filled (see "What has run" under "State of the
+      code").
 - [ ] **Screen-space reflections.** A forward pass has no normal or
       roughness target to reflect from: it needs the surface to write a
       second target (a variant of the surface shader, and a pipeline of
