@@ -1,0 +1,16 @@
+// What Aprend's lit vertex shaders take (aprendlit.h): aprend_lit_vertex at
+// binding 0, locations 0 to 3, and aprend_lit_instance's transform at
+// binding 1, locations 4 to 7, a column each.
+
+layout(location = 0) in vec3 in_position;
+layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec2 in_uv;
+layout(location = 3) in vec4 in_tangent;
+layout(location = 4) in vec4 in_transform0;
+layout(location = 5) in vec4 in_transform1;
+layout(location = 6) in vec4 in_transform2;
+layout(location = 7) in vec4 in_transform3;
+
+mat4 instance_transform() {
+    return mat4(in_transform0, in_transform1, in_transform2, in_transform3);
+}

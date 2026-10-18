@@ -34,6 +34,8 @@ add_library(ApricotFields STATIC
         src/render/aprendtimer.cpp
         src/render/aprendbuiltin_internal.hpp
         src/render/aprendbuiltin.cpp
+        src/render/aprendlit_internal.hpp
+        src/render/aprendlit.cpp
         src/render/aprendrendertargets_internal.hpp
         src/render/aprendrendertargets.cpp
         src/archive/aparchive_internal.hpp
@@ -151,7 +153,7 @@ target_link_libraries(ApricotFields PRIVATE spirv-cross-core)
 find_package(Threads REQUIRED)
 target_link_libraries(ApricotFields PRIVATE Threads::Threads)
 
-# Aprend's own shaders (shaders/*.vert, *.frag), compiled to SPIR-V at build
+# Aprend's own shaders (shaders/*.vert, *.frag, *.comp), compiled to SPIR-V at build
 # time and embedded in the library as C arrays (glslc -mfmt=c), as
 # trellislib does: there is nothing to deploy or find at run time.
 # src/render/aprendbuiltin.cpp includes them. glslc is needed on every
@@ -168,14 +170,42 @@ set(APRICOTFIELDS_SHADERS
         aprend_bloom_downsample.frag
         aprend_bloom_upsample.frag
         aprend_bloom_composite.frag
+        aprend_tone_map.frag
+        aprend_lit.vert
+        aprend_lit.frag
+        aprend_lit_shadow.vert
+        aprend_lit_depth.frag
+        aprend_environment_from_cube.frag
+        aprend_environment_from_equirect.frag
+        aprend_environment_prefilter.frag
+        aprend_environment_irradiance.frag
+        aprend_environment_sky.frag
+        aprend_lit_depth_cutout.frag
+        aprend_lit_sky.frag
+        aprend_lit_cull.comp
+        aprend_lit_brdf_lut.frag
+        aprend_lit_occlusion.frag
+        aprend_lit_occlusion_blur.frag
+        aprend_exposure_luminance.frag
+        aprend_exposure_adapt.frag
+)
+# What the shaders include (#include, GL_GOOGLE_include_directive), from
+# shaders/: every shader is compiled again when one of them changes.
+set(APRICOTFIELDS_SHADER_INCLUDES
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_scene.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_vertex.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_environment.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_material.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_bindings.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_shadow_pass.glslh
 )
 foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
     set(shader_inc ${APRICOTFIELDS_SHADER_INC_DIR}/${shader}.spv.inc)
     add_custom_command(
             OUTPUT ${shader_inc}
             COMMAND ${CMAKE_COMMAND} -E make_directory ${APRICOTFIELDS_SHADER_INC_DIR}
-            COMMAND ${APRICOTFIELDS_GLSLC} -mfmt=c ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader} -o ${shader_inc}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}
+            COMMAND ${APRICOTFIELDS_GLSLC} -mfmt=c -I ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader} -o ${shader_inc}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader} ${APRICOTFIELDS_SHADER_INCLUDES}
             COMMENT "Compiling ${shader} to embedded SPIR-V"
     )
     list(APPEND APRICOTFIELDS_SHADER_INCS ${shader_inc})

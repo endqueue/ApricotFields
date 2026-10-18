@@ -60,4 +60,12 @@ void aprend_write_block_member(
     uint8_t *block,
     const void *data);
 
+/* aprend_write_block_member the other way: the member from [block] into
+ * [out_data], tightly packed, as the caller would have given it. The same
+ * checks are the caller's. */
+void aprend_read_block_member(
+    const aprend_shader_member &member,
+    const uint8_t *block,
+    void *out_data);
+
 #endif // APREND_REFLECT_INTERNAL_HPP

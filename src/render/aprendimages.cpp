@@ -242,6 +242,8 @@ aprend_texture_view_t::~aprend_texture_view_t() {
 	// view is released only once it has.
 	if (this->bloom_set)
 		aprend_release_handle<aprend_binding_set_t>(this->bloom_set);
+	if (this->environment_set)
+		aprend_release_handle<aprend_binding_set_t>(this->environment_set);
 	// A view that failed to create has nothing to destroy.
 	if (this->image_view)
 		spudgpu_destroy_image_view(this->image_view);
@@ -1348,6 +1350,8 @@ aprend_sampler aprend_sampler_create(
 	sd.min_lod        = desc->min_lod;
 	sd.max_lod        = desc->max_lod;
 	sd.max_anisotropy = desc->max_anisotropy;
+	sd.compare_enable = desc->compare_enable;
+	sd.compare_op     = desc->compare_op;
 #if _DEBUG
 	sd.debug_name = desc->debug_name;
 #endif

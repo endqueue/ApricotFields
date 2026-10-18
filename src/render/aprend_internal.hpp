@@ -896,6 +896,10 @@ typedef struct aprend_material_t {
 	aprend_binding_set set{nullptr};
 	/* A resource was set since the binding set was built. */
 	bool resources_changed{true};
+	/* The lit scene (aprendlit.h) this is the material of, or NULL: a
+	 * compile that binds it makes sure the scene's environment has been
+	 * written (aprend_lit_scene_prepare_list). */
+	struct aprend_lit_scene_t *lit_scene{nullptr};
 } aprend_material_t;
 
 /* For a compile: builds [material]'s binding set if it has none, or again if

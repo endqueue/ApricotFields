@@ -19,6 +19,8 @@
 #include "render/aprendmaterial.h"
 #include "render/aprendpass.h"
 #include "render/aprenddrawlist.h"
+#include "render/aprendlit.h"
+#include "render/aprendpost.h"
 
 /*
 #if __cplusplus

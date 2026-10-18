@@ -13,6 +13,7 @@
 #include "render/aprendimages.h"
 #include "render/aprendpipeline.h"
 #include "render/aprendshader.h"
+#include "aprendlit_internal.hpp"
 
 #include <vector>
 
@@ -49,6 +50,9 @@ struct aprend_builtins {
 		aprend_graphics_pipeline pipeline;
 	};
 	std::vector<bloom_pipeline> bloom_pipelines{};
+
+	/* Lit surfaces' (aprendlit.h, aprendlit_internal.hpp). */
+	aprend_lit_builtins lit{};
 };
 
 /* The stages of a bloom, each a pass with its own fragment shader. */
@@ -81,7 +85,11 @@ aprend_shader aprend_builtin_fullscreen_vert(aprend_instance instance);
  * exist, with the bloom shaders and layout. The upsample and composite
  * stages blend additively. NULL, printed, if it can't be made. */
 aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance, uint32_t stage, SPUDGPU_FORMAT format);
-/* The bloom layout; made by aprend_builtin_bloom_pipeline, NULL before it. */
+/* The bloom shaders and layout, made if they aren't: what
+ * aprend_builtin_bloom_pipeline() and aprend_texture_view_bloom_set() need.
+ * False, printed, if one can't be. */
+bool aprend_builtin_bloom_prepare(aprend_instance instance);
+/* The bloom layout; made by aprend_builtin_bloom_prepare, NULL before it. */
 aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance);
 
 /* The downsample pipeline rendering to [format], made if it doesn't exist,
@@ -115,6 +123,22 @@ void aprend_record_fullscreen_pass(
     uint32_t height,
     SPUDGPU_LOAD_OP load_op,
     aprend_binding_set set,
+    const void *push,
+    uint32_t push_size);
+
+/* As aprend_record_fullscreen_pass, with [set_count] sets at slots 0 on (a
+ * NULL one left unbound, for a pipeline that declares none there), each read
+ * at its copy for [frame] where it is a set of buffer sets. */
+void aprend_record_fullscreen_pass_sets(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    spudgpu_image_view target,
+    uint32_t width,
+    uint32_t height,
+    SPUDGPU_LOAD_OP load_op,
+    const aprend_binding_set *sets,
+    uint32_t set_count,
+    uint32_t frame,
     const void *push,
     uint32_t push_size);
 

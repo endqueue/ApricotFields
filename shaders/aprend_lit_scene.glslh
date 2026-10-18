@@ -1,0 +1,56 @@
+// The scene set of Aprend's lit shaders (aprendlit.h), set 0. Included by
+// every shader that reads it, so they declare it alike; aprendlit.cpp's
+// aprend_lit_scene_block mirrors the block and checks every member's offset
+// against the shader's reflection when the layout is made.
+
+#define APREND_LIT_MAX_LIGHTS 128
+#define APREND_LIT_MAX_CASCADES 4
+#define APREND_LIT_MAX_SPOT_SHADOWS 4
+// Lights a tile of the view lists at most; one more is its count.
+#define APREND_LIT_MAX_TILE_LIGHTS 63
+
+struct AprendLitLight {
+    vec4 position_range;  // xyz: where it is. w: its range
+    vec4 radiance_type;   // rgb: color times strength. w: 0 point, 1 spot
+    vec4 direction_inner; // xyz: a spot's axis, unit. w: cos of its inner angle
+    vec4 outer_shadow;    // x: cos of a spot's outer angle. y: its spot shadow, or -1
+};
+
+// Bits of AprendLitScene.flags.
+const uint APREND_LIT_SCENE_SUN_SHADOW     = 1u;  // sun_shadow_map is the sun's cascades
+const uint APREND_LIT_SCENE_SUN_REVERSED   = 2u;  // rendered near at 1
+const uint APREND_LIT_SCENE_ENVIRONMENT    = 4u;  // the environment cubes hold light
+const uint APREND_LIT_SCENE_TILES          = 8u;  // tile_lights holds this view's lists
+const uint APREND_LIT_SCENE_OCCLUSION      = 16u; // ambient_occlusion is this view's
+const uint APREND_LIT_SCENE_SPOT_REVERSED  = 32u; // spot shadows rendered near at 1
+
+layout(set = 0, binding = 0) uniform AprendLitScene {
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    mat4 sun_shadow_view_projection[APREND_LIT_MAX_CASCADES];
+    mat4 spot_shadow_view_projection[APREND_LIT_MAX_SPOT_SHADOWS];
+    vec4 eye_position;
+    vec4 view_direction;          // xyz unit: the way the view looks
+    vec4 sun_direction;           // xyz unit, towards the sun
+    vec4 sun_radiance;
+    vec4 ambient_up;              // xyz unit
+    vec4 ambient_sky;
+    vec4 ambient_ground;
+    vec4 environment_rotation[3]; // rows, scene space into the environment's
+    vec4 sun_shadow_splits;       // how far along view_direction each cascade reaches
+    vec4 sun_shadow_params;       // x depth bias, y normal offset, z softness, w strength
+    vec4 spot_shadow_params[APREND_LIT_MAX_SPOT_SHADOWS]; // the same, for each
+    vec4 target_size;             // xy: the view's target in texels; zw: their reciprocals
+    float environment_intensity;
+    float environment_mips;       // the specular chain's mip count
+    float exposure;
+    uint output_encoding;         // APREND_COLOR_ENCODING
+    uint flags;
+    uint light_count;
+    uint sun_cascade_count;
+    uint tile_size;               // in texels
+    uint tiles_x;
+    uint tiles_y;
+    float occlusion_strength;
+    AprendLitLight lights[APREND_LIT_MAX_LIGHTS];
+} u_lit_scene;

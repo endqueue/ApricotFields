@@ -41,8 +41,18 @@
  * shaders, the `_name`s of a layout written by hand. A uniform is named by
  * its path in its block (`roughness`, `lights[2].color`), or by that path
  * after its binding's name (`u_Material.roughness`), which is needed where
- * two owned blocks have a member of one name. A name that matches nothing
- * is a failed call, not a silent one.
+ * two of the layout's blocks have a member of one name. A name that matches
+ * nothing is a failed call, not a silent one.
+ *
+ * @par Finding a uniform once
+ * aprend_material_set_uniform() searches the layout's members by name at
+ * every call. A value set every frame, or in many materials, is found once
+ * instead: aprend_material_find_uniform() turns a name into an
+ * aprend_material_uniform, a small value that names the member within the
+ * layout, and aprend_material_set_uniform_value() writes it with no search.
+ * One is found from the layout, not from a material, so it serves every
+ * material of that layout: found when the layout is made, used for each
+ * material after. aprend_material_set_uniform() is a find and a set.
  *
  * @par When resources take effect
  * The material builds its aprend_binding_set (aprendpipeline.h) when a command
@@ -177,15 +187,95 @@ bool aprend_material_is_complete(aprend_material material);
 /**
  * @brief Sets one uniform of a material's owned blocks, by name.
  *
- * Writes the material's copy of the block, where the SPIR-V lays the member
- * out: each array element at its array stride, each matrix column at its
- * matrix stride, and a `row_major` matrix transposed. What a frame reads is
- * under "When uniform values take effect" at the top of this header.
+ * aprend_material_find_uniform() on the material's layout, then
+ * aprend_material_set_uniform_value(): see both for what is written and
+ * when it is refused. For a value set every frame or in many materials,
+ * find it once and call aprend_material_set_uniform_value() (see "Finding
+ * a uniform once" at the top of this header).
  *
  * @param[in] material Material to write.
  * @param[in] name     The member's path in its block, or its binding's name,
  *                     a dot and that path (see the top of this header).
  *                     Case-sensitive.
+ * @param[in] data     The whole member, tightly packed, as
+ *                     aprend_material_set_uniform_value() takes it.
+ *
+ * @return false, with nothing written, if an argument is NULL, or either
+ *         call it makes would return false.
+ */
+bool aprend_material_set_uniform(
+    aprend_material material,
+    const char *name,
+    const void *data);
+
+/**
+ * @brief One member of a uniform block of a binding layout, as
+ * aprend_material_find_uniform() found it: what
+ * aprend_material_set_uniform_value() and
+ * aprend_material_get_uniform_value() write and read with no search.
+ *
+ * A value, copied and kept as the caller likes, and valid as long as its
+ * layout. Its fields are Aprend's: they are filled by
+ * aprend_material_find_uniform() and read only by the calls that take one,
+ * never by the caller. All zeroes is no uniform, and every call that takes
+ * it refuses it.
+ */
+typedef struct aprend_material_uniform {
+	/** The layout the member was found in. */
+	aprend_binding_layout _layout;
+	/** The block's binding: its place in the layout's bindings. */
+	uint32_t _binding_index;
+	/** The member's place in its block's members. */
+	uint32_t _member_index;
+} aprend_material_uniform;
+
+/**
+ * @brief Finds a member of one of a layout's uniform blocks by name, for
+ * every material of that layout.
+ *
+ * The blocks searched are the ones a material of the layout can own: a
+ * uniform buffer binding that is one buffer, not an array, and whose block
+ * the layout knows (a layout made from shaders). Whether a given material
+ * owns the block, or was told to leave it external, is checked when the
+ * uniform is set, so the name means the same member in every material of
+ * the layout.
+ *
+ * A layout of the same bindings made separately (aprendpipeline.h, "Layouts
+ * of the same bindings") is another layout here: a uniform found in one is
+ * refused by a material of the other.
+ *
+ * @param[in]  layout      Layout to search.
+ * @param[in]  name        The member's path in its block, or its binding's
+ *                         name (or its block name), a dot and that path, as
+ *                         at the top of this header. Case-sensitive.
+ * @param[out] out_uniform Receives the uniform. Not NULL.
+ * @param[out] out_member  Receives the member: its type, offset, size and
+ *                         array count, for a caller that checks them once
+ *                         (that `roughness` is a float, say). Its `name` is
+ *                         the layout's, valid as long as it. May be NULL.
+ *
+ * @return false, with nothing written, if an argument but @p out_member is
+ *         NULL, no member of those blocks has that name, or more than one
+ *         does and the name isn't qualified by its binding. Each is printed.
+ */
+bool aprend_material_find_uniform(
+    aprend_binding_layout layout,
+    const char *name,
+    aprend_material_uniform *out_uniform,
+    aprend_shader_member *out_member);
+
+/**
+ * @brief Sets one uniform of a material's owned blocks, found beforehand
+ * with aprend_material_find_uniform().
+ *
+ * Writes the material's copy of the block, where the SPIR-V lays the member
+ * out: each array element at its array stride, each matrix column at its
+ * matrix stride, and a `row_major` matrix transposed. What a frame reads is
+ * under "When uniform values take effect" at the top of this header. It
+ * costs the copy of the member's bytes and nothing else: no name is read.
+ *
+ * @param[in] material Material to write.
+ * @param[in] uniform  The uniform, found in the material's layout.
  * @param[in] data     The whole member, tightly packed: its type's size
  *                     (aprend_uniform_type_get_size()) for each element, a
  *                     matrix column after column. A `mat3` is 36 bytes, as
@@ -193,17 +283,38 @@ bool aprend_material_is_complete(aprend_material material);
  *                     keeps it: pass a `uint32_t`, never a C `bool`, whose
  *                     one byte would be read as four.
  *
- * @return false, with nothing written, if an argument is NULL, no member of
- *         an owned block has that name, more than one does and the name
- *         isn't qualified by its binding, the member has no
- *         APREND_UNIFORM_TYPE (write it with
- *         aprend_material_set_uniform_bytes()), or it is an array without a
- *         size.
+ * @return false, with nothing written, if @p material or @p data is NULL,
+ *         @p uniform is no uniform or was found in another layout than the
+ *         material's, its block is one the material doesn't own (named in
+ *         `_external_blocks`), the member has no APREND_UNIFORM_TYPE (write
+ *         it with aprend_material_set_uniform_bytes() at the offset
+ *         aprend_material_find_uniform() gives), or it is an array without
+ *         a size. Each is printed.
  */
-bool aprend_material_set_uniform(
+bool aprend_material_set_uniform_value(
     aprend_material material,
-    const char *name,
+    aprend_material_uniform uniform,
     const void *data);
+
+/**
+ * @brief Reads one uniform of a material's owned blocks back: the value it
+ * was last set to, or zeroes if it never was.
+ *
+ * The material's own copy of the block, not the GPU's: it is what the next
+ * submission that binds the material reads.
+ *
+ * @param[in]  material Material to read.
+ * @param[in]  uniform  The uniform, found in the material's layout.
+ * @param[out] out_data Receives the whole member, tightly packed, as
+ *                      aprend_material_set_uniform_value() takes it.
+ *
+ * @return false, with nothing written, under the conditions of
+ *         aprend_material_set_uniform_value().
+ */
+bool aprend_material_get_uniform_value(
+    aprend_material material,
+    aprend_material_uniform uniform,
+    void *out_data);
 
 /**
  * @brief Writes bytes into one of a material's owned blocks.

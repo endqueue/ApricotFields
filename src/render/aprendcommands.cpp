@@ -1,6 +1,7 @@
 
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
+#include "aprendlit_internal.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -580,6 +581,122 @@ void aprend_send_command(
 			return;
 		}
 		if (!aprend_generate_mips_valid(p._texture, p._base_mip, p._filter, "aprend: GENERATE_MIPS")) {
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_TONE_MAP) {
+		const auto &p = cmd._params._tone_map;
+		const char *fault = nullptr;
+		if (!p._source || !p._target)
+			fault = "a NULL source or target";
+		else if (p._source->instance != cmd_list->instance || p._target->instance != cmd_list->instance)
+			fault = "a source or target of another instance";
+		else if (p._source->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || p._source->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
+		         p._source->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)
+			fault = "a source that is not a SHADER_RESOURCE 2D view of color";
+		else if (p._source->desc.mip_count != 1)
+			fault = "a source of more than one mip";
+		else if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
+			fault = "a target that is not a RENDER_TAGET 2D view";
+		else if (!aprend_builtin_downsample_format(p._target->texture._t2d->desc.format))
+			fault = "a target in a format it doesn't render onto";
+		else if (aprend_texture_ranges_overlap(aprend_texture_view_range(p._source), aprend_texture_view_range(p._target)))
+			fault = "a source and a target that share a mip of a layer";
+		else if (!(std::isfinite(p._exposure) && p._exposure >= 0.0f))
+			fault = "an _exposure that is negative or not a number";
+		else if (p._curve > APREND_TONE_CURVE_AGX)
+			fault = "a _curve that is not an APREND_TONE_CURVE";
+		else if (p._encoding > APREND_COLOR_ENCODING_SRGB)
+			fault = "an _encoding that is not an APREND_COLOR_ENCODING";
+		else if (p._auto_exposure && p._auto_exposure->instance != cmd_list->instance)
+			fault = "an _auto_exposure of another instance";
+		if (fault) {
+			printf("aprend: TONE_MAP with %s\n", fault);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+	if (cmd._type == APREND_COMMAND_LIT_ENVIRONMENT) {
+		const auto &p = cmd._params._lit_environment;
+		const char *fault = nullptr;
+		if (!p._environment || !p._source)
+			fault = "a NULL environment or source";
+		else if (p._environment->instance != cmd_list->instance || p._source->instance != cmd_list->instance)
+			fault = "an environment or source of another instance";
+		else if (p._source->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || p._source->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR ||
+		         (p._source->desc.shape != APREND_TEXTURE_VIEW_SHAPE_CUBE && p._source->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D))
+			fault = "a source that is not a SHADER_RESOURCE view of color shaped CUBE or 2D";
+		if (fault) {
+			printf("aprend: LIT_ENVIRONMENT with %s\n", fault);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+	if (cmd._type == APREND_COMMAND_LIT_SKY) {
+		const auto &p = cmd._params._lit_sky;
+		const char *fault = nullptr;
+		const float *d    = p._sun_direction;
+		const float *g    = p._ground_albedo;
+		if (!p._environment)
+			fault = "a NULL environment";
+		else if (p._environment->instance != cmd_list->instance)
+			fault = "an environment of another instance";
+		else if (!(std::isfinite(d[0]) && std::isfinite(d[1]) && std::isfinite(d[2])) || d[0] * d[0] + d[1] * d[1] + d[2] * d[2] == 0.0f)
+			fault = "a _sun_direction of 0, or not a number";
+		else if (!(p._turbidity >= 1.7f && p._turbidity <= 10.0f))
+			fault = "a _turbidity outside 1.7 to 10";
+		else if (!(std::isfinite(p._intensity) && p._intensity >= 0.0f))
+			fault = "an _intensity that is negative or not a number";
+		else if (!(g[0] >= 0.0f && g[1] >= 0.0f && g[2] >= 0.0f && std::isfinite(g[0]) && std::isfinite(g[1]) && std::isfinite(g[2])))
+			fault = "a _ground_albedo that is negative or not a number";
+		if (fault) {
+			printf("aprend: LIT_SKY with %s\n", fault);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+	if (cmd._type == APREND_COMMAND_LIT_AMBIENT_OCCLUSION) {
+		const auto &p = cmd._params._lit_ambient_occlusion;
+		const char *fault = nullptr;
+		if (!p._scene || !p._depth || !p._target)
+			fault = "a NULL scene, depth or target";
+		else if (p._scene->instance != cmd_list->instance || p._depth->instance != cmd_list->instance || p._target->instance != cmd_list->instance)
+			fault = "a scene, depth or target of another instance";
+		else if (p._depth->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || p._depth->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
+		         p._depth->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_DEPTH)
+			fault = "a depth that is not a SHADER_RESOURCE 2D view of depth";
+		else if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
+		         !aprend_builtin_downsample_format(p._target->texture._t2d->desc.format))
+			fault = "a target that is not a RENDER_TAGET 2D view of a format it renders onto";
+		else if (aprend_mip_size(p._depth->texture._t2d->desc.width, p._depth->desc.base_mip) !=
+		             aprend_mip_size(p._target->texture._t2d->desc.width, p._target->desc.base_mip) ||
+		         aprend_mip_size(p._depth->texture._t2d->desc.height, p._depth->desc.base_mip) !=
+		             aprend_mip_size(p._target->texture._t2d->desc.height, p._target->desc.base_mip))
+			fault = "a depth and a target of different sizes";
+		else if (!(std::isfinite(p._radius) && p._radius > 0.0f) || !(std::isfinite(p._intensity) && p._intensity >= 0.0f))
+			fault = "a _radius that is not above 0, or an _intensity below 0, or either not a number";
+		if (fault) {
+			printf("aprend: LIT_AMBIENT_OCCLUSION with %s\n", fault);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+	if (cmd._type == APREND_COMMAND_AUTO_EXPOSURE) {
+		const auto &p = cmd._params._auto_exposure;
+		const char *fault = nullptr;
+		if (!p._exposure || !p._source)
+			fault = "a NULL exposure or source";
+		else if (p._exposure->instance != cmd_list->instance || p._source->instance != cmd_list->instance)
+			fault = "an exposure or source of another instance";
+		else if (p._source->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || p._source->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
+		         p._source->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR || p._source->desc.mip_count != 1)
+			fault = "a source that is not a SHADER_RESOURCE 2D view of color of one mip";
+		else if (!(std::isfinite(p._delta_time) && p._delta_time >= 0.0f))
+			fault = "a _delta_time that is negative or not a number";
+		if (fault) {
+			printf("aprend: AUTO_EXPOSURE with %s\n", fault);
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -1434,6 +1551,358 @@ static bool aprend_cmd_bloom(aprend_command_list cmd_list, const APREND_COMMAND 
 	return true;
 }
 
+/* Whether every mip and layer of [range] has something in it as the list
+ * reaches this point: written before the list, or earlier in it. */
+static bool aprend_cmd_range_written(aprend_command_list cmd_list, const aprend_texture_range &range) {
+	for (uint32_t layer = 0; layer < range.layer_count; ++layer) {
+		for (uint32_t mip = 0; mip < range.mip_count; ++mip) {
+			const size_t index = aprend_cmd_layout_use(cmd_list, range, range.base_mip + mip, range.base_layer + layer);
+			if (cmd_list->layout_uses[index].final_layout == SPUDGPU_IMAGE_LAYOUT_UNDEFINED)
+				return false;
+		}
+	}
+	return true;
+}
+
+/* Adds [material] to the materials [cmd_list] uploads at its submission,
+ * once, building its binding set first: for a material Aprend binds itself,
+ * which no SET_MATERIAL names. False if its set can't be built. */
+static bool aprend_cmd_use_material(aprend_command_list cmd_list, aprend_material material) {
+	for (aprend_material listed : cmd_list->materials)
+		if (listed == material)
+			return true;
+	if (!aprend_material_prepare(material))
+		return false;
+	try {
+		cmd_list->materials.push_back(material);
+	} catch (const std::bad_alloc &) {
+		printf("aprend: compile: out of memory\n");
+		return false;
+	}
+	return true;
+}
+
+/* One full-target pass of Aprend's own into [target], a view [width] by
+ * [height], reading [sets]. The target is moved to COLOR_ATTACHMENT_OPTIMAL
+ * first and to SHADER_READ_ONLY after; what the sets read is the caller's to
+ * have moved. */
+static void aprend_cmd_own_pass(aprend_command_list cmd_list, aprend_graphics_pipeline pipeline, aprend_texture_view target, uint32_t width,
+                                uint32_t height, const aprend_binding_set *sets, uint32_t set_count, const void *push, uint32_t push_size) {
+	aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	aprend_record_fullscreen_pass_sets(cmd_list->cmd_list, pipeline, target->image_view, width, height, SPUDGPU_LOAD_OP_DONT_CARE, sets,
+	                                   set_count, cmd_list->compiled_frame, push, push_size);
+	aprend_cmd_transition_view(cmd_list, target, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+}
+
+/* TONE_MAP, outside a pass: the source into SHADER_READ_ONLY, the target
+ * into COLOR_ATTACHMENT_OPTIMAL and every texel of it replaced. */
+static bool aprend_cmd_tone_map(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p                     = command._params._tone_map;
+	aprend_instance instance          = cmd_list->instance;
+	const aprend_texture_range source = aprend_texture_view_range(p._source);
+	if (!aprend_cmd_range_written(cmd_list, source)) {
+		printf("aprend: TONE_MAP: the source has nothing in it, from before the list or earlier in it\n");
+		return false;
+	}
+	aprend_graphics_pipeline pipeline = aprend_lit_tone_map_pipeline(instance, p._target->texture._t2d->desc.format);
+	if (!pipeline)
+		return false;
+	// The exposure's last value, or a placeholder that isn't read.
+	aprend_texture_view exposure = p._auto_exposure ? p._auto_exposure->value_views[p._auto_exposure->current]
+	                                                : instance->builtins.lit.placeholder_2d_view;
+	if (p._auto_exposure && !p._auto_exposure->adapted) {
+		printf("aprend: TONE_MAP: its _auto_exposure has never adapted (AUTO_EXPOSURE)\n");
+		return false;
+	}
+	aprend_binding_set sets[2] = {aprend_texture_view_bloom_set(p._source), aprend_texture_view_environment_set(exposure)};
+	if (!sets[0] || !sets[1])
+		return false;
+	const uint32_t width  = aprend_mip_size(p._target->texture._t2d->desc.width, p._target->desc.base_mip);
+	const uint32_t height = aprend_mip_size(p._target->texture._t2d->desc.height, p._target->desc.base_mip);
+	aprend_tone_map_params params{};
+	params.target_size[0] = (float)width;
+	params.target_size[1] = (float)height;
+	params.exposure       = p._exposure;
+	params.curve          = p._curve;
+	params.encoding       = p._encoding;
+	params.automatic      = p._auto_exposure ? 1u : 0u;
+	aprend_cmd_transition_range(cmd_list, source, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	if (p._auto_exposure)
+		aprend_cmd_transition_view(cmd_list, exposure, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	aprend_record_fullscreen_pass_sets(cmd_list->cmd_list, pipeline, p._target->image_view, width, height, SPUDGPU_LOAD_OP_DONT_CARE, sets, 2,
+	                                   cmd_list->compiled_frame, &params, sizeof(params));
+	return true;
+}
+
+/* What both fills of an environment end with, once the radiance cube's
+ * first mip has the picture: its other mips generated; each mip of the
+ * specular chain prefiltered from it, face by face; and the irradiance
+ * cube. Everything it renders is left in SHADER_READ_ONLY. */
+static bool aprend_cmd_prefilter_environment(aprend_command_list cmd_list, aprend_lit_environment env) {
+	aprend_instance instance            = cmd_list->instance;
+	aprend_graphics_pipeline prefilter  = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_PREFILTER);
+	aprend_graphics_pipeline irradiance = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_IRRADIANCE);
+	aprend_binding_set radiance_set     = aprend_texture_view_environment_set(env->radiance_cube);
+	if (!prefilter || !irradiance || !radiance_set)
+		return false;
+	if (!aprend_cmd_generate_mips(cmd_list, env->radiance, 0, SPUDGPU_FILTER_LINEAR))
+		return false;
+	aprend_cmd_transition_range(cmd_list, aprend_texture_view_range(env->radiance_cube), SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	const uint32_t size = env->desc.specular_size;
+	aprend_environment_params params{};
+	params.source_size = (float)size;
+	params.source_mips = (float)env->radiance->desc.mip_levels;
+	for (uint32_t mip = 0; mip < env->specular_mips; ++mip) {
+		const uint32_t side = aprend_mip_size(size, mip);
+		params.roughness    = env->specular_mips > 1 ? (float)mip / (float)(env->specular_mips - 1) : 0.0f;
+		params.sample_count = mip == 0 ? 1u : 256u;
+		params.target_size[0] = params.target_size[1] = (float)side;
+		for (uint32_t face = 0; face < 6; ++face) {
+			params.face = face;
+			aprend_cmd_own_pass(cmd_list, prefilter, env->specular_faces[(size_t)mip * 6 + face], side, side, &radiance_set, 1, &params, sizeof(params));
+		}
+	}
+	params.roughness      = 0.0f;
+	params.sample_count   = 512u;
+	params.target_size[0] = params.target_size[1] = (float)env->desc.irradiance_size;
+	for (uint32_t face = 0; face < 6; ++face) {
+		params.face = face;
+		aprend_cmd_own_pass(cmd_list, irradiance, env->irradiance_faces[face], env->desc.irradiance_size, env->desc.irradiance_size, &radiance_set, 1,
+		                    &params, sizeof(params));
+	}
+	return true;
+}
+
+/* LIT_ENVIRONMENT, outside a pass: the source copied into the radiance
+ * cube's first mip, face by face, then prefiltered. */
+static bool aprend_cmd_lit_environment(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p                     = command._params._lit_environment;
+	aprend_lit_environment env        = p._environment;
+	const aprend_texture_range source = aprend_texture_view_range(p._source);
+	if (!aprend_cmd_range_written(cmd_list, source)) {
+		printf("aprend: LIT_ENVIRONMENT: the source has nothing in it, from before the list or earlier in it\n");
+		return false;
+	}
+	const bool cube               = p._source->desc.shape == APREND_TEXTURE_VIEW_SHAPE_CUBE;
+	aprend_graphics_pipeline copy = aprend_lit_pass_pipeline(cmd_list->instance, cube ? APREND_LIT_PASS_FROM_CUBE : APREND_LIT_PASS_FROM_EQUIRECT);
+	aprend_binding_set source_set = copy ? aprend_texture_view_environment_set(p._source) : nullptr;
+	if (!source_set)
+		return false;
+	const uint32_t size = env->desc.specular_size;
+	aprend_environment_params params{};
+	params.target_size[0] = params.target_size[1] = (float)size;
+	aprend_cmd_transition_range(cmd_list, source, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	for (uint32_t face = 0; face < 6; ++face) {
+		params.face = face;
+		aprend_cmd_own_pass(cmd_list, copy, env->radiance_faces[face], size, size, &source_set, 1, &params, sizeof(params));
+	}
+	return aprend_cmd_prefilter_environment(cmd_list, env);
+}
+
+/* LIT_SKY, outside a pass: Preetham's sky into the radiance cube's first
+ * mip, face by face, then prefiltered. */
+static bool aprend_cmd_lit_sky(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p                = command._params._lit_sky;
+	aprend_lit_environment env   = p._environment;
+	aprend_graphics_pipeline sky = aprend_lit_pass_pipeline(cmd_list->instance, APREND_LIT_PASS_SKY);
+	if (!sky)
+		return false;
+	const uint32_t size = env->desc.specular_size;
+	const float l       = std::sqrt(p._sun_direction[0] * p._sun_direction[0] + p._sun_direction[1] * p._sun_direction[1] +
+	                                p._sun_direction[2] * p._sun_direction[2]);
+	aprend_sky_params params{};
+	params.target_size[0] = params.target_size[1] = (float)size;
+	params.turbidity                              = p._turbidity;
+	for (int i = 0; i < 3; ++i) {
+		params.sun[i]    = p._sun_direction[i] / l;
+		params.ground[i] = p._ground_albedo[i];
+	}
+	params.sun[3]    = p._intensity;
+	params.ground[3] = 0.0f;
+	for (uint32_t face = 0; face < 6; ++face) {
+		params.face = face;
+		aprend_cmd_own_pass(cmd_list, sky, env->radiance_faces[face], size, size, nullptr, 0, &params, sizeof(params));
+	}
+	return aprend_cmd_prefilter_environment(cmd_list, env);
+}
+
+/* LIT_AMBIENT_OCCLUSION, outside a pass: the raw estimate into a pooled
+ * texture the depth's size, then smoothed onto the target, left in
+ * SHADER_READ_ONLY for the scene to read. */
+static bool aprend_cmd_lit_ambient_occlusion(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p                    = command._params._lit_ambient_occlusion;
+	aprend_instance instance         = cmd_list->instance;
+	const aprend_texture_range depth = aprend_texture_view_range(p._depth);
+	if (!aprend_cmd_range_written(cmd_list, depth)) {
+		printf("aprend: LIT_AMBIENT_OCCLUSION: the depth has nothing in it, from before the list or earlier in it\n");
+		return false;
+	}
+	const uint32_t width            = aprend_mip_size(p._target->texture._t2d->desc.width, p._target->desc.base_mip);
+	const uint32_t height           = aprend_mip_size(p._target->texture._t2d->desc.height, p._target->desc.base_mip);
+	aprend_graphics_pipeline raw    = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_OCCLUSION);
+	aprend_graphics_pipeline smooth = aprend_lit_blur_pipeline(instance, p._target->texture._t2d->desc.format);
+	if (!raw || !smooth)
+		return false;
+	// The view's matrices and size, and the command's settings, in the
+	// scene's occlusion material for this list.
+	const aprend_lit_scene_block &b = p._scene->block;
+	aprend_occlusion_block block{};
+	memcpy(block.view_projection, b.view_projection, sizeof(block.view_projection));
+	memcpy(block.inverse_view_projection, b.inverse_view_projection, sizeof(block.inverse_view_projection));
+	block.target_size[0] = (float)width;
+	block.target_size[1] = (float)height;
+	block.target_size[2] = 1.0f / (float)width;
+	block.target_size[3] = 1.0f / (float)height;
+	memcpy(block.eye_position, b.eye_position, sizeof(block.eye_position));
+	block.params[0]      = p._radius;
+	block.params[1]      = p._intensity;
+	block.params[2]      = 0.1f;
+	aprend_material material = p._scene->occlusion_material;
+	for (uint32_t i = 0; i < material->slot_count; ++i) {
+		if (material->slots[i].bytes) {
+			memcpy(material->slots[i].bytes, &block, sizeof(block));
+			material->slots[i].dirty = true;
+		}
+	}
+	if (!aprend_cmd_use_material(cmd_list, material))
+		return false;
+	aprend_pooled_target *pooled = aprend_render_target_take(cmd_list, width, height, APREND_OCCLUSION_FORMAT, 1);
+	if (!pooled)
+		return false;
+	aprend_binding_set raw_sets[2] = {material->set, aprend_texture_view_environment_set(p._depth)};
+	aprend_binding_set blur_set    = aprend_texture_view_environment_set(pooled->level_sources[0]);
+	if (!raw_sets[1] || !blur_set)
+		return false;
+	aprend_cmd_transition_range(cmd_list, depth, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	aprend_cmd_own_pass(cmd_list, raw, pooled->level_targets[0], width, height, raw_sets, 2, nullptr, 0);
+	aprend_size_params size{};
+	size.target_size[0] = (float)width;
+	size.target_size[1] = (float)height;
+	aprend_cmd_own_pass(cmd_list, smooth, p._target, width, height, &blur_set, 1, &size, sizeof(size));
+	return true;
+}
+
+/* AUTO_EXPOSURE, outside a pass: the source's log luminance into the
+ * exposure's luminance texture, its mips averaged down, and the adapted
+ * exposure into the value texture not last written, which becomes the
+ * current one. */
+static bool aprend_cmd_auto_exposure(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p                     = command._params._auto_exposure;
+	aprend_instance instance          = cmd_list->instance;
+	aprend_exposure exposure          = p._exposure;
+	const aprend_texture_range source = aprend_texture_view_range(p._source);
+	if (!aprend_cmd_range_written(cmd_list, source)) {
+		printf("aprend: AUTO_EXPOSURE: the source has nothing in it, from before the list or earlier in it\n");
+		return false;
+	}
+	aprend_graphics_pipeline luminance = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_LUMINANCE);
+	aprend_graphics_pipeline adapt     = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_ADAPT);
+	if (!luminance || !adapt)
+		return false;
+	const uint32_t next          = exposure->current ^ 1u;
+	aprend_binding_set source_set = aprend_texture_view_environment_set(p._source);
+	aprend_binding_set adapt_sets[2] = {aprend_texture_view_environment_set(exposure->luminance_view),
+	                                    aprend_texture_view_environment_set(exposure->value_views[exposure->current])};
+	if (!source_set || !adapt_sets[0] || !adapt_sets[1])
+		return false;
+	aprend_cmd_transition_range(cmd_list, source, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	aprend_size_params size{};
+	size.target_size[0] = size.target_size[1] = (float)APREND_EXPOSURE_LUMINANCE_SIZE;
+	aprend_cmd_own_pass(cmd_list, luminance, exposure->luminance_target, APREND_EXPOSURE_LUMINANCE_SIZE, APREND_EXPOSURE_LUMINANCE_SIZE,
+	                    &source_set, 1, &size, sizeof(size));
+	if (!aprend_cmd_generate_mips(cmd_list, exposure->luminance, 0, SPUDGPU_FILTER_LINEAR))
+		return false;
+	aprend_cmd_transition_range(cmd_list, aprend_texture_view_range(exposure->luminance_view), SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	// Read only once it has been adapted: the first takes its target.
+	aprend_cmd_transition_view(cmd_list, exposure->value_views[exposure->current], SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	aprend_adapt_params params{};
+	params.key        = exposure->desc.key;
+	params.min_log    = exposure->desc.min_log;
+	params.max_log    = exposure->desc.max_log;
+	params.up_rate    = exposure->desc.up_rate;
+	params.down_rate  = exposure->desc.down_rate;
+	params.delta_time = p._delta_time;
+	params.last_mip   = (float)(exposure->luminance->desc.mip_levels - 1);
+	params.first      = exposure->adapted ? 0u : 1u;
+	aprend_cmd_own_pass(cmd_list, adapt, exposure->value_targets[next], 1, 1, adapt_sets, 2, &params, sizeof(params));
+	exposure->current = next;
+	exposure->adapted = true;
+	return true;
+}
+
+/* For each lit scene [cmd_list] binds, at the top of the list:
+ * - the instance's BRDF lookup texture made, if nothing has written it;
+ * - its environment's cubes cleared to black, if it names one that has
+ *   never been written (not filled before the list, and not yet in it), so
+ *   an environment reads as black until it is filled;
+ * - its lights culled for its view's tiles, if it has a target size.
+ * Recorded before anything else. False if a pipeline or set can't be made. */
+static bool aprend_cmd_prepare_lit_scenes(aprend_command_list cmd_list) {
+	aprend_instance instance = cmd_list->instance;
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	// A copy: culling adds materials to the list.
+	std::vector<aprend_material> materials;
+	try {
+		materials = cmd_list->materials;
+	} catch (const std::bad_alloc &) {
+		printf("aprend: compile: out of memory\n");
+		return false;
+	}
+	bool lut_checked = false;
+	for (aprend_material material : materials) {
+		aprend_lit_scene_t *scene = material->lit_scene;
+		if (!scene)
+			continue;
+		if (!lut_checked) {
+			lut_checked                    = true;
+			const aprend_texture_range lut = aprend_texture_view_range(lit.brdf_lut_view);
+			if (!aprend_cmd_range_written(cmd_list, lut)) {
+				aprend_graphics_pipeline pipeline = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_BRDF_LUT);
+				if (!pipeline)
+					return false;
+				aprend_size_params size{};
+				size.target_size[0] = size.target_size[1] = (float)APREND_BRDF_LUT_SIZE;
+				aprend_cmd_own_pass(cmd_list, pipeline, lit.brdf_lut_target, APREND_BRDF_LUT_SIZE, APREND_BRDF_LUT_SIZE, nullptr, 0, &size, sizeof(size));
+			}
+		}
+		if (aprend_lit_environment env = scene->environment) {
+			const aprend_texture_range specular   = aprend_texture_view_range(env->specular_cube);
+			const aprend_texture_range irradiance = aprend_texture_view_range(env->irradiance_cube);
+			if (!aprend_cmd_range_written(cmd_list, specular) || !aprend_cmd_range_written(cmd_list, irradiance)) {
+				aprend_cmd_transition_range(cmd_list, specular, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
+				aprend_cmd_transition_range(cmd_list, irradiance, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
+				for (uint32_t mip = 0; mip < env->specular_mips; ++mip) {
+					const uint32_t side = aprend_mip_size(env->desc.specular_size, mip);
+					for (uint32_t face = 0; face < 6; ++face)
+						spudgpu_cmd_clear_color_attachment(cmd_list->cmd_list, env->specular_faces[(size_t)mip * 6 + face]->image_view, 0.0f, 0.0f, 0.0f,
+						                                   1.0f, side, side);
+				}
+				for (uint32_t face = 0; face < 6; ++face)
+					spudgpu_cmd_clear_color_attachment(cmd_list->cmd_list, env->irradiance_faces[face]->image_view, 0.0f, 0.0f, 0.0f, 1.0f,
+					                                   env->desc.irradiance_size, env->desc.irradiance_size);
+			}
+		}
+		if ((scene->block.flags & APREND_LIT_SCENE_FLAG_TILES) && scene->tiles) {
+			aprend_compute_pipeline pipeline = aprend_lit_cull_pipeline(instance);
+			if (!pipeline || !aprend_cmd_use_material(cmd_list, scene->cull_material))
+				return false;
+			// The copy this frame writes may still be read by a submission
+			// of this frame made earlier.
+			aprend_storage_buffer tiles = scene->tiles->buffers[cmd_list->compiled_frame % scene->tiles->buffer_count];
+			spudgpu_buffer_barrier barrier{tiles->store.buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS};
+			spudgpu_cmd_pipeline_barrier(cmd_list->cmd_list, &barrier, 1, nullptr, 0);
+			aprend_binding_set set = scene->cull_material->set;
+			spudgpu_cmd_bind_compute_pipeline(cmd_list->cmd_list, pipeline->pipeline);
+			spudgpu_cmd_bind_descriptor_sets_compute(cmd_list->cmd_list, pipeline->pipeline, 0,
+			                                         &set->sets[aprend_binding_set_frame_slot(set, cmd_list->compiled_frame)], 1);
+			const uint32_t count = scene->block.tiles_x * scene->block.tiles_y;
+			spudgpu_cmd_dispatch(cmd_list->cmd_list, (count + 63) / 64, 1, 1);
+		}
+	}
+	return true;
+}
+
 bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return false;
@@ -1494,6 +1963,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 
 	spudgpu_command_list cmd = cmd_list->cmd_list;
 	spudgpu_begin_command_list(cmd);
+	bool ok = aprend_cmd_prepare_lit_scenes(cmd_list);
 
 	/* Whether a BEGIN_RENDERING pass is currently open. */
 	bool in_pass = false;
@@ -1503,7 +1973,6 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	/* The open labelled regions, innermost last: whether each was opened
 	 * inside a pass. */
 	std::vector<bool> open_labels;
-	bool ok      = true;
 	/* The pipeline bound in the open pass; none until the pass sets one. */
 	aprend_graphics_pipeline bound_pipeline = nullptr;
 	/* The stride of the buffer or transient span last put in each vertex
@@ -1523,7 +1992,9 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 
 	std::vector<spudgpu_buffer_view> vertex_buffer_views;
 
-	for (size_t command_index = 0; command_index < cmd_list->commands.size(); ++command_index) {
+	// Nothing more is recorded once something has failed, the top of the
+	// list (aprend_cmd_prepare_lit_scenes) included.
+	for (size_t command_index = 0; ok && command_index < cmd_list->commands.size(); ++command_index) {
 		const APREND_COMMAND &command = cmd_list->commands[command_index];
 		switch (command._type) {
 		case APREND_COMMAND_DRAW:
@@ -1895,6 +2366,45 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			ok = aprend_cmd_bloom(cmd_list, command);
 			// Its passes bind pipelines of their own: a compute pipeline is
 			// set again before the next dispatch, as after a pass.
+			bound_compute_pipeline = nullptr;
+			break;
+		}
+		case APREND_COMMAND_TONE_MAP: {
+			if (in_pass) {
+				printf("aprend: TONE_MAP inside a rendering pass\n");
+				ok = false;
+				break;
+			}
+			ok = aprend_cmd_tone_map(cmd_list, command);
+			bound_compute_pipeline = nullptr;
+			break;
+		}
+		case APREND_COMMAND_LIT_ENVIRONMENT: {
+			if (in_pass) {
+				printf("aprend: LIT_ENVIRONMENT inside a rendering pass\n");
+				ok = false;
+				break;
+			}
+			ok = aprend_cmd_lit_environment(cmd_list, command);
+			bound_compute_pipeline = nullptr;
+			break;
+		}
+		case APREND_COMMAND_LIT_SKY:
+		case APREND_COMMAND_LIT_AMBIENT_OCCLUSION:
+		case APREND_COMMAND_AUTO_EXPOSURE: {
+			if (in_pass) {
+				printf("aprend: %s inside a rendering pass\n", command._type == APREND_COMMAND_LIT_SKY             ? "LIT_SKY"
+				                                               : command._type == APREND_COMMAND_AUTO_EXPOSURE ? "AUTO_EXPOSURE"
+				                                                                                                : "LIT_AMBIENT_OCCLUSION");
+				ok = false;
+				break;
+			}
+			if (command._type == APREND_COMMAND_LIT_SKY)
+				ok = aprend_cmd_lit_sky(cmd_list, command);
+			else if (command._type == APREND_COMMAND_AUTO_EXPOSURE)
+				ok = aprend_cmd_auto_exposure(cmd_list, command);
+			else
+				ok = aprend_cmd_lit_ambient_occlusion(cmd_list, command);
 			bound_compute_pipeline = nullptr;
 			break;
 		}

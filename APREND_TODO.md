@@ -382,7 +382,7 @@ unfinished in it.
   Linux with `-fsyntax-only -Wall -Wextra`, with and without `_DEBUG`, over
   every file in `src/render`, and `apricotfields.h` as C11: no errors and
   no new warnings. They are linked into the library now, and have run on
-  Metal (last bullet). Doxygen has
+  all three backends (last bullet). Doxygen has
   not been run over the three new headers, so "no warnings over
   `include/render`" above is not known to hold for them.
   - `aprendmaterial.h`, `aprendmaterial.cpp` (item 19): `aprend_material`
@@ -422,7 +422,8 @@ unfinished in it.
     then for each batch SET_MATERIAL, SET_VERTEX_BUFFERS and
     SET_INDEX_BUFFER where they change, and DRAW_INSTANCED[_INDEXED] with
     the batch's first instance as `_start_instance_location`.
-  - **Run on Metal only** (2026-10-17, Apple M5 Pro, unified memory):
+  - **Run on all three backends** (2026-10-17). First on Metal (Apple M5
+    Pro, unified memory):
     `../apricottests`' `test_material`, `test_render_pass` and
     `test_draw_list` passed on their first build, Debug under the Metal
     validation settings and Release, with no validation message and no
@@ -440,10 +441,110 @@ unfinished in it.
     list in both orders: three batches from four draws, one of them
     indexed, replayed into two passes of one list; the last added on top
     in submission order; a list changed since its build, a draw with no
-    material and a list built in the frame before, each refused. Not run
-    on D3D12 or Vulkan, so the per-instance binding past instance 0 there
-    is still to see, and not on a device with its own memory, where the
-    material arena's copies are the only path a block takes.
+    material and a list built in the frame before, each refused. The same
+    day they passed on D3D12 and Vulkan on Windows, on an Intel Iris Xe
+    and an NVIDIA RTX A2000 (memory of its own, so the material arena's
+    copies and the draw list's instance bytes reached device memory
+    there), with every other test (reported).
+- **Lit surfaces, item 24, written 2026-10-17; run on Metal.**
+  `include/render/aprendlit.h` (lit surfaces), `include/render/aprendpost.h`
+  (adapting exposure), `src/render/aprendlit.cpp`, `aprendlit_internal.hpp`,
+  the commands in `aprendcommands.cpp`, and 25 shaders in `shaders/` sharing
+  `.glslh` includes (glslc `-I`; CMake rebuilds each when one changes).
+  - **The shape.** Aprend ships the shading, never the geometry: the
+    surface fragment shader reads a position, normal, uv and tangent from
+    any vertex shader, the scene at set 0 and the material at set 1 (item
+    24 has why). The API is a handful of objects and calls, each value
+    checked and each refusal printed: shaders and layouts (the
+    instance's); a lit material (an `aprend_material` with typed values,
+    maps and sampler); an environment; a scene (view, sun and its
+    cascaded shadow, up to 128 point and spot lights, spot shadows,
+    ambient light, ambient occlusion), which is a surface material, a
+    block-only material per sun cascade and per spot shadow for the
+    shadow passes, and Aprend's own for culling and occlusion; an
+    exposure. Fitting functions with no GPU in them: the sun's cascades
+    for a view (`aprend_lit_fit_sun_cascades`, stable: bounding spheres,
+    texel snapping) and a spot's shadow matrix. Commands: LIT_ENVIRONMENT
+    (a cube or equirectangular picture), LIT_SKY (Preetham's daylight),
+    LIT_AMBIENT_OCCLUSION, AUTO_EXPOSURE, TONE_MAP (clamp, ACES, Khronos
+    PBR Neutral, AgX; an exposure's adapted value).
+  - **Shading**: Cook-Torrance (GGX, Smith-Schlick, Schlick); a clear coat
+    (Filament's lobe) and a sheen (Charlie, Neubelt's visibility); point
+    and spot lights windowed to their range; a sun with up to four
+    cascades, a spot with a shadow of its own, each read through a
+    comparison sampler with nine bilinear taps; a hemisphere plus an
+    environment (GGX-prefiltered specular chain, irradiance cube) weighted
+    by a BRDF lookup texture made once per instance; ambient occlusion
+    from the map and from the view; base color, normal, ORM and emission
+    maps, cut-outs, a uv transform; linear or sRGB out.
+  - **What a compile does for a scene**, at the top of the list: makes the
+    BRDF lookup texture once, clears an environment never filled to
+    black, and culls the scene's lights for each 16-texel tile of its
+    view's target with a compute pass into a buffer set the surface shader
+    reads (`aprend_cmd_prepare_lit_scenes`). Empty slots hold placeholders
+    a block bit says not to read: nothing needs filling, no lit call needs
+    a queue.
+  - **Fixes below Aprend** it brought, in SpudGPU: comparison samplers
+    (`compare_enable`, `compare_op`) on all three backends; D3D12 begins a
+    depth-only pass; Metal binds a set only to the stages whose function
+    reads it (from Metal's pipeline reflection), and emits every declared
+    resource into a shader's argument buffer struct, so a shader that uses
+    some of a set's bindings reads the right ones (spudlib/CLAUDE.md has
+    what is still a gap). Vulkan's and D3D12's sides are written, not
+    compiled or run.
+  - **What has run.** `../apricottests`, on an Apple M5 Pro (2026-10-17),
+    Debug under the Metal validation settings with warnings fatal and
+    Release, no leak: `test_lit_surface`, `test_lit_mesh_shadow`,
+    `test_tone_map` (nine curves and encodings, AgX's against the same
+    formula in C), `test_lit_environment`, `test_lit_cascades` (the fit
+    on the CPU: splits, framing, texel snapping, refusals; on the GPU:
+    the cascade chosen by depth, and past the last), `test_lit_spot_and_
+    cutout_shadows` (a spot's shadow, 0 against 231 predicted lit; a
+    cut-out's shadow there or not by its cutoff), `test_lit_coat_and_sheen`
+    (against the lobes' formulas in C), `test_lit_tiles` (culled per tile,
+    texel for texel the same as unculled), `test_lit_sky` (the zenith
+    read 161, 255, 255, as the model gives), `test_auto_exposure` (46, 6,
+    46, 11 as worked out), `test_lit_ambient_occlusion` (a step occluded
+    beside it, 155 of 255; open elsewhere; the scene darkened by it
+    there alone). Found on the way and fixed: Metal's argument buffer
+    struct for a shader using some of a set's bindings (black sky), a set
+    bound to a stage that doesn't read it, push blocks Metal rounds to 8.
+    Not run on D3D12 or Vulkan.
+- **Uniforms found once, written 2026-10-17; run on Metal** (from "Next,
+  from the review", its first step). `aprend_material_find_uniform`
+  turns a member's name into an `aprend_material_uniform` once, against
+  a binding layout, and `aprend_material_set_uniform_value` and
+  `aprend_material_get_uniform_value` write and read it with no string
+  read. `aprend_material_set_uniform` is now a find and a set.
+  - The handle is a value of the layout, its binding's place and the
+    member's place in its block, not a pointer into a material: one find
+    serves every material of the layout, which is how a caller with one
+    material per look and one layout for all of them uses it. It is
+    checked at every set against the material's layout (another layout,
+    even one of the same bindings, is refused) and against what the
+    material owns (a block named external is refused).
+  - What it was measured against. Hazel's `Material::Set(name, value)`
+    hashes the name into its shader buffer's map at every call and has
+    no handle. Unreal resolves a parameter once and sets it by index
+    (`UMaterialInstanceDynamic::InitializeScalarParameterAndGetIndex`,
+    `SetScalarParameterByIndex`), and its shader parameters are bound to
+    offsets once at compile; GL's uniform locations, bgfx's uniform
+    handles and Unity's property IDs are the same idea. Aprend's is that
+    shape in C: a plain struct handed back by value, no allocation, no
+    lifetime of its own beyond the layout's.
+  - One rule changed with it: a bare name is looked for in every block a
+    material of the layout could own, a block some material leaves
+    external included, so a name means the same member in every material
+    of the layout. Before, it was looked for in the blocks the material
+    at hand owned.
+  - `../apricottests`' `test_material` finds `color` and `strength` and
+    checks their type and offset, finds `layers[1].add` by its binding's
+    name and its block's and gets the same handle, sets by handle between
+    two submissions, reads values back, and is refused a zeroed handle,
+    one of another layout made from the same shaders, and one into a
+    block the material leaves external. Passed on Metal (Debug under
+    validation, Release, no leak), 2026-10-17. Not run on D3D12 or
+    Vulkan; nothing in it is backend-specific.
 - **Shader reflection, written 2026-10-11 and compiled on all three
   backends** (item 18; closes item 1). Type-checked with GCC 11 as the
   entry above before that. Part of it has run without a device: see the
@@ -742,7 +843,8 @@ unfinished in it.
   M5 Pro) on its first build: Debug under Metal API and shader validation
   with warnings fatal, and Release; no leak at exit. The white square read
   255 at its centre, 34 ten texels out on both sides (white, alpha the
-  same), 2 in the corner. Not run on D3D12 or Vulkan.
+  same), 2 in the corner. On 2026-10-17 it passed on D3D12 and Vulkan on
+  Windows, on an Intel Iris Xe and an NVIDIA RTX A2000 (reported).
 - **Mip generation in a command list, written 2026-10-16; run on Metal
   the same day** (item 31): `APREND_COMMAND_GENERATE_MIPS`, outside a pass,
   checked as it is sent (texture, instance, level, filter, usage, format)
@@ -1456,7 +1558,7 @@ Half settled on 2026-10-16. Aprend ships shaders of its own: GLSL in
 embedded in it (see "State of the code"), and the objects made of them kept
 by the instance (`aprendbuiltin_internal.hpp`). A caller's shaders are
 still SPIR-V it hands over: item 18 has Aprend reflect them, so SPIR-V is
-all it needs. Written 2026-10-16 and run on Metal by `../apricottests`; not run on D3D12 or Vulkan. Left:
+all it needs. Written 2026-10-16 and run on all three backends by `../apricottests` (mip generation and bloom draw with them; D3D12 and Vulkan by 2026-10-17). Left:
 
 - **No runtime compilation, includes, macros, cache or reload**, for the
   caller's shaders or Aprend's. Aprend's shaders share nothing yet; when two
@@ -1556,15 +1658,70 @@ polylines (`APTEXT_TODO.md`). Exact curve rendering with no atlas (Slug) is
 the quality ceiling and is commercial; MTSDF is the choice until something
 shows it isn't enough.
 
-### 24. No lit pipeline
+### 24. Lighting: what is left
 
-No lighting, shadows or post-processing of any kind; a pipeline today outputs
-whatever its two shaders compute from one uniform block. Hazel's chain, in
-order: directional and spot shadow maps, pre-depth, tiled light culling
-(compute), skybox, PBR geometry, GTAO, SSR, bloom, composite
-(`SceneRenderer::FlushDrawList`). Each stage is its own piece of work once
-items 9 to 21 exist; this entry is the placeholder for splitting them out.
-Post-processing, with bloom first, is split out as item 36.
+Written 2026-10-17 and run on Metal (see "State of the code"). Against the
+chain Hazel's `SceneRenderer::FlushDrawList` runs - directional and spot
+shadow maps, pre-depth, tiled light culling, skybox, PBR geometry, GTAO,
+SSR, bloom, composite - Aprend has every stage but screen-space
+reflections: cascaded sun shadows and spot shadows, tiled culling (as a
+compute pass a compile records), a sky and its background, the PBR
+surface with Hazel's model, a horizon-based ambient occlusion, bloom
+(item 36) and a composite with four tone curves and adapting exposure.
+Against Unreal's forward path: its material inputs (base color,
+metallic, specular, roughness, emissive, opacity, opacity mask), clear
+coat, a cloth-like sheen, split-sum image-based light from a lookup
+texture, stable cascades, eye adaptation. Unreal's deferred path, virtual
+shadow maps, Lumen and Nanite are past what a forward renderer is for.
+
+**The shape, decided 2026-10-17.** Aprend ships the shading, never the
+geometry: the surface fragment shader has a documented interface and the
+caller's vertex shader decides the vertex format, the transforms and the
+space. That is Unreal's split - a vertex factory per kind of geometry, a
+shading model per kind of surface, a material that only hands over values
+- not Hazel's, whose one PBR shader is tied to its one vertex layout and
+keeps its material values in push constants. Aprend's own vertex shaders
+are there for a caller with no geometry of its own; trellislib keeps its
+own. Set 0 for the view and set 1 for the material is the usual order of
+binding frequency. There is no scene graph: what is drawn, in what order
+and into which shadow map is the caller's, and Aprend gives it the
+matrices (`aprend_lit_fit_sun_cascades`,
+`aprend_lit_spot_shadow_view_projection`) as functions with no GPU in
+them, so a caller that frames its own keeps doing so.
+
+Left:
+
+- [ ] **Run on D3D12 and Vulkan**, with SpudGPU's comparison samplers and
+      D3D12 depth-only passes, both written blind.
+- [ ] **Screen-space reflections.** A forward pass has no normal or
+      roughness target to reflect from: it needs the surface to write a
+      second target (a variant of the surface shader, and a pipeline of
+      two targets, item 25), then a ray march over depth and a resolve.
+      Hazel does it deferred-style over its own G-buffer outputs.
+- [ ] **Shadows from point lights** (a cube map each, six passes).
+- [ ] **Depth bounds for the tiles**: without a depth pre-pass a tile's
+      frustum runs the whole depth of the view (Hazel's forward+ uses its
+      pre-depth for each tile's range), so a light behind a wall is kept.
+      A pass that reduces a depth buffer per tile, and culling against it.
+- [ ] **Transmission** (glTF's KHR_materials_transmission): refraction of
+      what is behind, needing a copy of the opaque picture.
+- [ ] **A sun disc** in the sky shader (left out of the environment on
+      purpose, where it would only blur), and Hosek-Wilkie's sky for a
+      better horizon than Preetham's.
+- [ ] **Cascade blending**: a fragment takes one cascade; a blend over the
+      last stretch of each would hide the seam between them (only the
+      last fades out now).
+- [ ] **GTAO proper** (Jimenez et al.: cosine-weighted horizons and a
+      bent normal) in place of the horizon-based estimate, and at half
+      resolution with an upsample, when it is measured.
+- [ ] **A histogram for exposure** (Unreal's), which can leave the
+      darkest and brightest few percent out, in place of the log
+      average.
+- [ ] **Per-map uv transforms** (KHR_texture_transform's), one for all
+      maps now.
+- [ ] **Variants**: branches on the encoding, the map bits, the shadows
+      and the tiles are at run time; a shader per case, or specialization
+      constants (item 22), when a measurement shows them.
 
 ### 36. Post-processing, and bloom first
 
@@ -1625,9 +1782,9 @@ the code"). What was decided:
 
 Left:
 
-- [ ] **Run on D3D12 and Vulkan.** `../apricottests`' `test_bloom` passed
-      on Metal; nothing in it is backend-specific beyond what mip
-      generation already ran there.
+- [x] **Run on D3D12 and Vulkan.** `../apricottests`' `test_bloom` passed
+      on both, on an Intel Iris Xe and an NVIDIA RTX A2000, on
+      2026-10-17, after Metal the day before.
 - [ ] **Exposure and a tone curve** belong with an HDR pipeline (item 24),
       in the composite or after it.
 - [ ] **A lens dirt texture** (Hazel's) and a mask texture weighting the
@@ -1874,16 +2031,16 @@ and 5 are closed and their numbers are not reused.
    its reflection and the logic over it have run without a device only
    (see "State of the code").
 5. Items 19, 20, 21: material, pass and draw list. Written, compiled, and
-   run on Metal by `../apricottests` (2026-10-17, see "State of the
-   code"); left of this step, running those three tests on D3D12 and
-   Vulkan, on the RTX A2000 for the staged path. What is left of each
-   item is in its item.
+   run on Metal, D3D12 and Vulkan by `../apricottests` (2026-10-17, see
+   "State of the code"). What is left of each item is in its item, and
+   the first of it is "Next, from the review" below.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
    Metal (`../apricottests`, 2026-10-16). Item 22 (Aprend ships shaders)
    and item 31 (mip generation, both forms) are written and have run on
-   all three. Bloom (item 36) is written and `test_bloom` passed on
-   Metal (2026-10-16). Then 23 and 24, each a shader Aprend
-   ships, as item 22 allows; and trellislib's half of the selective glow
+   all three. Bloom (item 36) is written and `test_bloom` has passed on
+   all three (2026-10-17). Then 23 and 24, each a shader Aprend
+   ships, as item 22 allows (24 is written and has run on Metal,
+   2026-10-17; what is left of it is in the item); and trellislib's half of the selective glow
    (`../trellislib/TODO.md`).
 
 Item 37 (the command allocator) is written and has run on all three
@@ -1909,15 +2066,15 @@ From the review of the reflection and the material against Hazel on
 and record what was done under "State of the code" and in the item it
 belongs to.
 
-1. **`aprend_material_set_uniform` looks a name up by string on every
-   call**, across every member of every owned block. A lookup once (a
-   name to a handle) and a set by handle would make per-frame updates
-   cheap.
-2. **What Hazel's material has and Aprend's doesn't:** a copy
-   (`Material::Copy`), reading a value back (`Get`), and default
-   resources for slots left empty. Without defaults an incomplete
-   material fails the compile, which is stricter than Hazel and arguably
-   right, but every slot has to be set before the first draw.
+1. **What Hazel's material has and Aprend's doesn't:** a copy
+   (`Material::Copy`), and default resources for slots left empty.
+   Without defaults an incomplete material fails the compile, which is
+   stricter than Hazel and arguably right, but every slot has to be set
+   before the first draw. (Reading a value back is done: see "Uniforms
+   found once" under "State of the code".)
+2. **`aprend_uniform_buffer_update_by_name` searches by name at every
+   call**, as the material did: a uniform buffer's layout is a short list,
+   but the same find-once handle would serve it. Not started.
 3. **Reflection limits**: the list is item 18's "what is left", and is
    kept there only.
 4. **The arena's remaining policy** (item 19): place a new block in the

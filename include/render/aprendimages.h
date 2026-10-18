@@ -873,6 +873,16 @@ typedef struct aprend_sampler_desc {
 	/** 1.0 for no anisotropic filtering. */
 	float max_anisotropy;
 
+	/**
+	 * A comparison sampler, for a depth texture read in a shader as a
+	 * `sampler2DShadow` (or its array or cube form): each texel is compared
+	 * with the depth the shader gives, and the read is the share of the
+	 * filtered texels that pass. false for an ordinary sampler.
+	 */
+	bool compare_enable;
+	/** The comparison, the shader's depth first: LESS_OR_EQUAL passes where it is at or in front of the texel. Read only with #compare_enable. */
+	SPUDGPU_COMPARE_OP compare_op;
+
 #if _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;

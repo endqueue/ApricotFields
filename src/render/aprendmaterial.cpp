@@ -400,52 +400,171 @@ bool aprend_material_is_complete(aprend_material material) {
 	return true;
 }
 
-// The member of an owned block [name] names: "binding.path" first, then
-// "path" alone in any owned block. [out_slot] receives its slot. NULL,
-// printed for [who], if none does or the bare path is ambiguous.
-static const aprend_shader_member *aprend_material_find_member(
+// Whether binding [index] of [layout] is a block a material of it can own:
+// a uniform buffer, one buffer, whose block the layout knows.
+static bool aprend_layout_has_ownable_block(aprend_binding_layout layout, uint32_t index) {
+	const aprend_binding_desc &binding = layout->bindings[index];
+	return binding._type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER && binding._count == 1 && layout->blocks[index].known;
+}
+
+// The member of [uniform], or NULL, printed for [who], if it names none of
+// [material]'s layout or one in a block the material doesn't own.
+// [out_slot] receives the block's slot.
+static const aprend_shader_member *aprend_material_uniform_member(
     aprend_material material,
-    const char *name,
+    const aprend_material_uniform &uniform,
     aprend_material_slot **out_slot,
     const char *who) {
-	for (uint32_t i = 0; i < material->slot_count; ++i) {
-		aprend_material_slot &slot = material->slots[i];
-		if (!slot.arena)
+	if (!uniform._layout) {
+		printf("apricot: %s: uniform is no uniform (aprend_material_find_uniform fills one)\n", who);
+		return nullptr;
+	}
+	if (uniform._layout != material->layout) {
+		printf("apricot: %s: uniform was found in another layout than the material's\n", who);
+		return nullptr;
+	}
+	// Found in this layout, so in range; checked all the same, since the
+	// fields are the caller's to have copied.
+	if (uniform._binding_index >= material->slot_count) {
+		printf("apricot: %s: uniform names binding %u, and the layout has %u\n", who, uniform._binding_index, material->slot_count);
+		return nullptr;
+	}
+	aprend_material_slot &slot = material->slots[uniform._binding_index];
+	if (!slot.arena) {
+		printf("apricot: %s: binding \"%s\" is a block the material doesn't own (it was named in _external_blocks)\n", who, slot.name);
+		return nullptr;
+	}
+	if (uniform._member_index >= slot.member_count) {
+		printf("apricot: %s: uniform names member %u of \"%s\", which has %u\n", who, uniform._member_index, slot.name, slot.member_count);
+		return nullptr;
+	}
+	const aprend_shader_member &member = slot.members[uniform._member_index];
+	if (member.type == APREND_UNIFORM_TYPE_UNKNOWN) {
+		printf("apricot: %s: member \"%s\" has a type with no APREND_UNIFORM_TYPE: write it with aprend_material_set_uniform_bytes\n", who,
+		       member.name);
+		return nullptr;
+	}
+	if (member.array_count == 0) {
+		printf("apricot: %s: member \"%s\" is an array without a size\n", who, member.name);
+		return nullptr;
+	}
+	*out_slot = &slot;
+	return &member;
+}
+
+bool aprend_material_find_uniform(
+    aprend_binding_layout layout,
+    const char *name,
+    aprend_material_uniform *out_uniform,
+    aprend_shader_member *out_member) {
+	static const char *who = "aprend_material_find_uniform";
+	if (!layout) {
+		printf("apricot: %s: layout is NULL\n", who);
+		return false;
+	}
+	if (!name) {
+		printf("apricot: %s: name is NULL\n", who);
+		return false;
+	}
+	if (!out_uniform) {
+		printf("apricot: %s: out_uniform is NULL\n", who);
+		return false;
+	}
+	// Qualified by the binding's name or its block's: one block, so one
+	// member at most.
+	for (uint32_t i = 0; i < layout->binding_count; ++i) {
+		if (!aprend_layout_has_ownable_block(layout, i))
 			continue;
-		// Qualified by the binding's name or the block's.
-		const char *qualifiers[2] = {slot.name, slot.block_name};
+		const aprend_binding_layout_t::block_info &block = layout->blocks[i];
+		const char *qualifiers[2]                        = {layout->names[i].c_str(), block.block_name};
 		for (const char *qualifier : qualifiers) {
-			if (!qualifier)
+			if (!qualifier || !qualifier[0])
 				continue;
 			const size_t length = strlen(qualifier);
 			if (strncmp(name, qualifier, length) != 0 || name[length] != '.')
 				continue;
-			for (uint32_t m = 0; m < slot.member_count; ++m) {
-				if (strcmp(slot.members[m].name, name + length + 1) == 0) {
-					*out_slot = &slot;
-					return &slot.members[m];
-				}
+			for (uint32_t m = 0; m < block.member_count; ++m) {
+				const aprend_shader_member &member = layout->members[block.first_member + m];
+				if (strcmp(member.name, name + length + 1) != 0)
+					continue;
+				*out_uniform = {layout, i, m};
+				if (out_member)
+					*out_member = member;
+				return true;
 			}
 		}
 	}
-	const aprend_shader_member *found = nullptr;
-	for (uint32_t i = 0; i < material->slot_count; ++i) {
-		aprend_material_slot &slot = material->slots[i];
-		for (uint32_t m = 0; m < slot.member_count; ++m) {
-			if (strcmp(slot.members[m].name, name) != 0)
+	// The path alone: in exactly one block.
+	bool found                = false;
+	aprend_material_uniform at{};
+	for (uint32_t i = 0; i < layout->binding_count; ++i) {
+		if (!aprend_layout_has_ownable_block(layout, i))
+			continue;
+		const aprend_binding_layout_t::block_info &block = layout->blocks[i];
+		for (uint32_t m = 0; m < block.member_count; ++m) {
+			if (strcmp(layout->members[block.first_member + m].name, name) != 0)
 				continue;
 			if (found) {
-				printf("apricot: %s: \"%s\" is a member of more than one block of the material: name it after its binding, as \"%s.%s\"\n", who,
-				       name, slot.name, name);
-				return nullptr;
+				printf("apricot: %s: \"%s\" is a member of more than one block of the layout: name it after its binding, as \"%s.%s\"\n", who,
+				       name, layout->names[i].c_str(), name);
+				return false;
 			}
-			found     = &slot.members[m];
-			*out_slot = &slot;
+			found = true;
+			at    = {layout, i, m};
 		}
 	}
-	if (!found)
-		printf("apricot: %s: no block the material owns has a member \"%s\"\n", who, name);
-	return found;
+	if (!found) {
+		printf("apricot: %s: no uniform block of the layout has a member \"%s\"\n", who, name);
+		return false;
+	}
+	*out_uniform = at;
+	if (out_member)
+		*out_member = layout->members[layout->blocks[at._binding_index].first_member + at._member_index];
+	return true;
+}
+
+bool aprend_material_set_uniform_value(
+    aprend_material material,
+    aprend_material_uniform uniform,
+    const void *data) {
+	static const char *who = "aprend_material_set_uniform_value";
+	if (!material) {
+		printf("apricot: %s: material is NULL\n", who);
+		return false;
+	}
+	if (!data) {
+		printf("apricot: %s: data is NULL\n", who);
+		return false;
+	}
+	aprend_material_slot *slot         = nullptr;
+	const aprend_shader_member *member = aprend_material_uniform_member(material, uniform, &slot, who);
+	if (!member)
+		return false;
+	// The block was sized from these members, so each one fits.
+	aprend_write_block_member(*member, slot->bytes, data);
+	slot->dirty = true;
+	return true;
+}
+
+bool aprend_material_get_uniform_value(
+    aprend_material material,
+    aprend_material_uniform uniform,
+    void *out_data) {
+	static const char *who = "aprend_material_get_uniform_value";
+	if (!material) {
+		printf("apricot: %s: material is NULL\n", who);
+		return false;
+	}
+	if (!out_data) {
+		printf("apricot: %s: out_data is NULL\n", who);
+		return false;
+	}
+	aprend_material_slot *slot         = nullptr;
+	const aprend_shader_member *member = aprend_material_uniform_member(material, uniform, &slot, who);
+	if (!member)
+		return false;
+	aprend_read_block_member(*member, slot->bytes, out_data);
+	return true;
 }
 
 bool aprend_material_set_uniform(
@@ -465,22 +584,10 @@ bool aprend_material_set_uniform(
 		printf("apricot: %s: data is NULL\n", who);
 		return false;
 	}
-	aprend_material_slot *slot         = nullptr;
-	const aprend_shader_member *member = aprend_material_find_member(material, name, &slot, who);
-	if (!member)
+	aprend_material_uniform uniform{};
+	if (!aprend_material_find_uniform(material->layout, name, &uniform, nullptr))
 		return false;
-	if (member->type == APREND_UNIFORM_TYPE_UNKNOWN) {
-		printf("apricot: %s: member \"%s\" has a type with no APREND_UNIFORM_TYPE: write it with aprend_material_set_uniform_bytes\n", who, name);
-		return false;
-	}
-	if (member->array_count == 0) {
-		printf("apricot: %s: member \"%s\" is an array without a size\n", who, name);
-		return false;
-	}
-	// The block was sized from these members, so each one fits.
-	aprend_write_block_member(*member, slot->bytes, data);
-	slot->dirty = true;
-	return true;
+	return aprend_material_set_uniform_value(material, uniform, data);
 }
 
 bool aprend_material_set_uniform_bytes(

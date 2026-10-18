@@ -250,6 +250,10 @@ typedef struct aprend_texture_view_t
 	 * it can't outlive the view or be confused with a new view made at the
 	 * same address. Released with the view, before its image view. */
 	aprend_binding_set bloom_set{nullptr};
+	/* The same for Aprend's environment passes (aprendlit.cpp,
+	 * aprend_texture_view_environment_set): this view and a mipmapped
+	 * sampler, made the first time one reads it. */
+	aprend_binding_set environment_set{nullptr};
 } aprend_texture_view_t;
 
 /* The mips and layers [view] covers, with the image and where that

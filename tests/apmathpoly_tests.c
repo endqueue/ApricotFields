@@ -709,6 +709,78 @@ static void test_offset_moves(void)
     apmath_poly_destroy(gone);
 }
 
+// Edges a move shortens to nothing: a ring moved in past its own width
+// leaves nothing - it would otherwise come out turned through half a turn,
+// winding the same way - and short of that it shrinks as it should. A notch
+// closed by an outward move leaves no trace.
+static void test_offset_collapses(void)
+{
+    current_test = "offset_collapses";
+    test_set square = {0};
+    add_rect(&square, 0, 0, 10, 10, 1);
+    const double in_four[4] = {-4, -4, -4, -4};
+    apmath_poly small = run_offset(&square, in_four, 2.0);
+    APMATH_POLY_SET s = apmath_poly_get_set(small);
+    int64_t small_xy[] = {4, 4, 6, 4, 6, 6, 4, 6};
+    uint64_t small_tags[] = {1, 2, 3, 4};
+    CHECK(s.ring_count == 1 && ring_is(&s, 0, small_xy, small_tags, 4));
+    apmath_poly_destroy(small);
+
+    // Exactly to its middle: no area, so nothing.
+    const double in_five[4] = {-5, -5, -5, -5};
+    apmath_poly point = run_offset(&square, in_five, 2.0);
+    s = apmath_poly_get_set(point);
+    CHECK(s.ring_count == 0);
+    apmath_poly_destroy(point);
+
+    // A long thin rectangle: its short edges go first, and past half its
+    // width nothing is left.
+    test_set bar = {0};
+    add_rect(&bar, 0, 0, 100, 20, 1);
+    const double in_five_bar[4] = {-5, -5, -5, -5};
+    apmath_poly thinner = run_offset(&bar, in_five_bar, 2.0);
+    s = apmath_poly_get_set(thinner);
+    int64_t thinner_xy[] = {5, 5, 95, 5, 95, 15, 5, 15};
+    CHECK(s.ring_count == 1 && ring_is(&s, 0, thinner_xy, small_tags, 4));
+    apmath_poly_destroy(thinner);
+    const double in_fifteen[4] = {-15, -15, -15, -15};
+    apmath_poly bar_gone = run_offset(&bar, in_fifteen, 2.0);
+    s = apmath_poly_get_set(bar_gone);
+    CHECK(s.ring_count == 0);
+    apmath_poly_destroy(bar_gone);
+
+    // A right triangle whose incircle has a radius of about 8.8: in by 5
+    // it's smaller, in by 10 it's gone. Its sharp corners mitre within 4.
+    test_set triangle = {0};
+    int64_t triangle_xy[] = {0, 0, 30, 0, 0, 30};
+    add_ring(&triangle, triangle_xy, 3, 1, APMATH_POLY_NO_RING);
+    const double in_five_tri[3] = {-5, -5, -5};
+    apmath_poly smaller = run_offset(&triangle, in_five_tri, 4.0);
+    s = apmath_poly_get_set(smaller);
+    CHECK(s.ring_count == 1 && s.point_count == 3);
+    CHECK(set_area2(&s) > 0.0 && set_area2(&s) < 2.0 * 450.0);
+    apmath_poly_destroy(smaller);
+    const double in_ten_tri[3] = {-10, -10, -10};
+    apmath_poly triangle_gone = run_offset(&triangle, in_ten_tri, 4.0);
+    s = apmath_poly_get_set(triangle_gone);
+    CHECK(s.ring_count == 0);
+    apmath_poly_destroy(triangle_gone);
+
+    // A notch 20 wide grown shut by 15 on every side: the bottom of the
+    // notch goes, its walls pass each other, and the outline is a square.
+    test_set notched = {0};
+    int64_t notched_xy[] = {0, 0, 100, 0, 100, 100, 60, 100, 60, 40, 40, 40, 40, 100, 0, 100};
+    add_ring(&notched, notched_xy, 8, 1, APMATH_POLY_NO_RING);
+    const double out_fifteen[8] = {15, 15, 15, 15, 15, 15, 15, 15};
+    apmath_poly shut = run_offset(&notched, out_fifteen, 2.0);
+    s = apmath_poly_get_set(shut);
+    int64_t shut_xy[] = {-15, -15, 115, -15, 115, 115, -15, 115};
+    CHECK(s.ring_count == 1 && s.point_count == 4 && set_area2(&s) == 2.0 * 130.0 * 130.0);
+    if (s.ring_count == 1 && s.point_count == 4)
+        CHECK(memcmp(s.points, shut_xy, sizeof(shut_xy)) == 0);
+    apmath_poly_destroy(shut);
+}
+
 // Mitres within the limit, bevels past it, and a step where two edges in
 // one line move apart.
 static void test_offset_corners(void)
@@ -1087,6 +1159,7 @@ int main(void)
     test_boolean_arguments();
     test_offset_moves();
     test_offset_corners();
+    test_offset_collapses();
     test_offset_arguments();
     test_skeleton_square();
     test_skeleton_roofs();

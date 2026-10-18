@@ -61,6 +61,32 @@ void aprend_write_block_member(
 	}
 }
 
+void aprend_read_block_member(
+    const aprend_shader_member &member,
+    const uint8_t *block,
+    void *out_data) {
+	uint8_t *destination         = (uint8_t *)out_data;
+	const uint32_t columns       = aprend_uniform_type_columns(member.type);
+	const uint32_t column_size   = aprend_uniform_type_column_size(member.type);
+	const uint32_t element_size  = columns * column_size;
+	for (uint32_t element = 0; element < member.array_count; ++element) {
+		const uint8_t *source = block + member.offset + (size_t)element * member.array_stride;
+		// aprend_write_block_member, the other way.
+		if (columns == 1) {
+			memcpy(destination, source, element_size);
+		} else if (!member.row_major) {
+			for (uint32_t column = 0; column < columns; ++column)
+				memcpy(destination + (size_t)column * column_size, source + (size_t)column * member.matrix_stride, column_size);
+		} else {
+			const uint32_t rows = column_size / 4;
+			for (uint32_t column = 0; column < columns; ++column)
+				for (uint32_t row = 0; row < rows; ++row)
+					memcpy(destination + (size_t)column * column_size + (size_t)row * 4, source + (size_t)row * member.matrix_stride + (size_t)column * 4, 4);
+		}
+		destination += element_size;
+	}
+}
+
 namespace {
 
 // The SPIR-V execution models a shader of [stage] may have its entry point

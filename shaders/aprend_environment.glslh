@@ -1,0 +1,44 @@
+// What Aprend's environment passes share (APREND_COMMAND_LIT_ENVIRONMENT):
+// the direction a texel of a cube face looks along, their push constants,
+// and Hammersley's low-discrepancy points.
+
+// AprendEnvironmentParams in aprendbuiltin_internal.hpp.
+layout(push_constant) uniform EnvironmentParams {
+    vec2 target_size;   // the face being rendered, in texels
+    uint face;          // 0 to 5: +X, -X, +Y, -Y, +Z, -Z
+    uint sample_count;
+    float roughness;    // the prefilter's
+    float source_size;  // a face of the source's first mip, in texels
+    float source_mips;  // the source's mip count
+    // To a multiple of 8 bytes, as aprend_tone_map.frag explains.
+    float padding;
+} params;
+
+const float PI = 3.14159265359;
+
+// The direction through texel [frag] (gl_FragCoord.xy, the first row at the
+// top) of face [face], as Vulkan, D3D and Metal pick a cube's face and its
+// coordinates from a direction.
+vec3 cube_direction(vec2 frag, uint face) {
+    vec2 st = frag / params.target_size * 2.0 - 1.0;
+    float s = st.x, t = st.y;
+    vec3 d;
+    if (face == 0u)      d = vec3(1.0, -t, -s);
+    else if (face == 1u) d = vec3(-1.0, -t, s);
+    else if (face == 2u) d = vec3(s, 1.0, t);
+    else if (face == 3u) d = vec3(s, -1.0, -t);
+    else if (face == 4u) d = vec3(s, -t, 1.0);
+    else                 d = vec3(-s, -t, -1.0);
+    return normalize(d);
+}
+
+vec2 hammersley(uint i, uint count) {
+    return vec2(float(i) / float(count), float(bitfieldReverse(i)) * 2.3283064365386963e-10);
+}
+
+// A frame around [n]: tangent, bitangent, n.
+mat3 frame(vec3 n) {
+    vec3 up = abs(n.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 t  = normalize(cross(up, n));
+    return mat3(t, cross(n, t), n);
+}

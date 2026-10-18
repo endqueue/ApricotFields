@@ -635,6 +635,48 @@ APRESULT compute_boolean(const APMATH_POLY_SET &subject, const APMATH_POLY_SET &
 
 const size_t APMATH_POLY_OFFSET_DESC_V1_SIZE = sizeof(APMATH_POLY_OFFSET_DESC);
 
+// One edge of a ring for move_edges(): where it starts, which way it runs,
+// and where its line goes as the move runs from t = 0 to t = 1. Its line at t
+// is every start + move * t + unit * s.
+struct moving_edge
+{
+    APMATH_POLY_POINT start;
+    double sx, sy;    // start, as doubles
+    double wx, wy;    // to its end, as integers would have it: exact for the parallel test
+    double ux, uy;    // unit direction
+    double mx, my;    // the whole move: the right-hand normal times the distance
+    double distance;
+    uint64_t tag;
+};
+
+// a + b * t: how far along an edge's line one of its ends is, as the move runs.
+struct moving_length
+{
+    double a, b;
+    double at(double t) const { return a + b * t; }
+};
+
+// Where the lines of [before] and [after] meet as the move runs: along
+// [before] from its start ([out_before]) and along [after] from its start
+// ([out_after]). Each is linear in t, since each line moves at a constant
+// rate. Parallel lines don't meet; there each end is where [reference] falls
+// on its line, which doesn't change as the lines move square to themselves.
+static void meet(const moving_edge &before, const moving_edge &after, double ref_x, double ref_y,
+                 moving_length &out_before, moving_length &out_after)
+{
+    if (before.wx * after.wy - before.wy * after.wx != 0.0)
+    {
+        double cross = before.ux * after.uy - before.uy * after.ux;
+        double d0x = after.sx - before.sx, d0y = after.sy - before.sy;
+        double d1x = after.mx - before.mx, d1y = after.my - before.my;
+        out_before = {(d0x * after.uy - d0y * after.ux) / cross, (d1x * after.uy - d1y * after.ux) / cross};
+        out_after = {(d0x * before.uy - d0y * before.ux) / cross, (d1x * before.uy - d1y * before.ux) / cross};
+        return;
+    }
+    out_before = {(ref_x - before.sx) * before.ux + (ref_y - before.sy) * before.uy, 0.0};
+    out_after = {(ref_x - after.sx) * after.ux + (ref_y - after.sy) * after.uy, 0.0};
+}
+
 // [set]'s rings with each edge moved by its distance and the corners re-met
 // (apmath_poly_offset_edges()), into [out_points], [out_tags] and
 // [out_ring_ends]: rings that may cross themselves or each other, for a
@@ -642,12 +684,26 @@ const size_t APMATH_POLY_OFFSET_DESC_V1_SIZE = sizeof(APMATH_POLY_OFFSET_DESC);
 // moved edge after the corner, or a bevel or step leading to it, so it takes
 // that edge's tag. False, with [error] set, if a corner lands past the
 // coordinate limit. Throws std::bad_alloc.
+//
+// Edges a move shortens to nothing are taken out first, in the order they
+// would go if the move ran from 0 to its whole distance, and the edges
+// either side of each meet directly. Without that, a ring moved in past its
+// own width comes out turned through half a turn - its corners each past the
+// opposite one - which winds the same way as the ring it came from, so the
+// union would keep it. A fold the other way, where a ring crosses itself, is
+// the union's to resolve, as before.
 bool move_edges(const APMATH_POLY_SET &set, const double *distances, double miter_limit,
                 std::vector<APMATH_POLY_POINT> &out_points, std::vector<uint64_t> &out_tags,
                 std::vector<uint32_t> &out_ring_ends, APMATH_ERROR *error)
 {
     const double limit = (double)APMATH_POLY_COORD_LIMIT;
     std::vector<uint32_t> at;
+    std::vector<moving_edge> edges;
+    std::vector<uint32_t> prev, next;
+    // The join before each edge: met at its original corner, or made when an
+    // edge between went, at the point where that edge vanished.
+    std::vector<bool> joined;
+    std::vector<double> joined_x, joined_y;
     for (uint32_t ring = 0; ring < set.ring_count; ring++)
     {
         // The ring without repeated points. Of a run of equal points the
@@ -668,9 +724,97 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
         if (n < 3)
             continue;
 
-        auto emit = [&](const APMATH_POLY_POINT &corner, double dx, double dy, uint64_t tag) {
-            double x = (double)corner.x + dx;
-            double y = (double)corner.y + dy;
+        edges.resize(n);
+        for (size_t k = 0; k < n; k++)
+        {
+            const APMATH_POLY_POINT &a = set.points[at[k]];
+            const APMATH_POLY_POINT &b = set.points[at[(k + 1) % n]];
+            moving_edge &e = edges[k];
+            e.start = a;
+            e.sx = (double)a.x;
+            e.sy = (double)a.y;
+            e.wx = (double)(b.x - a.x);
+            e.wy = (double)(b.y - a.y);
+            double length = std::sqrt(e.wx * e.wx + e.wy * e.wy);
+            e.ux = e.wx / length;
+            e.uy = e.wy / length;
+            e.distance = distances[at[k]];
+            // Along its right-hand normal, which points away from what the
+            // ring encloses on either winding.
+            e.mx = e.uy * e.distance;
+            e.my = -e.ux * e.distance;
+            e.tag = set.edge_tags ? set.edge_tags[at[k]] : 0;
+        }
+        prev.resize(n);
+        next.resize(n);
+        joined.assign(n, false);
+        joined_x.assign(n, 0.0);
+        joined_y.assign(n, 0.0);
+        for (size_t k = 0; k < n; k++)
+        {
+            prev[k] = (uint32_t)((k + n - 1) % n);
+            next[k] = (uint32_t)((k + 1) % n);
+        }
+
+        // How far along edge [k] its two ends are, as the move runs.
+        auto ends = [&](uint32_t k, moving_length &out_start, moving_length &out_end) {
+            moving_length unused;
+            uint32_t p = prev[k], q = next[k];
+            double rx = joined[k] ? joined_x[k] : edges[k].sx, ry = joined[k] ? joined_y[k] : edges[k].sy;
+            meet(edges[p], edges[k], rx, ry, unused, out_start);
+            double qx = joined[q] ? joined_x[q] : edges[q].sx, qy = joined[q] ? joined_y[q] : edges[q].sy;
+            meet(edges[k], edges[q], qx, qy, out_end, unused);
+        };
+
+        // Take out the edge that goes first, again and again, until none
+        // goes before the move is done or too few are left to enclose
+        // anything. Each step looks at every edge left: about the square of
+        // the edge count in all, for the few edges that ever go.
+        size_t left = n;
+        uint32_t first = 0;
+        double now = 0.0;
+        while (left >= 3)
+        {
+            uint32_t gone = UINT32_MAX;
+            double when = 1.0;
+            uint32_t k = first;
+            for (size_t visited = 0; visited < left; visited++, k = next[k])
+            {
+                moving_length start, end;
+                ends(k, start, end);
+                double rate = end.b - start.b;
+                if (!(rate < 0.0))
+                    continue;
+                double length_now = end.at(now) - start.at(now);
+                double t = length_now <= 0.0 ? now : now + length_now / -rate;
+                if (t <= when && (gone == UINT32_MAX || t < when))
+                {
+                    gone = k;
+                    when = t;
+                }
+            }
+            if (gone == UINT32_MAX)
+                break;
+            // Where it vanished: its start, at that moment.
+            moving_length start, end;
+            ends(gone, start, end);
+            const moving_edge &g = edges[gone];
+            double s = start.at(when);
+            uint32_t p = prev[gone], q = next[gone];
+            next[p] = q;
+            prev[q] = p;
+            joined[q] = true;
+            joined_x[q] = g.sx + g.mx * when + g.ux * s;
+            joined_y[q] = g.sy + g.my * when + g.uy * s;
+            if (gone == first)
+                first = q;
+            left--;
+            now = when;
+        }
+        if (left < 3)
+            continue;
+
+        auto emit = [&](double x, double y, uint64_t tag) {
             if (!(std::fabs(x) <= limit) || !(std::fabs(y) <= limit))
                 return false;
             out_points.push_back({(int64_t)std::llround(x), (int64_t)std::llround(y)});
@@ -678,52 +822,66 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
             return true;
         };
 
-        for (size_t k = 0; k < n; k++)
+        // From the lowest edge left, in ring order, so a ring nothing was
+        // taken out of comes out as it always did.
+        uint32_t k = first;
+        for (size_t visited = 0; visited < left; visited++, k = next[k])
+            if (k < first)
+                first = k;
+        k = first;
+        for (size_t visited = 0; visited < left; visited++, k = next[k])
         {
-            uint32_t in = at[(k + n - 1) % n], out = at[k], next = at[(k + 1) % n];
-            const APMATH_POLY_POINT &prev_point = set.points[in];
-            const APMATH_POLY_POINT &corner = set.points[out];
-            const APMATH_POLY_POINT &next_point = set.points[next];
-            uint64_t tag = set.edge_tags ? set.edge_tags[out] : 0;
-
-            // Unit directions of the edge into the corner and out of it, and
-            // each one's move: along its right-hand normal, which points away
-            // from what the ring encloses on either winding.
-            double ux = (double)(corner.x - prev_point.x), uy = (double)(corner.y - prev_point.y);
-            double vx = (double)(next_point.x - corner.x), vy = (double)(next_point.y - corner.y);
-            double u_length = std::sqrt(ux * ux + uy * uy), v_length = std::sqrt(vx * vx + vy * vy);
-            ux /= u_length;
-            uy /= u_length;
-            vx /= v_length;
-            vy /= v_length;
-            double d1 = distances[in], d2 = distances[out];
-            double q1x = uy * d1, q1y = -ux * d1;
-            double q2x = vy * d2, q2y = -vx * d2;
-
-            double cross = ux * vy - uy * vx;
-            double dot = ux * vx + uy * vy;
-            bool one_point = false;
-            double x = 0.0, y = 0.0;
-            if (cross != 0.0)
+            const moving_edge &before = edges[prev[k]];
+            const moving_edge &after = edges[k];
+            bool ok = true;
+            if (!joined[k])
             {
-                // Where the two moved lines meet, unless that's past the
-                // mitre limit.
-                double s = ((q2x - q1x) * vy - (q2y - q1y) * vx) / cross;
-                x = q1x + ux * s;
-                y = q1y + uy * s;
-                double reach = std::fabs(d1) > std::fabs(d2) ? std::fabs(d1) : std::fabs(d2);
-                one_point = std::sqrt(x * x + y * y) <= miter_limit * reach;
+                // An original corner, re-met as the header says: mitred,
+                // bevelled past the limit, one point where two edges run on
+                // in one line and move as one, stepped where they don't.
+                const APMATH_POLY_POINT &corner = after.start;
+                double d1 = before.distance, d2 = after.distance;
+                double cross = before.ux * after.uy - before.uy * after.ux;
+                double dot = before.ux * after.ux + before.uy * after.uy;
+                bool one_point = false;
+                double x = 0.0, y = 0.0;
+                if (cross != 0.0)
+                {
+                    // Where the two moved lines meet, unless that's past the
+                    // mitre limit.
+                    double s = ((after.mx - before.mx) * after.uy - (after.my - before.my) * after.ux) / cross;
+                    x = before.mx + before.ux * s;
+                    y = before.my + before.uy * s;
+                    double reach = std::fabs(d1) > std::fabs(d2) ? std::fabs(d1) : std::fabs(d2);
+                    one_point = std::sqrt(x * x + y * y) <= miter_limit * reach;
+                }
+                else if (dot > 0.0 && d1 == d2)
+                {
+                    // Running on in one line, moved as one.
+                    x = before.mx;
+                    y = before.my;
+                    one_point = true;
+                }
+                double cx = (double)corner.x, cy = (double)corner.y;
+                ok = one_point ? emit(cx + x, cy + y, after.tag)
+                               : emit(cx + before.mx, cy + before.my, after.tag) &&
+                                     emit(cx + after.mx, cy + after.my, after.tag);
             }
-            else if (dot > 0.0 && d1 == d2)
+            else
             {
-                // Running on in one line, moved as one.
-                x = q1x;
-                y = q1y;
-                one_point = true;
+                // Met where an edge between went: mitred whatever the limit,
+                // since the two met at a point and have only moved on from
+                // it; stepped across, through that point, if they're
+                // parallel.
+                moving_length on_before, on_after;
+                meet(before, after, joined_x[k], joined_y[k], on_before, on_after);
+                double ax = after.sx + after.mx + after.ux * on_after.at(1.0);
+                double ay = after.sy + after.my + after.uy * on_after.at(1.0);
+                if (before.wx * after.wy - before.wy * after.wx == 0.0)
+                    ok = emit(before.sx + before.mx + before.ux * on_before.at(1.0),
+                              before.sy + before.my + before.uy * on_before.at(1.0), after.tag);
+                ok = ok && emit(ax, ay, after.tag);
             }
-
-            bool ok = one_point ? emit(corner, x, y, tag)
-                                : emit(corner, q1x, q1y, tag) && emit(corner, q2x, q2y, tag);
             if (!ok)
             {
                 fail(error, APRESULT_INVALID_ARGUMENT, "a moved corner of ring %u lands past the coordinate limit", ring);

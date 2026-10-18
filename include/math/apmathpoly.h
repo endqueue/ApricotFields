@@ -237,10 +237,19 @@ typedef struct APMATH_POLY_OFFSET_DESC {
 /* Moves each edge of [desc]'s set by its own distance and re-meets the
  * corners: mitred, bevelled past the mitre limit, and stepped where two
  * edges that run on in one line move by different distances (a short edge
- * square to them joins the two). What the moved rings enclose is then
+ * square to them joins the two).
+ *
+ * An edge the move shortens to nothing is gone: as if the move ran from 0
+ * to its whole distance, each edge whose two ends meet on the way is taken
+ * out when they meet, and the edges either side of it meet directly from
+ * there - mitred whatever the limit, or stepped across where they're
+ * parallel. So a ring moved in past its own width leaves nothing, and a
+ * notch grown shut leaves no trace. What the moved rings enclose is then
  * taken as by a union with no clip under the POSITIVE rule, so a ring
  * folded over on itself by a large inward move loses the fold, and two
- * polygons grown into each other merge.
+ * polygons grown into each other merge. A ring the move pinches in two
+ * (a narrow waist moved in past its half width) is resolved by that union,
+ * not by taking edges out.
  *
  * The result is a boolean's (apmath_poly_boolean()): normalised the same
  * way, and each edge tagged with the tag of the input edge it was moved

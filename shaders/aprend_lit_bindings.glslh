@@ -1,0 +1,20 @@
+// The textures and buffers of set 0 beside the scene block, for the shaders
+// that read them: the surface and the sky. Every one is bound whether or not
+// the scene uses it; a flag in the block says which hold anything.
+
+// The view's tiles, row after row: each a count, then up to
+// APREND_LIT_MAX_TILE_LIGHTS indices into u_lit_scene.lights.
+layout(set = 0, binding = 1, std430) readonly buffer AprendLitTiles {
+    uint tile_lights[];
+};
+layout(set = 0, binding = 2) uniform texture2DArray sun_shadow_map;
+layout(set = 0, binding = 3) uniform texture2DArray spot_shadow_map;
+layout(set = 0, binding = 4) uniform samplerShadow shadow_sampler;
+layout(set = 0, binding = 5) uniform textureCube environment_specular;
+layout(set = 0, binding = 6) uniform textureCube environment_irradiance;
+layout(set = 0, binding = 7) uniform texture2D brdf_lut;
+layout(set = 0, binding = 8) uniform sampler environment_sampler;
+layout(set = 0, binding = 9) uniform texture2D ambient_occlusion;
+// The same comparison the other way, for maps rendered with depth reversed
+// (near at 1): a shadow sampler's comparison is fixed when it is made.
+layout(set = 0, binding = 10) uniform samplerShadow shadow_sampler_reversed;

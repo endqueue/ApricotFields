@@ -2,6 +2,7 @@
 #include "aprend_internal.hpp"
 #include "aprendbuiltin_internal.hpp"
 #include "aprendimages_internal.hpp"
+#include "aprendlit_internal.hpp"
 
 #include <cstdio>
 
@@ -139,7 +140,7 @@ aprend_binding_layout aprend_builtin_downsample_layout(aprend_instance instance)
 
 // The bloom shaders and their layout, made together the first time a bloom
 // pipeline is asked for, as aprend_builtin_downsample_prepare.
-static bool aprend_builtin_bloom_prepare(aprend_instance instance) {
+bool aprend_builtin_bloom_prepare(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
 	if (!aprend_builtin_fullscreen_vert(instance))
 		return false;
@@ -274,14 +275,16 @@ aprend_binding_set aprend_texture_view_bloom_set(aprend_texture_view view) {
 	return view->bloom_set;
 }
 
-void aprend_record_fullscreen_pass(
+void aprend_record_fullscreen_pass_sets(
     spudgpu_command_list cmd,
     aprend_graphics_pipeline pipeline,
     spudgpu_image_view target,
     uint32_t width,
     uint32_t height,
     SPUDGPU_LOAD_OP load_op,
-    aprend_binding_set set,
+    const aprend_binding_set *sets,
+    uint32_t set_count,
+    uint32_t frame,
     const void *push,
     uint32_t push_size) {
 	spudgpu_rendering_begin_desc pass{};
@@ -302,11 +305,26 @@ void aprend_record_fullscreen_pass(
 	scissor.height = (float)height;
 	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
 	spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
-	spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, 0, &set->sets[0], 1);
+	for (uint32_t i = 0; i < set_count; ++i)
+		if (sets[i])
+			spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, i, &sets[i]->sets[aprend_binding_set_frame_slot(sets[i], frame)], 1);
 	if (push)
 		spudgpu_cmd_push_constants(cmd, pipeline->pipeline, 0, push_size, push);
 	spudgpu_cmd_draw(cmd, 3, 0);
 	spudgpu_cmd_end_rendering(cmd);
+}
+
+void aprend_record_fullscreen_pass(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    spudgpu_image_view target,
+    uint32_t width,
+    uint32_t height,
+    SPUDGPU_LOAD_OP load_op,
+    aprend_binding_set set,
+    const void *push,
+    uint32_t push_size) {
+	aprend_record_fullscreen_pass_sets(cmd, pipeline, target, width, height, load_op, &set, 1, 0, push, push_size);
 }
 
 void aprend_builtins_destroy(aprend_instance instance) {
@@ -335,4 +353,5 @@ void aprend_builtins_destroy(aprend_instance instance) {
 	builtins.downsample_frag = nullptr;
 	aprend_shader_destroy(builtins.fullscreen_vert);
 	builtins.fullscreen_vert = nullptr;
+	aprend_lit_builtins_destroy(instance);
 }

@@ -1,0 +1,35 @@
+// The material set of Aprend's lit shaders (aprendlit.h), set 1, for the
+// shaders that read it: the surface, and the cut-out depth pass.
+// aprendlit.cpp's aprend_lit_material_block mirrors the block.
+
+// Bits of AprendLitMaterial.maps: which maps hold a texture of the caller's.
+// A map left out is not read, and its binding holds a placeholder.
+const uint MAP_BASE_COLOR = 1u;
+const uint MAP_NORMAL     = 2u;
+const uint MAP_ORM        = 4u;
+const uint MAP_EMISSION   = 8u;
+
+layout(set = 1, binding = 0) uniform AprendLitMaterial {
+    vec4 base_color;      // rgb linear, a: opacity
+    vec4 emission;        // rgb linear
+    vec4 sheen;           // rgb: sheen color, linear. a: sheen roughness
+    float roughness;
+    float metalness;
+    float specular;       // a dielectric's reflectance: 0.5 is F0 0.04
+    float normal_scale;
+    float occlusion_strength;
+    float alpha_cutoff;   // 0: blended by opacity; above: a cut-out
+    float clearcoat;      // 0 to 1: how much of a clear coat there is
+    float clearcoat_roughness;
+    uint maps;
+    vec4 uv_transform[2]; // rows of a 2x3 matrix
+} u_lit_material;
+layout(set = 1, binding = 1) uniform texture2D base_color_map;
+layout(set = 1, binding = 2) uniform texture2D normal_map;
+layout(set = 1, binding = 3) uniform texture2D orm_map;
+layout(set = 1, binding = 4) uniform texture2D emission_map;
+layout(set = 1, binding = 5) uniform sampler material_sampler;
+
+vec2 material_uv(vec2 uv) {
+    return vec2(dot(u_lit_material.uv_transform[0].xyz, vec3(uv, 1.0)), dot(u_lit_material.uv_transform[1].xyz, vec3(uv, 1.0)));
+}

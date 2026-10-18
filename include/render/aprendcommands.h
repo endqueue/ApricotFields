@@ -45,6 +45,56 @@ typedef struct aprend_material_t *aprend_material;
 typedef struct aprend_render_pass_t *aprend_render_pass;
 typedef struct aprend_compute_pass_t *aprend_compute_pass;
 typedef struct aprend_draw_list_t *aprend_draw_list;
+/* An environment for lit surfaces (aprendlit.h), filled by
+ * APREND_COMMAND_LIT_ENVIRONMENT. */
+typedef struct aprend_lit_environment_t *aprend_lit_environment;
+/* A lit scene (aprendlit.h), read by APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
+typedef struct aprend_lit_scene_t *aprend_lit_scene;
+/* An adapting exposure (aprendpost.h), for APREND_COMMAND_AUTO_EXPOSURE and
+ * APREND_COMMAND_TONE_MAP. */
+typedef struct aprend_exposure_t *aprend_exposure;
+
+/**
+ * @brief How color is written out, by APREND_COMMAND_TONE_MAP and by lit
+ * surfaces (aprendlit.h).
+ */
+typedef uint32_t APREND_COLOR_ENCODING;
+enum {
+	/** Linear: for a float target, an `_SRGB` target that encodes as it is
+	 * written, or a pass that tone maps after. */
+	APREND_COLOR_ENCODING_LINEAR = 0,
+	/** Clamped to 0 to 1 and encoded as sRGB: for an 8-bit UNORM target
+	 * whose values are shown as they are. */
+	APREND_COLOR_ENCODING_SRGB = 1,
+};
+
+/**
+ * @brief The curve APREND_COMMAND_TONE_MAP brings linear radiance, of any
+ * brightness, into 0 to 1 with.
+ */
+typedef uint32_t APREND_TONE_CURVE;
+enum {
+	/** None: clamped at 1. What is brighter than white is lost. */
+	APREND_TONE_CURVE_CLAMP = 0,
+	/**
+	 * Stephen Hill's fit of ACES's reference rendering and sRGB output
+	 * transforms: the filmic look most engines default to (Unreal's
+	 * is ACES-based). Shifts saturated colors as they brighten.
+	 */
+	APREND_TONE_CURVE_ACES = 1,
+	/**
+	 * Khronos PBR Neutral (2024): base colors under even light come out as
+	 * they went in, and only highlights are compressed. For product and
+	 * architectural pictures, where a material's color must read true.
+	 */
+	APREND_TONE_CURVE_KHRONOS_PBR_NEUTRAL = 2,
+	/**
+	 * AgX (Troy Sobotka's; Blender's default since 4.0), in Benjamin
+	 * Wrensch's minimal fit: bright, saturated colors go towards white as
+	 * film does, with no hue skew, over 16.5 stops.
+	 */
+	APREND_TONE_CURVE_AGX = 3,
+};
 
 /**
  * @brief Upper bound on color targets in one BEGIN_RENDERING pass.
@@ -386,6 +436,76 @@ enum {
 	 * set that reads it, which the view keeps.
 	 */
 	APREND_COMMAND_BLOOM                       = 29,
+	/**
+	 * Tone maps `_source` onto `_target`, outside a pass: each texel times
+	 * `_exposure`, through `_curve`, then written as `_encoding` says,
+	 * replacing what the target held, alpha kept as it is. The source is a
+	 * SHADER_RESOURCE view of one mip of a 2D color texture (a float target
+	 * that lit surfaces were drawn into, with a bloom over it, say); the
+	 * target a RENDER_TAGET view of a 2D texture of a color format, of any
+	 * size: it is read at the same place in [0, 1], filtered. `_exposure` is
+	 * not negative and is a number.
+	 *
+	 * With `_auto_exposure` (aprendpost.h) each texel is also multiplied by
+	 * the exposure it last adapted to (APREND_COMMAND_AUTO_EXPOSURE, earlier
+	 * in this list or in one submitted before); `_exposure` is then a
+	 * compensation on top of it.
+	 *
+	 * It binds a pipeline and a set of its own, as BLOOM does, and leaves
+	 * the binding set slots alone. The first onto a target format makes the
+	 * pipeline for it.
+	 */
+	APREND_COMMAND_TONE_MAP                    = 30,
+	/**
+	 * Fills `_environment` (aprendlit.h) from `_source`, outside a pass: the
+	 * picture copied into the environment's specular chain's first mip, its
+	 * other mips prefiltered for rougher and rougher surfaces (GGX, importance
+	 * sampled from the picture's own mips), and its irradiance worked out.
+	 * The source is a SHADER_RESOURCE view, of color, of a CUBE (six faces,
+	 * any size) or of a 2D equirectangular picture (longitude across, the
+	 * north pole at the top row), linear. It is read, not kept: it may be
+	 * destroyed once the list has been submitted.
+	 *
+	 * It binds pipelines and sets of its own, as BLOOM does. Its cost is a
+	 * few hundred samples a texel of the chain, so it is for a sky that
+	 * changes now and then, not every frame.
+	 */
+	APREND_COMMAND_LIT_ENVIRONMENT             = 31,
+	/**
+	 * Fills `_environment` (aprendlit.h) from a daylight sky, outside a
+	 * pass: Preetham, Shirley and Smits' analytic model (Hazel's sky too) at
+	 * `_turbidity` (2, clear, to 10, hazy) with the sun towards
+	 * `_sun_direction` in the environment's space (+Y up), scaled so the
+	 * zenith's radiance is `_intensity`; below the horizon, the horizon's
+	 * light times `_ground_albedo`. Then prefiltered as LIT_ENVIRONMENT's
+	 * picture is. The sun's disc is not drawn: the sun is the scene's own
+	 * light (aprend_lit_scene_set_sun()), and a disc would only be blurred
+	 * into the rougher mips.
+	 */
+	APREND_COMMAND_LIT_SKY                     = 32,
+	/**
+	 * Ambient occlusion from a depth buffer, outside a pass: how open each
+	 * texel of `_depth` is to the sky, from the depth round it, out to
+	 * `_radius` in the scene's units and darkened by `_intensity` (1 as
+	 * measured), then smoothed over 4x4 texels, written into `_target`'s red.
+	 * `_depth` is a SHADER_RESOURCE view, DEPTH aspect, 2D, of a depth buffer
+	 * rendered through `_scene`'s view_projection (a depth pre-pass), at the
+	 * view's target size; `_target` a RENDER_TAGET 2D view of a color format
+	 * at that size, which aprend_lit_scene_set_ambient_occlusion() then
+	 * names. Positions come back through the view's view_projection, so it
+	 * must be invertible. A horizon-based estimate (HBAO's; GTAO's in
+	 * spirit), eight directions of four steps.
+	 */
+	APREND_COMMAND_LIT_AMBIENT_OCCLUSION       = 33,
+	/**
+	 * Adapts `_exposure` (aprendpost.h) to `_source`, outside a pass: the
+	 * source's log-average luminance, brought to the exposure's key, eased
+	 * towards from the exposure it last adapted to over `_delta_time`
+	 * seconds. `_source` is a SHADER_RESOURCE view of one mip of a 2D color
+	 * texture: what lit surfaces were drawn into, before the tone map that
+	 * then reads the exposure. `_delta_time` is not negative.
+	 */
+	APREND_COMMAND_AUTO_EXPOSURE               = 34,
 };
 
 /**
@@ -563,6 +683,43 @@ typedef struct APREND_COMMAND {
 			/** How many levels the glow is spread through. */
 			uint32_t _levels;
 		} _bloom;
+		/** APREND_COMMAND_TONE_MAP. */
+		struct {
+			aprend_texture_view _source;
+			aprend_texture_view _target;
+			float _exposure;
+			APREND_TONE_CURVE _curve;
+			APREND_COLOR_ENCODING _encoding;
+			/** NULL for `_exposure` alone. */
+			aprend_exposure _auto_exposure;
+		} _tone_map;
+		/** APREND_COMMAND_LIT_SKY. */
+		struct {
+			aprend_lit_environment _environment;
+			float _sun_direction[3];
+			float _turbidity;
+			float _intensity;
+			float _ground_albedo[3];
+		} _lit_sky;
+		/** APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
+		struct {
+			aprend_lit_scene _scene;
+			aprend_texture_view _depth;
+			aprend_texture_view _target;
+			float _radius;
+			float _intensity;
+		} _lit_ambient_occlusion;
+		/** APREND_COMMAND_AUTO_EXPOSURE. */
+		struct {
+			aprend_exposure _exposure;
+			aprend_texture_view _source;
+			float _delta_time;
+		} _auto_exposure;
+		/** APREND_COMMAND_LIT_ENVIRONMENT. */
+		struct {
+			aprend_lit_environment _environment;
+			aprend_texture_view _source;
+		} _lit_environment;
 		/** APREND_COMMAND_GENERATE_MIPS. */
 		struct {
 			/** The texture, of the list's instance. */
@@ -654,7 +811,27 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   source or target view of the wrong type, shape or aspect, a target in
  *   a format a bloom doesn't render onto, a source and target that share a
  *   mip of a layer, `_levels` 0 or more than the source's size allows, a
- *   setting that is negative or not a number, or a `_radius` of 0.
+ *   setting that is negative or not a number, or a `_radius` of 0;
+ * - a TONE_MAP with a NULL source or target, one of another instance, a view
+ *   of the wrong type, shape or aspect, a source of more than one mip, a
+ *   source and target that share a mip of a layer, a target in a format it
+ *   doesn't render onto, an `_exposure` that is negative or not a number,
+ *   or a `_curve` or `_encoding` that is not one;
+ * - a LIT_ENVIRONMENT with a NULL environment or source, one of another
+ *   instance, or a source that is not a SHADER_RESOURCE view of color
+ *   shaped CUBE or 2D;
+ * - a TONE_MAP whose `_auto_exposure` is of another instance;
+ * - a LIT_SKY with a NULL environment or one of another instance, a sun
+ *   direction of 0, a turbidity outside 1.7 to 10, a negative intensity or
+ *   albedo, or a value that is not a number;
+ * - a LIT_AMBIENT_OCCLUSION with a NULL scene, depth or target, one of
+ *   another instance, a depth that is not a SHADER_RESOURCE 2D view of
+ *   depth, a target that is not a RENDER_TAGET 2D view of a format it
+ *   renders onto, the two of different sizes, or a radius that is not above
+ *   0 or an intensity below 0;
+ * - an AUTO_EXPOSURE with a NULL exposure or source, one of another
+ *   instance, a source that is not a SHADER_RESOURCE 2D view of color of one
+ *   mip, or a `_delta_time` that is negative or not a number.
  *
  * BEGIN_RENDER_PASS, SET_COMPUTE_PASS and DRAW_LIST are expanded here into
  * the commands they stand for, read from the pass or list as it is now (see
@@ -729,6 +906,13 @@ void aprend_send_command(
  *           (written neither before the list nor earlier in it) or no
  *           longer holds `_levels` (resized since it was sent), or whose
  *           pipelines, sets or pooled texture can't be made;
+ *         - a TONE_MAP inside a pass, whose source has nothing in it, or
+ *           whose pipeline or set can't be made;
+ *         - a LIT_ENVIRONMENT inside a pass, whose source has nothing in it,
+ *           or whose pipelines, views or sets can't be made; a LIT_SKY,
+ *           LIT_AMBIENT_OCCLUSION or AUTO_EXPOSURE inside a pass, whose
+ *           source or depth has nothing in it, or whose pipelines, views,
+ *           sets or pooled textures can't be made;
  *         - a GENERATE_MIPS inside a pass, or whose base level has nothing
  *           in some layer: written neither by anything submitted before nor
  *           earlier in the list; or whose views, sets or pipeline can't be
