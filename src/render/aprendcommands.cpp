@@ -1872,14 +1872,18 @@ static bool aprend_cmd_prepare_lit_scenes(aprend_command_list cmd_list) {
 			if (!aprend_cmd_range_written(cmd_list, specular) || !aprend_cmd_range_written(cmd_list, irradiance)) {
 				aprend_cmd_transition_range(cmd_list, specular, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
 				aprend_cmd_transition_range(cmd_list, irradiance, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
+				// Cleared to 0 in every channel: the clear value every texture is
+				// made with (aprend_texture2d_create leaves the image's clear_value
+				// zeroed), so D3D12 clears at its fast rate and its debug layer
+				// doesn't warn of a mismatch. Only .rgb of either cube is read.
 				for (uint32_t mip = 0; mip < env->specular_mips; ++mip) {
 					const uint32_t side = aprend_mip_size(env->desc.specular_size, mip);
 					for (uint32_t face = 0; face < 6; ++face)
 						spudgpu_cmd_clear_color_attachment(cmd_list->cmd_list, env->specular_faces[(size_t)mip * 6 + face]->image_view, 0.0f, 0.0f, 0.0f,
-						                                   1.0f, side, side);
+						                                   0.0f, side, side);
 				}
 				for (uint32_t face = 0; face < 6; ++face)
-					spudgpu_cmd_clear_color_attachment(cmd_list->cmd_list, env->irradiance_faces[face]->image_view, 0.0f, 0.0f, 0.0f, 1.0f,
+					spudgpu_cmd_clear_color_attachment(cmd_list->cmd_list, env->irradiance_faces[face]->image_view, 0.0f, 0.0f, 0.0f, 0.0f,
 					                                   env->desc.irradiance_size, env->desc.irradiance_size);
 			}
 		}

@@ -509,7 +509,15 @@ unfinished in it.
     there alone). Found on the way and fixed: Metal's argument buffer
     struct for a shader using some of a set's bindings (black sky), a set
     bound to a stage that doesn't read it, push blocks Metal rounds to 8.
-    Not run on D3D12 or Vulkan.
+    **Passed on D3D12 and Vulkan on 2026-10-17** (Windows 11, Intel Iris
+    Xe and NVIDIA RTX A2000, Debug, at 7b18da8 with spudlib 69e6c43; D3D12
+    under cdb, Vulkan with the validation layer, both clean), the first
+    D3D12 run of a depth-only pass included, after one fix here: the
+    clear of an environment never filled was to opaque black, and every
+    texture is made with SpudGPU's clear value zeroed, so D3D12's debug
+    layer warned of a mismatched clear value at each of the 30 faces
+    (`CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE`). The faces are now
+    cleared to 0 in every channel; only the cubes' color is read.
 - **Uniforms found once, written 2026-10-17; run on Metal** (from "Next,
   from the review", its first step). `aprend_material_find_uniform`
   turns a member's name into an `aprend_material_uniform` once, against
@@ -543,8 +551,9 @@ unfinished in it.
     two submissions, reads values back, and is refused a zeroed handle,
     one of another layout made from the same shaders, and one into a
     block the material leaves external. Passed on Metal (Debug under
-    validation, Release, no leak), 2026-10-17. Not run on D3D12 or
-    Vulkan; nothing in it is backend-specific.
+    validation, Release, no leak), 2026-10-17, and the same day on D3D12
+    and Vulkan (Intel Iris Xe and NVIDIA RTX A2000, Debug, debug and
+    validation layers clean).
 - **Shader reflection, written 2026-10-11 and compiled on all three
   backends** (item 18; closes item 1). Type-checked with GCC 11 as the
   entry above before that. Part of it has run without a device: see the
