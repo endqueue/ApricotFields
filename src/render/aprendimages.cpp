@@ -396,7 +396,7 @@ bool aprend_texture2d_update(
 
 	// Recorded into the upload batch and not waited for: the copy runs ahead
 	// of anything submitted after it.
-	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, array_layer, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, array_layer, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, aprend_texture_upload_rest_layout(texture->desc.usage), [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.buffer_offset     = staging.offset;
 		copy_desc.mip_level         = mip_level;
@@ -721,6 +721,21 @@ bool aprend_texture2d_resize(
 		return false;
 	if (!new_height)
 		return false;
+#if _DEBUG
+	// A view left alive would be released after the old image it was made
+	// of. Its mip chains' views are the texture's own, released below.
+	{
+		uint32_t own_views = 0;
+		for (const aprend_mip_chain &chain : texture->mip_chains)
+			for (const aprend_mip_step &step : chain.steps)
+				own_views += (step.source ? 1u : 0u) + (step.target ? 1u : 0u);
+		if (texture->live_views > own_views) {
+			printf("apricot: aprend_texture2d_resize: views of the texture not destroyed: %u; destroy them first\n",
+			       texture->live_views - own_views);
+			return false;
+		}
+	}
+#endif
 	if (new_width == texture->desc.width && new_height == texture->desc.height)
 		return true; // No resize needed
 	if (texture->desc.cube_capable && new_width != new_height) {
@@ -897,7 +912,7 @@ bool aprend_texture3d_update(
 
 	// Recorded into the upload batch and not waited for: the copy runs ahead
 	// of anything submitted after it.
-	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, 0, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, false, mip_level, 0, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, aprend_texture_upload_rest_layout(texture->desc.usage), [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.buffer_offset       = staging.offset;
 		copy_desc.mip_level           = mip_level;
@@ -1028,6 +1043,14 @@ bool aprend_texture3d_resize(
 		return false;
 	if (!new_depth)
 		return false;
+#if _DEBUG
+	// As aprend_texture2d_resize. The view a 3D texture keeps is SpudGPU's,
+	// not an aprend_texture_view, so none here is its own.
+	if (texture->live_views > 0) {
+		printf("apricot: aprend_texture3d_resize: views of the texture not destroyed: %u; destroy them first\n", texture->live_views);
+		return false;
+	}
+#endif
 	if (new_width == texture->desc.width && new_height == texture->desc.height && new_depth == texture->desc.depth)
 		return true; // No resize needed
 
@@ -1252,6 +1275,9 @@ aprend_texture_view aprend_texture_view_create_2d(
 		goto failedattempt;
 	}
 
+#if _DEBUG
+	++texture->live_views;
+#endif
 	return result;
 failedattempt:
 	printf("apricot: %s failed: %s\n", who, spudresult_str(sr));
@@ -1314,6 +1340,9 @@ aprend_texture_view aprend_texture_view_create_3d(
 		goto failedattempt;
 	}
 
+#if _DEBUG
+	++texture->live_views;
+#endif
 	return result;
 failedattempt:
 	printf("apricot: %s failed: %s\n", who, spudresult_str(sr));
@@ -1324,6 +1353,14 @@ failedattempt:
 void aprend_destroy_texture_view(aprend_texture_view view) {
 	if (!view)
 		return;
+#if _DEBUG
+	// Counted off at the caller's destroy, not at the release: the contract
+	// is about the order of the calls.
+	if (view->dimension == APREND_TEXTURE_DIMENSION_2D)
+		--view->texture._t2d->live_views;
+	else
+		--view->texture._t3d->live_views;
+#endif
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(view->instance, view, &aprend_release_handle<aprend_texture_view_t>);
 }

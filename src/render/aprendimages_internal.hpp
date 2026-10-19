@@ -130,6 +130,18 @@ inline SPUDGPU_IMAGE_LAYOUT aprend_immediate_final_layout(SPUDGPU_IMAGE_LAYOUT f
 	return found == SPUDGPU_IMAGE_LAYOUT_UNDEFINED ? if_undefined : found;
 }
 
+/* The layout an upload leaves a texture with no layout yet in: one its usage
+ * allows a shader to reach it through. SHADER_READ_ONLY needs a sampled
+ * image, so a storage-only texture rests in GENERAL, the storage layout; a
+ * texture with neither stays in TRANSFER_DST, where the copy left it. */
+inline SPUDGPU_IMAGE_LAYOUT aprend_texture_upload_rest_layout(APREND_TEXTURE_USAGE_BITS usage) {
+	if (usage & APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE)
+		return SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY;
+	if (usage & APREND_TEXTURE_USAGE_BIT_STORAGE)
+		return SPUDGPU_IMAGE_LAYOUT_GENERAL;
+	return SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST;
+}
+
 /* aprend_record_immediate for work on one mip of one layer of a texture
  * (aprend_texture2d_t or aprend_texture3d_t): moves that subresource into
  * [working], runs [record], and moves it to aprend_immediate_final_layout.
@@ -207,6 +219,11 @@ typedef struct aprend_texture2d_t
     uint32_t requested_mip_levels{0};
     // The mip generations made so far; see aprend_mip_chain.
     std::vector<aprend_mip_chain> mip_chains{};
+#if _DEBUG
+    // Views made of it and not yet destroyed, its mip chains' included, so
+    // a resize can refuse while one is left (aprend_texture2d_resize).
+    uint32_t live_views{0};
+#endif
 } aprend_texture2d_t;
 
 typedef struct aprend_texture3d_t
@@ -224,6 +241,10 @@ typedef struct aprend_texture3d_t
     aprend_texture_layouts tracking{};
     // As aprend_texture2d_t::requested_mip_levels.
     uint32_t requested_mip_levels{0};
+#if _DEBUG
+    // As aprend_texture2d_t::live_views.
+    uint32_t live_views{0};
+#endif
 } aprend_texture3d_t;
 
 typedef struct aprend_texture_view_t

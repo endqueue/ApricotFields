@@ -2345,9 +2345,25 @@ and 5 are closed and their numbers are not reused.
      done on D3D12 and Vulkan (RTX A2000), 2026-10-16.
 2. Freeing staging copies (item 13): written 2026-10-18, with exact
    staged ranges and `APREND_BUFFER_WRITES`, and run on Metal only, where
-   nothing is staged. Left of this step: run `test_buffer_writes` on a
-   device with memory of its own (D3D12 and Vulkan on the RTX A2000),
-   which is the first time that code runs. The shared upload path for
+   nothing is staged. `test_buffer_writes` then passed on D3D12 and Vulkan
+   on the RTX A2000 (memory of its own) and the Iris Xe, 2026-10-18, with
+   every other test, Vulkan with the validation layer, both clean (at
+   1f75d84 plus the fix below, spudlib b7ac7e6). That run found and fixed
+   one thing here: an upload to a texture with no layout yet always left
+   it in SHADER_READ_ONLY, which Vulkan forbids for an image without
+   sampled usage (VUID-VkImageMemoryBarrier-oldLayout-01211, a
+   storage-only texture). It now rests in a layout its usage allows
+   (`aprend_texture_upload_rest_layout`): SHADER_READ_ONLY if sampled,
+   GENERAL if storage only, else TRANSFER_DST. A crash on Vulkan in the
+   same runs was the test's own: `test_stale_lists` resized a texture with
+   a view of it still alive, against aprend_texture2d_resize()'s contract.
+   A Debug build now refuses that resize (2D and 3D): each texture counts
+   its views not destroyed (`live_views`, Debug only), and a 2D resize
+   leaves out its own mip chain's views, which it releases itself.
+   `test_resize_with_views` (2D) and `test_resize_3d_with_views` (3D, the
+   first test of a 3D texture and a 3D view) cover it; both passed on
+   D3D12 and Vulkan, both GPUs, 2026-10-18.
+   The shared upload path for
    textures is written (item 6), and staged buffers don't use it: a
    transient span is taken back at the next frame, and a buffer may be
    created a frame or more before a list that uses it is submitted.

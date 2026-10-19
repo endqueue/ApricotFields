@@ -317,14 +317,17 @@ bool aprend_texture2d_generate_mips(
  * @p texture. Afterwards, recompile any command list that used it, and make
  * the views again: aprend_command_list_submit() refuses one compiled before
  * the resize. A submission already made that uses the old image is safe:
- * the old image is released when that work has finished.
+ * the old image is released when that work has finished. A Debug build
+ * refuses the call while a view of @p texture is not destroyed, whether or
+ * not the size changes; a Release build doesn't check.
  *
  * @param[in] texture    Texture to resize.
  * @param[in] new_width  New width of mip 0. Never 0.
  * @param[in] new_height New height of mip 0. Never 0.
  *
  * @return true if the texture has the new size, including when it already
- *         had it. false on failure, with the texture left exactly as it was.
+ *         had it. false on failure, with the texture left exactly as it was,
+ *         as it is by the Debug refusal of a view not destroyed.
  */
 bool aprend_texture2d_resize(
 	aprend_texture2d texture,
@@ -509,7 +512,8 @@ bool aprend_texture3d_get_data(
  * spudgpu_image taken from @p texture before the call must be fetched again.
  *
  * @warning As aprend_texture2d_resize(): views destroyed before, command
- * lists recompiled and views made again after.
+ * lists recompiled and views made again after. A Debug build refuses the
+ * call while a view is not destroyed.
  *
  * @param[in] texture    Texture to resize.
  * @param[in] new_width  New width of mip 0. Never 0.
