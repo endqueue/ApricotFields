@@ -287,6 +287,10 @@ there is no separate `-debug` configure preset any more.)
   target on Metal and D3D12, so `CMakeLists.txt` only builds it when no
   target exists yet. libdeflate is pinned on
   purpose: its DEFLATE output is part of what makes an archive byte-identical.
+  Every fetch fallback names a tag or a commit, never a branch, so a build
+  without `../.deps/` is the same every time. glaze is pinned to the commit
+  vendored in `../.deps/glaze` (it has no release tag there); move the two
+  together.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
 - Aprend's own shaders are GLSL in `shaders/`, compiled by glslc at build time
   on every platform, Apple included, and embedded in the library as C arrays

@@ -243,9 +243,10 @@ target_link_libraries(ApricotFields PRIVATE libdeflate::libdeflate_static)
 # glaze - JSON, for ApAudio's sound bank manifests (src/audio/apaudiocues.cpp).
 # Header only, vendored under eqdev/.deps/glaze like libdeflate. Private: no
 # glaze type crosses ApricotFields' C API.
-# NOTE: the fetch fallback tag is a placeholder - pin a real glaze release once
-# one is chosen; the vendored eqdev/.deps/glaze path is unaffected by it.
-declare_vendored_or_fetch(glaze glaze https://github.com/stephenberry/glaze.git main)
+# Pinned to a commit, not a branch, so a fetched build is the same every time:
+# 52971fe5 (v9.0.0-22, 2026-09-29), the commit vendored in eqdev/.deps/glaze,
+# so a fetched build and a vendored one use the same glaze. Move both together.
+declare_vendored_or_fetch(glaze glaze https://github.com/stephenberry/glaze.git 52971fe5fc97d0bac361c20c9cf4cf22e4dbdd12)
 FetchContent_MakeAvailable(glaze)
 target_link_libraries(ApricotFields PRIVATE glaze::glaze)
 
