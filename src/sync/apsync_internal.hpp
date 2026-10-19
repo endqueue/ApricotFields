@@ -245,9 +245,7 @@ struct apsync_log_entry
 
 struct apsync_session_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
 
     // ---- Set at creation and never changed ----
     bool hosting{false};

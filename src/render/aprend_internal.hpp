@@ -115,9 +115,7 @@ struct aprend_material_arena {
 };
 
 typedef struct aprend_instance_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_instance_t() = default;
 	~aprend_instance_t();
 
@@ -476,9 +474,7 @@ SPUDRESULT aprend_buffer_store_write(
 void aprend_buffer_store_uploads_submitted(aprend_buffer_store *store);
 
 typedef struct aprend_gpu_timer_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_gpu_timer_t() = default;
 	~aprend_gpu_timer_t();
 	aprend_instance instance{nullptr};
@@ -494,9 +490,7 @@ typedef struct aprend_gpu_timer_t {
 } aprend_gpu_timer_t;
 
 typedef struct aprend_command_list_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_command_list_t() = default;
 	~aprend_command_list_t();
 	aprend_instance instance{nullptr};
@@ -621,9 +615,7 @@ typedef struct aprend_command_list_t {
 #define APREND_SWAP_CHAIN_NO_IMAGE 0xFFFFFFFFu
 
 typedef struct aprend_swap_chain_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_swap_chain_t() = default;
 	~aprend_swap_chain_t();
 	aprend_instance instance{nullptr};
@@ -636,9 +628,7 @@ typedef struct aprend_swap_chain_t {
 } aprend_swap_chain_t;
 
 typedef struct aprend_uniform_buffer_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_uniform_buffer_t() = default;
 	~aprend_uniform_buffer_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
@@ -659,9 +649,7 @@ typedef struct aprend_uniform_buffer_t {
 } aprend_uniform_buffer_t;
 
 typedef struct aprend_vertex_buffer_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_vertex_buffer_t() = default;
 	~aprend_vertex_buffer_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
@@ -690,31 +678,27 @@ SPUDRESULT aprend_vertex_buffer_view(
     spudgpu_buffer_view *out_view);
 
 typedef struct aprend_index_buffer_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_index_buffer_t() = default;
 	~aprend_index_buffer_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
 	aprend_instance instance{nullptr};
 	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
-	spudgpu_buffer_view_desc buffer_view_desc{};
+	spudgpu_buffer_view_desc buffer_view_desc{{SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC, nullptr}};
 	uint32_t index_count{0};
 	APREND_INDEX_STRIDE index_stride{APREND_INDEX_STRIDE_NONE};
 } aprend_index_buffer_t;
 
 typedef struct aprend_storage_buffer_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_storage_buffer_t() = default;
 	~aprend_storage_buffer_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
 	aprend_instance instance{nullptr};
 	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
-	spudgpu_buffer_view_desc buffer_view_desc{};
+	spudgpu_buffer_view_desc buffer_view_desc{{SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC, nullptr}};
 	uint64_t size{0};
 	APREND_STORAGE_BUFFER_USAGE usage{APREND_STORAGE_BUFFER_USAGE_NONE};
 } aprend_storage_buffer_t;
@@ -722,9 +706,7 @@ typedef struct aprend_storage_buffer_t {
 /* One uniform buffer for each frame in flight, all of one layout.
  * buffers[instance->frame_index] is the current one. */
 typedef struct aprend_uniform_buffer_set_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_uniform_buffer_set_t() = default;
 	~aprend_uniform_buffer_set_t();
 	aprend_instance instance{nullptr};
@@ -734,9 +716,7 @@ typedef struct aprend_uniform_buffer_set_t {
 
 /* The same for storage buffers, all of one size. */
 typedef struct aprend_storage_buffer_set_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_storage_buffer_set_t() = default;
 	~aprend_storage_buffer_set_t();
 	aprend_instance instance{nullptr};
@@ -745,9 +725,7 @@ typedef struct aprend_storage_buffer_set_t {
 } aprend_storage_buffer_set_t;
 
 typedef struct aprend_shader_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_shader_t() = default;
 	~aprend_shader_t();
 	aprend_instance instance{nullptr};
@@ -799,9 +777,7 @@ bool aprend_binding_set_matches_images(
     const char *who);
 
 typedef struct aprend_graphics_pipeline_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_graphics_pipeline_t() = default;
 	~aprend_graphics_pipeline_t();
 	aprend_graphics_pipeline_desc desc{};
@@ -832,9 +808,7 @@ typedef struct aprend_graphics_pipeline_t {
 } aprend_graphics_pipeline_t;
 
 typedef struct aprend_compute_pipeline_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_compute_pipeline_t() = default;
 	~aprend_compute_pipeline_t();
 	aprend_compute_pipeline_desc desc{};
@@ -890,9 +864,7 @@ struct aprend_binding_layout_core {
 void aprend_binding_layout_core_release(aprend_binding_layout_core *core);
 
 typedef struct aprend_binding_layout_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_binding_layout_t() = default;
 	~aprend_binding_layout_t();
 	aprend_instance instance{nullptr};
@@ -928,9 +900,7 @@ typedef struct aprend_binding_layout_t {
 } aprend_binding_layout_t;
 
 typedef struct aprend_binding_set_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_binding_set_t() = default;
 	~aprend_binding_set_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
@@ -1022,9 +992,7 @@ struct aprend_upload_copy {
 };
 
 typedef struct aprend_material_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_material_t() = default;
 	~aprend_material_t();
 	aprend_instance instance{nullptr};
@@ -1072,9 +1040,7 @@ void aprend_material_arena_destroy(aprend_instance instance);
 aprend_uniform_buffer aprend_uniform_buffer_create_device(aprend_instance instance, uint32_t size);
 
 typedef struct aprend_render_pass_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_render_pass_t() = default;
 	~aprend_render_pass_t() = default;
 	aprend_instance instance{nullptr};
@@ -1083,9 +1049,7 @@ typedef struct aprend_render_pass_t {
 } aprend_render_pass_t;
 
 typedef struct aprend_compute_pass_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_compute_pass_t() = default;
 	~aprend_compute_pass_t() = default;
 	aprend_instance instance{nullptr};
@@ -1100,9 +1064,7 @@ bool aprend_compute_pass_expand(aprend_command_list cmd_list, aprend_compute_pas
 bool aprend_draw_list_expand(aprend_command_list cmd_list, aprend_draw_list list, uint32_t material_slot);
 
 typedef struct aprend_draw_list_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_draw_list_t() = default;
 	~aprend_draw_list_t() = default;
 	aprend_instance instance{nullptr};

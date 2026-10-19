@@ -35,6 +35,7 @@ static aprend_transient_chunk *aprend_transient_chunk_create(
 	// What a span is bound as, and a copy source so the same memory can
 	// later stage writes to buffers in the device's memory.
 	spudgpu_buffer_desc bd{};
+	bd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	bd.memory_kind = SPUDGPU_MEMORY_KIND_UPLOAD;
 	bd.size        = size;
 	bd.usage       = SPUDGPU_BUFFER_USAGE_VERTEX | SPUDGPU_BUFFER_USAGE_INDEX | SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
@@ -146,6 +147,7 @@ SPUDRESULT aprend_transient_span_view(
 	(void)instance;
 	aprend_transient_chunk *chunk = (aprend_transient_chunk *)span->_chunk;
 	spudgpu_buffer_view_desc vd{};
+	vd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC;
 	vd.parent_buffer             = chunk->buffer;
 	vd.offset_from_parent_buffer = span->_offset;
 	vd.stride                    = stride;

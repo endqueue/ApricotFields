@@ -98,18 +98,14 @@ struct aprend_pool_core {
 };
 
 typedef struct aprend_vertex_pool_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_vertex_pool_t() = default;
 	~aprend_vertex_pool_t();
 	aprend_pool_core core{};
 } aprend_vertex_pool_t;
 
 typedef struct aprend_index_pool_t {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_index_pool_t() = default;
 	~aprend_index_pool_t();
 	aprend_pool_core core{};

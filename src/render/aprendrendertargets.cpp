@@ -43,9 +43,7 @@ static aprend_pooled_target *aprend_pooled_target_make(
 	texture_desc.mip_levels   = levels;
 	texture_desc.array_layers = 1;
 	texture_desc.sample_count = 1;
-#if _DEBUG
 	texture_desc.debug_name = "aprend pooled render target";
-#endif
 	target->texture = aprend_texture2d_create(instance, &texture_desc);
 	if (!target->texture) {
 		printf("apricot: render target pool: a %ux%u target of %u levels can't be created\n", width, height, levels);

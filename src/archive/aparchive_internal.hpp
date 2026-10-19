@@ -29,9 +29,7 @@ constexpr size_t APARCHIVE_ENTRY_INFO_V1_SIZE = APARCHIVE_V1_SIZE(APARCHIVE_ENTR
 
 struct aparchive_codecs_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
     std::vector<APARCHIVE_CODEC> codecs; // never STORED
     const APARCHIVE_CODEC *find(uint16_t method) const;
 };
@@ -54,9 +52,7 @@ struct aparchive_written_entry_t
 
 struct aparchive_writer_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
     APARCHIVE_SINK sink{};
     aparchive_codecs codecs{nullptr};
     uint64_t offset{0}; // bytes written to the sink
@@ -70,9 +66,7 @@ struct aparchive_writer_t
 
 struct aparchive_reader_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
     APARCHIVE_SOURCE source{};
     aparchive_codecs codecs{nullptr};
     // Where the central directory starts: every entry's header and data end

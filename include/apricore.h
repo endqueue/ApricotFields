@@ -52,20 +52,21 @@ typedef enum APRESULT {
 } APRESULT;
 
 /*
- * In Debug configuration, every implementation of an Apricot opaque handle must
- * have its first member be a pointer to a null-terminated string containing the
- * debug name of the object, for use in debugging and validation layers. This is
- * to garauntee compatibility with casting, for a C++ std::string_view or
- * similar, so C++ backends can provide zero-cost debug names without extra
- * allocations.
+ * Every implementation of an Apricot opaque handle has as its first member a
+ * pointer to a null-terminated string, the object's debug name, for
+ * debugging and validation layers. This holds in every build configuration:
+ * a debug name never changes a struct's layout or which functions exist.
+ *
+ * apri_debug_name_set stores [name] itself, not a copy: the string must stay
+ * valid until the object is destroyed or named again. NULL removes the name.
+ * apri_debug_name_get returns the stored pointer, or NULL for a NULL object
+ * or one with no name.
  */
-#ifdef _DEBUG
 void apri_debug_name_set(void *object, const char *name);
 #define APRI_SET_DEBUG_NAME(obj, name)                                         \
 	apri_debug_name_set((void *)(obj), (name))
 const char *apri_debug_name_get(void *object);
 #define APRI_GET_DEBUG_NAME(obj) apri_debug_name_get((void *)(obj))
-#endif
 
 #if __cplusplus
 }

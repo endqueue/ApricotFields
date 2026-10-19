@@ -26,6 +26,7 @@ aprend_uniform_buffer aprend_uniform_buffer_create_device(aprend_instance instan
 	result->size     = size;
 
 	spudgpu_buffer_desc bd{};
+	bd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	// Read by shaders, written by the copies a submission records ahead of
 	// its list: never by the CPU, so in the device's own memory, unmapped.
 	bd.memory_kind = SPUDGPU_MEMORY_KIND_DEVICE;
@@ -76,6 +77,7 @@ SPUDRESULT aprend_vertex_buffer_view(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
 	spudgpu_buffer_view_desc vd{};
+	vd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC;
 	vd.parent_buffer             = buffer->store.buffer;
 	vd.offset_from_parent_buffer = 0;
 	vd.stride                    = stride;
@@ -134,6 +136,7 @@ SPUDRESULT aprend_buffer_store_create(
 	const bool staged          = shader_writable ? !instance->device_mappable_memory : !instance->unified_memory;
 
 	spudgpu_buffer_desc bd{};
+	bd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	bd.size         = size;
 	if (staged) {
 		bd.memory_kind = SPUDGPU_MEMORY_KIND_DEVICE;
@@ -154,6 +157,7 @@ SPUDRESULT aprend_buffer_store_create(
 		return SPUD_SUCCESS;
 
 	spudgpu_buffer_desc sd{};
+	sd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	sd.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
 	sd.size         = size;
 	sd.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
@@ -213,6 +217,7 @@ static SPUDRESULT aprend_buffer_store_write_own(
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
 	spudgpu_buffer_desc sd{};
+	sd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	sd.memory_kind        = SPUDGPU_MEMORY_KIND_UPLOAD;
 	sd.size               = size;
 	sd.usage              = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
@@ -462,6 +467,7 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 	}
 
 	spudgpu_buffer_desc bd{};
+	bd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	// Written by the CPU and only read by the GPU, on every device.
 	bd.memory_kind = SPUDGPU_MEMORY_KIND_UPLOAD;
 	bd.size        = result->size;

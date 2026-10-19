@@ -258,11 +258,7 @@ static aprend_sampler aprend_lit_sampler(aprend_instance instance, SPUDGPU_ADDRE
 	desc.max_anisotropy = 1.0f;
 	desc.compare_enable = compare;
 	desc.compare_op     = op;
-#if _DEBUG
 	desc.debug_name = name;
-#else
-	(void)name;
-#endif
 	aprend_sampler sampler = aprend_sampler_create(instance, &desc);
 	if (!sampler)
 		printf("apricot: Aprend's %s can't be created\n", name);
@@ -378,9 +374,7 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
                                                                uint32_t layout_count, SPUDGPU_FORMAT format, uint32_t push_size,
                                                                const char *name) {
 	aprend_graphics_pipeline_desc desc{};
-#ifdef _DEBUG
 	desc._debug_name = name;
-#endif
 	desc._vertex_binding_count       = 0;
 	desc._topology                   = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	desc._cull_mode                  = SPUDGPU_CULL_MODE_NONE;
@@ -571,9 +565,7 @@ aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 		}
 	}
 	aprend_compute_pipeline_desc desc{};
-#ifdef _DEBUG
 	desc._debug_name = "aprend light culling";
-#endif
 	desc.compute_shader        = lit.cull_comp;
 	desc._entry_point          = "main";
 	desc._binding_layouts[0]   = lit.cull_layout;

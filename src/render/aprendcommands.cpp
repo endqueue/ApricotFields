@@ -65,14 +65,14 @@ static SPUDRESULT aprend_cmd_record_uploads(
 				known = true;
 		if (known)
 			continue;
-		before.push_back({copy.destination, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
-		after.push_back({copy.destination, SPUDGPU_RESOURCE_STATE_COPY_DEST, SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER});
+		before.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
+		after.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COPY_DEST, SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER});
 	}
 	for (aprend_buffer_store *store : cmd_list->staged_stores) {
 		if (store->uploads.empty())
 			continue;
-		before.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
-		after.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_COPY_DEST, store->use_state});
+		before.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
+		after.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COPY_DEST, store->use_state});
 	}
 	// A store whose state the list's barriers track must start the list in
 	// its use_state, which the copy above leaves it in. One with nothing to
@@ -81,7 +81,7 @@ static SPUDRESULT aprend_cmd_record_uploads(
 		aprend_buffer_store *store = tracked.store;
 		if (store->staged && !store->uploads.empty())
 			continue;
-		before.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, store->use_state});
+		before.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, store->use_state});
 	}
 	if (before.empty())
 		return SPUD_SUCCESS;
@@ -888,6 +888,7 @@ static bool aprend_cmd_present_texture(
 
 	spudgpu_image_view back_view = spudgpu_get_swap_chain_image_view(sc->swap_chain, sc->acquired_image);
 	spudgpu_image_view_desc back_view_desc{};
+	back_view_desc.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC;
 	if (!back_view || SPUDFAIL(spudgpu_get_image_view_desc(back_view, &back_view_desc)) || !back_view_desc.parent_image) {
 		printf("aprend: PRESENT_TEXTURE couldn't get the acquired back buffer\n");
 		return false;
@@ -895,6 +896,7 @@ static bool aprend_cmd_present_texture(
 	// The real back-buffer size, which the surface can override on Vulkan -
 	// not necessarily the size the swap chain was requested at.
 	spudgpu_swap_chain_desc actual{};
+	actual.base.type = SPUD_STRUCT_TYPE_GPU_SWAP_CHAIN_DESC;
 	if (SPUDFAIL(spudgpu_get_swap_chain_desc(sc->swap_chain, &actual)) || !actual.width || !actual.height) {
 		printf("aprend: PRESENT_TEXTURE couldn't get the back buffer size\n");
 		return false;
@@ -1061,6 +1063,7 @@ static void aprend_cmd_begin_rendering(
 	spudgpu_command_list cmd = cmd_list->cmd_list;
 
 	spudgpu_rendering_begin_desc desc{};
+	desc.base.type = SPUD_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
 	desc.color_attachment_count = p._color_target_count;
 	desc.x                      = p._x;
 	desc.y                      = p._y;
@@ -1221,7 +1224,7 @@ static void aprend_cmd_transition_store(
 	}
 	if (tracked->state == state)
 		return;
-	spudgpu_buffer_barrier barrier{store->buffer, tracked->state, state};
+	spudgpu_buffer_barrier barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, tracked->state, state};
 	spudgpu_cmd_pipeline_barrier(cmd_list->cmd_list, &barrier, 1, nullptr, 0);
 	tracked->state = state;
 	// A barrier orders everything before it, storage writes included.
@@ -1304,7 +1307,7 @@ static void aprend_cmd_ready_set_resources(
 			aprend_cmd_transition_store(cmd_list, store, store->use_state);
 		aprend_command_list_t::storage_hazard &hazard = aprend_cmd_store_hazard(cmd_list, store);
 		if (hazard.written || (pass_store.written && hazard.accessed)) {
-			buffer_barriers.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
+			buffer_barriers.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
 			hazard.written = false;
 		}
 		hazard.accessed = true;

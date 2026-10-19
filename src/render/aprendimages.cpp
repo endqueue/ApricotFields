@@ -90,6 +90,7 @@ static bool aprend_upload_staging_begin(
 		}
 	}
 	spudgpu_buffer_desc staging_desc{};
+	staging_desc.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	staging_desc.usage       = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
 	staging_desc.memory_kind = SPUDGPU_MEMORY_KIND_UPLOAD;
 	staging_desc.size        = size;
@@ -179,6 +180,7 @@ static SPUDRESULT aprend_texture3d_create_image_view(
     uint32_t mip_levels,
     spudgpu_image_view *out_view) {
 	spudgpu_image_view_desc view_desc{};
+	view_desc.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC;
 	view_desc.parent_image                        = image;
 	view_desc.type                                = SPUDGPU_IMAGE_VIEW_TYPE_3D;
 	view_desc.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(format);
@@ -212,11 +214,10 @@ static bool aprend_resized_image_desc(
 		       new_depth, requested_mip_levels);
 		return false;
 	}
-	out_desc->gpu_address_location = 0;
-	out_desc->width                = new_width;
-	out_desc->height               = new_height;
-	out_desc->depth                = new_depth;
-	out_desc->mip_levels           = requested_mip_levels ? requested_mip_levels : full_chain;
+	out_desc->width      = new_width;
+	out_desc->height     = new_height;
+	out_desc->depth      = new_depth;
+	out_desc->mip_levels = requested_mip_levels ? requested_mip_levels : full_chain;
 	return true;
 }
 
@@ -291,6 +292,7 @@ aprend_texture2d aprend_texture2d_create(
 	result->requested_mip_levels = desc->mip_levels;
 
 	spudgpu_image_desc image_desc{};
+	image_desc.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_DESC;
 	image_desc.usage        = (SPUDGPU_IMAGE_USAGE)desc->usage | SPUDGPU_IMAGE_USAGE_TRANSFER_DST | SPUDGPU_IMAGE_USAGE_TRANSFER_SRC;
 	image_desc.type         = SPUDGPU_IMAGE_TYPE_2D;
 	image_desc.format       = desc->format;
@@ -300,9 +302,7 @@ aprend_texture2d aprend_texture2d_create(
 	image_desc.array_layers = desc->array_layers ? desc->array_layers : 1;
 	image_desc.mip_levels   = desc->mip_levels ? desc->mip_levels : aprend_compute_mip_levels(desc->width, desc->height);
 	image_desc.cube_capable = desc->cube_capable;
-#if _DEBUG
 	image_desc.debug_name = desc->debug_name;
-#endif
 
 	SPUDRESULT sr = SPUDRESULT_OUT_OF_MEMORY;
 	if (!aprend_texture_layouts_reset(&result->tracking, image_desc.mip_levels, image_desc.array_layers))
@@ -458,6 +458,7 @@ bool aprend_texture2d_get_data(
 	uint64_t region_size = aligned_row_pitch * height;
 
 	spudgpu_buffer_desc staging_desc{};
+	staging_desc.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
 	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_READBACK;
 	staging_desc.size         = region_size;
@@ -744,6 +745,7 @@ bool aprend_texture2d_resize(
 	}
 
 	spudgpu_image_desc image_desc{};
+	image_desc.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_DESC;
 	if (!aprend_resized_image_desc(texture->image, texture->requested_mip_levels, new_width, new_height, 1, &image_desc))
 		return false;
 
@@ -796,6 +798,7 @@ aprend_texture3d aprend_texture3d_create(
 	result->desc                 = *desc;
 	result->requested_mip_levels = desc->mip_levels;
 	spudgpu_image_desc image_desc{};
+	image_desc.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_DESC;
 	image_desc.usage        = (SPUDGPU_IMAGE_USAGE)desc->usage | SPUDGPU_IMAGE_USAGE_TRANSFER_DST | SPUDGPU_IMAGE_USAGE_TRANSFER_SRC;
 	image_desc.type         = SPUDGPU_IMAGE_TYPE_3D;
 	image_desc.format       = desc->format;
@@ -804,9 +807,7 @@ aprend_texture3d aprend_texture3d_create(
 	image_desc.depth        = desc->depth;
 	image_desc.array_layers = 1; // 3D textures do not support array layers
 	image_desc.mip_levels   = desc->mip_levels ? desc->mip_levels : aprend_compute_mip_levels(desc->width, desc->height, desc->depth);
-#if _DEBUG
 	image_desc.debug_name = desc->debug_name;
-#endif
 
 	SPUDRESULT sr = SPUDRESULT_OUT_OF_MEMORY;
 	if (!aprend_texture_layouts_reset(&result->tracking, image_desc.mip_levels, 1))
@@ -981,6 +982,7 @@ bool aprend_texture3d_get_data(
 	uint64_t region_size         = aligned_slice_pitch * depth;
 
 	spudgpu_buffer_desc staging_desc{};
+	staging_desc.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
 	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_READBACK;
 	staging_desc.size         = region_size;
@@ -1055,6 +1057,7 @@ bool aprend_texture3d_resize(
 		return true; // No resize needed
 
 	spudgpu_image_desc image_desc{};
+	image_desc.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_DESC;
 	if (!aprend_resized_image_desc(texture->image, texture->requested_mip_levels, new_width, new_height, new_depth, &image_desc))
 		return false;
 
@@ -1262,6 +1265,7 @@ aprend_texture_view aprend_texture_view_create_2d(
 	result->desc         = resolved;
 
 	spudgpu_image_view_desc imgvd{};
+	imgvd.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC;
 	imgvd.parent_image                        = texture->image;
 	imgvd.type                                = spud_view_type;
 	imgvd.subresource_range.aspect_mask       = desc->aspect;
@@ -1327,6 +1331,7 @@ aprend_texture_view aprend_texture_view_create_3d(
 	result->desc         = resolved;
 
 	spudgpu_image_view_desc imgvd{};
+	imgvd.base.type = SPUD_STRUCT_TYPE_GPU_IMAGE_VIEW_DESC;
 	imgvd.parent_image                        = texture->image;
 	imgvd.type                                = SPUDGPU_IMAGE_VIEW_TYPE_3D;
 	imgvd.subresource_range.aspect_mask       = desc->aspect;
@@ -1388,6 +1393,7 @@ aprend_sampler aprend_sampler_create(
 	result->desc     = *desc;
 
 	spudgpu_sampler_desc sd{};
+	sd.base.type = SPUD_STRUCT_TYPE_GPU_SAMPLER_DESC;
 	sd.mag_filter     = desc->mag_filter;
 	sd.min_filter     = desc->min_filter;
 	sd.mipmap_filter  = desc->mipmap_filter;
@@ -1400,9 +1406,7 @@ aprend_sampler aprend_sampler_create(
 	sd.max_anisotropy = desc->max_anisotropy;
 	sd.compare_enable = desc->compare_enable;
 	sd.compare_op     = desc->compare_op;
-#if _DEBUG
 	sd.debug_name = desc->debug_name;
-#endif
 
 	SPUDRESULT sr = spudgpu_create_sampler(instance->desc.device, &sd, &result->sampler);
 	if (SPUDFAIL(sr)) {

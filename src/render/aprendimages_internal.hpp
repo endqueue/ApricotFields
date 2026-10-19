@@ -204,9 +204,7 @@ struct aprend_mip_chain {
 
 typedef struct aprend_texture2d_t
 {
-#if _DEBUG
     char *debug_name{nullptr};
-#endif
     aprend_texture2d_t() = default;
     ~aprend_texture2d_t();
     aprend_instance instance;
@@ -228,9 +226,7 @@ typedef struct aprend_texture2d_t
 
 typedef struct aprend_texture3d_t
 {
-#if _DEBUG
     char *debug_name{nullptr};
-#endif
     aprend_texture3d_t() = default;
     ~aprend_texture3d_t();
     aprend_instance instance;
@@ -249,9 +245,7 @@ typedef struct aprend_texture3d_t
 
 typedef struct aprend_texture_view_t
 {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_texture_view_t() = default;
 	~aprend_texture_view_t();
 	aprend_instance instance{nullptr};
@@ -298,9 +292,7 @@ inline aprend_texture_range aprend_texture_view_range(aprend_texture_view_t *vie
 
 typedef struct aprend_sampler_t
 {
-#if _DEBUG
 	char *debug_name{nullptr};
-#endif
 	aprend_sampler_t() = default;
 	~aprend_sampler_t();
 	aprend_instance instance{nullptr};
@@ -310,9 +302,7 @@ typedef struct aprend_sampler_t
 
 typedef struct aprend_framebuffer_t
 {
-#if _DEBUG
     char *debug_name{nullptr};
-#endif
     aprend_framebuffer_t() = default;
     ~aprend_framebuffer_t();
     aprend_instance instance;

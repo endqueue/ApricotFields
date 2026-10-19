@@ -417,10 +417,8 @@ typedef struct aprend_vertex_binding_desc {
  * No field has a default.
  */
 typedef struct aprend_graphics_pipeline_desc {
-#ifdef _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *_debug_name;
-#endif
 	/**
 	 * The vertex input: `_vertex_bindings[N]` is read from the vertex buffer
 	 * at slot N (APREND_COMMAND_SET_VERTEX_BUFFERS). The first
@@ -713,10 +711,8 @@ aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_
  * No field has a default.
  */
 typedef struct aprend_compute_pipeline_desc {
-#ifdef _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *_debug_name;
-#endif
 	/**
 	 * The compute stage: a shader created for
 	 * SPUDGPU_SHADER_STAGE_COMPUTE. Required.

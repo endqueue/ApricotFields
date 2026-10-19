@@ -81,10 +81,8 @@ typedef struct aprend_texture2d_desc {
 	 */
 	bool cube_capable;
 
-#if _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
-#endif
 } aprend_texture2d_desc;
 
 /**
@@ -363,10 +361,8 @@ typedef struct aprend_texture3d_desc {
 	 */
 	uint32_t mip_levels;
 
-#if _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
-#endif
 } aprend_texture3d_desc;
 
 /**
@@ -888,10 +884,8 @@ typedef struct aprend_sampler_desc {
 	/** The comparison, the shader's depth first: LESS_OR_EQUAL passes where it is at or in front of the texel. Read only with #compare_enable. */
 	SPUDGPU_COMPARE_OP compare_op;
 
-#if _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
-#endif
 } aprend_sampler_desc;
 
 /**

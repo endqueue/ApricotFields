@@ -118,6 +118,7 @@ static SPUDRESULT aprend_binding_layout_add_pool(aprend_binding_layout_core *lay
 		per_set[layout->bindings[i]._type] += layout->bindings[i]._count;
 
 	spudgpu_descriptor_pool_desc pool_desc{};
+	pool_desc.base.type = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_POOL_DESC;
 	pool_desc.max_sets = APREND_BINDING_SETS_PER_POOL;
 	for (uint32_t type = 0; type < APREND_DESCRIPTOR_TYPE_COUNT; ++type) {
 		if (per_set[type] == 0)
@@ -150,6 +151,7 @@ static SPUDRESULT aprend_binding_layout_acquire_set(aprend_binding_layout_core *
 	}
 
 	spudgpu_descriptor_set_desc set_desc{};
+	set_desc.base.type = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_DESC;
 	set_desc.pool           = layout->pools[layout->pool_count - 1];
 	set_desc.set_layouts[0] = layout->layout;
 	set_desc.set_count      = 1;
@@ -277,6 +279,7 @@ static bool aprend_binding_set_entry_resource_valid(const char *who, aprend_inst
 static bool aprend_device_supports_mesh_shading(spudgpu_device device) {
 #if SPUDGPU_EXT_MESH_SHADING
 	spudgpu_mesh_shading_capabilities caps{};
+	caps.base.type = SPUD_STRUCT_TYPE_GPU_MESH_SHADING_CAPABILITIES;
 	if (SPUDFAIL(spudgpu_get_mesh_shading_capabilities(device, &caps)))
 		return false;
 	return caps.supported;
@@ -336,14 +339,11 @@ static SPUDRESULT aprend_shader_create_module(
     SPUDGPU_SHADER_STAGE shader_stage,
     const char *debug_name) {
 	spudgpu_shader_module_desc smd = {};
+	smd.base.type = SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC;
 	smd.stage                      = shader_stage;
 	smd.spirv_code                 = code;
 	smd.spirv_size                 = size;
-#if _DEBUG
 	smd.debug_name = debug_name;
-#else
-	(void)debug_name;
-#endif
 	shader->stage = shader_stage;
 	return spudgpu_create_shader_module(shader->instance->desc.device, &smd, &shader->shader_module);
 }
@@ -641,6 +641,7 @@ static aprend_binding_layout_core *aprend_binding_layout_core_acquire(
 	core->binding_count = binding_count;
 	core->holders       = 1;
 	spudgpu_descriptor_set_layout_desc ld{};
+	ld.base.type = SPUD_STRUCT_TYPE_GPU_DESCRIPTOR_SET_LAYOUT_DESC;
 	for (uint32_t i = 0; i < binding_count; ++i) {
 		core->bindings[i]              = key[i];
 		ld.bindings[i].binding         = key[i]._binding;
@@ -1137,6 +1138,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	result->desc._fragment_entry_point = result->entry_points + vertex_entry_size;
 
 	spudgpu_shader_pipeline_desc pd{};
+	pd.base.type = SPUD_STRUCT_TYPE_GPU_SHADER_PIPELINE_DESC;
 	if (result->is_mesh) {
 		result->desc._mesh_entry_point   = result->entry_points;
 		result->desc._vertex_entry_point = nullptr;
@@ -1210,9 +1212,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
 		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->core->layout;
 	pd.descriptor_set_layout_count = desc._binding_layout_count;
-#if _DEBUG
 	pd.debug_name = desc._debug_name;
-#endif
 
 	SPUDRESULT sr = spudgpu_create_shader_pipeline(instance->desc.device, &pd, &result->pipeline);
 	if (SPUDFAIL(sr)) {
@@ -1372,6 +1372,7 @@ aprend_compute_pipeline aprend_compute_pipeline_create(
 	result->desc._entry_point = result->entry_point;
 
 	spudgpu_compute_pipeline_desc pd{};
+	pd.base.type = SPUD_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
 	pd.compute_module      = desc.compute_shader->shader_module;
 	pd.compute_entry_point = result->entry_point;
 	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
@@ -1384,9 +1385,7 @@ aprend_compute_pipeline aprend_compute_pipeline_create(
 			result->push_constant_end = range_end;
 	}
 	pd.push_constant_range_count = desc._push_constant_range_count;
-#if _DEBUG
 	pd.debug_name = desc._debug_name;
-#endif
 
 	SPUDRESULT sr = spudgpu_create_compute_pipeline(instance->desc.device, &pd, &result->pipeline);
 	if (SPUDFAIL(sr)) {
@@ -1810,6 +1809,7 @@ aprend_binding_set aprend_binding_set_create(
 			const aprend_binding_set_entry &entry = entries[i];
 			spudgpu_write_descriptor_set &write   = writes[i];
 			write                                 = {};
+			write.base.type                       = SPUD_STRUCT_TYPE_GPU_WRITE_DESCRIPTOR_SET;
 			infos[i]                              = {};
 			write.dst_set                         = result->sets[frame];
 			write.dst_binding                     = entry._binding;

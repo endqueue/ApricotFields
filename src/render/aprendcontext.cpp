@@ -133,6 +133,7 @@ SPUDRESULT aprend_instance_submit(
 		return flushed;
 	const uint64_t serial = instance->submit_serial.load() + 1;
 	spudgpu_submit_desc submit{};
+	submit.base.type = SPUD_STRUCT_TYPE_GPU_SUBMIT_DESC;
 	submit.cmd_lists          = all;
 	submit.cmd_list_count     = all_count;
 	submit.signal_fence       = instance->frame_fence;
@@ -315,6 +316,7 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 	// while the GPU still runs what the others recorded.
 	for (uint32_t i = 0; i < desc->frames_in_flight; ++i) {
 		spudgpu_command_allocator_desc aDesc = {};
+		aDesc.base.type = SPUD_STRUCT_TYPE_GPU_COMMAND_ALLOCATOR_DESC;
 		aDesc.flags                          = 0;
 		aDesc.type                           = SPUDGPU_COMMAND_LIST_TYPE_DIRECT;
 
@@ -332,6 +334,7 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 
 	{
 		SPUDGPU_DEVICE_PROPERTIES properties{};
+		properties.base.type = SPUD_STRUCT_TYPE_GPU_DEVICE_PROPERTIES;
 		sr = spudgpu_get_device_properties(desc->device, &properties);
 		if (SPUDFAIL(sr))
 			goto failedattempt;

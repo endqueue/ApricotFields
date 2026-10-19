@@ -5,7 +5,6 @@
 extern "C" {
 #endif
 
-#ifdef _DEBUG
 void apri_debug_name_set(void *object, const char *name) {
 	if (object) {
 		/* Store the debug name in the first member of the object struct. */
@@ -22,7 +21,6 @@ const char *apri_debug_name_get(void *object) {
 	} else
 		return nullptr;
 }
-#endif // _DEBUG
 
 #if __cplusplus
 }

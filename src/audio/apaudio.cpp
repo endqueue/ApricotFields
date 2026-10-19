@@ -945,9 +945,7 @@ constexpr float SINC_MAX_STRETCH = 16.0f;
 
 struct apaudio_mixer_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
     // Fixed at creation.
     uint32_t max_voices{0};
     uint32_t max_real_voices{0};

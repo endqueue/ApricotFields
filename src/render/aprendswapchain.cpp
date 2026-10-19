@@ -14,6 +14,7 @@ static SPUDRESULT aprend_swap_chain_create_native(aprend_swap_chain_t *sc) {
 	if (!sc)
 		return SPUDRESULT_GENERAL_FAILURE;
 	spudgpu_swap_chain_desc scd{};
+	scd.base.type = SPUD_STRUCT_TYPE_GPU_SWAP_CHAIN_DESC;
 	scd.surface         = sc->desc.surface;
 	scd.queue           = sc->desc.queue;
 	scd.width           = sc->desc.width;

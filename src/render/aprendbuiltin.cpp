@@ -100,9 +100,7 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 		return nullptr;
 
 	aprend_graphics_pipeline_desc desc{};
-#ifdef _DEBUG
 	desc._debug_name = "aprend downsample";
-#endif
 	desc._vertex_binding_count        = 0;
 	desc._topology                    = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	desc._cull_mode                   = SPUDGPU_CULL_MODE_NONE;
@@ -181,9 +179,7 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 		return nullptr;
 
 	aprend_graphics_pipeline_desc desc{};
-#ifdef _DEBUG
 	desc._debug_name = "aprend bloom";
-#endif
 	desc._vertex_binding_count       = 0;
 	desc._topology                   = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	desc._cull_mode                  = SPUDGPU_CULL_MODE_NONE;
@@ -247,9 +243,7 @@ aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDG
 	desc.min_lod        = 0.0f;
 	desc.max_lod        = 0.0f;
 	desc.max_anisotropy = 1.0f;
-#if _DEBUG
 	desc.debug_name = "aprend downsample";
-#endif
 	sampler = aprend_sampler_create(instance, &desc);
 	if (!sampler)
 		printf("apricot: Aprend's downsample sampler can't be created\n");
@@ -288,6 +282,7 @@ void aprend_record_fullscreen_pass_sets(
     const void *push,
     uint32_t push_size) {
 	spudgpu_rendering_begin_desc pass{};
+	pass.base.type = SPUD_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
 	pass.color_attachments[0].image_view = target;
 	pass.color_attachments[0].load_op    = load_op;
 	pass.color_attachments[0].store_op   = SPUDGPU_STORE_OP_STORE;

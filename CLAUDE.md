@@ -187,8 +187,12 @@ block near the top. A new header gets the same block.
 - Math types crossing the API are the `Apri*` structs from `aprimath.h`. They are
   laid out identically to their GLM counterparts so `to_glm()` can reinterpret them
   in place; changing a member's order or type breaks that silently.
-- In Debug, an Aprend handle struct's first member is its `debug_name` pointer
-  (`apricore.h` explains why). Keep it first.
+- An Aprend handle struct's first member is its `debug_name` pointer
+  (`apricore.h` explains why). Keep it first. It, and every desc's
+  `debug_name`, exist in every build (since 2026-10-18; before, only under
+  `_DEBUG`, which made a desc's layout differ between Debug and Release):
+  no build switch changes a public struct's layout or which functions
+  exist.
 
 ## Aprend
 
@@ -289,8 +293,8 @@ there is no separate `-debug` configure preset any more.)
   purpose: its DEFLATE output is part of what makes an archive byte-identical.
   Every fetch fallback names a tag or a commit, never a branch, so a build
   without `../.deps/` is the same every time. glaze is pinned to the commit
-  vendored in `../.deps/glaze` (it has no release tag there); move the two
-  together.
+  of its release v9.0.0, and `../.deps/glaze` is checked out at that tag; to
+  upgrade, move the two together, to a release.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
 - Aprend's own shaders are GLSL in `shaders/`, compiled by glslc at build time
   on every platform, Apple included, and embedded in the library as C arrays

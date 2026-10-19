@@ -378,9 +378,7 @@ struct mesh_hit_t
 
 struct apmath_mesh_bvh_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
     // The desc's triangles, degenerate ones included.
     uint32_t triangle_count{0};
     box_t bounds;
@@ -411,9 +409,7 @@ struct instance_t
 
 struct apmath_instance_bvh_t
 {
-#ifdef _DEBUG
     const char *debug_name{nullptr};
-#endif
     std::vector<instance_t> instances; // the desc's order
     box_t bounds;
     // Over the instances with triangles; its order holds their indices.
