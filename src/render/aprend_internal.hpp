@@ -345,7 +345,7 @@ SPUDRESULT aprend_instance_submit(
     spudgpu_swap_chain swap_chain,
     uint64_t *out_serial);
 /* Blocks until the submission that took [serial], and every one before it,
- * has finished. */
+ * has finished. Serial 0 returns at once. */
 SPUDRESULT aprend_instance_wait_serial(
     aprend_instance instance,
     uint64_t serial);

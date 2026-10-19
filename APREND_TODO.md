@@ -166,6 +166,10 @@ unfinished in it.
     it for the frame that last used the index. `aprend_instance_wait_idle`
     waits for everything submitted so far. It rests on SpudGPU's fence being a counter on every backend,
     which was rewritten the same day and is built on all three since.
+    A wait for serial 0, a frame index nothing was submitted in or an
+    instance destroyed before its first submission, returns at once without
+    calling SpudGPU (2026-10-19): the fence starts at 0, and D3D12's debug
+    layer warned at every such wait. Run on Windows, D3D12 and Vulkan.
   - Buffer sets (item 12). `aprend_instance_desc::frames_in_flight`, a frame
     index moved on by `aprend_instance_next_frame`, and
     `aprend_uniform_buffer_set` and `aprend_storage_buffer_set` with one copy

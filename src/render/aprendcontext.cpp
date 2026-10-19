@@ -165,6 +165,10 @@ SPUDRESULT aprend_instance_submit(
 SPUDRESULT aprend_instance_wait_serial(
     aprend_instance instance,
     uint64_t serial) {
+	// 0 is no submission: the fence started there, so there is nothing to
+	// wait for, and a wait for it is one a backend may warn about.
+	if (serial == 0)
+		return SPUD_SUCCESS;
 	return spudgpu_wait_for_fences(instance->desc.device, &instance->frame_fence, &serial, 1, true, UINT64_MAX);
 }
 
