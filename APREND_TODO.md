@@ -2371,10 +2371,27 @@ and 5 are closed and their numbers are not reused.
 3. The rest of item 32: written 2026-10-18 and run on Metal (see "State
    of the code"), except reading a depth texture while it is the pass's
    depth target, which needs a read-only depth layout SpudGPU doesn't
-   have and a test of what Metal allows; nothing asks for it yet. Left of
-   this step: run `test_storage_ordering` under Vulkan's synchronization
-   validation and D3D12's debug layer, which is what shows that a barrier
-   left out was not needed.
+   have and a test of what Metal allows; nothing asks for it yet.
+   `test_storage_ordering` then ran on 2026-10-18 under Vulkan's
+   synchronization validation (`VK_LAYER_VALIDATE_SYNC=1`) and under D3D12's
+   debug layer (under cdb: SpudGPU registered no message callback then,
+   and since the same day prints the layer's corruptions, errors and
+   warnings to stdout itself in Debug builds), on the Iris Xe and the RTX
+   A2000: no hazard on any dispatch or storage image, so the barrier left
+   out between two reads is not needed. Sync validation did report 15
+   hazards per device elsewhere, all from SpudGPU's Vulkan barriers
+   inferring access and stages from a layout (`layout_to_access`,
+   `layout_to_stage`, spudgpuvulkanrenderpass.c), not from Aprend:
+   COLOR_ATTACHMENT_OPTIMAL gives write access only, so a pass that loads
+   its target reads it unordered after the transition (6, READ_AFTER_WRITE
+   at vkCmdBeginRendering); DEPTH_STENCIL_ATTACHMENT_OPTIMAL gives write
+   only and the early fragment tests only, while depth is written at the
+   late tests, so the transition out after a depth pass is unordered (9,
+   WRITE_AFTER_WRITE, the lit tests' depth targets). Fixed in spudlib the
+   same day (attachments read and written, depth at both test stages, and
+   the same access in spudgpu_cmd_pipeline_barrier's resource states);
+   rerun, every test passed under sync validation on both devices with no
+   message.
 4. Item 18, which settles item 1 and unblocks 19. Written, and run on
    all three backends through the materials and passes made from it
    (`../apricottests`, 2026-10-17). What is left is item 18's own list.
