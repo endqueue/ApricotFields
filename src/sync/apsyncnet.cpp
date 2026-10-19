@@ -1127,7 +1127,7 @@ static const uint32_t APSYNC_MAX_RESOLVED_ADDRESSES = 8;
 static bool resolve_host(apsync_session_t &s, char addresses[][SPUDNET_MAX_ADDRESS_STRING_LEN], uint32_t &count)
 {
     spudnet_error none{};
-    spudnet_resolver_desc desc{};
+    spudnet_resolver_desc desc{{SPUD_STRUCT_TYPE_NET_RESOLVER_DESC, nullptr}};
     desc.host = s.join_host.c_str();
     desc.family = s.join_family;
     spudnet_resolver resolver = nullptr;
@@ -1249,7 +1249,7 @@ static bool connect_to_host(apsync_session_t &s)
         if (s.stop.load())
             spudnet_tcp_socket_abort(socket);
 
-        spudnet_tcp_socket_connect_desc desc{};
+        spudnet_tcp_socket_connect_desc desc{{SPUD_STRUCT_TYPE_NET_TCP_SOCKET_CONNECT_DESC, nullptr}};
         desc.address = addresses[i];
         desc.port = s.join_port;
         desc.timeout_ms = s.connect_timeout_ms;
@@ -1538,7 +1538,7 @@ extern "C"
         {
             for (uint32_t i = 0; i < h.listen_address_count; ++i)
             {
-                spudnet_tcp_listener_desc listener_desc{};
+                spudnet_tcp_listener_desc listener_desc{{SPUD_STRUCT_TYPE_NET_TCP_LISTENER_DESC, nullptr}};
                 listener_desc.address = h.listen_addresses[i];
                 listener_desc.port = h.port;
                 listener_desc.backlog = h.listen_backlog;
