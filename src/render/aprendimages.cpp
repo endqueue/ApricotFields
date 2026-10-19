@@ -1165,7 +1165,7 @@ static bool aprend_texture_view_desc_valid(
 aprend_texture_view aprend_texture_view_create_2d(
     aprend_texture2d texture,
     const aprend_texture_view_desc *desc) {
-	static const char *who = "aprend_texture_view_create_2d";
+	static const char who[] = "aprend_texture_view_create_2d";
 	if (!texture)
 		return nullptr;
 	if (!desc)
@@ -1288,7 +1288,7 @@ failedattempt:
 aprend_texture_view aprend_texture_view_create_3d(
     aprend_texture3d texture,
     const aprend_texture_view_desc *desc) {
-	static const char *who = "aprend_texture_view_create_3d";
+	static const char who[] = "aprend_texture_view_create_3d";
 	if (!texture)
 		return nullptr;
 	if (!desc)

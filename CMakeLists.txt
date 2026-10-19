@@ -154,8 +154,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(ApricotFields PRIVATE Threads::Threads)
 
 # Aprend's own shaders (shaders/*.vert, *.frag, *.comp), compiled to SPIR-V at build
-# time and embedded in the library as C arrays (glslc -mfmt=c), as
-# trellislib does: there is nothing to deploy or find at run time.
+# time and embedded in the library as C arrays (glslc -mfmt=c): there is
+# nothing to deploy or find at run time.
 # src/render/aprendbuiltin.cpp includes them. glslc is needed on every
 # platform, Apple included, since SpudGPU's Metal and D3D12 backends take
 # SPIR-V and cross-compile it.

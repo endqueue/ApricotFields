@@ -594,9 +594,11 @@ unfinished in it.
     refusing an update. Passed on Metal (Apple M5 Pro, Debug), 2026-10-18,
     with every other test, and trellislib's and latran's tests pass over
     it. That device is unified, so the buffers were written directly and
-    none of the new staged code ran: it runs only on a device with memory
-    of its own, D3D12 or Vulkan on the RTX A2000. Not built on Windows or
-    Linux.
+    none of the new staged code ran there. It ran first on the RTX A2000
+    (memory of its own): every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    the validation layer with synchronization validation, on the Iris Xe
+    and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
+    what that run found). Not built on Linux.
 - **Stale lists refused, and storage barriers from what shaders write,
   written 2026-10-18; run on Metal** (item 32, step 3 of "Suggested order").
   - The instance keeps every command list compiled and not yet submitted
@@ -634,10 +636,12 @@ unfinished in it.
     after a compile and refused at submit, and a list that goes). Every
     test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
     validation with warnings fatal, and Release under `leaks` (none).
-    trellislib's and latran's tests pass over it. Not built on Windows or
-    Linux; on Metal the barriers do nothing, so only Vulkan's
-    synchronization validation and D3D12's debug layer can show that a
-    barrier left out was not needed.
+    trellislib's and latran's tests pass over it. On Metal the barriers do
+    nothing; every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    the validation layer with synchronization validation, on the Iris Xe
+    and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
+    what that run found). Not built on Linux. Under sync validation `test_storage_ordering` had
+    no hazard, so the barrier left out between two reads is not needed.
 - **`aprend_material_copy`, and no default resources by decision,
   written 2026-10-18; run on Metal** (from "Next, from the review", its
   first step).
@@ -686,7 +690,10 @@ unfinished in it.
     latran's 26 suites pass over it, and trellislib's 10. Of trellislib's,
     `trellislib_model_tests` failed once, in the first run after the
     relink, with its output lost; nine runs since passed, and it calls
-    no material code. Not built on Windows or Linux.
+    no material code. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    the validation layer with synchronization validation, on the Iris Xe
+    and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
+    what that run found). Not built on Linux.
 - **A uniform buffer's uniforms found once, written 2026-10-18; run on
   Metal** (from "Next, from the review", its first step).
   - `aprend_uniform_layout_get_uniform_index(layout, name)` finds a uniform
@@ -715,7 +722,10 @@ unfinished in it.
     refused. Passed on Metal (Apple M5 Pro), Debug under Metal API and
     shader validation with warnings fatal and Release under `leaks`
     (none), with every other test; latran's and trellislib's tests pass
-    over it. Not built on Windows or Linux.
+    over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    the validation layer with synchronization validation, on the Iris Xe
+    and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
+    what that run found). Not built on Linux.
 - **The uniform buffer cleaned up, written 2026-10-18; run on Metal.**
   From a review of `aprend_uniform_buffer_t`:
   - `aprend_uniform_buffer_create` checks a layout's `uniforms` against its
@@ -759,8 +769,10 @@ unfinished in it.
     Vulkan's `minUniformBufferOffsetAlignment` and
     `minStorageBufferOffsetAlignment`; D3D12's 256 and 16 (a constant buffer
     view's placement, a raw buffer view's first byte); 256 for both on
-    Metal, which has no query. The Vulkan and D3D12 halves are written and
-    not compiled: this Mac has neither API's headers.
+    Metal, which has no query. The Vulkan and D3D12 halves were written on
+    macOS without either API's headers, and first compiled and run on
+    Windows on 2026-10-18 (spudlib b7ac7e6), with every test passing on
+    both devices.
   - `aprend_binding_set_create` (and `_update`) refuses a uniform or storage
     buffer entry whose `_offset` is not a multiple of the device's
     alignment for its type, naming the entry and the alignment. Before,
@@ -779,8 +791,10 @@ unfinished in it.
     alignment is taken and one at 4 refused (both, on Metal's 256). Every
     test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
     validation with warnings fatal and Release under `leaks` (none);
-    latran's and trellislib's tests pass over it. Not built on Windows or
-    Linux.
+    latran's and trellislib's tests pass over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    the validation layer with synchronization validation, on the Iris Xe
+    and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
+    what that run found). Not built on Linux.
 - **Vertex buffers are bytes and vertex layouts the pipeline's, written
   2026-10-18; run on Metal.** As Unreal (`FVertexBuffer` and the vertex
   declaration), Hazel 2025 (`VertexBuffer` is a size and its bytes; the
@@ -838,8 +852,13 @@ unfinished in it.
     the end of a 6-vertex buffer refused. Every test passed on Metal (Apple
     M5 Pro), Debug under Metal API and shader validation with warnings
     fatal and Release under `leaks` (none); latran's and trellislib's tests
-    pass over it. Not built on Windows or Linux, and D3D12, whose vertex
-    view's stride is what the per-stride views are for, has not run it.
+    pass over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    the validation layer with synchronization validation, on the Iris Xe
+    and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
+    what that run found). Not built on Linux. That includes D3D12, whose
+    vertex view's stride is what the per-stride views are for.
+    Trellis_Avalonia and latran ran over it on Windows the same day
+    (reported).
 - **Shader reflection, written 2026-10-11 and compiled on all three
   backends** (item 18; closes item 1). Type-checked with GCC 11 as the
   entry above before that. Part of it has run without a device: see the
@@ -2362,7 +2381,12 @@ and 5 are closed and their numbers are not reused.
    leaves out its own mip chain's views, which it releases itself.
    `test_resize_with_views` (2D) and `test_resize_3d_with_views` (3D, the
    first test of a 3D texture and a 3D view) cover it; both passed on
-   D3D12 and Vulkan, both GPUs, 2026-10-18.
+   D3D12 and Vulkan, both GPUs, 2026-10-18. The same evening the fixes of
+   that run (and spudlib's Vulkan barrier and D3D12 message changes) were
+   built on macOS and every test passed on Metal (Apple M5 Pro), Debug
+   under Metal API and shader validation with warnings fatal, both resize
+   tests refusing as they should, and Release under `leaks` (none);
+   latran's and trellislib's tests pass over them.
    The shared upload path for
    textures is written (item 6), and staged buffers don't use it: a
    transient span is taken back at the next frame, and a buffer may be

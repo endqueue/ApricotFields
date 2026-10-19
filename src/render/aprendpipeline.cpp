@@ -1097,7 +1097,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	// vertex element is read at.
 	std::vector<aprend_vertex_attribute_plan> plan;
 	try {
-		static const char *who      = "aprend_graphics_pipeline_create";
+		static const char who[]     = "aprend_graphics_pipeline_create";
 		aprend_shader geometry      = desc.mesh_shader ? desc.mesh_shader : desc.vertex_shader;
 		const char *geometry_entry  = desc.mesh_shader ? desc._mesh_entry_point : desc._vertex_entry_point;
 		bool ok = aprend_pipeline_check_shader(who, geometry, geometry_entry, desc._binding_layouts, desc._binding_layout_count,
@@ -1455,7 +1455,7 @@ aprend_binding_layout aprend_binding_layout_create_from_shaders(
     const aprend_shader *shaders,
     uint32_t shader_count,
     uint32_t set) {
-	static const char *who = "aprend_binding_layout_create_from_shaders";
+	static const char who[] = "aprend_binding_layout_create_from_shaders";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -1867,7 +1867,7 @@ bool aprend_binding_set_update(
     aprend_binding_set set,
     const aprend_binding_set_entry *entries,
     uint32_t entry_count) {
-	static const char *who = "aprend_binding_set_update";
+	static const char who[] = "aprend_binding_set_update";
 	if (!set) {
 		printf("apricot: %s: set is NULL\n", who);
 		return false;

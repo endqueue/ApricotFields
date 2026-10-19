@@ -384,7 +384,7 @@ static aprend_shader_member aprend_uniform_as_member(const aprend_uniform &u) {
 }
 
 aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, const aprend_uniform_layout *layout) {
-	static const char *who = "aprend_uniform_buffer_create";
+	static const char who[] = "aprend_uniform_buffer_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -507,7 +507,7 @@ void aprend_uniform_buffer_get_layout(aprend_uniform_buffer buffer, aprend_unifo
 }
 uint32_t aprend_uniform_buffer_get_size(aprend_uniform_buffer buffer) { return buffer ? buffer->size : 0; }
 bool aprend_uniform_buffer_update(aprend_uniform_buffer buffer, uint32_t local_offset, uint32_t size, const void *pData) {
-	static const char *who = "aprend_uniform_buffer_update";
+	static const char who[] = "aprend_uniform_buffer_update";
 	if (!buffer) {
 		printf("apricot: %s: buffer is NULL\n", who);
 		return false;
@@ -545,7 +545,7 @@ uint32_t aprend_uniform_layout_get_uniform_index(const aprend_uniform_layout *la
 	return UINT32_MAX;
 }
 bool aprend_uniform_buffer_update_uniform(aprend_uniform_buffer buffer, uint32_t uniform_index, const void *pData) {
-	static const char *who = "aprend_uniform_buffer_update_uniform";
+	static const char who[] = "aprend_uniform_buffer_update_uniform";
 	if (!buffer) {
 		printf("apricot: %s: buffer is NULL\n", who);
 		return false;
@@ -568,7 +568,7 @@ bool aprend_uniform_buffer_update_uniform(aprend_uniform_buffer buffer, uint32_t
 	return !SPUDFAIL(spudgpu_flush_buffer(buffer->buffer, member.offset, member.size));
 }
 bool aprend_uniform_buffer_update_by_name(aprend_uniform_buffer buffer, const char *name, const void *pData) {
-	static const char *who = "aprend_uniform_buffer_update_by_name";
+	static const char who[] = "aprend_uniform_buffer_update_by_name";
 	if (!buffer) {
 		printf("apricot: %s: buffer is NULL\n", who);
 		return false;
@@ -590,7 +590,7 @@ bool aprend_uniform_buffer_update_by_name(aprend_uniform_buffer buffer, const ch
 }
 
 aprend_vertex_buffer aprend_vertex_buffer_create(aprend_instance instance, uint64_t size, APREND_BUFFER_WRITES writes, const void *pData) {
-	static const char *who = "aprend_vertex_buffer_create";
+	static const char who[] = "aprend_vertex_buffer_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -638,7 +638,7 @@ void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer) {
 }
 uint64_t aprend_vertex_buffer_get_size(aprend_vertex_buffer buffer) { return buffer ? buffer->size : 0; }
 bool aprend_vertex_buffer_update(aprend_vertex_buffer buffer, uint64_t offset, uint64_t size, const void *pData) {
-	static const char *who = "aprend_vertex_buffer_update";
+	static const char who[] = "aprend_vertex_buffer_update";
 	if (!buffer) {
 		printf("apricot: %s: buffer is NULL\n", who);
 		return false;
@@ -834,7 +834,7 @@ bool aprend_storage_buffer_update(aprend_storage_buffer buffer, uint64_t local_o
 }
 
 aprend_uniform_buffer_set aprend_uniform_buffer_set_create(aprend_instance instance, const aprend_uniform_layout *layout) {
-	static const char *who = "aprend_uniform_buffer_set_create";
+	static const char who[] = "aprend_uniform_buffer_set_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;

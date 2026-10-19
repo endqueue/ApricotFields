@@ -181,7 +181,7 @@ extern "C" {
 aprend_render_pass aprend_render_pass_create(
     aprend_instance instance,
     const aprend_render_pass_desc *desc) {
-	static const char *who = "aprend_render_pass_create";
+	static const char who[] = "aprend_render_pass_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -321,7 +321,7 @@ bool aprend_render_pass_set_binding_set(
     aprend_render_pass pass,
     uint32_t slot,
     aprend_binding_set set) {
-	static const char *who = "aprend_render_pass_set_binding_set";
+	static const char who[] = "aprend_render_pass_set_binding_set";
 	if (!pass) {
 		printf("apricot: %s: pass is NULL\n", who);
 		return false;
@@ -366,7 +366,7 @@ bool aprend_render_pass_get_size(
 aprend_compute_pass aprend_compute_pass_create(
     aprend_instance instance,
     const aprend_compute_pass_desc *desc) {
-	static const char *who = "aprend_compute_pass_create";
+	static const char who[] = "aprend_compute_pass_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -406,7 +406,7 @@ bool aprend_compute_pass_set_binding_set(
     aprend_compute_pass pass,
     uint32_t slot,
     aprend_binding_set set) {
-	static const char *who = "aprend_compute_pass_set_binding_set";
+	static const char who[] = "aprend_compute_pass_set_binding_set";
 	if (!pass) {
 		printf("apricot: %s: pass is NULL\n", who);
 		return false;

@@ -296,7 +296,7 @@ extern "C" {
 aprend_material aprend_material_create(
     aprend_instance instance,
     const aprend_material_desc *desc) {
-	static const char *who = "aprend_material_create";
+	static const char who[] = "aprend_material_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -428,7 +428,7 @@ aprend_material aprend_material_create(
 }
 
 aprend_material aprend_material_copy(aprend_material source) {
-	static const char *who = "aprend_material_copy";
+	static const char who[] = "aprend_material_copy";
 	if (!source) {
 		printf("apricot: %s: source is NULL\n", who);
 		return nullptr;
@@ -561,7 +561,7 @@ bool aprend_material_find_uniform(
     const char *name,
     aprend_material_uniform *out_uniform,
     aprend_shader_member *out_member) {
-	static const char *who = "aprend_material_find_uniform";
+	static const char who[] = "aprend_material_find_uniform";
 	if (!layout) {
 		printf("apricot: %s: layout is NULL\n", who);
 		return false;
@@ -631,7 +631,7 @@ bool aprend_material_set_uniform_value(
     aprend_material material,
     aprend_material_uniform uniform,
     const void *data) {
-	static const char *who = "aprend_material_set_uniform_value";
+	static const char who[] = "aprend_material_set_uniform_value";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -654,7 +654,7 @@ bool aprend_material_get_uniform_value(
     aprend_material material,
     aprend_material_uniform uniform,
     void *out_data) {
-	static const char *who = "aprend_material_get_uniform_value";
+	static const char who[] = "aprend_material_get_uniform_value";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -675,7 +675,7 @@ bool aprend_material_set_uniform(
     aprend_material material,
     const char *name,
     const void *data) {
-	static const char *who = "aprend_material_set_uniform";
+	static const char who[] = "aprend_material_set_uniform";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -700,7 +700,7 @@ bool aprend_material_set_uniform_bytes(
     uint32_t offset,
     uint32_t size,
     const void *data) {
-	static const char *who = "aprend_material_set_uniform_bytes";
+	static const char who[] = "aprend_material_set_uniform_bytes";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -739,7 +739,7 @@ bool aprend_material_set_uniform_buffer(
     uint32_t array_element,
     aprend_uniform_buffer buffer,
     aprend_uniform_buffer_set set) {
-	static const char *who = "aprend_material_set_uniform_buffer";
+	static const char who[] = "aprend_material_set_uniform_buffer";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -793,7 +793,7 @@ bool aprend_material_set_storage_buffer(
     uint32_t array_element,
     aprend_storage_buffer buffer,
     aprend_storage_buffer_set set) {
-	static const char *who = "aprend_material_set_storage_buffer";
+	static const char who[] = "aprend_material_set_storage_buffer";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -842,7 +842,7 @@ bool aprend_material_set_texture(
     const char *name,
     uint32_t array_element,
     aprend_texture_view view) {
-	static const char *who = "aprend_material_set_texture";
+	static const char who[] = "aprend_material_set_texture";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;
@@ -886,7 +886,7 @@ bool aprend_material_set_sampler(
     const char *name,
     uint32_t array_element,
     aprend_sampler sampler) {
-	static const char *who = "aprend_material_set_sampler";
+	static const char who[] = "aprend_material_set_sampler";
 	if (!material) {
 		printf("apricot: %s: material is NULL\n", who);
 		return false;

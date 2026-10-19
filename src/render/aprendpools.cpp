@@ -356,7 +356,7 @@ aprend_index_pool_t::~aprend_index_pool_t() { aprend_pool_destroy_blocks(&this->
 extern "C" {
 
 aprend_vertex_pool aprend_vertex_pool_create(aprend_instance instance, const aprend_vertex_pool_desc *desc) {
-	static const char *who = "aprend_vertex_pool_create";
+	static const char who[] = "aprend_vertex_pool_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;

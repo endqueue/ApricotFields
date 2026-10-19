@@ -47,6 +47,58 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_CONFIGURATION_TYPES": "Debug;Release;RelWithDebInfo"
       }
+    },
+    {
+      "name": "apricotfields-sanitize-asan",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_OBJC_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_OBJCXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "apricotfields-sanitize-tsan",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_OBJC_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_OBJCXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
+      "name": "apricotfields-macos-metal-asan",
+      "displayName": "ApricotFields macOS ASan+UBSan",
+      "inherits": ["apricotfields-sanitize-asan", "apricotfields-macos-metal"],
+      "binaryDir": "${sourceDir}/build-macos-metal-asan"
+    },
+    {
+      "name": "apricotfields-macos-metal-tsan",
+      "displayName": "ApricotFields macOS TSan",
+      "inherits": ["apricotfields-sanitize-tsan", "apricotfields-macos-metal"],
+      "binaryDir": "${sourceDir}/build-macos-metal-tsan"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-asan",
+      "displayName": "ApricotFields Linux ASan+UBSan",
+      "inherits": ["apricotfields-sanitize-asan", "apricotfields-linux-vulkan"],
+      "binaryDir": "${sourceDir}/build-linux-vulkan-asan"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-tsan",
+      "displayName": "ApricotFields Linux TSan",
+      "inherits": ["apricotfields-sanitize-tsan", "apricotfields-linux-vulkan"],
+      "binaryDir": "${sourceDir}/build-linux-vulkan-tsan"
     }
   ],
   "buildPresets": [
@@ -121,6 +173,78 @@
       "displayName": "ApricotFields macOS Metal (RelWithDebInfo)",
       "configurePreset": "apricotfields-macos-metal",
       "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "apricotfields-macos-metal-asan-debug",
+      "displayName": "ApricotFields macOS ASan+UBSan (Debug)",
+      "configurePreset": "apricotfields-macos-metal-asan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-macos-metal-tsan-debug",
+      "displayName": "ApricotFields macOS TSan (Debug)",
+      "configurePreset": "apricotfields-macos-metal-tsan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-asan-debug",
+      "displayName": "ApricotFields Linux ASan+UBSan (Debug)",
+      "configurePreset": "apricotfields-linux-vulkan-asan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-tsan-debug",
+      "displayName": "ApricotFields Linux TSan (Debug)",
+      "configurePreset": "apricotfields-linux-vulkan-tsan",
+      "configuration": "Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "apricotfields-macos-metal-asan",
+      "configurePreset": "apricotfields-macos-metal-asan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "halt_on_error=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
+      }
+    },
+    {
+      "name": "apricotfields-macos-metal-tsan",
+      "configurePreset": "apricotfields-macos-metal-tsan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      }
+    },
+    {
+      "name": "apricotfields-linux-vulkan-asan",
+      "configurePreset": "apricotfields-linux-vulkan-asan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "halt_on_error=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"
+      }
+    },
+    {
+      "name": "apricotfields-linux-vulkan-tsan",
+      "configurePreset": "apricotfields-linux-vulkan-tsan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      }
     }
   ]
 }

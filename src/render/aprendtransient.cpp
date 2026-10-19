@@ -176,7 +176,7 @@ static bool aprend_transient_take(
     uint64_t alignment,
     aprend_transient_span *out_span,
     bool staging) {
-	static const char *who = "aprend_transient_allocate";
+	static const char who[] = "aprend_transient_allocate";
 	if (!out_span) {
 		printf("apricot: %s: out_span is NULL\n", who);
 		return false;

@@ -105,7 +105,7 @@ extern "C" {
 aprend_draw_list aprend_draw_list_create(
     aprend_instance instance,
     const aprend_draw_list_desc *desc) {
-	static const char *who = "aprend_draw_list_create";
+	static const char who[] = "aprend_draw_list_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -167,7 +167,7 @@ bool aprend_draw_list_add(
     aprend_material material,
     uint32_t instance_count,
     const void *instance_data) {
-	static const char *who = "aprend_draw_list_add";
+	static const char who[] = "aprend_draw_list_add";
 	if (!list) {
 		printf("apricot: %s: list is NULL\n", who);
 		return false;
@@ -264,7 +264,7 @@ bool aprend_draw_list_add(
 }
 
 bool aprend_draw_list_build(aprend_draw_list list) {
-	static const char *who = "aprend_draw_list_build";
+	static const char who[] = "aprend_draw_list_build";
 	if (!list) {
 		printf("apricot: %s: list is NULL\n", who);
 		return false;

@@ -807,7 +807,7 @@ static aprend_material_slot *aprend_lit_material_slot(aprend_material material, 
 }
 
 aprend_material aprend_lit_material_create(aprend_instance instance) {
-	static const char *who = "aprend_lit_material_create";
+	static const char who[] = "aprend_lit_material_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -850,7 +850,7 @@ aprend_material aprend_lit_material_create(aprend_instance instance) {
 }
 
 bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_material_values *values) {
-	static const char *who     = "aprend_lit_material_set_values";
+	static const char who[]    = "aprend_lit_material_set_values";
 	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
 	if (!slot)
 		return false;
@@ -890,7 +890,7 @@ bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_m
 }
 
 bool aprend_lit_material_get_values(aprend_material material, aprend_lit_material_values *out_values) {
-	static const char *who     = "aprend_lit_material_get_values";
+	static const char who[]    = "aprend_lit_material_get_values";
 	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
 	if (!slot)
 		return false;
@@ -920,7 +920,7 @@ bool aprend_lit_material_get_values(aprend_material material, aprend_lit_materia
 }
 
 bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, aprend_texture_view view) {
-	static const char *who     = "aprend_lit_material_set_map";
+	static const char who[]    = "aprend_lit_material_set_map";
 	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
 	if (!slot)
 		return false;
@@ -947,7 +947,7 @@ bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, a
 }
 
 bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler) {
-	static const char *who = "aprend_lit_material_set_sampler";
+	static const char who[] = "aprend_lit_material_set_sampler";
 	if (!aprend_lit_material_slot(material, who))
 		return false;
 	return aprend_material_set_sampler(material, "material_sampler", 0, sampler ? sampler : material->instance->builtins.lit.material_sampler);
@@ -1015,7 +1015,7 @@ static aprend_texture_view aprend_lit_whole_view(aprend_texture2d texture, bool 
 extern "C" {
 
 aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, const aprend_lit_environment_desc *desc) {
-	static const char *who = "aprend_lit_environment_create";
+	static const char who[] = "aprend_lit_environment_create";
 	if (!instance || !desc) {
 		printf("apricot: %s: %s is NULL\n", who, instance ? "desc" : "instance");
 		return nullptr;
@@ -1125,7 +1125,7 @@ static void aprend_lit_scene_free(aprend_lit_scene scene) {
 extern "C" {
 
 aprend_lit_scene aprend_lit_scene_create(aprend_instance instance) {
-	static const char *who = "aprend_lit_scene_create";
+	static const char who[] = "aprend_lit_scene_create";
 	if (!instance) {
 		printf("apricot: %s: instance is NULL\n", who);
 		return nullptr;
@@ -1203,7 +1203,7 @@ aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene
 }
 
 bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *view) {
-	static const char *who = "aprend_lit_scene_set_view";
+	static const char who[] = "aprend_lit_scene_set_view";
 	if (!scene || !view) {
 		printf("apricot: %s: %s is NULL\n", who, scene ? "view" : "scene");
 		return false;
@@ -1282,7 +1282,7 @@ bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *vi
 }
 
 bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun) {
-	static const char *who = "aprend_lit_scene_set_sun";
+	static const char who[] = "aprend_lit_scene_set_sun";
 	if (!scene || !sun) {
 		printf("apricot: %s: %s is NULL\n", who, scene ? "sun" : "scene");
 		return false;
@@ -1370,7 +1370,7 @@ static bool aprend_lit_light_valid(const aprend_lit_light &l, uint32_t index, co
 extern "C" {
 
 bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_sun_shadow *shadow) {
-	static const char *who = "aprend_lit_scene_set_sun_shadow";
+	static const char who[] = "aprend_lit_scene_set_sun_shadow";
 	if (!scene) {
 		printf("apricot: %s: scene is NULL\n", who);
 		return false;
@@ -1428,7 +1428,7 @@ bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_su
 }
 
 bool aprend_lit_scene_set_lights(aprend_lit_scene scene, const aprend_lit_light *lights, uint32_t count) {
-	static const char *who = "aprend_lit_scene_set_lights";
+	static const char who[] = "aprend_lit_scene_set_lights";
 	if (!scene) {
 		printf("apricot: %s: scene is NULL\n", who);
 		return false;
@@ -1464,7 +1464,7 @@ bool aprend_lit_scene_set_lights(aprend_lit_scene scene, const aprend_lit_light 
 
 bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const aprend_lit_spot_shadow *shadows, uint32_t count,
                                        bool reversed_depth) {
-	static const char *who = "aprend_lit_scene_set_spot_shadows";
+	static const char who[] = "aprend_lit_scene_set_spot_shadows";
 	if (!scene) {
 		printf("apricot: %s: scene is NULL\n", who);
 		return false;
@@ -1521,7 +1521,7 @@ bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_vi
 }
 
 bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambient *ambient) {
-	static const char *who = "aprend_lit_scene_set_ambient";
+	static const char who[] = "aprend_lit_scene_set_ambient";
 	if (!scene || !ambient) {
 		printf("apricot: %s: %s is NULL\n", who, scene ? "ambient" : "scene");
 		return false;
@@ -1581,7 +1581,7 @@ bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambie
 }
 
 bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_texture_view occlusion, float strength) {
-	static const char *who = "aprend_lit_scene_set_ambient_occlusion";
+	static const char who[] = "aprend_lit_scene_set_ambient_occlusion";
 	if (!scene) {
 		printf("apricot: %s: scene is NULL\n", who);
 		return false;
@@ -1611,7 +1611,7 @@ bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_textu
 // ---- Fitting shadows --------------------------------------------------------------
 
 bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_sun_shadow *out_shadow) {
-	static const char *who = "aprend_lit_fit_sun_cascades";
+	static const char who[] = "aprend_lit_fit_sun_cascades";
 	if (!fit || !out_shadow) {
 		printf("apricot: %s: %s is NULL\n", who, fit ? "out_shadow" : "fit");
 		return false;
@@ -1708,7 +1708,7 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 }
 
 bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float near_depth, bool reversed_depth, float out_view_projection[16]) {
-	static const char *who = "aprend_lit_spot_shadow_view_projection";
+	static const char who[] = "aprend_lit_spot_shadow_view_projection";
 	if (!light || !out_view_projection) {
 		printf("apricot: %s: %s is NULL\n", who, light ? "out_view_projection" : "light");
 		return false;
@@ -1752,7 +1752,7 @@ aprend_exposure_t::~aprend_exposure_t() {
 extern "C" {
 
 aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_exposure_desc *desc) {
-	static const char *who = "aprend_exposure_create";
+	static const char who[] = "aprend_exposure_create";
 	if (!instance || !desc) {
 		printf("apricot: %s: %s is NULL\n", who, instance ? "desc" : "instance");
 		return nullptr;

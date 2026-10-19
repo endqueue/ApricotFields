@@ -16,7 +16,7 @@ extern "C" {
 aprend_gpu_timer aprend_gpu_timer_create(
     aprend_instance instance,
     const aprend_gpu_timer_desc *desc) {
-	static const char *who = "aprend_gpu_timer_create";
+	static const char who[] = "aprend_gpu_timer_create";
 	if (!instance)
 		return nullptr;
 	if (!desc)
