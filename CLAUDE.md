@@ -82,7 +82,11 @@ block near the top. A new header gets the same block.
   right after its null check, and returns what it gives. This is SpudLib's
   scheme (`SPUD_STRUCT_BASE`) with ApricotFields' own types; it replaced a
   leading `struct_size` on 2026-10-19, and Aprend took it on 2026-10-20
-  (`aprendcontext.h`, "Struct bases", has how Aprend applies it).
+  (`aprendcontext.h`, "Struct bases", has how Aprend applies it). The
+  workspace's `check.sh struct-bases` checks the headers' side: based or
+  frozen, base first, no `#if` in a struct, no based struct held by value,
+  and each type registered in `APRI_STRUCT_TYPE` as the right kind and used
+  in `src/`.
 - **No defaults in a desc.** A limit or a time left at 0 is refused with
   `APRESULT_INVALID_ARGUMENT` unless the field's comment says what 0 means.
 - **Validate every argument before allocating anything**, then allocate (by hand,
