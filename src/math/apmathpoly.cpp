@@ -1,5 +1,6 @@
 #include "math/apmathpoly.h"
 #include "apmathpoly_internal.hpp"
+#include "../apristructbase.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -49,21 +50,6 @@ void clear(APMATH_ERROR *error)
     if (error)
         error->message[0] = '\0';
 }
-
-// Copies a caller's versioned input struct into [out] at the current version:
-// the fields its struct_size covers, zeros past them. False if it's smaller
-// than the struct's first version.
-template <typename T> bool read_versioned(const T *in, size_t v1_size, T &out)
-{
-    if (!in || in->struct_size < v1_size)
-        return false;
-    memset(&out, 0, sizeof(T));
-    memcpy(&out, in, in->struct_size < sizeof(T) ? in->struct_size : sizeof(T));
-    out.struct_size = (uint32_t)sizeof(T);
-    return true;
-}
-
-const size_t APMATH_POLY_BOOLEAN_DESC_V1_SIZE = sizeof(APMATH_POLY_BOOLEAN_DESC);
 
 // ---- Exact predicates -----------------------------------------------------
 //
@@ -633,8 +619,6 @@ APRESULT compute_boolean(const APMATH_POLY_SET &subject, const APMATH_POLY_SET &
 
 // ---- Offsetting -------------------------------------------------------------------
 
-const size_t APMATH_POLY_OFFSET_DESC_V1_SIZE = sizeof(APMATH_POLY_OFFSET_DESC);
-
 // One edge of a ring for move_edges(): where it starts, which way it runs,
 // and where its line goes as the move runs from t = 0 to t = 1. Its line at t
 // is every start + move * t + unit * s.
@@ -911,8 +895,6 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
 //
 // Every vertex leaves a trace from where it started to where it ended,
 // between the faces of its two edges; the faces are walked from those.
-
-const size_t APMATH_POLY_SKELETON_DESC_V1_SIZE = sizeof(APMATH_POLY_SKELETON_DESC);
 
 // Unit cross products below this count two edges as parallel (the header's
 // rule).
@@ -1212,9 +1194,11 @@ APRESULT apmath_poly_boolean(const APMATH_POLY_BOOLEAN_DESC *desc, apmath_poly *
     clear(out_error);
     if (out_poly)
         *out_poly = nullptr;
-    APMATH_POLY_BOOLEAN_DESC d;
-    if (!read_versioned(desc, APMATH_POLY_BOOLEAN_DESC_V1_SIZE, d))
-        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null or its struct_size is too small");
+    if (!desc)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+    if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APMATH_POLY_BOOLEAN_DESC))
+        return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+    const APMATH_POLY_BOOLEAN_DESC &d = *desc;
     if (!out_poly)
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_poly is null");
 
@@ -1266,9 +1250,11 @@ APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_po
     clear(out_error);
     if (out_poly)
         *out_poly = nullptr;
-    APMATH_POLY_OFFSET_DESC d;
-    if (!read_versioned(desc, APMATH_POLY_OFFSET_DESC_V1_SIZE, d))
-        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null or its struct_size is too small");
+    if (!desc)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+    if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC))
+        return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+    const APMATH_POLY_OFFSET_DESC &d = *desc;
     if (!out_poly)
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_poly is null");
     APRESULT result = check_set(d.set, "the set", false, out_error);
@@ -1316,9 +1302,11 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
     clear(out_error);
     if (out_poly)
         *out_poly = nullptr;
-    APMATH_POLY_SKELETON_DESC d;
-    if (!read_versioned(desc, APMATH_POLY_SKELETON_DESC_V1_SIZE, d))
-        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null or its struct_size is too small");
+    if (!desc)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+    if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC))
+        return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+    const APMATH_POLY_SKELETON_DESC &d = *desc;
     if (!out_poly)
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_poly is null");
     APRESULT result = check_set(d.set, "the set", false, out_error);

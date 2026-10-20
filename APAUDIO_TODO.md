@@ -84,6 +84,10 @@ voice as it plays. Converting at load:
 
 ### 4. `APAUDIO_MIXER_DESC` breaks the `struct_size` versioning scheme - fixed
 
+(`struct_size` was replaced by struct bases on 2026-10-19, `apricore.h`; the
+rule this item set, that no desc holds another module's struct by value,
+stands.)
+
 It embedded `SPUDAUDIO_FORMAT`, whose size SpudLib controls. If SpudLib added a
 field, every later ApAudio field would move, which is exactly what `struct_size`
 exists to prevent.

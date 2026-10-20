@@ -22,18 +22,6 @@
 #include <unordered_set>
 #include <vector>
 
-// ---- Struct versions --------------------------------------------------------
-
-// The size each versioned struct had when it was first published: through its
-// last original field. Frozen - when a field is added, these don't change.
-
-#define APSYNC_V1_SIZE(type, last_field) (offsetof(type, last_field) + sizeof(((type *)nullptr)->last_field))
-
-constexpr size_t APSYNC_SESSION_DESC_V1_SIZE = APSYNC_V1_SIZE(APSYNC_SESSION_DESC, handshake_timeout_ms);
-constexpr size_t APSYNC_HOST_DESC_V1_SIZE = APSYNC_V1_SIZE(APSYNC_HOST_DESC, max_peers);
-constexpr size_t APSYNC_JOIN_DESC_V1_SIZE = APSYNC_V1_SIZE(APSYNC_JOIN_DESC, max_snapshot_size);
-constexpr size_t APSYNC_EVENT_V1_SIZE = APSYNC_V1_SIZE(APSYNC_EVENT, message);
-
 // Everything below needs SpudNet's TCP sockets. Where there are none
 // (watchOS) the two calls that make a session return APRESULT_UNSUPPORTED
 // and no session ever exists.

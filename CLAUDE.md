@@ -28,7 +28,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 
 | Module | Header | Prefix | Notes |
 |---|---|---|---|
-| Core | `apricore.h` | `APRESULT`, `apri_` | The shared result enum and debug names |
+| Core | `apricore.h` | `APRESULT`, `APRI_`, `apri_` | The shared result enum, struct bases and debug names |
 | Aprend | `render/aprend*.h` | `aprend_` / `APREND_` | Renderer over SpudGPU. Older code, mid-overhaul |
 | ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision; exact plane polygons on an integer grid (booleans, checks, per-edge offsets, weighted straight skeletons, triangulation); unrelated to Aprend |
 | ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
@@ -72,10 +72,16 @@ block near the top. A new header gets the same block.
 - **Error messages.** A call that can fail for a reason worth a sentence takes an
   `AP<MODULE>_ERROR *` (NULL to skip). It is per call, not stored on the object, so
   concurrent readers stay thread-safe.
-- **Struct versions.** Every struct that may grow starts with `struct_size`. Fields
-  are only ever added at the end, and the implementation reads it through
-  `read_versioned(desc, <STRUCT>_V1_SIZE, d)`. Adding a field in the middle, or
-  reordering, breaks binaries built against the old header.
+- **Struct bases.** Every public struct that may grow starts with an
+  `APRI_STRUCT_BASE base` (`APRI_STRUCT_BASE_OUT` for one ApricotFields fills in),
+  with its own `APRI_STRUCT_TYPE_*` in `apricore.h`, in the module's block; every
+  other struct in the newer modules has a `/* Frozen: <why> ... */` line above its
+  `typedef`. `apricore.h`, "Struct bases", has the rules. A released layout never
+  changes: a new field is a new struct chained on. A call checks a based argument
+  with `apri_struct_check` / `apri_struct_out_check` (`src/apristructbase.hpp`)
+  right after its null check, and returns what it gives. This is SpudLib's
+  scheme (`SPUD_STRUCT_BASE`) with ApricotFields' own types; it replaced a
+  leading `struct_size` on 2026-10-19. Aprend's descs have neither yet.
 - **No defaults in a desc.** A limit or a time left at 0 is refused with
   `APRESULT_INVALID_ARGUMENT` unless the field's comment says what 0 means.
 - **Validate every argument before allocating anything**, then allocate (by hand,
@@ -244,7 +250,7 @@ What a Hazel idiom becomes here:
 |---|---|
 | `class Pipeline : public RefCounted`, held as `Ref<Pipeline>` | An opaque handle, `typedef struct <name>_t *<name>;`, with a create and a destroy call and one owner. No reference count crosses the API |
 | `static Ref<X> Create(const XSpecification &)` | `<prefix>_x_create(...)` taking a desc pointer; how the handle comes back follows the generation of code you're in |
-| `XSpecification` holding `std::string`, `Ref<>` members and default member values | A plain C desc: `<stdint.h>` types, handles, `const char *`. `struct_size` first in the newer modules, and no defaults |
+| `XSpecification` holding `std::string`, `Ref<>` members and default member values | A plain C desc: `<stdint.h>` types, handles, `const char *`. A struct base first in the newer modules, and no defaults |
 | `static` state and getters on `Renderer` | State lives on the instance handle the caller passes in. No globals |
 | `Renderer::Submit` lambdas and `RT_` functions | No closure crosses the API. What is safe from which thread is written in the header |
 | `HZ_CORE_ASSERT(false, ...)` on a bad input | Argument checks line by line, each returning its own result |

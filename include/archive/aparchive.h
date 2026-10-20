@@ -38,7 +38,7 @@ extern "C" {
  *
  * Not built yet (APARCHIVE_TODO.md): entries streamed in pieces, entries
  * added already compressed, writing directory entries, updating an archive
- * in place. Each is a new call or a new field at the end of a struct. None
+ * in place. Each is a new call or a new struct chained onto one. None
  * changes the bytes today's calls write, or which archives today's reader
  * opens.
  *
@@ -67,18 +67,19 @@ extern "C" {
  * description naming the entry and what was wrong; on success its message
  * is empty. Being per call, it keeps readers thread-safe.
  *
- * Struct versions. Every struct that may grow starts with [struct_size],
- * which the caller sets to sizeof(the struct) as it was compiled. Fields
- * past it are treated as zero on input and not written on output, so a
- * binary built against an older aparchive.h keeps working with a newer
- * ApricotFields. Fields are only ever added at the end. A [struct_size]
- * smaller than the first version of the struct fails with
- * APRESULT_INVALID_ARGUMENT. APARCHIVE_SOURCE, APARCHIVE_SINK and
- * APARCHIVE_ERROR are frozen and have none.
+ * Struct bases. Every struct that may grow starts with a [base]
+ * (apricore.h, "Struct bases"): the caller sets [base.type] to the
+ * struct's own APRI_STRUCT_TYPE_APARCHIVE_* and [base.next] to NULL, on
+ * APARCHIVE_ENTRY_INFO too, which ApArchive fills in. A wrong type is
+ * APRESULT_STRUCT_WRONG_TYPE and a chained struct
+ * APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto any of them yet.
+ * APARCHIVE_SOURCE, APARCHIVE_SINK and APARCHIVE_ERROR are frozen and have
+ * none.
  */
 
 #define APARCHIVE_ERROR_MESSAGE_SIZE 256
 
+/* Frozen: filled per call. It never changes; a new need gets a new type. */
 typedef struct APARCHIVE_ERROR {
 	char message[APARCHIVE_ERROR_MESSAGE_SIZE]; /* NUL-terminated, truncated to fit */
 } APARCHIVE_ERROR;
@@ -89,6 +90,7 @@ typedef struct APARCHIVE_ERROR {
  * copies exactly [count] bytes at [offset] into [buffer] and returns false
  * on any failure, including a short read. Offsets come in any order, and
  * from several threads at once if the reader is used that way. */
+/* Frozen: held by value in APARCHIVE_READER_DESC. It never changes; a new need gets a new type. */
 typedef struct APARCHIVE_SOURCE {
 	void *user;
 	uint64_t size;
@@ -97,6 +99,7 @@ typedef struct APARCHIVE_SOURCE {
 
 /* Append-only output. [write] appends [count] bytes and returns false on
  * failure, which fails the call that was writing. */
+/* Frozen: held by value in APARCHIVE_WRITER_DESC. It never changes; a new need gets a new type. */
 typedef struct APARCHIVE_SINK {
 	void *user;
 	bool (*write)(void *user, const void *data, uint64_t count);
@@ -134,7 +137,7 @@ typedef struct APARCHIVE_SINK {
  *                   size.
  *   A decode-only codec leaves compress and compress_bound NULL. */
 typedef struct APARCHIVE_CODEC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APARCHIVE_CODEC */
 	uint16_t method;
 	void *user;
 	uint64_t (*compress_bound)(void *user, uint64_t in_size);
@@ -165,7 +168,7 @@ void aparchive_codecs_destroy(aparchive_codecs codecs);
 /* ---- Writing --------------------------------------------------------- */
 
 typedef struct APARCHIVE_WRITER_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC */
 	APARCHIVE_SINK sink;
 	/* Must outlive the writer. */
 	aparchive_codecs codecs;
@@ -179,7 +182,7 @@ APRESULT aparchive_writer_create(const APARCHIVE_WRITER_DESC *desc, aparchive_wr
  * fixed value - nothing is taken from the clock, the file system or the
  * platform. */
 typedef struct APARCHIVE_ENTRY_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC */
 	/* Valid UTF-8, '/'-separated, passing aparchive_is_safe_name(), and not
 	 * a name already in the archive. A name with any non-ASCII byte needs
 	 * [utf8_name_flag]: without it, readers take the name as CP437. A name
@@ -240,7 +243,7 @@ void aparchive_writer_destroy(aparchive_writer writer);
 /* ---- Reading --------------------------------------------------------- */
 
 typedef struct APARCHIVE_READER_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APARCHIVE_READER_DESC */
 	APARCHIVE_SOURCE source;
 	/* Must outlive the reader. */
 	aparchive_codecs codecs;
@@ -279,7 +282,7 @@ uint32_t aparchive_reader_get_entry_count(aparchive_reader reader);
 /* What the central directory says about an entry. [name] and [extra] point
  * into the reader and stay valid until it's destroyed. */
 typedef struct APARCHIVE_ENTRY_INFO {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE_OUT base; /* type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO */
 	const char *name; /* NUL-terminated, as stored: UTF-8 if flags bit 11, else CP437 */
 	uint16_t name_size;
 	uint16_t method;
@@ -295,8 +298,8 @@ typedef struct APARCHIVE_ENTRY_INFO {
 	bool is_directory; /* the name ends in '/' */
 } APARCHIVE_ENTRY_INFO;
 
-/* Fills [out_info] up to its struct_size, which the caller sets. Entries
- * are in central directory order. */
+/* Fills [out_info], whose base the caller sets, and leaves its base as it
+ * was. Entries are in central directory order. */
 APRESULT aparchive_reader_get_entry(aparchive_reader reader, uint32_t index, APARCHIVE_ENTRY_INFO *out_info);
 
 /* The index of the entry named [name] (exact, byte for byte - no case

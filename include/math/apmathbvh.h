@@ -59,10 +59,14 @@ extern "C" {
  * cast given a NULL BVH, a NULL ray or a ray that isn't finite hits
  * nothing.
  *
- * Struct versions. Descs start with [struct_size], set to sizeof(the
- * struct) as compiled; fields past it read as zero, as in aparchive.h.
- * APMATH_AABB, APMATH_RAY, APMATH_BVH_INSTANCE and the hit structs are
- * frozen: they never grow (a new need gets a new type).
+ * Struct bases. Descs start with a [base] (apricore.h, "Struct bases"):
+ * the caller sets [base.type] to the desc's own APRI_STRUCT_TYPE_APMATH_*
+ * and [base.next] to NULL. A create given a wrong type returns
+ * APRESULT_STRUCT_WRONG_TYPE, and one given a chained struct
+ * APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto any of them yet. A
+ * cast given either hits nothing. APMATH_AABB, APMATH_RAY,
+ * APMATH_BVH_INSTANCE and the hit structs are frozen: they never grow (a
+ * new need gets a new type).
  *
  * Geometry. Right-handed coordinates; a triangle's front is the side its
  * points run counter-clockwise from. A triangle with no area is never hit.
@@ -72,6 +76,7 @@ extern "C" {
 /* ---- Rays and boxes -------------------------------------------------- */
 
 /* An axis-aligned box. Empty if any [lo] is above its [hi]. */
+/* Frozen: a value. It never changes; a new need gets a new type. */
 typedef struct APMATH_AABB {
 	ApriDVec3 lo;
 	ApriDVec3 hi;
@@ -82,6 +87,7 @@ typedef struct APMATH_AABB {
  * lengths, so with a unit direction it's a distance. [t_max] may be
  * INFINITY for a ray with no far end; [t_min] may be negative. A zero
  * [direction], or a [t_min] above [t_max], hits nothing. */
+/* Frozen: a value, passed on every cast. It never changes; a new need gets a new type. */
 typedef struct APMATH_RAY {
 	ApriDVec3 origin;
 	ApriDVec3 direction;
@@ -100,7 +106,7 @@ bool apmath_ray_clip_aabb(APMATH_RAY *ray, const APMATH_AABB *box);
 typedef struct apmath_mesh_bvh_t *apmath_mesh_bvh;
 
 typedef struct APMATH_MESH_BVH_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC */
 	/* The mesh's points, in its own coordinates. Copied: the array needn't
 	 * outlive the call. */
 	const ApriDVec3 *positions;
@@ -123,6 +129,7 @@ uint32_t apmath_mesh_bvh_get_triangle_count(apmath_mesh_bvh bvh);
 APMATH_AABB apmath_mesh_bvh_get_bounds(apmath_mesh_bvh bvh);
 
 /* Where a ray hit a mesh, in the mesh's coordinates. */
+/* Frozen: filled on every cast. It never changes; a new need gets a new type. */
 typedef struct APMATH_MESH_HIT {
 	/* The triangle's position in the desc's order - never the BVH's own. */
 	uint32_t triangle;
@@ -144,7 +151,8 @@ bool apmath_mesh_bvh_cast(apmath_mesh_bvh bvh, const APMATH_RAY *ray, APMATH_MES
 
 typedef struct apmath_instance_bvh_t *apmath_instance_bvh;
 
-/* One placement of a mesh. Frozen. */
+/* One placement of a mesh. */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
 typedef struct APMATH_BVH_INSTANCE {
 	/* Not owned, and not copied: it must outlive the instance BVH. NULL is
 	 * an instance that's never hit. */
@@ -163,7 +171,7 @@ typedef struct APMATH_BVH_INSTANCE {
 } APMATH_BVH_INSTANCE;
 
 typedef struct APMATH_INSTANCE_BVH_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC */
 	const APMATH_BVH_INSTANCE *instances; /* copied */
 	uint32_t instance_count;
 } APMATH_INSTANCE_BVH_DESC;
@@ -186,7 +194,7 @@ typedef bool (*APMATH_CAST_FILTER)(void *user, uint32_t instance, uint64_t id);
 
 /* Which instances a cast considers. A NULL desc considers them all. */
 typedef struct APMATH_CAST_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APMATH_CAST_DESC */
 	/* Only instances sharing a bit with [mask] are considered. */
 	uint32_t mask;
 	/* Asked about each of those the ray might hit. NULL lets them all
@@ -196,6 +204,7 @@ typedef struct APMATH_CAST_DESC {
 } APMATH_CAST_DESC;
 
 /* Where a ray hit an instance, in the instance BVH's coordinates. */
+/* Frozen: filled on every cast. It never changes; a new need gets a new type. */
 typedef struct APMATH_INSTANCE_HIT {
 	uint32_t instance; /* its position in the desc's order */
 	uint64_t id;

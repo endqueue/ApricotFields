@@ -1,4 +1,5 @@
 #include "aparchive_internal.hpp"
+#include "../apristructbase.hpp"
 #include <algorithm>
 #include <libdeflate.h>
 #include <new>
@@ -29,33 +30,6 @@ static APRESULT fail(APARCHIVE_ERROR *error, APRESULT result, const char *format
         va_end(args);
     }
     return result;
-}
-
-// ---- Struct versions ----------------------------------------------------------
-
-// Copies a caller's versioned input struct into [out] at the current version:
-// the fields its struct_size covers, zeros past them. False if it's smaller
-// than the struct's first version.
-template <typename T> static bool read_versioned(const T *in, size_t v1_size, T &out)
-{
-    if (!in || in->struct_size < v1_size)
-        return false;
-    memset(&out, 0, sizeof(T));
-    memcpy(&out, in, in->struct_size < sizeof(T) ? in->struct_size : sizeof(T));
-    out.struct_size = (uint32_t)sizeof(T);
-    return true;
-}
-
-// Writes [value] into a caller's versioned output struct, up to its
-// struct_size, which is kept as the caller set it.
-template <typename T> static bool write_versioned(T *out, size_t v1_size, const T &value)
-{
-    if (!out || out->struct_size < v1_size)
-        return false;
-    uint32_t caller_size = out->struct_size;
-    memcpy(out, &value, caller_size < sizeof(T) ? caller_size : sizeof(T));
-    out->struct_size = caller_size;
-    return true;
 }
 
 // ---- Names --------------------------------------------------------------------
@@ -774,8 +748,7 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
                             (unsigned long long)ratio, desc.max_compression_ratio);
         }
 
-        APARCHIVE_ENTRY_INFO info{};
-        info.struct_size = (uint32_t)sizeof(info);
+        APARCHIVE_ENTRY_INFO info{}; // its base is the caller's, set as it's handed out
         info.name = name;
         info.name_size = (uint16_t)name_size;
         info.method = method;
@@ -935,9 +908,13 @@ extern "C"
 
     APRESULT aparchive_codecs_add(aparchive_codecs codecs, const APARCHIVE_CODEC *codec)
     {
-        APARCHIVE_CODEC c;
-        if (!codecs || !read_versioned(codec, APARCHIVE_CODEC_V1_SIZE, c))
+        if (!codecs)
             return APRESULT_INVALID_ARGUMENT;
+        if (!codec)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_check(&codec->base, APRI_STRUCT_TYPE_APARCHIVE_CODEC))
+            return result;
+        const APARCHIVE_CODEC &c = *codec;
         if (c.method == APARCHIVE_METHOD_STORED || !c.decompress)
             return APRESULT_INVALID_ARGUMENT;
         if ((c.compress == nullptr) != (c.compress_bound == nullptr))
@@ -958,7 +935,7 @@ extern "C"
     APRESULT aparchive_codecs_add_deflate(aparchive_codecs codecs)
     {
         APARCHIVE_CODEC codec{};
-        codec.struct_size = sizeof(codec);
+        codec.base = apri_struct_base(APRI_STRUCT_TYPE_APARCHIVE_CODEC);
         codec.method = APARCHIVE_METHOD_DEFLATE;
         codec.compress_bound = deflate_compress_bound;
         codec.compress = deflate_compress;
@@ -985,8 +962,14 @@ extern "C"
         if (!out_writer)
             return APRESULT_INVALID_ARGUMENT;
         *out_writer = nullptr;
-        APARCHIVE_WRITER_DESC d;
-        if (!read_versioned(desc, APARCHIVE_WRITER_DESC_V1_SIZE, d) || !d.sink.write || !d.codecs)
+        if (!desc)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC))
+            return result;
+        const APARCHIVE_WRITER_DESC &d = *desc;
+        if (!d.sink.write)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!d.codecs)
             return APRESULT_INVALID_ARGUMENT;
         aparchive_writer_t *writer = new (std::nothrow) aparchive_writer_t();
         if (!writer)
@@ -1001,9 +984,13 @@ extern "C"
                                         uint64_t size, APARCHIVE_ERROR *out_error)
     {
         clear_error(out_error);
-        APARCHIVE_ENTRY_DESC d;
-        if (!writer || !read_versioned(desc, APARCHIVE_ENTRY_DESC_V1_SIZE, d))
-            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer or desc is null, or desc's struct_size is too small");
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (!desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC))
+            return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        const APARCHIVE_ENTRY_DESC &d = *desc;
         if (!data && size != 0)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "data is null but size is %llu", (unsigned long long)size);
         try
@@ -1056,9 +1043,11 @@ extern "C"
         if (!out_reader)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_reader is null");
         *out_reader = nullptr;
-        APARCHIVE_READER_DESC d;
-        if (!read_versioned(desc, APARCHIVE_READER_DESC_V1_SIZE, d))
-            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null, or its struct_size is too small");
+        if (!desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_READER_DESC))
+            return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        const APARCHIVE_READER_DESC &d = *desc;
         if (!d.source.read || !d.codecs)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's source read callback or codecs is null");
         aparchive_reader_t *reader = new (std::nothrow) aparchive_reader_t();
@@ -1089,11 +1078,17 @@ extern "C"
 
     APRESULT aparchive_reader_get_entry(aparchive_reader reader, uint32_t index, APARCHIVE_ENTRY_INFO *out_info)
     {
-        if (!reader || !out_info || out_info->struct_size < APARCHIVE_ENTRY_INFO_V1_SIZE)
+        if (!reader)
             return APRESULT_INVALID_ARGUMENT;
+        if (!out_info)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO))
+            return result;
         if (index >= reader->entries.size())
             return APRESULT_NOT_FOUND;
-        write_versioned(out_info, APARCHIVE_ENTRY_INFO_V1_SIZE, reader->entries[index]);
+        APRI_STRUCT_BASE_OUT base = out_info->base;
+        *out_info = reader->entries[index];
+        out_info->base = base;
         return APRESULT_OK;
     }
 

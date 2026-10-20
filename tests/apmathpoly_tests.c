@@ -126,7 +126,7 @@ static apmath_poly run_boolean(APMATH_POLY_OP op, const test_set *subject, const
 {
     APMATH_POLY_BOOLEAN_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_BOOLEAN_DESC;
     desc.op = op;
     desc.fill = APMATH_POLY_FILL_NON_ZERO;
     if (subject)
@@ -596,7 +596,7 @@ static void test_boolean_arguments(void)
     add_rect(&a, 0, 0, 10, 10, 0);
     APMATH_POLY_BOOLEAN_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_BOOLEAN_DESC;
     desc.subject = view(&a);
     apmath_poly poly = (apmath_poly)1;
     APMATH_ERROR error;
@@ -612,8 +612,8 @@ static void test_boolean_arguments(void)
     bad.fill = (APMATH_POLY_FILL)99;
     CHECK(apmath_poly_boolean(&bad, &poly, NULL) == APRESULT_INVALID_ARGUMENT);
     bad = desc;
-    bad.struct_size = 4;
-    CHECK(apmath_poly_boolean(&bad, &poly, NULL) == APRESULT_INVALID_ARGUMENT);
+    bad.base.type = APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC;
+    CHECK(apmath_poly_boolean(&bad, &poly, NULL) == APRESULT_STRUCT_WRONG_TYPE);
 
     test_set far = a;
     far.points[0].y = -APMATH_POLY_COORD_LIMIT - 1;
@@ -642,7 +642,7 @@ static apmath_poly run_offset(const test_set *set, const double *distances, doub
 {
     APMATH_POLY_OFFSET_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC;
     desc.set = view(set);
     desc.distances = distances;
     desc.miter_limit = miter_limit;
@@ -838,7 +838,7 @@ static void test_offset_arguments(void)
     const double one[4] = {1, 1, 1, 1};
     APMATH_POLY_OFFSET_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC;
     desc.set = view(&square);
     desc.distances = one;
     desc.miter_limit = 2.0;
@@ -880,7 +880,7 @@ static apmath_poly run_skeleton(const test_set *set, const double *weights)
 {
     APMATH_POLY_SKELETON_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC;
     desc.set = view(set);
     desc.weights = weights;
     apmath_poly poly = NULL;
@@ -1011,7 +1011,7 @@ static void test_skeleton_arguments(void)
     const double ones[4] = {1, 1, 1, 1};
     APMATH_POLY_SKELETON_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC;
     desc.set = view(&square);
     desc.weights = ones;
     apmath_poly poly = (apmath_poly)1;

@@ -73,7 +73,7 @@ static apmath_mesh_bvh make_cube(void)
 {
     APMATH_MESH_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
     desc.positions = cube_positions;
     desc.position_count = 8;
     desc.indices = cube_indices;
@@ -127,7 +127,7 @@ static void test_mesh_arguments(void)
     current_test = "mesh_arguments";
     APMATH_MESH_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
     apmath_mesh_bvh bvh = (apmath_mesh_bvh)1;
     CHECK(apmath_mesh_bvh_create(NULL, &bvh) == APRESULT_INVALID_ARGUMENT);
     CHECK(bvh == NULL);
@@ -159,8 +159,12 @@ static void test_mesh_arguments(void)
     desc.indices = NULL;
     desc.index_count = 0;
     CHECK(apmath_mesh_bvh_create(&desc, &bvh) == APRESULT_INVALID_ARGUMENT);
-    desc.struct_size = 4;
-    CHECK(apmath_mesh_bvh_create(&desc, &bvh) == APRESULT_INVALID_ARGUMENT);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
+    CHECK(apmath_mesh_bvh_create(&desc, &bvh) == APRESULT_STRUCT_WRONG_TYPE);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
+    APRI_STRUCT_BASE chained = {APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC, NULL};
+    desc.base.next = &chained;
+    CHECK(apmath_mesh_bvh_create(&desc, &bvh) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN);
     CHECK(bvh == NULL);
 }
 
@@ -241,7 +245,7 @@ static void test_mesh_ties_and_degenerates(void)
                                {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {0, 0, 2}, {1, 0, 2}, {0, 1, 2}};
     APMATH_MESH_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
     desc.positions = positions;
     desc.position_count = 12;
     apmath_mesh_bvh bvh = NULL;
@@ -323,7 +327,7 @@ static void test_mesh_against_brute_force(void)
         }
         APMATH_MESH_BVH_DESC desc;
         memset(&desc, 0, sizeof(desc));
-        desc.struct_size = sizeof(desc);
+        desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
         desc.positions = positions;
         desc.position_count = TRIANGLES * 3;
         apmath_mesh_bvh bvh = NULL;
@@ -377,7 +381,7 @@ static apmath_instance_bvh make_instances(const APMATH_BVH_INSTANCE *instances, 
 {
     APMATH_INSTANCE_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
     desc.instances = instances;
     desc.instance_count = count;
     apmath_instance_bvh bvh = NULL;
@@ -391,7 +395,7 @@ static void test_instance_arguments(void)
     apmath_mesh_bvh cube = make_cube();
     APMATH_INSTANCE_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
     apmath_instance_bvh bvh = (apmath_instance_bvh)1;
     CHECK(apmath_instance_bvh_create(NULL, &bvh) == APRESULT_INVALID_ARGUMENT);
     CHECK(bvh == NULL);
@@ -499,7 +503,7 @@ static void test_instances(void)
     ray = make_ray(-2, 0.25, 0.5, 1, 0, 0);
     APMATH_CAST_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_CAST_DESC;
     desc.mask = 1u << 3;
     CHECK(apmath_instance_bvh_cast(bvh, &ray, &desc, &hit));
     CHECK(hit.instance == 3);
@@ -508,13 +512,13 @@ static void test_instances(void)
     CHECK(hits[0].instance == 0 && hits[1].instance == 1 && hits[2].instance == 3);
     desc.mask = 0;
     CHECK(!apmath_instance_bvh_cast(bvh, &ray, &desc, &hit));
-    desc.struct_size = 2;
+    desc.base.type = APRI_STRUCT_TYPE_UNKNOWN; /* a wrong base hits nothing */
     desc.mask = UINT32_MAX;
     CHECK(!apmath_instance_bvh_cast(bvh, &ray, &desc, &hit));
 
     // The filter: passed through as if it weren't there, asked once each.
     uint64_t skipped = 100;
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_CAST_DESC;
     desc.filter = filter_skip_one;
     desc.user = &skipped;
     memset(filter_calls, 0, sizeof(filter_calls));

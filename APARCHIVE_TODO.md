@@ -17,9 +17,9 @@ Nothing here may change existing files or existing callers:
   today's reader keeps opening every archive it opens now. The writer's output is
   plain ZIP, so a later feature is a different set of standard ZIP records, used
   only by the entries that ask for it.
-- **Callers:** a feature is a new function, or a new field at the end of a struct.
-  Every struct that can grow starts with `struct_size`, so a field added later
-  reads as zero from older callers, and zero must mean "as before".
+- **Callers:** a feature is a new function, or a new struct chained onto an
+  existing one (`apricore.h`, "Struct bases"). A caller that doesn't chain it on
+  gets what it gets now, so leaving it out must mean "as before".
 
 Each item says how it fits that rule.
 

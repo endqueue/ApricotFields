@@ -12,19 +12,6 @@
 // Every opaque handle's first member is its debug name in Debug builds
 // (apricore.h).
 
-// ---- Struct versions ------------------------------------------------------
-//
-// The size of each versioned struct's first version: up to the end of its
-// last original field. Frozen - when a field is added, these don't change.
-
-#define APARCHIVE_V1_SIZE(type, last_field) (offsetof(type, last_field) + sizeof(((type *)nullptr)->last_field))
-
-constexpr size_t APARCHIVE_CODEC_V1_SIZE = APARCHIVE_V1_SIZE(APARCHIVE_CODEC, decompress);
-constexpr size_t APARCHIVE_WRITER_DESC_V1_SIZE = APARCHIVE_V1_SIZE(APARCHIVE_WRITER_DESC, codecs);
-constexpr size_t APARCHIVE_ENTRY_DESC_V1_SIZE = APARCHIVE_V1_SIZE(APARCHIVE_ENTRY_DESC, zip64);
-constexpr size_t APARCHIVE_READER_DESC_V1_SIZE = APARCHIVE_V1_SIZE(APARCHIVE_READER_DESC, max_compression_ratio);
-constexpr size_t APARCHIVE_ENTRY_INFO_V1_SIZE = APARCHIVE_V1_SIZE(APARCHIVE_ENTRY_INFO, is_directory);
-
 // ---- Objects ----------------------------------------------------------------
 
 struct aparchive_codecs_t

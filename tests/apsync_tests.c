@@ -42,7 +42,7 @@ static APSYNC_SESSION_DESC session_desc(const char *name, uint32_t application_v
 {
     APSYNC_SESSION_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = (uint32_t)sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APSYNC_SESSION_DESC;
     desc.application_id = TEST_APPLICATION_ID;
     desc.application_version = application_version;
     desc.channels = test_channels;
@@ -63,7 +63,7 @@ static apsync_session host_session(uint16_t *out_port)
     APSYNC_SESSION_DESC desc = session_desc("host", TEST_APPLICATION_VERSION);
     APSYNC_HOST_DESC host_desc;
     memset(&host_desc, 0, sizeof(host_desc));
-    host_desc.struct_size = (uint32_t)sizeof(host_desc);
+    host_desc.base.type = APRI_STRUCT_TYPE_APSYNC_HOST_DESC;
     host_desc.listen_addresses = addresses;
     host_desc.listen_address_count = 1;
     host_desc.port = 0; // the system picks
@@ -86,7 +86,7 @@ static apsync_session join_session(const char *name, uint32_t application_versio
     APSYNC_SESSION_DESC desc = session_desc(name, application_version);
     APSYNC_JOIN_DESC join_desc;
     memset(&join_desc, 0, sizeof(join_desc));
-    join_desc.struct_size = (uint32_t)sizeof(join_desc);
+    join_desc.base.type = APRI_STRUCT_TYPE_APSYNC_JOIN_DESC;
     join_desc.host = "127.0.0.1";
     join_desc.port = port;
     join_desc.family = APSYNC_ADDRESS_FAMILY_IPV4;
@@ -107,7 +107,7 @@ static apsync_session join_session(const char *name, uint32_t application_versio
 static bool next_event(apsync_session session, APSYNC_EVENT *event)
 {
     memset(event, 0, sizeof(*event));
-    event->struct_size = (uint32_t)sizeof(*event);
+    event->base.type = APRI_STRUCT_TYPE_APSYNC_EVENT;
     if (apsync_session_wait(session, PATIENCE_MS) != APRESULT_OK)
         return false;
     return apsync_session_poll(session, event) == APRESULT_OK;
@@ -132,7 +132,7 @@ static void test_arguments(void)
     APSYNC_SESSION_DESC desc = session_desc("x", TEST_APPLICATION_VERSION);
     APSYNC_JOIN_DESC join_desc;
     memset(&join_desc, 0, sizeof(join_desc));
-    join_desc.struct_size = (uint32_t)sizeof(join_desc);
+    join_desc.base.type = APRI_STRUCT_TYPE_APSYNC_JOIN_DESC;
     join_desc.host = "127.0.0.1";
     join_desc.port = 1;
     join_desc.resolve_timeout_ms = 1000;
@@ -154,13 +154,17 @@ static void test_arguments(void)
     APSYNC_JOIN_DESC no_time = join_desc;
     no_time.connect_timeout_ms = 0;
     CHECK(apsync_session_join(&desc, &no_time, &session, NULL) == APRESULT_INVALID_ARGUMENT);
-    APSYNC_SESSION_DESC too_small = desc;
-    too_small.struct_size = 8;
-    CHECK(apsync_session_join(&too_small, &join_desc, &session, NULL) == APRESULT_INVALID_ARGUMENT);
+    APSYNC_SESSION_DESC wrong_type = desc;
+    wrong_type.base.type = APRI_STRUCT_TYPE_APSYNC_JOIN_DESC;
+    CHECK(apsync_session_join(&wrong_type, &join_desc, &session, NULL) == APRESULT_STRUCT_WRONG_TYPE);
+    APRI_STRUCT_BASE chained = {APRI_STRUCT_TYPE_APSYNC_JOIN_DESC, NULL};
+    APSYNC_JOIN_DESC chained_join = join_desc;
+    chained_join.base.next = &chained;
+    CHECK(apsync_session_join(&desc, &chained_join, &session, NULL) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN);
 
     APSYNC_EVENT event;
     memset(&event, 0, sizeof(event));
-    event.struct_size = (uint32_t)sizeof(event);
+    event.base.type = APRI_STRUCT_TYPE_APSYNC_EVENT;
     CHECK(apsync_session_poll(NULL, &event) == APRESULT_INVALID_ARGUMENT);
     CHECK(apsync_session_send(NULL, 0, 0, "a", 1) == APRESULT_INVALID_ARGUMENT);
     CHECK(apsync_session_get_local_peer(NULL) == APSYNC_PEER_NONE);
@@ -180,8 +184,8 @@ static void test_join_and_messages(void)
 
     CHECK(apsync_session_get_local_peer(host) == APSYNC_PEER_HOST);
     memset(&event, 0, sizeof(event));
-    CHECK(apsync_session_poll(host, &event) == APRESULT_INVALID_ARGUMENT); // struct_size not set
-    event.struct_size = (uint32_t)sizeof(event);
+    CHECK(apsync_session_poll(host, &event) == APRESULT_STRUCT_WRONG_TYPE); // base not set
+    event.base.type = APRI_STRUCT_TYPE_APSYNC_EVENT;
     CHECK(apsync_session_poll(host, &event) == APRESULT_NOT_FOUND);
 
     // The host's own ordered message comes back to it, numbered.
@@ -240,7 +244,7 @@ static void test_join_and_messages(void)
     CHECK(next_event(joiner, &event));
     CHECK(event.type == APSYNC_EVENT_MESSAGE && event.channel == CHANNEL_PRESENCE && event.peer == APSYNC_PEER_HOST);
     CHECK(event.key == 9 && event.size == 0);
-    event.struct_size = (uint32_t)sizeof(event);
+    event.base.type = APRI_STRUCT_TYPE_APSYNC_EVENT;
     CHECK(apsync_session_poll(host, &event) == APRESULT_NOT_FOUND);
 
     // What a send refuses.
@@ -342,7 +346,7 @@ static void test_refusals(void)
     CHECK(event.reason == APSYNC_REASON_REFUSED_APPLICATION || event.reason == APSYNC_REASON_CLOSED ||
           event.reason == APSYNC_REASON_NETWORK);
     apsync_session_destroy(other);
-    event.struct_size = (uint32_t)sizeof(event);
+    event.base.type = APRI_STRUCT_TYPE_APSYNC_EVENT;
     CHECK(apsync_session_poll(host, &event) == APRESULT_NOT_FOUND); // the host never heard of it
 
     // A port the first host already has.
@@ -350,7 +354,7 @@ static void test_refusals(void)
     APSYNC_SESSION_DESC desc = session_desc("second host", TEST_APPLICATION_VERSION);
     APSYNC_HOST_DESC host_desc;
     memset(&host_desc, 0, sizeof(host_desc));
-    host_desc.struct_size = (uint32_t)sizeof(host_desc);
+    host_desc.base.type = APRI_STRUCT_TYPE_APSYNC_HOST_DESC;
     host_desc.listen_addresses = addresses;
     host_desc.listen_address_count = 1;
     host_desc.port = port;

@@ -36,7 +36,7 @@ extern "C" {
  * an APAUDIO_BANK_SOURCE the caller implements (a folder, files embedded
  * in the executable), or from a ZIP archive through an APARCHIVE_SOURCE.
  *
- * Threads, results, error messages and struct versions are apaudio.h's
+ * Threads, results, error messages and struct bases are apaudio.h's
  * (Conventions). Here, also:
  *   APRESULT_CORRUPT_DATA  a malformed bank: its manifest, a sound it
  *                          names and doesn't hold, a WAV that isn't mono
@@ -101,7 +101,8 @@ typedef struct apaudio_cues_t *apaudio_cues;
 /* A cue name's size in bytes, including the terminating NUL. */
 #define APAUDIO_CUE_NAME_SIZE 64
 
-/* One of the mixer's buses that banks may route cues to. Frozen. */
+/* One of the mixer's buses that banks may route cues to. */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_CUES_BUS {
 	/* What manifests call it; copied. */
 	const char *name;
@@ -112,7 +113,7 @@ typedef struct APAUDIO_CUES_BUS {
 } APAUDIO_CUES_BUS;
 
 typedef struct APAUDIO_CUES_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_CUES_DESC */
 	/* The mixer cues play on. It outlives the table. */
 	apaudio_mixer mixer;
 	/* [bus_count] buses, at least one, copied. Elsewhere a bus is named by
@@ -162,13 +163,14 @@ void apaudio_cues_update(apaudio_cues cues);
 /* ---- Banks ----------------------------------------------------------- */
 
 /* Where a bank's files come from, by the names its manifest uses
- * ("manifest.json" itself first). Frozen. Called only during the load
+ * ("manifest.json" itself first). Called only during the load
  * call, on its thread.
  *   [get_size]  the size in bytes of the file named [name]; false if the
  *               bank doesn't hold it - including a name the source won't
  *               serve, such as one leading out of a folder
  *   [read]      copies the file whole into [buffer], of the [size]
  *               get_size gave; false on any failure */
+/* Frozen: callbacks for one load call. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_BANK_SOURCE {
 	void *user;
 	bool (*get_size)(void *user, const char *name, uint64_t *out_size);
@@ -247,7 +249,7 @@ APAUDIO_MODIFIER apaudio_cues_get_bus_ducking(apaudio_cues cues, uint32_t bus_in
 
 /* What the loaded banks define for a cue. */
 typedef struct APAUDIO_CUE_INFO {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE_OUT base; /* type = APRI_STRUCT_TYPE_APAUDIO_CUE_INFO */
 	/* False for a cue no loaded bank defines; the rest is then its
 	 * defaults. */
 	bool defined;
@@ -264,14 +266,14 @@ typedef struct APAUDIO_CUE_INFO {
 	uint32_t fade_out_ms;
 } APAUDIO_CUE_INFO;
 
-/* Thread: any. Fills [out_info] up to its struct_size, which the caller
- * sets. */
+/* Thread: any. Fills [out_info], whose base the caller sets
+ * (APRI_STRUCT_TYPE_APAUDIO_CUE_INFO), and leaves its base as it was. */
 APRESULT apaudio_cues_get_info(apaudio_cues cues, APAUDIO_CUE cue, APAUDIO_CUE_INFO *out_info);
 
 /* ---- Playing --------------------------------------------------------- */
 
 typedef struct APAUDIO_CUE_PLAY_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_CUE_PLAY_DESC */
 	/* Times the cue's own gain: linear, finite, >= 0. */
 	float gain;
 	/* As APAUDIO_PLAY_DESC's; NULL for none. */

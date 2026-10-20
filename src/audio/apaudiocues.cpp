@@ -1,4 +1,5 @@
 #include "audio/apaudiocues.h"
+#include "../apristructbase.hpp"
 
 #include <glaze/glaze.hpp>
 
@@ -437,7 +438,7 @@ APRESULT apply_bank(apaudio_cues_t *cues, const bank_t &bank, std::string &out_e
     for (const bank_sound_t &file : bank.sounds)
     {
         APAUDIO_SOUND_DESC desc{};
-        desc.struct_size = sizeof(desc);
+        desc.base = apri_struct_base(APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC);
         desc.samples = file.pcm.samples;
         desc.frame_count = file.pcm.frame_count;
         desc.channel_count = file.pcm.channel_count;
@@ -471,7 +472,7 @@ APRESULT apply_bank(apaudio_cues_t *cues, const bank_t &bank, std::string &out_e
         if (cue.settings.max_instances || cue.settings.retrigger_ms)
         {
             APAUDIO_CONCURRENCY_DESC desc{};
-            desc.struct_size = sizeof(desc);
+            desc.base = apri_struct_base(APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC);
             desc.max_instances = cue.settings.max_instances ? cue.settings.max_instances : cues->max_voices;
             desc.resolution = APAUDIO_RESOLUTION_STOP_OLDEST;
             desc.retrigger_us = cue.settings.retrigger_ms > UINT32_MAX / 1000 ? UINT32_MAX
@@ -506,7 +507,7 @@ APRESULT apply_bank(apaudio_cues_t *cues, const bank_t &bank, std::string &out_e
         if (!targets.empty())
         {
             APAUDIO_MODIFIER_DESC desc{};
-            desc.struct_size = sizeof(desc);
+            desc.base = apri_struct_base(APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC);
             desc.targets = targets.data();
             desc.target_count = (uint32_t)targets.size();
             desc.fade_in_us = cues->duck_fade_in_us;
@@ -617,7 +618,7 @@ APRESULT read_entry(aparchive_reader reader, const std::string &name, std::vecto
         return APRESULT_CORRUPT_DATA;
     }
     APARCHIVE_ENTRY_INFO info{};
-    info.struct_size = sizeof(info);
+    info.base.type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO;
     if (aparchive_reader_get_entry(reader, index, &info) != APRESULT_OK || info.is_directory)
     {
         out_error = name + " isn't a file";
@@ -683,7 +684,9 @@ APRESULT plan_play(apaudio_cues_t *cues, APAUDIO_CUE cue, const APAUDIO_CUE_PLAY
     float gain = 1.0f;
     if (desc)
     {
-        if (desc->struct_size < sizeof(APAUDIO_CUE_PLAY_DESC) || !gain_valid(desc->gain))
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_CUE_PLAY_DESC))
+            return result;
+        if (!gain_valid(desc->gain))
             return APRESULT_INVALID_ARGUMENT;
         gain = desc->gain;
         if (desc->direction)
@@ -735,7 +738,7 @@ APRESULT play_plan(apaudio_cues_t *cues, const play_plan_t &plan, APAUDIO_VOICE 
     out_voice = 0;
     const bus_t &bus = cues->buses[plan.settings.bus];
     APAUDIO_PLAY_DESC desc{};
-    desc.struct_size = sizeof(desc);
+    desc.base = apri_struct_base(APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC);
     desc.gain = plan.gain;
     desc.priority = plan.settings.priority;
     desc.virtual_behavior = bus.virtual_behavior;
@@ -789,8 +792,13 @@ extern "C"
             *out_cues = nullptr;
         if (error)
             error->message[0] = '\0';
-        if (!desc || !out_cues || desc->struct_size < sizeof(APAUDIO_CUES_DESC))
+        if (!desc || !out_cues)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_CUES_DESC))
+        {
+            set_error(error, std::string("desc ") + apri_struct_check_message(result));
+            return result;
+        }
         if (!desc->mixer || !desc->buses || !desc->bus_count || !desc->max_cues || !desc->max_playings ||
             !desc->max_voices || !desc->sample_rate)
         {
@@ -944,7 +952,7 @@ extern "C"
             aparchive_codecs_add_deflate(archive.codecs) != APRESULT_OK)
             return APRESULT_OUT_OF_MEMORY;
         APARCHIVE_READER_DESC desc{};
-        desc.struct_size = sizeof(desc);
+        desc.base = apri_struct_base(APRI_STRUCT_TYPE_APARCHIVE_READER_DESC);
         desc.source = *source;
         desc.codecs = archive.codecs;
         desc.max_entry_count = BANK_MAX_ENTRIES;
@@ -1043,13 +1051,15 @@ extern "C"
 
     APRESULT apaudio_cues_get_info(apaudio_cues cues, APAUDIO_CUE cue, APAUDIO_CUE_INFO *out_info)
     {
-        if (!cues || !out_info || out_info->struct_size < sizeof(uint32_t))
+        if (!cues || !out_info)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APAUDIO_CUE_INFO))
+            return result;
         uint32_t index;
         if (!cue_index(cues, cue, index))
             return APRESULT_NOT_FOUND;
         APAUDIO_CUE_INFO info{};
-        info.struct_size = out_info->struct_size;
+        info.base = out_info->base;
         {
             std::lock_guard<std::mutex> lock(cues->cue_mutex);
             const cue_t &definition = cues->cues[index];
@@ -1067,8 +1077,7 @@ extern "C"
             info.fade_in_ms = settings.fade_in_ms;
             info.fade_out_ms = settings.fade_out_ms;
         }
-        size_t size = out_info->struct_size < sizeof(info) ? out_info->struct_size : sizeof(info);
-        memcpy(out_info, &info, size);
+        *out_info = info;
         return APRESULT_OK;
     }
 

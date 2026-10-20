@@ -64,7 +64,7 @@ static aparchive_codecs deflate_codecs()
 static aparchive_writer memory_writer(std::vector<uint8_t> &out, aparchive_codecs codecs)
 {
     APARCHIVE_WRITER_DESC desc{};
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC;
     desc.sink.user = &out;
     desc.sink.write = memory_write;
     desc.codecs = codecs;
@@ -77,7 +77,7 @@ static aparchive_writer memory_writer(std::vector<uint8_t> &out, aparchive_codec
 static APARCHIVE_READER_DESC reader_desc(const std::vector<uint8_t> &archive, aparchive_codecs codecs)
 {
     APARCHIVE_READER_DESC desc{};
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_READER_DESC;
     desc.source.user = (void *)&archive;
     desc.source.size = archive.size();
     desc.source.read = memory_read;
@@ -93,7 +93,7 @@ static APARCHIVE_READER_DESC reader_desc(const std::vector<uint8_t> &archive, ap
 static APARCHIVE_ENTRY_DESC entry_desc(const char *name, uint16_t method)
 {
     APARCHIVE_ENTRY_DESC entry{};
-    entry.struct_size = sizeof(entry);
+    entry.base.type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC;
     entry.name = name;
     entry.method = method;
     entry.dos_date = 0x0021; // 1980-01-01
@@ -103,7 +103,7 @@ static APARCHIVE_ENTRY_DESC entry_desc(const char *name, uint16_t method)
 static APARCHIVE_ENTRY_INFO entry_info(aparchive_reader reader, uint32_t index)
 {
     APARCHIVE_ENTRY_INFO info{};
-    info.struct_size = sizeof(info);
+    info.base.type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO;
     CHECK(aparchive_reader_get_entry(reader, index, &info) == APRESULT_OK);
     return info;
 }
@@ -224,11 +224,11 @@ static void test_codecs()
     // No duplicates, no STORED, no codec without decompress.
     CHECK(aparchive_codecs_add_deflate(codecs) == APRESULT_INVALID_ARGUMENT);
     APARCHIVE_CODEC stored{};
-    stored.struct_size = sizeof(stored);
+    stored.base.type = APRI_STRUCT_TYPE_APARCHIVE_CODEC;
     stored.method = APARCHIVE_METHOD_STORED;
     CHECK(aparchive_codecs_add(codecs, &stored) == APRESULT_INVALID_ARGUMENT);
     APARCHIVE_CODEC zstd{};
-    zstd.struct_size = sizeof(zstd);
+    zstd.base.type = APRI_STRUCT_TYPE_APARCHIVE_CODEC;
     zstd.method = 93;
     CHECK(aparchive_codecs_add(codecs, &zstd) == APRESULT_INVALID_ARGUMENT);
     // Tables are independent: no global registration.
@@ -280,10 +280,17 @@ static void test_writer_checks()
     desc.sink.write = discard_write;
     desc.codecs = codecs;
     aparchive_writer writer = nullptr;
-    // A struct_size below the first version is refused.
-    desc.struct_size = 4;
-    CHECK(aparchive_writer_create(&desc, &writer) == APRESULT_INVALID_ARGUMENT && writer == nullptr);
-    desc.struct_size = sizeof(desc);
+    // A base left zeroed, another struct's type, and a chained struct are
+    // refused.
+    CHECK(aparchive_writer_create(&desc, &writer) == APRESULT_STRUCT_WRONG_TYPE && writer == nullptr);
+    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_READER_DESC;
+    CHECK(aparchive_writer_create(&desc, &writer) == APRESULT_STRUCT_WRONG_TYPE && writer == nullptr);
+    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC;
+    APRI_STRUCT_BASE chained{};
+    chained.type = APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC;
+    desc.base.next = &chained;
+    CHECK(aparchive_writer_create(&desc, &writer) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN && writer == nullptr);
+    desc.base.next = nullptr;
     CHECK(aparchive_writer_create(&desc, &writer) == APRESULT_OK);
     CHECK(aparchive_writer_get_offset(writer) == 0);
 
@@ -351,11 +358,11 @@ static void test_reader_checks()
     desc.codecs = codecs;
     aparchive_reader reader = nullptr;
     APARCHIVE_ERROR error;
-    // struct_size unset (0) is refused, with a message saying so.
-    CHECK(aparchive_reader_open(&desc, &reader, &error) == APRESULT_INVALID_ARGUMENT && reader == nullptr);
-    CHECK(strstr(error.message, "struct_size") != nullptr);
+    // A base left unset (0) is refused, with a message saying so.
+    CHECK(aparchive_reader_open(&desc, &reader, &error) == APRESULT_STRUCT_WRONG_TYPE && reader == nullptr);
+    CHECK(strstr(error.message, "base.type") != nullptr);
     // A source that fails.
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_READER_DESC;
     desc.source.size = 1000;
     CHECK(aparchive_reader_open(&desc, &reader, &error) == APRESULT_IO && reader == nullptr);
     // Not archives: too small, and no end record.
@@ -465,7 +472,7 @@ static void test_round_trip()
     CHECK(info.extra_size == sizeof(CUSTOM_EXTRA) && info.extra &&
           memcmp(info.extra, CUSTOM_EXTRA, sizeof(CUSTOM_EXTRA)) == 0);
     APARCHIVE_ENTRY_INFO unset{};
-    CHECK(aparchive_reader_get_entry(reader, 0, &unset) == APRESULT_INVALID_ARGUMENT); // no struct_size
+    CHECK(aparchive_reader_get_entry(reader, 0, &unset) == APRESULT_STRUCT_WRONG_TYPE); // no base set
     CHECK(aparchive_reader_get_entry(reader, 5, &info) == APRESULT_NOT_FOUND);
 
     // Every entry reads back.

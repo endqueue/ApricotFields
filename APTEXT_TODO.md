@@ -8,7 +8,8 @@ back (`APREND_TODO.md`, item 23, "Text: the design").
 
 Planned header `include/text/aptext.h`, prefix `aptext_` / `APTEXT_`, newer
 generation (see `CLAUDE.md`, "Writing a new module"): `APRESULT` returns,
-`APTEXT_ERROR` per call, `struct_size` descs, its own numbered block of
+`APTEXT_ERROR` per call, descs with a struct base (`APRI_STRUCT_TYPE_APTEXT_*`
+in a block of its own), its own numbered block of
 `APRESULT_APTEXT_*` codes in `apricore.h` if it needs any.
 
 ## What it deliberately does not do

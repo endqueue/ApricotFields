@@ -1,4 +1,5 @@
 #include "apsync_internal.hpp"
+#include "../apristructbase.hpp"
 #include <algorithm>
 #include <iterator>
 #include <new>
@@ -48,33 +49,6 @@ static APRESULT fail(APSYNC_ERROR *error, APRESULT result, const char *format, .
         va_end(args);
     }
     return result;
-}
-
-// ---- Struct versions ----------------------------------------------------------
-
-// Copies a caller's versioned input struct into [out] at the current version:
-// the fields its struct_size covers, zeros past them. False if it's smaller
-// than the struct's first version.
-template <typename T> static bool read_versioned(const T *in, size_t v1_size, T &out)
-{
-    if (!in || in->struct_size < v1_size)
-        return false;
-    memset(&out, 0, sizeof(T));
-    memcpy(&out, in, in->struct_size < sizeof(T) ? in->struct_size : sizeof(T));
-    out.struct_size = (uint32_t)sizeof(T);
-    return true;
-}
-
-// Writes [value] into a caller's versioned output struct, up to its
-// struct_size, which is kept as the caller set it.
-template <typename T> static bool write_versioned(T *out, size_t v1_size, const T &value)
-{
-    if (!out || out->struct_size < v1_size)
-        return false;
-    uint32_t caller_size = out->struct_size;
-    memcpy(out, &value, caller_size < sizeof(T) ? caller_size : sizeof(T));
-    out->struct_size = caller_size;
-    return true;
 }
 
 #if SPUDNET_EXT_TCP
@@ -1392,9 +1366,11 @@ static APRESULT create_session(const APSYNC_SESSION_DESC *desc, bool hosting, ap
                                APSYNC_ERROR *error)
 {
     out_session = nullptr;
-    APSYNC_SESSION_DESC d;
-    if (!read_versioned(desc, APSYNC_SESSION_DESC_V1_SIZE, d))
-        return fail(error, APRESULT_INVALID_ARGUMENT, "desc is null, or its struct_size is too small");
+    if (!desc)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "desc is null");
+    if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APSYNC_SESSION_DESC))
+        return fail(error, result, "desc %s", apri_struct_check_message(result));
+    const APSYNC_SESSION_DESC &d = *desc;
     if (!d.channels || d.channel_count == 0 || d.channel_count > APSYNC_MAX_CHANNELS)
         return fail(error, APRESULT_INVALID_ARGUMENT, "a session has between 1 and %u channels", APSYNC_MAX_CHANNELS);
     for (uint32_t i = 0; i < d.channel_count; ++i)
@@ -1514,9 +1490,11 @@ extern "C"
         if (!out_session)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_session is null");
         *out_session = nullptr;
-        APSYNC_HOST_DESC h;
-        if (!read_versioned(host_desc, APSYNC_HOST_DESC_V1_SIZE, h))
-            return fail(out_error, APRESULT_INVALID_ARGUMENT, "host_desc is null, or its struct_size is too small");
+        if (!host_desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "host_desc is null");
+        if (APRESULT result = apri_struct_check(&host_desc->base, APRI_STRUCT_TYPE_APSYNC_HOST_DESC))
+            return fail(out_error, result, "host_desc %s", apri_struct_check_message(result));
+        const APSYNC_HOST_DESC &h = *host_desc;
         if (!h.listen_addresses || h.listen_address_count == 0 || h.listen_address_count > APSYNC_MAX_LISTEN_ADDRESSES)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "a host listens on between 1 and %u addresses",
                         APSYNC_MAX_LISTEN_ADDRESSES);
@@ -1594,9 +1572,11 @@ extern "C"
         if (!out_session)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_session is null");
         *out_session = nullptr;
-        APSYNC_JOIN_DESC j;
-        if (!read_versioned(join_desc, APSYNC_JOIN_DESC_V1_SIZE, j))
-            return fail(out_error, APRESULT_INVALID_ARGUMENT, "join_desc is null, or its struct_size is too small");
+        if (!join_desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "join_desc is null");
+        if (APRESULT result = apri_struct_check(&join_desc->base, APRI_STRUCT_TYPE_APSYNC_JOIN_DESC))
+            return fail(out_error, result, "join_desc %s", apri_struct_check_message(result));
+        const APSYNC_JOIN_DESC &j = *join_desc;
         if (!j.host || j.host[0] == '\0')
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "join_desc has no host");
         if (j.family != APSYNC_ADDRESS_FAMILY_ANY && j.family != APSYNC_ADDRESS_FAMILY_IPV4 &&
@@ -1650,8 +1630,12 @@ extern "C"
 
     APRESULT apsync_session_poll(apsync_session session, APSYNC_EVENT *out_event)
     {
-        if (!session || !out_event || out_event->struct_size < APSYNC_EVENT_V1_SIZE)
+        if (!session)
             return APRESULT_INVALID_ARGUMENT;
+        if (!out_event)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_out_check(&out_event->base, APRI_STRUCT_TYPE_APSYNC_EVENT))
+            return result;
         {
             std::lock_guard<std::mutex> lock(session->inbox_mutex);
             if (session->inbox.empty())
@@ -1702,7 +1686,7 @@ extern "C"
         }
 
         APSYNC_EVENT event{};
-        event.struct_size = (uint32_t)sizeof(event);
+        event.base = out_event->base;
         event.type = current.type;
         event.peer = current.peer;
         event.channel = current.channel;
@@ -1712,7 +1696,7 @@ extern "C"
         event.data = current.data.empty() ? nullptr : current.data.data();
         event.size = current.data.size();
         event.message = current.message.c_str();
-        write_versioned(out_event, APSYNC_EVENT_V1_SIZE, event);
+        *out_event = event;
         return APRESULT_OK;
     }
 

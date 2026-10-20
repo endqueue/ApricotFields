@@ -89,11 +89,13 @@ extern "C" {
  * goes wrong later, on the network, arrives as an event instead, with its
  * own message.
  *
- * Struct versions. Every struct here starts with [struct_size], which the
- * caller sets to sizeof(the struct) as it was compiled, on output structs
- * too (APSYNC_EVENT). The rule is aparchive.h's: fields are only added at
- * the end, and a size smaller than the first version fails with
- * APRESULT_INVALID_ARGUMENT. APSYNC_ERROR is frozen and has none.
+ * Struct bases. Every struct here but APSYNC_ERROR starts with a [base]
+ * (apricore.h, "Struct bases"): the caller sets [base.type] to the
+ * struct's own APRI_STRUCT_TYPE_APSYNC_* and [base.next] to NULL, on the
+ * output struct too (APSYNC_EVENT). A wrong type is
+ * APRESULT_STRUCT_WRONG_TYPE and a chained struct
+ * APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto any of them yet.
+ * APSYNC_ERROR is frozen and has none.
  *
  * Nothing in a desc has a default. A limit or a time left at 0 is refused
  * unless its comment says what 0 means.
@@ -107,6 +109,7 @@ extern "C" {
 
 #define APSYNC_ERROR_MESSAGE_SIZE 256
 
+/* Frozen: filled per call. It never changes; a new need gets a new type. */
 typedef struct APSYNC_ERROR {
 	char message[APSYNC_ERROR_MESSAGE_SIZE]; /* NUL-terminated, truncated to fit */
 } APSYNC_ERROR;
@@ -152,7 +155,7 @@ typedef enum APSYNC_CHANNEL_MODE {
 /* What the host and every joiner have to agree on, and what a session of
  * either role needs. */
 typedef struct APSYNC_SESSION_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APSYNC_SESSION_DESC */
 
 	/* Which application this is and which version of its messages it
 	 * speaks. A joiner whose pair differs from the host's is turned away
@@ -209,7 +212,7 @@ typedef struct APSYNC_SESSION_DESC {
 } APSYNC_SESSION_DESC;
 
 typedef struct APSYNC_HOST_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APSYNC_HOST_DESC */
 
 	/* The local addresses to listen on, numeric, as SpudNet takes them:
 	 * "0.0.0.0" for every IPv4 interface, "::" for every IPv6 one,
@@ -242,7 +245,7 @@ typedef enum APSYNC_ADDRESS_FAMILY {
 } APSYNC_ADDRESS_FAMILY;
 
 typedef struct APSYNC_JOIN_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APSYNC_JOIN_DESC */
 
 	/* The host: a name or a numeric address, UTF-8. Copied. */
 	const char *host;
@@ -382,7 +385,7 @@ typedef enum APSYNC_REASON {
 } APSYNC_REASON;
 
 typedef struct APSYNC_EVENT {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE_OUT base; /* type = APRI_STRUCT_TYPE_APSYNC_EVENT */
 	APSYNC_EVENT_TYPE type;
 	APSYNC_PEER peer;
 	uint32_t channel;

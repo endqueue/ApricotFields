@@ -32,7 +32,7 @@ static APAUDIO_MIXER_DESC valid_mixer_desc(void)
 {
     APAUDIO_MIXER_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC;
     desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
     desc.format.sample_rate = 48000;
     desc.format.channel_count = 2;
@@ -90,7 +90,7 @@ static void test_null_arguments(void)
 
     APAUDIO_BUS_DESC bus_desc;
     memset(&bus_desc, 0, sizeof(bus_desc));
-    bus_desc.struct_size = sizeof(bus_desc);
+    bus_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_BUS_DESC;
     bus_desc.gain = 1.0f;
     bus_desc.rate = 1.0f;
     APAUDIO_BUS bus = 99;
@@ -105,7 +105,7 @@ static void test_null_arguments(void)
     APAUDIO_MODIFIER modifier = 99;
     APAUDIO_MODIFIER_DESC modifier_desc;
     memset(&modifier_desc, 0, sizeof(modifier_desc));
-    modifier_desc.struct_size = sizeof(modifier_desc);
+    modifier_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC;
     CHECK(apaudio_modifier_create(NULL, &modifier_desc, &modifier, NULL) == APRESULT_INVALID_ARGUMENT);
     CHECK(modifier == 0);
     CHECK(apaudio_modifier_set_active(NULL, 1, true) == APRESULT_INVALID_ARGUMENT);
@@ -113,20 +113,20 @@ static void test_null_arguments(void)
     APAUDIO_CONCURRENCY group = 99;
     APAUDIO_CONCURRENCY_DESC group_desc;
     memset(&group_desc, 0, sizeof(group_desc));
-    group_desc.struct_size = sizeof(group_desc);
+    group_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC;
     CHECK(apaudio_concurrency_create(NULL, &group_desc, &group, NULL) == APRESULT_INVALID_ARGUMENT);
     CHECK(group == 0);
 
     APAUDIO_SOUND sound = 99;
     APAUDIO_SOUND_DESC sound_desc;
     memset(&sound_desc, 0, sizeof(sound_desc));
-    sound_desc.struct_size = sizeof(sound_desc);
+    sound_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
     CHECK(apaudio_sound_create(NULL, &sound_desc, &sound, NULL) == APRESULT_INVALID_ARGUMENT);
     CHECK(sound == 0);
 
     APAUDIO_PLAY_DESC play;
     memset(&play, 0, sizeof(play));
-    play.struct_size = sizeof(play);
+    play.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
     play.gain = 1.0f;
     play.rate = 1.0f;
     APAUDIO_VOICE voice = 99;
@@ -338,7 +338,7 @@ static APAUDIO_SOUND make_sound(apaudio_mixer mixer, const float *samples, uint6
 {
     APAUDIO_SOUND_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
     desc.samples = samples;
     desc.frame_count = frames;
     desc.channel_count = channels;
@@ -369,7 +369,7 @@ static APAUDIO_PLAY_DESC play_desc(float gain)
 {
     APAUDIO_PLAY_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
     desc.gain = gain;
     desc.rate = 1.0f;
     return desc;
@@ -436,8 +436,12 @@ static void test_mixer_create(void)
     desc.resampler = APAUDIO_RESAMPLER_UNSPECIFIED; /* a zeroed desc chooses nothing */
     CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_INVALID_ARGUMENT);
     desc = valid_mixer_desc();
-    desc.struct_size = 8;
-    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_INVALID_ARGUMENT);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_BUS_DESC;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_STRUCT_WRONG_TYPE);
+    desc = valid_mixer_desc();
+    APRI_STRUCT_BASE chained = {APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC, NULL};
+    desc.base.next = &chained;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN);
     CHECK(mixer == NULL);
 
     desc = valid_mixer_desc();
@@ -679,7 +683,7 @@ static void test_resampling(void)
     CHECK(matches);
     APAUDIO_SOUND_DESC bad;
     memset(&bad, 0, sizeof(bad));
-    bad.struct_size = sizeof(bad);
+    bad.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
     bad.samples = ramp;
     bad.frame_count = 10;
     bad.channel_count = 1;
@@ -830,7 +834,7 @@ static void test_sounds(void)
     /* Its slot isn't reusable until a render has let go of it. */
     APAUDIO_SOUND_DESC sound_desc;
     memset(&sound_desc, 0, sizeof(sound_desc));
-    sound_desc.struct_size = sizeof(sound_desc);
+    sound_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
     sound_desc.samples = ones;
     sound_desc.frame_count = 8;
     sound_desc.channel_count = 1;
@@ -972,7 +976,7 @@ static APAUDIO_CONCURRENCY make_group(apaudio_mixer mixer, uint32_t max_instance
 {
     APAUDIO_CONCURRENCY_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC;
     desc.max_instances = max_instances;
     desc.resolution = resolution;
     desc.retrigger_us = retrigger_us;
@@ -992,7 +996,7 @@ static void test_concurrency(void)
 
     APAUDIO_CONCURRENCY_DESC bad;
     memset(&bad, 0, sizeof(bad));
-    bad.struct_size = sizeof(bad);
+    bad.base.type = APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC;
     APAUDIO_CONCURRENCY none = 99;
     APAUDIO_ERROR error;
     CHECK(apaudio_concurrency_create(mixer, &bad, &none, &error) == APRESULT_INVALID_ARGUMENT && none == 0);
@@ -1075,7 +1079,7 @@ static APAUDIO_BUS make_bus(apaudio_mixer mixer, APAUDIO_BUS parent, float gain)
 {
     APAUDIO_BUS_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_BUS_DESC;
     desc.parent = parent;
     desc.gain = gain;
     desc.rate = 1.0f;
@@ -1174,7 +1178,7 @@ static void test_buses(void)
     CHECK(frames_are(0, 15, (1.0f + 0.05f + 1.0f) * CENTRE, (1.0f + 0.05f + 1.0f) * CENTRE));
     APAUDIO_BUS_DESC bus_desc;
     memset(&bus_desc, 0, sizeof(bus_desc));
-    bus_desc.struct_size = sizeof(bus_desc);
+    bus_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_BUS_DESC;
     bus_desc.gain = 1.0f;
     bus_desc.rate = 1.0f;
     APAUDIO_BUS extra = 99;
@@ -1220,7 +1224,7 @@ static void test_modifiers(void)
     APAUDIO_MODIFIER_TARGET target = {music, 0.5f, 1.0f};
     APAUDIO_MODIFIER_DESC modifier_desc;
     memset(&modifier_desc, 0, sizeof(modifier_desc));
-    modifier_desc.struct_size = sizeof(modifier_desc);
+    modifier_desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC;
     modifier_desc.targets = &target;
     modifier_desc.target_count = 1;
     modifier_desc.fade_in_us = 1000; /* 48 frames */
@@ -1397,7 +1401,7 @@ static APAUDIO_CUE_INFO cue_info(apaudio_cues cues, APAUDIO_CUE cue)
 {
     APAUDIO_CUE_INFO info;
     memset(&info, 0, sizeof(info));
-    info.struct_size = sizeof(info);
+    info.base.type = APRI_STRUCT_TYPE_APAUDIO_CUE_INFO;
     CHECK(apaudio_cues_get_info(cues, cue, &info) == APRESULT_OK);
     return info;
 }
@@ -1420,7 +1424,7 @@ static void test_cues_clear_banks(void)
 
     APAUDIO_CUES_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.struct_size = sizeof(desc);
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_CUES_DESC;
     desc.mixer = mixer;
     desc.buses = buses;
     desc.bus_count = 2;

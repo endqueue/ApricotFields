@@ -1,4 +1,5 @@
 #include "audio/apaudio.h"
+#include "../apristructbase.hpp"
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -198,33 +199,6 @@ static APRESULT wav_decode(const uint8_t *data, uint64_t size, APAUDIO_PCM *out_
     out_pcm->channel_count = channel_count;
     out_pcm->sample_rate = sample_rate;
     return APRESULT_OK;
-}
-
-// ---- Struct versions ----------------------------------------------------------
-
-// The size of each versioned struct's first version: up to the end of its
-// last original field. Frozen - when a field is added, these don't change.
-
-#define APAUDIO_V1_SIZE(type, last_field) (offsetof(type, last_field) + sizeof(((type *)nullptr)->last_field))
-
-constexpr size_t APAUDIO_MIXER_DESC_V1_SIZE = APAUDIO_V1_SIZE(APAUDIO_MIXER_DESC, gain);
-constexpr size_t APAUDIO_BUS_DESC_V1_SIZE = APAUDIO_V1_SIZE(APAUDIO_BUS_DESC, rate);
-constexpr size_t APAUDIO_MODIFIER_DESC_V1_SIZE = APAUDIO_V1_SIZE(APAUDIO_MODIFIER_DESC, trigger);
-constexpr size_t APAUDIO_CONCURRENCY_DESC_V1_SIZE = APAUDIO_V1_SIZE(APAUDIO_CONCURRENCY_DESC, older_instance_gain);
-constexpr size_t APAUDIO_SOUND_DESC_V1_SIZE = APAUDIO_V1_SIZE(APAUDIO_SOUND_DESC, bus);
-constexpr size_t APAUDIO_PLAY_DESC_V1_SIZE = APAUDIO_V1_SIZE(APAUDIO_PLAY_DESC, loop);
-
-// Copies a caller's versioned input struct into [out] at the current version:
-// the fields its struct_size covers, zeros past them. False if it's smaller
-// than the struct's first version.
-template <typename T> static bool read_versioned(const T *in, size_t v1_size, T &out)
-{
-    if (!in || in->struct_size < v1_size)
-        return false;
-    memset(&out, 0, sizeof(T));
-    memcpy(&out, in, in->struct_size < sizeof(T) ? in->struct_size : sizeof(T));
-    out.struct_size = (uint32_t)sizeof(T);
-    return true;
 }
 
 // ---- Small helpers ------------------------------------------------------------
@@ -2407,9 +2381,9 @@ extern "C"
             *out_mixer = nullptr;
         if (!desc || !out_mixer)
             return fail(error, APRESULT_INVALID_ARGUMENT, "desc or out_mixer is null");
-        APAUDIO_MIXER_DESC d;
-        if (!read_versioned(desc, APAUDIO_MIXER_DESC_V1_SIZE, d))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "desc's struct_size is too small");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC))
+            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        const APAUDIO_MIXER_DESC &d = *desc;
         Layout layout;
         if (APRESULT result = layout_build(d.format, d.max_frames, layout, error))
             return result;
@@ -2649,9 +2623,9 @@ extern "C"
         if (!mixer || !desc || !out_bus)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_bus is null");
         Mixer *m = mixer;
-        APAUDIO_BUS_DESC d;
-        if (!read_versioned(desc, APAUDIO_BUS_DESC_V1_SIZE, d))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "desc's struct_size is too small");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_BUS_DESC))
+            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        const APAUDIO_BUS_DESC &d = *desc;
         if (!valid_gain(d.gain) || !valid_rate(d.rate))
             return fail(error, APRESULT_INVALID_ARGUMENT, "a gain of %g (finite, >= 0) or a rate of %g (%g to %g)",
                         (double)d.gain, (double)d.rate, (double)RATE_MIN, (double)RATE_MAX);
@@ -2771,9 +2745,9 @@ extern "C"
         if (!mixer || !desc || !out_modifier)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_modifier is null");
         Mixer *m = mixer;
-        APAUDIO_MODIFIER_DESC d;
-        if (!read_versioned(desc, APAUDIO_MODIFIER_DESC_V1_SIZE, d))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "desc's struct_size is too small");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC))
+            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        const APAUDIO_MODIFIER_DESC &d = *desc;
         if (d.target_count > 0 && !d.targets)
             return fail(error, APRESULT_INVALID_ARGUMENT, "targets is null with a target_count of %u", d.target_count);
         if (d.target_count > m->bus_count)
@@ -2855,9 +2829,9 @@ extern "C"
         if (!mixer || !desc || !out_group)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_group is null");
         Mixer *m = mixer;
-        APAUDIO_CONCURRENCY_DESC d;
-        if (!read_versioned(desc, APAUDIO_CONCURRENCY_DESC_V1_SIZE, d))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "desc's struct_size is too small");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC))
+            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        const APAUDIO_CONCURRENCY_DESC &d = *desc;
         if (d.max_instances == 0)
             return fail(error, APRESULT_INVALID_ARGUMENT, "max_instances is 0");
         if (d.resolution < APAUDIO_RESOLUTION_REJECT_NEW || d.resolution > APAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY)
@@ -2902,9 +2876,9 @@ extern "C"
         if (!mixer || !desc || !out_sound)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_sound is null");
         Mixer *m = mixer;
-        APAUDIO_SOUND_DESC d;
-        if (!read_versioned(desc, APAUDIO_SOUND_DESC_V1_SIZE, d))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "desc's struct_size is too small");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC))
+            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        const APAUDIO_SOUND_DESC &d = *desc;
         if (d.channel_count != 1 && d.channel_count != 2)
             return fail(error, APRESULT_UNSUPPORTED, "a sound of %u channels: only mono and stereo play",
                         d.channel_count);
@@ -2985,9 +2959,9 @@ extern "C"
         if (!mixer || !desc)
             return APRESULT_INVALID_ARGUMENT;
         Mixer *m = mixer;
-        APAUDIO_PLAY_DESC d;
-        if (!read_versioned(desc, APAUDIO_PLAY_DESC_V1_SIZE, d))
-            return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC))
+            return result;
+        const APAUDIO_PLAY_DESC &d = *desc;
         if (!valid_gain(d.gain) || !valid_rate(d.rate) || d.virtual_behavior > APAUDIO_VIRTUAL_PAUSE)
             return APRESULT_INVALID_ARGUMENT;
         if (d.direction && (!isfinite(d.direction->azimuth) || !isfinite(d.direction->elevation)))

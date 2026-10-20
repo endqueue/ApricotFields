@@ -54,10 +54,13 @@ extern "C" {
  * pointer (NULL to skip it): on failure it holds a description; on success
  * its message is empty.
  *
- * Struct versions. Descs start with [struct_size], set to sizeof(the
- * struct) as compiled; fields past it read as zero, as in aparchive.h.
- * APMATH_POLY_POINT, APMATH_POLY_SET, APMATH_POLY_DEFECT_INFO and
- * APMATH_ERROR are frozen: they never grow (a new need gets a new type).
+ * Struct bases. Descs start with a [base] (apricore.h, "Struct bases"):
+ * the caller sets [base.type] to the desc's own APRI_STRUCT_TYPE_APMATH_*
+ * and [base.next] to NULL. A wrong type is APRESULT_STRUCT_WRONG_TYPE and
+ * a chained struct APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto
+ * any of them yet. APMATH_POLY_POINT, APMATH_POLY_SET,
+ * APMATH_POLY_DEFECT_INFO and APMATH_ERROR are frozen: they never grow (a
+ * new need gets a new type).
  *
  * Geometry. Y up: counter-clockwise turns left. A ring is closed - its last
  * point joins its first - and doesn't repeat its first point at the end.
@@ -66,6 +69,7 @@ extern "C" {
 
 #define APMATH_ERROR_MESSAGE_SIZE 256
 
+/* Frozen: filled per call. It never changes; a new need gets a new type. */
 typedef struct APMATH_ERROR {
 	char message[APMATH_ERROR_MESSAGE_SIZE]; /* NUL-terminated, truncated to fit */
 } APMATH_ERROR;
@@ -79,6 +83,7 @@ typedef struct APMATH_ERROR {
 /* In APMATH_POLY_SET::ring_outers: the ring is an outer ring. */
 #define APMATH_POLY_NO_RING UINT32_MAX
 
+/* Frozen: a value, an array element. It never changes; a new need gets a new type. */
 typedef struct APMATH_POLY_POINT {
 	int64_t x;
 	int64_t y;
@@ -98,6 +103,7 @@ typedef struct APMATH_POLY_POINT {
  * fill rule decides what's inside - and fills it in on what it returns.
  *
  * All zeros is an empty set. */
+/* Frozen: held by value in the descs. It never changes; a new need gets a new type. */
 typedef struct APMATH_POLY_SET {
 	const APMATH_POLY_POINT *points;
 	const uint64_t *edge_tags; /* [point_count] of them, or NULL */
@@ -133,7 +139,8 @@ typedef enum APMATH_POLY_DEFECT {
 	APMATH_POLY_DEFECT_OVERLAP,
 } APMATH_POLY_DEFECT;
 
-/* Frozen. Fields a defect doesn't name are 0. */
+/* Fields a defect doesn't name are 0. */
+/* Frozen: filled per call. It never changes; a new need gets a new type. */
 typedef struct APMATH_POLY_DEFECT_INFO {
 	APMATH_POLY_DEFECT defect;
 	uint32_t ring;
@@ -172,7 +179,7 @@ typedef enum APMATH_POLY_FILL {
 } APMATH_POLY_FILL;
 
 typedef struct APMATH_POLY_BOOLEAN_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APMATH_POLY_BOOLEAN_DESC */
 	APMATH_POLY_OP op;
 	/* Applies to both sets. */
 	APMATH_POLY_FILL fill;
@@ -216,7 +223,7 @@ APMATH_POLY_SET apmath_poly_get_set(apmath_poly poly);
 /* ---- Offsetting ------------------------------------------------------ */
 
 typedef struct APMATH_POLY_OFFSET_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC */
 	/* Polygons with holes (apmath_poly_validate()); its ring_outers isn't
 	 * read - what each ring encloses follows from its winding. */
 	APMATH_POLY_SET set;
@@ -264,7 +271,7 @@ APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_po
 /* ---- Straight skeleton ----------------------------------------------- */
 
 typedef struct APMATH_POLY_SKELETON_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC */
 	/* One ring, simple and counter-clockwise (apmath_poly_validate()); no
 	 * holes (APRESULT_UNSUPPORTED). */
 	APMATH_POLY_SET set;

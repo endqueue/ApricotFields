@@ -12,6 +12,7 @@ endif()
 add_library(ApricotFields STATIC
         src/apricotfields.cpp
         src/apricore.cpp
+        src/apristructbase.hpp
         src/render/aprend_internal.hpp
         src/render/aprendcontext.cpp
         src/render/aprendbuffers.cpp

@@ -1,4 +1,5 @@
 #include "math/apmathbvh.h"
+#include "../apristructbase.hpp"
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -416,22 +417,6 @@ struct apmath_instance_bvh_t
     bvh_tree_t tree;
 };
 
-// As aparchive.cpp's: the fields a caller's struct_size covers, zeros past
-// them. False if it's smaller than the struct's first version.
-template <typename T> static bool read_versioned(const T *in, size_t v1_size, T &out)
-{
-    if (!in || in->struct_size < v1_size)
-        return false;
-    memset(&out, 0, sizeof(T));
-    memcpy(&out, in, in->struct_size < sizeof(T) ? in->struct_size : sizeof(T));
-    out.struct_size = (uint32_t)sizeof(T);
-    return true;
-}
-
-#define APMATH_MESH_BVH_DESC_V1_SIZE sizeof(APMATH_MESH_BVH_DESC)
-#define APMATH_INSTANCE_BVH_DESC_V1_SIZE sizeof(APMATH_INSTANCE_BVH_DESC)
-#define APMATH_CAST_DESC_V1_SIZE sizeof(APMATH_CAST_DESC)
-
 // ---- Casting ------------------------------------------------------------------
 
 // True if [candidate] is the hit to keep over [best]: nearer, or as near and
@@ -522,7 +507,10 @@ static bool read_cast_desc(const APMATH_CAST_DESC *desc, APMATH_CAST_DESC &out, 
     out_filtered = desc != nullptr;
     if (!desc)
         return true;
-    return read_versioned(desc, APMATH_CAST_DESC_V1_SIZE, out);
+    if (apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APMATH_CAST_DESC) != APRESULT_OK)
+        return false;
+    out = *desc;
+    return true;
 }
 
 // Calls hit(index, mesh_hit) for each instance [ray] hits among those the
@@ -577,9 +565,11 @@ extern "C"
         if (!out_bvh)
             return APRESULT_INVALID_ARGUMENT;
         *out_bvh = nullptr;
-        APMATH_MESH_BVH_DESC d;
-        if (!read_versioned(desc, APMATH_MESH_BVH_DESC_V1_SIZE, d))
+        if (!desc)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC))
+            return result;
+        const APMATH_MESH_BVH_DESC &d = *desc;
         if (d.position_count && !d.positions)
             return APRESULT_INVALID_ARGUMENT;
         uint32_t corner_count = d.indices ? d.index_count : d.position_count;
@@ -685,9 +675,11 @@ extern "C"
         if (!out_bvh)
             return APRESULT_INVALID_ARGUMENT;
         *out_bvh = nullptr;
-        APMATH_INSTANCE_BVH_DESC d;
-        if (!read_versioned(desc, APMATH_INSTANCE_BVH_DESC_V1_SIZE, d))
+        if (!desc)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC))
+            return result;
+        const APMATH_INSTANCE_BVH_DESC &d = *desc;
         // Node indices are 32-bit, and a tree has up to two nodes a box.
         if ((d.instance_count && !d.instances) || d.instance_count > UINT32_MAX / 2)
             return APRESULT_INVALID_ARGUMENT;

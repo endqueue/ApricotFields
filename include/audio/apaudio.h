@@ -91,24 +91,28 @@ extern "C" {
  * Error messages. Calls that can fail for a reason worth a sentence take an
  * APAUDIO_ERROR pointer (NULL to skip it), as aparchive.h's do.
  *
- * Struct versions. Structs that may grow start with [struct_size], set to
- * sizeof(the struct) as compiled; fields past it read as zero, as in
- * aparchive.h. APAUDIO_ERROR, APAUDIO_FORMAT and APAUDIO_DIRECTION are
- * frozen: they never grow (a new need gets a new type), which is what lets
- * versioned structs hold them by value. No versioned struct holds another
- * module's struct by value - its size isn't ApAudio's to keep fixed - so
- * SpudAudio's formats come in through APAUDIO_FORMAT.
+ * Struct bases. The descs start with a [base] (apricore.h, "Struct
+ * bases"): the caller sets [base.type] to the desc's own
+ * APRI_STRUCT_TYPE_APAUDIO_* and [base.next] to NULL. A wrong type is
+ * APRESULT_STRUCT_WRONG_TYPE and a chained struct
+ * APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto any of them yet.
+ * APAUDIO_ERROR, APAUDIO_FORMAT, APAUDIO_MODIFIER_TARGET,
+ * APAUDIO_DIRECTION and APAUDIO_PCM are frozen: they never grow (a new
+ * need gets a new type), which is what lets a desc hold one by value. No
+ * desc holds another module's struct by value - its layout isn't ApAudio's
+ * to keep fixed - so SpudAudio's formats come in through APAUDIO_FORMAT.
  */
 
 #define APAUDIO_ERROR_MESSAGE_SIZE 256
 
+/* Frozen: filled per call. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_ERROR {
 	char message[APAUDIO_ERROR_MESSAGE_SIZE]; /* NUL-terminated, truncated to fit */
 } APAUDIO_ERROR;
 
 /* ---- Formats --------------------------------------------------------- */
 
-/* What a mixer writes. Frozen. The fields mean what SPUDAUDIO_FORMAT's do,
+/* What a mixer writes. The fields mean what SPUDAUDIO_FORMAT's do,
  * and the enums are SpudAudio's own (plain uint32_t / uint8_t values, only
  * ever added to) - only the layout is ApAudio's.
  *
@@ -121,6 +125,7 @@ typedef struct APAUDIO_ERROR {
  * a layout needs the caller to say what its channels are - point
  * [positions] at e.g. {FL, FR} - since only the caller knows what it's
  * willing to assume. */
+/* Frozen: a value, held by value in APAUDIO_MIXER_DESC. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_FORMAT {
 	SPUDAUDIO_SAMPLE_FORMAT sample_format;
 	uint32_t sample_rate;
@@ -216,7 +221,7 @@ enum {
 };
 
 typedef struct APAUDIO_MIXER_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC */
 	/* What the mixer writes: the stream's granted format, usually through
 	 * apaudio_format_from_spudaudio(). */
 	APAUDIO_FORMAT format;
@@ -353,7 +358,7 @@ typedef uint64_t APAUDIO_BUS;
 APAUDIO_BUS apaudio_mixer_get_master_bus(apaudio_mixer mixer);
 
 typedef struct APAUDIO_BUS_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_BUS_DESC */
 	/* 0: the master. */
 	APAUDIO_BUS parent;
 	/* Linear; finite, >= 0. */
@@ -415,7 +420,8 @@ APRESULT apaudio_bus_set_paused(apaudio_mixer mixer, APAUDIO_BUS bus, bool pause
  */
 typedef uint64_t APAUDIO_MODIFIER;
 
-/* One bus's scaling. Frozen. */
+/* One bus's scaling. */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_MODIFIER_TARGET {
 	APAUDIO_BUS bus;
 	/* Multiplies the bus's gain: linear, finite, >= 0. */
@@ -425,7 +431,7 @@ typedef struct APAUDIO_MODIFIER_TARGET {
 } APAUDIO_MODIFIER_TARGET;
 
 typedef struct APAUDIO_MODIFIER_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC */
 	/* [target_count] targets, copied; at most one per bus. */
 	const APAUDIO_MODIFIER_TARGET *targets;
 	uint32_t target_count;
@@ -483,7 +489,7 @@ enum {
 };
 
 typedef struct APAUDIO_CONCURRENCY_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC */
 	/* Voices of the group that can exist at once, real or virtual. At
 	 * least 1. */
 	uint32_t max_instances;
@@ -524,7 +530,7 @@ void apaudio_concurrency_destroy(apaudio_mixer mixer, APAUDIO_CONCURRENCY group)
 typedef uint64_t APAUDIO_SOUND;
 
 typedef struct APAUDIO_SOUND_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC */
 	/* [frame_count] frames of [channel_count] interleaved samples at
 	 * [sample_rate] Hz, nominally in [-1, 1]. Copied. */
 	const float *samples;
@@ -585,13 +591,14 @@ typedef uint64_t APAUDIO_VOICE;
  * height speakers ignores elevation; one without rear speakers (stereo)
  * folds sounds behind to the front, mirrored, since it can't place them
  * behind. */
+/* Frozen: a value. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_DIRECTION {
 	double azimuth;
 	double elevation;
 } APAUDIO_DIRECTION;
 
 typedef struct APAUDIO_PLAY_DESC {
-	uint32_t struct_size;
+	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC */
 	/* Linear; finite, >= 0. */
 	float gain;
 	/* 0 lowest .. 255 highest. Ranks first, before audibility: a voice
@@ -709,6 +716,7 @@ APRESULT apaudio_voice_set_rate(
 
 /* Decoded samples, as APAUDIO_SOUND_DESC takes them. Owned: free with
  * apaudio_pcm_free(). */
+/* Frozen: decoded samples, as a value. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_PCM {
 	float *samples; /* interleaved */
 	uint64_t frame_count;
