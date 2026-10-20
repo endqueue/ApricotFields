@@ -30,12 +30,27 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "../apristructbase.hpp"
+
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <string>
 #include <mutex>
 #include <vector>
+
+/* A caller's based struct, checked as every Aprend call that takes one checks
+ * it (apricore.h, "Struct bases"): true if its base is [type] with nothing
+ * chained on; otherwise false, after printing why for [who], the call, and
+ * [name], the parameter. */
+static inline bool aprend_base_ok(const char *who, const char *name, const APRI_STRUCT_BASE *base, APRI_STRUCT_TYPE type) {
+	const APRESULT result = apri_struct_check(base, type);
+	if (result == APRESULT_OK)
+		return true;
+	printf("apricot: %s: %s %s\n", who, name, apri_struct_check_message(result));
+	return false;
+}
 
 /* ============================================================
    GLM conversion helpers

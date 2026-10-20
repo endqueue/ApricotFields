@@ -130,7 +130,7 @@ typedef uint32_t APSYNC_PEER;
 
 /* ---- Channels -------------------------------------------------------- */
 
-typedef enum APSYNC_CHANNEL_MODE {
+typedef enum APSYNC_CHANNEL_MODE APRI_ENUM_BASE {
 	/* Reliable, and in one order for everyone. The message goes to the
 	 * host, which numbers it and sends it to every peer, its sender
 	 * included. */
@@ -238,7 +238,7 @@ typedef struct APSYNC_HOST_DESC {
 
 #define APSYNC_MAX_LISTEN_ADDRESSES 8u
 
-typedef enum APSYNC_ADDRESS_FAMILY {
+typedef enum APSYNC_ADDRESS_FAMILY APRI_ENUM_BASE {
 	APSYNC_ADDRESS_FAMILY_ANY = 0, /* whichever the name has */
 	APSYNC_ADDRESS_FAMILY_IPV4 = 1,
 	APSYNC_ADDRESS_FAMILY_IPV6 = 2,
@@ -298,7 +298,7 @@ APSYNC_PEER apsync_session_get_local_peer(apsync_session session);
 
 /* ---- Events ---------------------------------------------------------- */
 
-typedef enum APSYNC_EVENT_TYPE {
+typedef enum APSYNC_EVENT_TYPE APRI_ENUM_BASE {
 	APSYNC_EVENT_NONE = 0,
 
 	/* Joined only: the host has let this peer in. [peer] is its id. The
@@ -348,7 +348,7 @@ typedef enum APSYNC_EVENT_TYPE {
 } APSYNC_EVENT_TYPE;
 
 /* Why a peer left or a session ended. */
-typedef enum APSYNC_REASON {
+typedef enum APSYNC_REASON APRI_ENUM_BASE {
 	APSYNC_REASON_NONE = 0,
 	/* The other end closed the connection. */
 	APSYNC_REASON_CLOSED = 1,

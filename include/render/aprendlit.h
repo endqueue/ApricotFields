@@ -225,6 +225,7 @@ aprend_binding_layout aprend_lit_get_material_layout(aprend_instance instance);
  * @brief One vertex of a mesh for Aprend's lit vertex shaders: 48 bytes,
  * tightly packed.
  */
+/* Frozen: a vertex in GPU memory, laid out as the lit shaders read it. It never changes; a new need gets a new type. */
 typedef struct aprend_lit_vertex {
 	float position[3];
 	float normal[3];
@@ -239,6 +240,7 @@ typedef struct aprend_lit_vertex {
  * instance bytes (aprenddrawlist.h, a stride of 64), or a vertex buffer that
  * steps per instance.
  */
+/* Frozen: an instance in GPU memory, laid out as the lit shaders read it. It never changes; a new need gets a new type. */
 typedef struct aprend_lit_instance {
 	/**
 	 * The mesh's transform into the space the scene is in, column after
@@ -269,6 +271,8 @@ aprend_vertex_layout aprend_lit_instance_layout(void);
  * glTF's clear coat and sheen.
  */
 typedef struct aprend_lit_material_values {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** rgb: the surface's color, linear: what a non-metal scatters and a
 	 * metal reflects. a: its opacity, 0 to 1. Times the base color map. */
 	float base_color[4];
@@ -412,6 +416,8 @@ bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sa
  * default.
  */
 typedef struct aprend_lit_environment_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * The width of a face of the specular chain's first mip, which is the
 	 * picture itself, for mirrors: a power of 2 from 16 to 2048. 256 suits
@@ -517,6 +523,8 @@ aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene
  * @brief Where a scene is seen from.
  */
 typedef struct aprend_lit_view {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_VIEW, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Where the eye is: what view-dependent shading (highlights, Fresnel)
 	 * is worked out from. */
 	float eye_position[3];
@@ -559,6 +567,8 @@ bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *vi
  * @brief The sun: a light from one direction, everywhere alike.
  */
 typedef struct aprend_lit_sun {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SUN, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** From the surface towards the sun; any length but 0. */
 	float direction[3];
 	/** Its color times its strength, linear; 0 for no sun. */
@@ -588,6 +598,8 @@ bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun)
  * last split it is lit, the shadow fading out over the last tenth.
  */
 typedef struct aprend_lit_sun_shadow {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * A SHADER_RESOURCE view, DEPTH aspect, shaped 2D_ARRAY, of a depth
 	 * texture with a layer for each cascade.
@@ -636,6 +648,8 @@ bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_su
  * @brief How aprend_lit_fit_sun_cascades() frames the sun's cascades.
  */
 typedef struct aprend_lit_cascade_fit {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** The view's eye, as aprend_lit_view has it. */
 	float eye_position[3];
 	/** Which way the view looks; any length but 0. */
@@ -677,7 +691,8 @@ typedef struct aprend_lit_cascade_fit {
  * @brief Frames the sun's cascades for a view: for each, the matrix its layer
  * is rendered through and how far along the view it reaches, into
  * @p out_shadow's cascade_count, view_projection and split_depths (nothing
- * else of it is written).
+ * else of it is written: its base, which the caller sets as for
+ * aprend_lit_scene_set_sun_shadow(), is checked and left as it is).
  *
  * Each cascade bounds its stretch of the view's frustum with a sphere, so
  * its size doesn't change as the view turns, looks at it down the sun's
@@ -689,7 +704,7 @@ typedef struct aprend_lit_cascade_fit {
  * @return false, with nothing written, if an argument is NULL, a value is not
  *         finite, a direction is 0, up runs along the view, the depths or the
  *         field of view are out of their ranges, the cascade count is 0 or
- *         too many, or the map size is 0.
+ *         too many, the map size is 0, or either struct's base is wrong.
  */
 bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_sun_shadow *out_shadow);
 
@@ -707,6 +722,7 @@ enum {
 /**
  * @brief One point or spot light.
  */
+/* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
 typedef struct aprend_lit_light {
 	APREND_LIT_LIGHT_TYPE type;
 	float position[3];
@@ -744,6 +760,7 @@ bool aprend_lit_scene_set_lights(aprend_lit_scene scene, const aprend_lit_light 
  * @brief The shadow of one spot light, from a layer of a depth map the
  * caller rendered, as a sun cascade is.
  */
+/* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
 typedef struct aprend_lit_spot_shadow {
 	/** The spot it is the shadow of: its place in the scene's lights. A
 	 * light that is not a spot casts no shadow from it. */
@@ -795,6 +812,8 @@ bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float
  * and an environment, added together.
  */
 typedef struct aprend_lit_ambient {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_AMBIENT, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Which way is up: the sky is that way, the ground the other. Any length
 	 * but 0 while either color isn't 0. */
 	float up[3];

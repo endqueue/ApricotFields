@@ -22,6 +22,7 @@ extern "C" {
 /**
  * @brief One color attachment of a framebuffer.
  */
+/* Frozen: an array element of aprend_framebuffer_desc. It never changes; a new need gets a new type. */
 typedef struct aprend_framebuffer_texture_spec {
 	/**
 	 * A texture of the caller's to use as the attachment, or NULL for the
@@ -45,6 +46,8 @@ typedef struct aprend_framebuffer_texture_spec {
  * @brief Configuration descriptor for a framebuffer.
  */
 typedef struct aprend_framebuffer_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Width of the framebuffer in texels. Never 0. */
 	uint32_t width;
 	/** Height of the framebuffer in texels. Never 0. */

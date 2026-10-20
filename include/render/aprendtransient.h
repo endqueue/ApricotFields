@@ -64,6 +64,7 @@ extern "C" {
  * A value: copy it freely, and record it in as many commands as read it.
  * There is nothing to destroy.
  */
+/* Frozen: a value, held by value in APREND_COMMAND. It never changes; a new need gets a new type. */
 typedef struct aprend_transient_span {
 	/**
 	 * Where the caller writes its vertices or indices. #size bytes, at an

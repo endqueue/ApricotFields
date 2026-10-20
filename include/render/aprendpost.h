@@ -30,6 +30,8 @@ extern "C" {
  * @brief Configuration descriptor for an exposure. No field has a default.
  */
 typedef struct aprend_exposure_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** The luminance the picture's log-average is brought to: 0.18 is middle
 	 * grey. Above 0. */
 	float key;

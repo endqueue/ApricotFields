@@ -94,6 +94,8 @@ enum {
  * No field has a default.
  */
 typedef struct aprend_draw_list_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** The order draws are recorded in. */
 	APREND_DRAW_LIST_ORDER _order;
 	/**
@@ -118,6 +120,7 @@ typedef struct aprend_draw_list_desc {
  * (aprendbuffers.h) is a mesh with the pool's block as its buffer and the
  * range's start as #_first or #_base_vertex.
  */
+/* Frozen: a value, copied by every aprend_draw_list_add(). It never changes; a new need gets a new type. */
 typedef struct aprend_draw_mesh {
 	/**
 	 * The vertex buffers: `_vertex_buffers[N]` at vertex buffer slot N. The

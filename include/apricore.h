@@ -2,6 +2,23 @@
 #ifndef APRICORE_H
 #define APRICORE_H
 
+#include <stdint.h>
+
+/*
+ * Every named enum in ApricotFields' headers is declared
+ * `typedef enum NAME APRI_ENUM_BASE {`. C sees a plain enum. C++ sees the
+ * enum with a fixed underlying type, uint32_t, which makes every 32-bit value
+ * a value of the type: a C caller may store any integer in an enum field, and
+ * a C++ implementation then reads it and refuses it by its check, where an
+ * enum with no fixed type would make reading a value outside its enumerators
+ * undefined. The size is 4 bytes either way.
+ */
+#if __cplusplus
+#define APRI_ENUM_BASE : uint32_t
+#else
+#define APRI_ENUM_BASE
+#endif
+
 #if __cplusplus
 extern "C" {
 #endif
@@ -10,7 +27,7 @@ extern "C" {
  * Every Apricot module's calls that can fail return an APRESULT: APRESULT_OK,
  * or a code from the module's own block (APRESULT_<MODULE>_*).
  */
-typedef enum APRESULT {
+typedef enum APRESULT APRI_ENUM_BASE {
 	APRESULT_OK = 0,
 
 	/* General: any module may return these. */
@@ -93,10 +110,10 @@ typedef enum APRESULT {
  * behaviour.
  *
  * Numbered in blocks per module: 1000+ ApArchive, 2000+ ApSync, 3000+
- * ApAudio, 4000+ ApMath. A value is never renumbered or reused, a retired
- * struct's included.
+ * ApAudio, 4000+ ApMath, 5000+ Aprend. A value is never renumbered or
+ * reused, a retired struct's included.
  */
-typedef enum APRI_STRUCT_TYPE {
+typedef enum APRI_STRUCT_TYPE APRI_ENUM_BASE {
 	/* Never valid: a struct left zeroed is refused, not misread. */
 	APRI_STRUCT_TYPE_UNKNOWN = 0,
 
@@ -132,12 +149,39 @@ typedef enum APRI_STRUCT_TYPE {
 	APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC = 4004,
 	APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC = 4005,
 
+	/* Aprend (render/aprend*.h) */
+	APRI_STRUCT_TYPE_APREND_INSTANCE_DESC = 5000,
+	APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC = 5001,
+	APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC = 5002,
+	APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC = 5003,
+	APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC = 5004,
+	APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC = 5005,
+	APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC = 5006,
+	APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC = 5007,
+	APRI_STRUCT_TYPE_APREND_SAMPLER_DESC = 5008,
+	APRI_STRUCT_TYPE_APREND_MATERIAL_DESC = 5009,
+	APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC = 5010,
+	APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC = 5011,
+	APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC = 5012,
+	APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC = 5013,
+	APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC = 5014,
+	APRI_STRUCT_TYPE_APREND_GPU_TIMER_DESC = 5015,
+	APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC = 5016,
+	APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC = 5017,
+	APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES = 5018,
+	APRI_STRUCT_TYPE_APREND_LIT_VIEW = 5019,
+	APRI_STRUCT_TYPE_APREND_LIT_SUN = 5020,
+	APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW = 5021,
+	APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT = 5022,
+	APRI_STRUCT_TYPE_APREND_LIT_AMBIENT = 5023,
+
 	/* Keeps the enum 32 bits wide on every compiler. Never a valid type. */
 	APRI_STRUCT_TYPE_MAX_ENUM = 0x7FFFFFFF
 } APRI_STRUCT_TYPE;
 
 /* The first member, [base], of every extensible struct the caller fills
  * in. */
+/* Frozen: the base every based struct starts with. It never changes; a new need gets a new type. */
 typedef struct APRI_STRUCT_BASE {
 	/* This struct's own type. */
 	APRI_STRUCT_TYPE type;
@@ -149,6 +193,7 @@ typedef struct APRI_STRUCT_BASE {
  * in for the caller. The caller builds the chain and sets each [type];
  * ApricotFields writes the other fields and leaves [type] and [next] as
  * they are. */
+/* Frozen: the base every based struct starts with. It never changes; a new need gets a new type. */
 typedef struct APRI_STRUCT_BASE_OUT {
 	/* This struct's own type. */
 	APRI_STRUCT_TYPE type;

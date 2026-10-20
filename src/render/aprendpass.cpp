@@ -190,6 +190,8 @@ aprend_render_pass aprend_render_pass_create(
 		printf("apricot: %s: desc is NULL\n", who);
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC))
+		return nullptr;
 	aprend_graphics_pipeline pipeline = desc->_pipeline;
 	if (!pipeline) {
 		printf("apricot: %s: _pipeline is NULL\n", who);
@@ -375,6 +377,8 @@ aprend_compute_pass aprend_compute_pass_create(
 		printf("apricot: %s: desc is NULL\n", who);
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC))
+		return nullptr;
 	if (!desc->_pipeline) {
 		printf("apricot: %s: _pipeline is NULL\n", who);
 		return nullptr;

@@ -35,6 +35,8 @@ aprend_swap_chain aprend_swap_chain_create(
 	const aprend_swap_chain_desc *desc) {
 	if (!instance || !desc)
 		return nullptr;
+	if (!aprend_base_ok("aprend_swap_chain_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC))
+		return nullptr;
 	if (!desc->surface || !desc->queue || !desc->width || !desc->height)
 		return nullptr;
 
@@ -90,7 +92,9 @@ bool aprend_swap_chain_get_desc(
 	aprend_swap_chain_desc *out_desc) {
 	if (!swap_chain || !out_desc)
 		return false;
-	*out_desc = swap_chain->desc;
+	*out_desc      = swap_chain->desc;
+	out_desc->base.type = APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC;
+	out_desc->base.next = nullptr;
 	return true;
 }
 

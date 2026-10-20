@@ -195,6 +195,7 @@ enum {
  * member that is an array of a scalar, vector or matrix is one entry with
  * #array_count elements.
  */
+/* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
 typedef struct aprend_shader_member {
 	/**
 	 * The member's path inside its block, as GLSL would write it after the
@@ -237,6 +238,7 @@ typedef struct aprend_shader_member {
  * @brief One descriptor binding a shader reads or writes: `layout(set = S,
  * binding = B)` in GLSL.
  */
+/* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
 typedef struct aprend_shader_resource {
 	/**
 	 * The variable's name: `u_Albedo`, or a block's instance name
@@ -300,6 +302,7 @@ typedef struct aprend_shader_resource {
 /**
  * @brief One input of a vertex shader: `layout(location = L) in ...`.
  */
+/* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
 typedef struct aprend_shader_input {
 	/** The variable's name. The shader's own string; not NULL. */
 	const char *name;
@@ -322,6 +325,7 @@ typedef struct aprend_shader_input {
  * @brief What one shader's SPIR-V declares. Read when the shader is created
  * and the shader's for its lifetime.
  */
+/* Frozen: Aprend's own, read through the pointer aprend_shader_get_reflection() returns; a new need gets a new getter. */
 typedef struct aprend_shader_reflection {
 	/** The shader's stage. */
 	SPUDGPU_SHADER_STAGE stage;

@@ -246,6 +246,7 @@ static aprend_shader aprend_lit_shader(aprend_instance instance, uint32_t which)
 static aprend_sampler aprend_lit_sampler(aprend_instance instance, SPUDGPU_ADDRESS_MODE address, bool compare, SPUDGPU_COMPARE_OP op,
                                          const char *name) {
 	aprend_sampler_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_SAMPLER_DESC);
 	desc.mag_filter     = SPUDGPU_FILTER_LINEAR;
 	desc.min_filter     = SPUDGPU_FILTER_LINEAR;
 	desc.mipmap_filter  = compare ? SPUDGPU_FILTER_NEAREST : SPUDGPU_FILTER_LINEAR;
@@ -274,6 +275,7 @@ static bool aprend_lit_placeholder(aprend_instance instance, APREND_TEXTURE_VIEW
 	const bool cube = shape == APREND_TEXTURE_VIEW_SHAPE_CUBE;
 	if (!*out_texture) {
 		aprend_texture2d_desc desc{};
+		desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 		desc.width        = 1;
 		desc.height       = 1;
 		desc.format       = depth ? SPUDGPU_FORMAT_D32_FLOAT : SPUDGPU_FORMAT_R8G8B8A8_UNORM;
@@ -289,6 +291,7 @@ static bool aprend_lit_placeholder(aprend_instance instance, APREND_TEXTURE_VIEW
 		}
 	}
 	aprend_texture_view_desc vd{};
+	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 	vd.shape       = shape;
 	vd.aspect      = depth ? APREND_TEXTURE_VIEW_ASPECT_DEPTH : APREND_TEXTURE_VIEW_ASPECT_COLOR;
@@ -336,6 +339,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 		return true;
 	if (!lit.brdf_lut) {
 		aprend_texture2d_desc desc{};
+		desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 		desc.width        = APREND_BRDF_LUT_SIZE;
 		desc.height       = APREND_BRDF_LUT_SIZE;
 		desc.format       = APREND_BRDF_LUT_FORMAT;
@@ -350,6 +354,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 		}
 	}
 	aprend_texture_view_desc vd{};
+	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 	vd.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
 	vd.mip_count   = 1;
@@ -374,6 +379,7 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
                                                                uint32_t layout_count, SPUDGPU_FORMAT format, uint32_t push_size,
                                                                const char *name) {
 	aprend_graphics_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = name;
 	desc._vertex_binding_count       = 0;
 	desc._topology                   = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -400,7 +406,7 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
 	}
 	if (!desc.vertex_shader)
 		return nullptr;
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, desc);
+	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
 	if (!pipeline)
 		printf("apricot: Aprend's %s pipeline can't be created for format %d\n", name, (int)format);
 	return pipeline;
@@ -565,12 +571,13 @@ aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 		}
 	}
 	aprend_compute_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend light culling";
 	desc.compute_shader        = lit.cull_comp;
 	desc._entry_point          = "main";
 	desc._binding_layouts[0]   = lit.cull_layout;
 	desc._binding_layout_count = 1;
-	lit.cull_pipeline          = aprend_compute_pipeline_create(instance, desc);
+	lit.cull_pipeline          = aprend_compute_pipeline_create(instance, &desc);
 	if (!lit.cull_pipeline)
 		printf("apricot: Aprend's light culling pipeline can't be created\n");
 	return lit.cull_pipeline;
@@ -808,6 +815,7 @@ aprend_material aprend_lit_material_create(aprend_instance instance) {
 	if (!layout || !aprend_lit_prepare_resources(instance))
 		return nullptr;
 	aprend_material_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
 	desc._layout             = layout;
 	aprend_material material = aprend_material_create(instance, &desc);
 	if (!material)
@@ -850,6 +858,8 @@ bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_m
 		printf("apricot: %s: values is NULL\n", who);
 		return false;
 	}
+	if (!aprend_base_ok(who, "values", &values->base, APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES))
+		return false;
 	const aprend_lit_material_values &v = *values;
 	if (!all_finite(v.base_color, 4) || !all_finite(v.emission, 3) || !finite(v.roughness) || !finite(v.metalness) || !finite(v.specular) ||
 	    !finite(v.normal_scale) || !finite(v.occlusion_strength) || !finite(v.alpha_cutoff) || !all_finite(v.uv_transform, 6) ||
@@ -893,6 +903,8 @@ bool aprend_lit_material_get_values(aprend_material material, aprend_lit_materia
 	aprend_lit_material_block block;
 	memcpy(&block, slot->bytes, sizeof(block));
 	aprend_lit_material_values &v = *out_values;
+	v.base.type = APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES; // field by field: the caller's padding stays as it was
+	v.base.next = nullptr;
 	memcpy(v.base_color, block.base_color, sizeof(v.base_color));
 	memcpy(v.emission, block.emission, sizeof(v.emission));
 	memcpy(v.sheen_color, block.sheen, sizeof(v.sheen_color));
@@ -969,6 +981,7 @@ aprend_lit_environment_t::~aprend_lit_environment_t() {
 // work, rendered to and sampled; a cube when [layers] is 6.
 static aprend_texture2d aprend_lit_work_texture(aprend_instance instance, uint32_t size, uint32_t mips, uint32_t layers, SPUDGPU_FORMAT format) {
 	aprend_texture2d_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 	desc.width        = size;
 	desc.height       = size;
 	desc.format       = format;
@@ -982,6 +995,7 @@ static aprend_texture2d aprend_lit_work_texture(aprend_instance instance, uint32
 
 static aprend_texture_view aprend_lit_target_view(aprend_texture2d texture, uint32_t mip, uint32_t layer) {
 	aprend_texture_view_desc vd{};
+	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
 	vd.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 	vd.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
@@ -994,6 +1008,7 @@ static aprend_texture_view aprend_lit_target_view(aprend_texture2d texture, uint
 
 static aprend_texture_view aprend_lit_whole_view(aprend_texture2d texture, bool cube) {
 	aprend_texture_view_desc vd{};
+	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 	vd.shape       = cube ? APREND_TEXTURE_VIEW_SHAPE_CUBE : APREND_TEXTURE_VIEW_SHAPE_2D;
 	vd.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
@@ -1012,6 +1027,8 @@ aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, c
 		printf("apricot: %s: %s is NULL\n", who, instance ? "desc" : "instance");
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC))
+		return nullptr;
 	if (!power_of_2(desc->specular_size) || desc->specular_size < 16 || desc->specular_size > 2048) {
 		printf("apricot: %s: specular_size %u is not a power of 2 from 16 to 2048\n", who, desc->specular_size);
 		return nullptr;
@@ -1136,6 +1153,7 @@ aprend_lit_scene aprend_lit_scene_create(aprend_instance instance) {
 	scene->instance                = instance;
 	const aprend_lit_builtins &lit = instance->builtins.lit;
 	aprend_material_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
 	desc._layout    = layout;
 	scene->material = aprend_material_create(instance, &desc);
 	desc._layout    = shadow_layout;
@@ -1200,6 +1218,8 @@ bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *vi
 		printf("apricot: %s: %s is NULL\n", who, scene ? "view" : "scene");
 		return false;
 	}
+	if (!aprend_base_ok(who, "view", &view->base, APRI_STRUCT_TYPE_APREND_LIT_VIEW))
+		return false;
 	const aprend_lit_view &v = *view;
 	if (!all_finite(v.eye_position, 3) || !all_finite(v.view_direction, 3) || !all_finite(v.view_projection, 16) || !finite(v.exposure) ||
 	    v.exposure < 0.0f) {
@@ -1279,6 +1299,8 @@ bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun)
 		printf("apricot: %s: %s is NULL\n", who, scene ? "sun" : "scene");
 		return false;
 	}
+	if (!aprend_base_ok(who, "sun", &sun->base, APRI_STRUCT_TYPE_APREND_LIT_SUN))
+		return false;
 	if (!all_finite(sun->direction, 3) || !all_finite(sun->radiance, 3) || sun->radiance[0] < 0.0f || sun->radiance[1] < 0.0f ||
 	    sun->radiance[2] < 0.0f) {
 		printf("apricot: %s: a value is not a finite number, or a radiance is negative\n", who);
@@ -1376,6 +1398,8 @@ bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_su
 		aprend_lit_scene_commit(scene);
 		return true;
 	}
+	if (!aprend_base_ok(who, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
+		return false;
 	const aprend_lit_sun_shadow &s = *shadow;
 	if (s.cascade_count == 0 || s.cascade_count > APREND_LIT_MAX_CASCADES) {
 		printf("apricot: %s: %u cascades: 1 to %u\n", who, s.cascade_count, APREND_LIT_MAX_CASCADES);
@@ -1518,6 +1542,8 @@ bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambie
 		printf("apricot: %s: %s is NULL\n", who, scene ? "ambient" : "scene");
 		return false;
 	}
+	if (!aprend_base_ok(who, "ambient", &ambient->base, APRI_STRUCT_TYPE_APREND_LIT_AMBIENT))
+		return false;
 	const aprend_lit_ambient &a = *ambient;
 	if (!all_finite(a.up, 3) || !all_finite(a.sky, 3) || !all_finite(a.ground, 3) || !finite(a.environment_intensity) ||
 	    !all_finite(a.environment_rotation, 9)) {
@@ -1608,6 +1634,10 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 		printf("apricot: %s: %s is NULL\n", who, fit ? "out_shadow" : "fit");
 		return false;
 	}
+	if (!aprend_base_ok(who, "fit", &fit->base, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT))
+		return false;
+	if (!aprend_base_ok(who, "out_shadow", &out_shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
+		return false;
 	const aprend_lit_cascade_fit &f = *fit;
 	if (!all_finite(f.eye_position, 3) || !all_finite(f.view_direction, 3) || !all_finite(f.view_up, 3) || !all_finite(f.sun_direction, 3) ||
 	    !finite(f.fov_y) || !finite(f.half_height) || !finite(f.aspect) || !finite(f.near_depth) || !finite(f.far_depth) ||
@@ -1749,6 +1779,8 @@ aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_ex
 		printf("apricot: %s: %s is NULL\n", who, instance ? "desc" : "instance");
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC))
+		return nullptr;
 	const aprend_exposure_desc &d = *desc;
 	if (!finite(d.key) || !finite(d.min_log) || !finite(d.max_log) || !finite(d.up_rate) || !finite(d.down_rate) || !(d.key > 0.0f) ||
 	    !(d.min_log < d.max_log) || !(d.up_rate > 0.0f) || !(d.down_rate > 0.0f)) {

@@ -100,6 +100,7 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 		return nullptr;
 
 	aprend_graphics_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend downsample";
 	desc._vertex_binding_count        = 0;
 	desc._topology                    = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -119,7 +120,7 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 	desc._binding_layout_count        = 1;
 	desc._push_constant_range_count   = 0;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, desc);
+	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
 	if (!pipeline) {
 		printf("apricot: Aprend's downsample pipeline can't be created for format %d\n", (int)format);
 		return nullptr;
@@ -179,6 +180,7 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 		return nullptr;
 
 	aprend_graphics_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend bloom";
 	desc._vertex_binding_count       = 0;
 	desc._topology                   = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -205,7 +207,7 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 	desc._push_constant_ranges[0].size         = sizeof(aprend_bloom_params);
 	desc._push_constant_range_count            = 1;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, desc);
+	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
 	if (!pipeline) {
 		printf("apricot: Aprend's bloom pipeline for stage %u can't be created for format %d\n", stage, (int)format);
 		return nullptr;
@@ -232,6 +234,7 @@ aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDG
 		return sampler;
 
 	aprend_sampler_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_SAMPLER_DESC);
 	desc.mag_filter     = filter;
 	desc.min_filter     = filter;
 	desc.mipmap_filter  = SPUDGPU_FILTER_NEAREST;

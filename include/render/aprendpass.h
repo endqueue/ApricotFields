@@ -74,6 +74,8 @@ typedef struct aprend_render_pass_t *aprend_render_pass;
  * No field has a default.
  */
 typedef struct aprend_render_pass_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * The pipeline the pass draws with, set as the pass begins. Not NULL. It
 	 * must outlive the pass. Another may be set inside the pass with
@@ -218,6 +220,8 @@ typedef struct aprend_compute_pass_t *aprend_compute_pass;
  * No field has a default.
  */
 typedef struct aprend_compute_pass_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** The pipeline the pass's dispatches run. Not NULL. It must outlive the pass. */
 	aprend_compute_pipeline _pipeline;
 	/**

@@ -50,6 +50,8 @@ enum {
  * shader and sampled at `vec2(u, 0.5)`.
  */
 typedef struct aprend_texture2d_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Width of mip 0 in texels. Never 0. */
 	uint32_t width;
 	/** Height of mip 0 in texels. Never 0. */
@@ -338,6 +340,8 @@ bool aprend_texture2d_resize(
  * A 3D texture has neither array layers nor MSAA.
  */
 typedef struct aprend_texture3d_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Width of mip 0 in texels. Never 0. */
 	uint32_t width;
 	/** Height of mip 0 in texels. Never 0. */
@@ -696,6 +700,8 @@ enum {
  * depth target.
  */
 typedef struct aprend_texture_view_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** What the view is used as. Not APREND_TEXTURE_VIEW_TYPE_NONE. */
 	APREND_TEXTURE_VIEW_TYPE type;
 	/** The view's shape. Not APREND_TEXTURE_VIEW_SHAPE_NONE. */
@@ -847,6 +853,8 @@ aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view);
  * Every field is the caller's to set; none has a default.
  */
 typedef struct aprend_sampler_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_SAMPLER_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Filter when a texel covers more than one pixel. */
 	SPUDGPU_FILTER mag_filter;
 	/** Filter when a pixel covers more than one texel. */
@@ -944,6 +952,7 @@ spudgpu_sampler aprend_sampler_get_spudgpu_sampler(aprend_sampler sampler);
  *
  * Zeroed ops mean load and store.
  */
+/* Frozen: held by value in aprend_render_pass_desc and APREND_COMMAND. It never changes; a new need gets a new type. */
 typedef struct aprend_color_target {
 	/** The view rendered to. A view of a 2D texture. */
 	aprend_texture_view view;
@@ -962,6 +971,7 @@ typedef struct aprend_color_target {
  *
  * Zeroed ops mean load and store.
  */
+/* Frozen: held by value in aprend_render_pass_desc and APREND_COMMAND. It never changes; a new need gets a new type. */
 typedef struct aprend_depth_target {
 	/** The view rendered to, a view of a 2D texture. NULL for no depth. */
 	aprend_texture_view view;

@@ -116,6 +116,8 @@ typedef struct aprend_material_t *aprend_material;
  * No field has a default.
  */
 typedef struct aprend_material_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_MATERIAL_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * The layout whose slots the material fills: the one the pipelines it is
 	 * drawn with declare at the slot it is bound to, usually made from their
@@ -264,6 +266,7 @@ bool aprend_material_set_uniform(
  * never by the caller. All zeroes is no uniform, and every call that takes
  * it refuses it.
  */
+/* Frozen: a value, Aprend's to fill in. It never changes; a new need gets a new type. */
 typedef struct aprend_material_uniform {
 	/** The layout the member was found in. */
 	aprend_binding_layout _layout;

@@ -262,6 +262,8 @@ aprend_texture2d aprend_texture2d_create(
 	/* Implementation-specific texture creation logic goes here. */
 	if (!instance || !desc)
 		return nullptr;
+	if (!aprend_base_ok("aprend_texture2d_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC))
+		return nullptr;
 	if (!(desc->width && desc->height && desc->format))
 		return nullptr;
 	if (desc->sample_count > 1)
@@ -334,7 +336,13 @@ void aprend_texture2d_destroy(aprend_texture2d texture) {
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture2d_t>);
 }
-aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture) { return texture ? texture->desc : aprend_texture2d_desc{}; }
+aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture) {
+	if (!texture)
+		return aprend_texture2d_desc{};
+	aprend_texture2d_desc desc = texture->desc;
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
+	return desc;
+}
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) { return texture ? texture->image : nullptr; }
 bool aprend_texture2d_update(
     aprend_texture2d texture,
@@ -578,6 +586,7 @@ bool aprend_texture2d_mip_chain(
 			// downsample shader declares it (aprend_downsample.frag says
 			// why); the target a 2D view of its layer, which no shader reads.
 			aprend_texture_view_desc view_desc{};
+			view_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 			view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY;
 			view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
 			view_desc.mip_count   = 1;
@@ -785,6 +794,8 @@ aprend_texture3d aprend_texture3d_create(
     const aprend_texture3d_desc *desc) {
 	if (!instance || !desc)
 		return nullptr;
+	if (!aprend_base_ok("aprend_texture3d_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC))
+		return nullptr;
 	if (!(desc->width && desc->height && desc->depth && desc->format))
 		return nullptr;
 
@@ -844,7 +855,13 @@ void aprend_texture3d_destroy(aprend_texture3d texture) {
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture3d_t>);
 }
-aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture) { return texture ? texture->desc : aprend_texture3d_desc{}; }
+aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture) {
+	if (!texture)
+		return aprend_texture3d_desc{};
+	aprend_texture3d_desc desc = texture->desc;
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC);
+	return desc;
+}
 spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture) { return texture ? texture->image_view : NULL; }
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture) { return texture ? texture->image : NULL; }
 bool aprend_texture3d_update(
@@ -1173,7 +1190,10 @@ aprend_texture_view aprend_texture_view_create_2d(
 		return nullptr;
 	if (!desc)
 		return nullptr;
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC))
+		return nullptr;
 	aprend_texture_view_desc resolved{};
+	resolved.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	if (!aprend_texture_view_desc_valid(who, desc, texture->desc.usage, texture->desc.format, texture->desc.mip_levels, &resolved))
 		return nullptr;
 
@@ -1297,7 +1317,10 @@ aprend_texture_view aprend_texture_view_create_3d(
 		return nullptr;
 	if (!desc)
 		return nullptr;
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC))
+		return nullptr;
 	aprend_texture_view_desc resolved{};
+	resolved.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	if (!aprend_texture_view_desc_valid(who, desc, texture->desc.usage, texture->desc.format, texture->desc.mip_levels, &resolved))
 		return nullptr;
 	if (desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL) {
@@ -1370,7 +1393,13 @@ void aprend_destroy_texture_view(aprend_texture_view view) {
 	aprend_instance_retire(view->instance, view, &aprend_release_handle<aprend_texture_view_t>);
 }
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) { return view ? view->view_type : APREND_TEXTURE_VIEW_TYPE_NONE; }
-aprend_texture_view_desc aprend_texture_view_get_desc(aprend_texture_view view) { return view ? view->desc : aprend_texture_view_desc{}; }
+aprend_texture_view_desc aprend_texture_view_get_desc(aprend_texture_view view) {
+	if (!view)
+		return aprend_texture_view_desc{};
+	aprend_texture_view_desc desc = view->desc;
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
+	return desc;
+}
 APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) { return view ? view->dimension : APREND_TEXTURE_DIMENSION_1D; }
 spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view) { return view ? view->image_view : nullptr; }
 aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view) {
@@ -1383,6 +1412,8 @@ aprend_sampler aprend_sampler_create(
 	if (!instance)
 		return nullptr;
 	if (!desc)
+		return nullptr;
+	if (!aprend_base_ok("aprend_sampler_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_SAMPLER_DESC))
 		return nullptr;
 
 	APREND_MALLOC__T(result, aprend_sampler_t);
@@ -1422,6 +1453,12 @@ void aprend_sampler_destroy(aprend_sampler sampler) {
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(sampler->instance, sampler, &aprend_release_handle<aprend_sampler_t>);
 }
-aprend_sampler_desc aprend_sampler_get_desc(aprend_sampler sampler) { return sampler ? sampler->desc : aprend_sampler_desc{}; }
+aprend_sampler_desc aprend_sampler_get_desc(aprend_sampler sampler) {
+	if (!sampler)
+		return aprend_sampler_desc{};
+	aprend_sampler_desc desc = sampler->desc;
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_SAMPLER_DESC);
+	return desc;
+}
 spudgpu_sampler aprend_sampler_get_spudgpu_sampler(aprend_sampler sampler) { return sampler ? sampler->sampler : nullptr; }
 }

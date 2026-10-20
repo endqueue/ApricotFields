@@ -75,13 +75,14 @@ block near the top. A new header gets the same block.
 - **Struct bases.** Every public struct that may grow starts with an
   `APRI_STRUCT_BASE base` (`APRI_STRUCT_BASE_OUT` for one ApricotFields fills in),
   with its own `APRI_STRUCT_TYPE_*` in `apricore.h`, in the module's block; every
-  other struct in the newer modules has a `/* Frozen: <why> ... */` line above its
-  `typedef`. `apricore.h`, "Struct bases", has the rules. A released layout never
+  other public struct, in every module, Aprend and `aprimath.h` included, has a
+  `/* Frozen: <why> ... */` line above its `typedef`. `apricore.h`, "Struct bases", has the rules. A released layout never
   changes: a new field is a new struct chained on. A call checks a based argument
   with `apri_struct_check` / `apri_struct_out_check` (`src/apristructbase.hpp`)
   right after its null check, and returns what it gives. This is SpudLib's
   scheme (`SPUD_STRUCT_BASE`) with ApricotFields' own types; it replaced a
-  leading `struct_size` on 2026-10-19. Aprend's descs have neither yet.
+  leading `struct_size` on 2026-10-19, and Aprend took it on 2026-10-20
+  (`aprendcontext.h`, "Struct bases", has how Aprend applies it).
 - **No defaults in a desc.** A limit or a time left at 0 is refused with
   `APRESULT_INVALID_ARGUMENT` unless the field's comment says what 0 means.
 - **Validate every argument before allocating anything**, then allocate (by hand,
@@ -174,6 +175,10 @@ block near the top. A new header gets the same block.
 
 - Plain C: `#if __cplusplus` / `extern "C"`, `<stdint.h>` and `<stdbool.h>`, no C++
   types. glm, glaze, libdeflate and the standard library never appear in `include/`.
+- **A named enum is `typedef enum NAME APRI_ENUM_BASE {`** (`apricore.h` says why): C++ then
+  sees it with a fixed `uint32_t` underlying type, so a value a C caller stores
+  outside its enumerators is one the check refuses, not undefined behaviour to
+  read. UBSan's `-fsanitize=enum` caught the plain form (2026-10-20).
 - Opaque handles are `typedef struct <name>_t *<name>;`. The struct is defined only
   in the module's `src/<module>/*_internal.hpp`, which nothing outside that
   directory includes.
@@ -193,6 +198,13 @@ block near the top. A new header gets the same block.
 - Math types crossing the API are the `Apri*` structs from `aprimath.h`. They are
   laid out identically to their GLM counterparts so `to_glm()` can reinterpret them
   in place; changing a member's order or type breaks that silently.
+- Aprend's descs and lit scene settings start with an `APRI_STRUCT_BASE base`,
+  as the newer modules' do; its calls refuse a wrong base in their own way
+  (NULL, false, or nothing recorded, after printing why), through
+  `aprend_base_ok()` in `src/render/aprend_internal.hpp`. A desc Aprend
+  builds for its own calls sets its base like any caller's. A getter that
+  returns a desc sets the base itself. `APREND_COMMAND`'s `_params` is padded
+  to a fixed 120 bytes, so the command stays 128 bytes as commands are added.
 - An Aprend handle struct's first member is its `debug_name` pointer
   (`apricore.h` explains why). Keep it first. It, and every desc's
   `debug_name`, exist in every build (since 2026-10-18; before, only under

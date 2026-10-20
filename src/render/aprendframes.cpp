@@ -19,6 +19,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 			owns_texture = false;
 		} else {
 			aprend_texture2d_desc tex_desc{};
+			tex_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 			tex_desc.width  = desc.width;
 			tex_desc.height = desc.height;
 			tex_desc.format = spec.format;
@@ -37,6 +38,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 
 		// An attachment is mip 0 of layer 0, whatever else the texture has.
 		aprend_texture_view_desc view_desc{};
+		view_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 		view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
 		view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 		view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
@@ -56,6 +58,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 
 	if (desc.depth_format != SPUDGPU_FORMAT_UNKNOWN) {
 		aprend_texture2d_desc depth_desc{};
+		depth_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 		depth_desc.width        = desc.width;
 		depth_desc.height       = desc.height;
 		depth_desc.format       = desc.depth_format;
@@ -69,6 +72,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 			return false;
 
 		aprend_texture_view_desc depth_view_desc{};
+		depth_view_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 		depth_view_desc.type        = APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL;
 		depth_view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 		// Every aspect of the format: the depth, and the stencil if it has one.
@@ -114,6 +118,8 @@ aprend_framebuffer aprend_framebuffer_create(
     const aprend_framebuffer_desc *desc) {
 	if (!instance || !desc)
 		return nullptr;
+	if (!aprend_base_ok("aprend_framebuffer_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC))
+		return nullptr;
 	if (!(desc->width && desc->height && desc->attachment_count && desc->attachments))
 		return nullptr;
 
@@ -150,7 +156,9 @@ bool aprend_framebuffer_get_desc(
     aprend_framebuffer framebuffer,
     aprend_framebuffer_desc *out_desc) {
 	if (framebuffer && out_desc) {
-		*out_desc = framebuffer->desc;
+		*out_desc      = framebuffer->desc;
+		out_desc->base.type = APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC;
+		out_desc->base.next = nullptr;
 		return true;
 	} else
 		return false;

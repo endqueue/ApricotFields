@@ -2,12 +2,13 @@
 #ifndef APREND_BASE_H
 #define APREND_BASE_H
 
+#include "../apricore.h"
 #include <spudgpu.h>
 
 /**
  * @file aprendcontext.h
  * @brief The Aprend instance: what everything else of Aprend is created
- * from, its frames, and the two rules every Aprend header rests on.
+ * from, its frames, and the rules every Aprend header rests on.
  *
  * @par Threads
  * This is the rule for every Aprend header (render/aprend*.h). Each of the
@@ -142,7 +143,18 @@
  * it took. A texture nobody has taken for 120 frames is destroyed, so sizes
  * no longer used don't stay; until then the pool holds a texture for every
  * size taken lately, for each command compiled in a frame and each frame
- * in flight.
+ * in flight. *
+ * @par Struct bases
+ * This too is the rule for every Aprend header. A desc, and each of the lit
+ * scene's settings, starts with an APRI_STRUCT_BASE named `base`
+ * (apricore.h, "Struct bases"): the caller sets `base.type` to the struct's
+ * own APRI_STRUCT_TYPE_APREND_* and `base.next` to NULL, since nothing
+ * chains onto any of them yet. A call given a wrong type or a chained
+ * struct refuses it as it refuses its other invalid arguments - NULL,
+ * false, or nothing recorded - and prints why. A get_ call that hands a
+ * desc or settings back writes the whole struct, `base` included: its own
+ * type and no chain, so the caller sets nothing first. Every other struct
+ * has a "Frozen" line above it and never changes.
  */
 
 #if __cplusplus
@@ -158,6 +170,8 @@ extern "C" {
  * @brief Configuration descriptor for an instance.
  */
 typedef struct aprend_instance_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_INSTANCE_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * The device everything of this instance is created on. Never NULL. It
 	 * is the caller's: it must outlive the instance and is not destroyed

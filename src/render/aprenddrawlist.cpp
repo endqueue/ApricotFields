@@ -114,6 +114,8 @@ aprend_draw_list aprend_draw_list_create(
 		printf("apricot: %s: desc is NULL\n", who);
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC))
+		return nullptr;
 	if (desc->_order != APREND_DRAW_LIST_ORDER_BATCHED && desc->_order != APREND_DRAW_LIST_ORDER_SUBMITTED) {
 		printf("apricot: %s: _order %u is not an APREND_DRAW_LIST_ORDER\n", who, desc->_order);
 		return nullptr;

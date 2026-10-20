@@ -860,9 +860,14 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void) {
 
 aprend_graphics_pipeline aprend_graphics_pipeline_create(
     aprend_instance instance,
-    aprend_graphics_pipeline_desc desc) {
+    const aprend_graphics_pipeline_desc *desc_in) {
 	if (!instance)
 		return nullptr;
+	if (!desc_in)
+		return nullptr;
+	if (!aprend_base_ok("aprend_graphics_pipeline_create", "desc", &desc_in->base, APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC))
+		return nullptr;
+	aprend_graphics_pipeline_desc desc = *desc_in;
 	if (!desc.fragment_shader)
 		return nullptr;
 	if (desc.fragment_shader->stage != SPUDGPU_SHADER_STAGE_FRAGMENT) {
@@ -1229,7 +1234,13 @@ void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p) {
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_graphics_pipeline_t>);
 }
-aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p) { return p ? p->desc : aprend_graphics_pipeline_desc{}; }
+aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p) {
+	if (!p)
+		return aprend_graphics_pipeline_desc{};
+	aprend_graphics_pipeline_desc desc = p->desc;
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
+	return desc;
+}
 
 uint32_t aprend_vertex_element_type_get_size(APREND_VERTEX_ELEMENT_TYPE type) {
 	switch (type) {
@@ -1271,11 +1282,18 @@ uint32_t aprend_vertex_layout_get_element_index(const aprend_vertex_layout *layo
 
 aprend_compute_pipeline aprend_compute_pipeline_create(
     aprend_instance instance,
-    aprend_compute_pipeline_desc desc) {
+    const aprend_compute_pipeline_desc *desc_in) {
 	if (!instance) {
 		printf("apricot: aprend_compute_pipeline_create: instance is NULL\n");
 		return nullptr;
 	}
+	if (!desc_in) {
+		printf("apricot: aprend_compute_pipeline_create: desc is NULL\n");
+		return nullptr;
+	}
+	if (!aprend_base_ok("aprend_compute_pipeline_create", "desc", &desc_in->base, APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC))
+		return nullptr;
+	aprend_compute_pipeline_desc desc = *desc_in;
 	if (!desc.compute_shader) {
 		printf("apricot: aprend_compute_pipeline_create: compute_shader is NULL\n");
 		return nullptr;
@@ -1403,7 +1421,13 @@ void aprend_compute_pipeline_destroy(aprend_compute_pipeline p) {
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_compute_pipeline_t>);
 }
-aprend_compute_pipeline_desc aprend_compute_pipeline_get_desc(aprend_compute_pipeline p) { return p ? p->desc : aprend_compute_pipeline_desc{}; }
+aprend_compute_pipeline_desc aprend_compute_pipeline_get_desc(aprend_compute_pipeline p) {
+	if (!p)
+		return aprend_compute_pipeline_desc{};
+	aprend_compute_pipeline_desc desc = p->desc;
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
+	return desc;
+}
 
 aprend_binding_layout aprend_binding_layout_create(
     aprend_instance instance,

@@ -116,7 +116,7 @@ typedef struct APMATH_POLY_SET {
 /* ---- Checking -------------------------------------------------------- */
 
 /* What makes a set something other than polygons with holes. */
-typedef enum APMATH_POLY_DEFECT {
+typedef enum APMATH_POLY_DEFECT APRI_ENUM_BASE {
 	APMATH_POLY_DEFECT_NONE = 0,
 	/* [ring] has fewer than three points. */
 	APMATH_POLY_DEFECT_TOO_FEW_POINTS,
@@ -163,7 +163,7 @@ APRESULT apmath_poly_validate(const APMATH_POLY_SET *set, APMATH_POLY_DEFECT_INF
 
 /* ---- Booleans -------------------------------------------------------- */
 
-typedef enum APMATH_POLY_OP {
+typedef enum APMATH_POLY_OP APRI_ENUM_BASE {
 	APMATH_POLY_OP_UNION = 0,        /* inside either */
 	APMATH_POLY_OP_INTERSECTION = 1, /* inside both */
 	APMATH_POLY_OP_DIFFERENCE = 2,   /* inside the subject, outside the clip */
@@ -172,7 +172,7 @@ typedef enum APMATH_POLY_OP {
 
 /* Which points a set's rings enclose, by the winding number - how many
  * times the rings go round the point counter-clockwise, less clockwise. */
-typedef enum APMATH_POLY_FILL {
+typedef enum APMATH_POLY_FILL APRI_ENUM_BASE {
 	APMATH_POLY_FILL_EVEN_ODD = 0, /* odd */
 	APMATH_POLY_FILL_NON_ZERO = 1, /* not zero */
 	APMATH_POLY_FILL_POSITIVE = 2, /* above zero */

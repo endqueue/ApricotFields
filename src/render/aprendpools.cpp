@@ -365,6 +365,8 @@ aprend_vertex_pool aprend_vertex_pool_create(aprend_instance instance, const apr
 		printf("apricot: %s: desc is NULL\n", who);
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC))
+		return nullptr;
 	if (desc->vertex_stride == 0) {
 		printf("apricot: %s: vertex_stride is 0\n", who);
 		return nullptr;
@@ -465,6 +467,8 @@ aprend_index_pool aprend_index_pool_create(aprend_instance instance, const apren
 	if (!instance)
 		return nullptr;
 	if (!desc)
+		return nullptr;
+	if (!aprend_base_ok("aprend_index_pool_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC))
 		return nullptr;
 	if (desc->stride != APREND_INDEX_STRIDE_UINT16 && desc->stride != APREND_INDEX_STRIDE_UINT32) {
 		printf("apricot: aprend_index_pool_create: stride is not UINT16 or UINT32\n");

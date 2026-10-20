@@ -78,6 +78,7 @@ extern "C" {
  * @brief A vertex of position, normal, texture coordinate and color, for a
  * caller that has no layout of its own.
  */
+/* Frozen: a vertex in GPU memory, laid out as the shaders that read it. It never changes; a new need gets a new type. */
 typedef struct APREND_DEFAULT_VERTEX {
 	/** Position. */
 	float position[3];
@@ -162,6 +163,7 @@ uint32_t aprend_uniform_type_get_size(APREND_UNIFORM_TYPE type);
 /**
  * @brief One uniform of a uniform block.
  */
+/* Frozen: an array element of aprend_uniform_layout. It never changes; a new need gets a new type. */
 typedef struct aprend_uniform {
 	/**
 	 * The uniform's name, for aprend_uniform_layout_get_uniform_index() and
@@ -188,6 +190,7 @@ typedef struct aprend_uniform {
  * block's size as the SPIR-V has them, and its structs and arrays of structs
  * listed member by member under names such as `lights[2].color`.
  */
+/* Frozen: a block's layout as a shader declares it, written by hand or read back. It never changes; a new need gets a new type. */
 typedef struct aprend_uniform_layout {
 	/** How many uniforms. */
 	uint32_t count;
@@ -464,7 +467,7 @@ bool aprend_vertex_buffer_update(
 /**
  * @brief The size of one index of an index buffer, in bytes.
  */
-typedef enum APREND_INDEX_STRIDE { APREND_INDEX_STRIDE_NONE = 0, APREND_INDEX_STRIDE_UINT16 = 2, APREND_INDEX_STRIDE_UINT32 = 4 } APREND_INDEX_STRIDE;
+typedef enum APREND_INDEX_STRIDE APRI_ENUM_BASE { APREND_INDEX_STRIDE_NONE = 0, APREND_INDEX_STRIDE_UINT16 = 2, APREND_INDEX_STRIDE_UINT32 = 4 } APREND_INDEX_STRIDE;
 
 /**
  * @brief Creates an index buffer.
@@ -886,6 +889,8 @@ typedef struct aprend_index_pool_t *aprend_index_pool;
  * @brief Configuration descriptor for a vertex pool.
  */
 typedef struct aprend_vertex_pool_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * The size of one vertex in bytes: what the pool counts its ranges in.
 	 * Not 0. The vertices' layout is the pipeline's that reads them
@@ -907,6 +912,7 @@ typedef struct aprend_vertex_pool_desc {
  *
  * A value: copy it freely. Zeroed, it is no range.
  */
+/* Frozen: a value, copied freely. It never changes; a new need gets a new type. */
 typedef struct aprend_vertex_range {
 	/**
 	 * The block the range is in, for SET_VERTEX_BUFFERS. The pool's: read by
@@ -1028,6 +1034,8 @@ void aprend_vertex_pool_get_usage(
  * @brief Configuration descriptor for an index pool.
  */
 typedef struct aprend_index_pool_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** The size of every index in the pool: UINT16 or UINT32. */
 	APREND_INDEX_STRIDE stride;
 	/** Indices in one block. Not 0. */
@@ -1041,6 +1049,7 @@ typedef struct aprend_index_pool_desc {
  *
  * A value: copy it freely. Zeroed, it is no range.
  */
+/* Frozen: a value, copied freely. It never changes; a new need gets a new type. */
 typedef struct aprend_index_range {
 	/**
 	 * The block the range is in, for SET_INDEX_BUFFER. The pool's: read by

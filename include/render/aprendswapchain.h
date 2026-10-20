@@ -33,6 +33,8 @@ extern "C" {
  * @brief Configuration descriptor for a swap chain.
  */
 typedef struct aprend_swap_chain_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/**
 	 * Created by the caller from its window (spudgpu_create_surface()), and
 	 * still owned by it: it must outlive the swap chain. Never NULL.

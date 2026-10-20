@@ -52,6 +52,8 @@ typedef struct aprend_gpu_timer_t *aprend_gpu_timer;
  * No field has a default.
  */
 typedef struct aprend_gpu_timer_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_GPU_TIMER_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** Number of slots: passes that can be timed in one frame. Not 0. */
 	uint32_t _slot_count;
 	/**

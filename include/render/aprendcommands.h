@@ -528,6 +528,7 @@ enum {
  * array only has to live for that call. What the entries refer to - buffers,
  * views - must stay alive until the list's submission has completed.
  */
+/* Frozen: an array element, recorded every frame. A new command is a new APREND_COMMAND_TYPE inside the fixed size #_params is padded to. It never changes; a new need gets a new type. */
 typedef struct APREND_COMMAND {
 	/** Which command this is: the member of #_params that is read. */
 	APREND_COMMAND_TYPE _type;
@@ -738,6 +739,12 @@ typedef struct APREND_COMMAND {
 			/** SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST. */
 			SPUDGPU_FILTER _filter;
 		} _generate_mips;
+		/**
+		 * Never read. Fixes #_params at 120 bytes, so the command's size
+		 * stays 128 as commands are added: a new command's parameters fit
+		 * in it or come through a pointer.
+		 */
+		uint8_t _padding[120];
 	} _params;
 } APREND_COMMAND;
 

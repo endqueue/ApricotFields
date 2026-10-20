@@ -287,6 +287,8 @@ extern "C" {
 aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 	if (!desc)
 		return nullptr;
+	if (!aprend_base_ok("aprend_instance_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_INSTANCE_DESC))
+		return nullptr;
 	if (!desc->device) {
 		printf("apricot: aprend_instance_create: device is NULL\n");
 		return nullptr;
@@ -373,7 +375,9 @@ bool aprend_instance_get_desc(
     aprend_instance instance,
     aprend_instance_desc *out_desc) {
 	if (instance && out_desc) {
-		*out_desc = instance->desc;
+		*out_desc      = instance->desc;
+		out_desc->base.type = APRI_STRUCT_TYPE_APREND_INSTANCE_DESC;
+		out_desc->base.next = nullptr;
 		return true;
 	} else
 		return false;

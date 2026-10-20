@@ -36,6 +36,7 @@ static aprend_pooled_target *aprend_pooled_target_make(
 	target->levels = levels;
 
 	aprend_texture2d_desc texture_desc{};
+	texture_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 	texture_desc.width        = width;
 	texture_desc.height       = height;
 	texture_desc.format       = format;
@@ -60,6 +61,7 @@ static aprend_pooled_target *aprend_pooled_target_make(
 	}
 	for (uint32_t level = 0; level < levels; ++level) {
 		aprend_texture_view_desc view_desc{};
+		view_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 		view_desc.shape              = APREND_TEXTURE_VIEW_SHAPE_2D;
 		view_desc.aspect             = APREND_TEXTURE_VIEW_ASPECT_COLOR;
 		view_desc.base_mip           = level;

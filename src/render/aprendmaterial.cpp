@@ -305,6 +305,8 @@ aprend_material aprend_material_create(
 		printf("apricot: %s: desc is NULL\n", who);
 		return nullptr;
 	}
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_MATERIAL_DESC))
+		return nullptr;
 	if (!desc->_layout) {
 		printf("apricot: %s: _layout is NULL\n", who);
 		return nullptr;

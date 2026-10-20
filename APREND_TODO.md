@@ -1217,6 +1217,17 @@ unfinished in it.
     sampled from layer 0. The array-view source came after, and has run on
     D3D12 and Vulkan, and then on Metal (M5 Pro, 2026-10-16: Debug under
     validation with warnings fatal, and Release; no leak at exit).
+- **Struct bases, 2026-10-20.** Aprend's 24 descs and lit scene settings
+  start with an `APRI_STRUCT_BASE` (`apricore.h`; `aprendcontext.h`, "Struct
+  bases"), and every other public struct is marked frozen.
+  `APREND_COMMAND`'s `_params` is padded to 120 bytes (the command to 128).
+  `aprend_graphics_pipeline_create()` and `aprend_compute_pipeline_create()`
+  take their desc by pointer, as every other create does. **Run on Metal on
+  2026-10-20** (M5 Pro): `../apricottests` passes, Debug under Metal API and
+  shader validation with warnings fatal, with a new `test_struct_bases`
+  (a zeroed base, another struct's type and a chained struct refused; the
+  getter's base). Not compiled for D3D12 or Vulkan: the backends are
+  untouched, but every caller's desc changed, so a Windows run is due.
 
 ## Wrong things
 

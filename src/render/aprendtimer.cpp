@@ -21,6 +21,8 @@ aprend_gpu_timer aprend_gpu_timer_create(
 		return nullptr;
 	if (!desc)
 		return nullptr;
+	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_GPU_TIMER_DESC))
+		return nullptr;
 	if (desc->_slot_count == 0) {
 		printf("apricot: %s: _slot_count is 0\n", who);
 		return nullptr;

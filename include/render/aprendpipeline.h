@@ -51,6 +51,7 @@ extern "C" {
  * N is not stated here. It is the index a pipeline puts the layout at, in
  * aprend_graphics_pipeline_desc::_binding_layouts.
  */
+/* Frozen: an array element of a binding layout. It never changes; a new need gets a new type. */
 typedef struct aprend_binding_desc {
 	/** Slot index, `binding = ...` in GLSL. Unique within a layout. */
 	uint32_t _binding;
@@ -339,6 +340,7 @@ uint32_t aprend_vertex_element_type_get_size(APREND_VERTEX_ELEMENT_TYPE type);
 /**
  * @brief One element of a vertex layout: one attribute of a vertex.
  */
+/* Frozen: an array element of aprend_vertex_layout. It never changes; a new need gets a new type. */
 typedef struct aprend_vertex_element {
 	/**
 	 * The element's name, for a pipeline that meets the shader's inputs by
@@ -363,6 +365,7 @@ typedef struct aprend_vertex_element {
  * layouts, a depth pass reading only the positions of vertices a main pass
  * reads whole, say: the same `stride`, fewer elements.
  */
+/* Frozen: held by value in aprend_vertex_binding_desc. It never changes; a new need gets a new type. */
 typedef struct aprend_vertex_layout {
 	/** How many elements. Not 0. */
 	uint32_t count;
@@ -395,6 +398,7 @@ uint32_t aprend_vertex_layout_get_element_index(
  * @brief The attributes a pipeline reads from one vertex buffer slot, and how
  * often it steps to the next element of that buffer.
  */
+/* Frozen: an array element of aprend_graphics_pipeline_desc. It never changes; a new need gets a new type. */
 typedef struct aprend_vertex_binding_desc {
 	/**
 	 * The attributes, with their offsets inside one vertex, and the stride.
@@ -417,6 +421,8 @@ typedef struct aprend_vertex_binding_desc {
  * No field has a default.
  */
 typedef struct aprend_graphics_pipeline_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** A name for diagnostics. May be NULL. */
 	const char *_debug_name;
 	/**
@@ -631,9 +637,9 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  * @brief Creates a graphics pipeline.
  *
  * @param[in] instance Instance whose device the pipeline is created on.
- * @param[in] desc     Pipeline configuration, taken by value.
+ * @param[in] desc     Pipeline configuration. Only read during the call.
  *
- * @return The pipeline, or NULL if @p instance is NULL, `fragment_shader` is
+ * @return The pipeline, or NULL if @p instance or @p desc is NULL, `fragment_shader` is
  *         NULL, neither or both of `vertex_shader` and `mesh_shader` are
  *         given, a shader was created for another stage than the one it is
  *         given as, a mesh shader comes with vertex bindings or on a device
@@ -675,7 +681,7 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *
  * @see aprend_graphics_pipeline_destroy()
  */
-aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instance, aprend_graphics_pipeline_desc desc);
+aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instance, const aprend_graphics_pipeline_desc *desc);
 
 /**
  * @brief Destroys a graphics pipeline.
@@ -711,6 +717,8 @@ aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_
  * No field has a default.
  */
 typedef struct aprend_compute_pipeline_desc {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
 	/** A name for diagnostics. May be NULL. */
 	const char *_debug_name;
 	/**
@@ -763,9 +771,9 @@ typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
  * @brief Creates a compute pipeline.
  *
  * @param[in] instance Instance whose device the pipeline is created on.
- * @param[in] desc     Pipeline configuration, taken by value.
+ * @param[in] desc     Pipeline configuration. Only read during the call.
  *
- * @return The pipeline, or NULL if @p instance is NULL, `compute_shader` is
+ * @return The pipeline, or NULL if @p instance or @p desc is NULL, `compute_shader` is
  *         NULL, belongs to another instance or was not created for the
  *         compute stage, `_entry_point` is NULL or an empty string,
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
@@ -779,7 +787,7 @@ typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
  *
  * @see aprend_compute_pipeline_destroy()
  */
-aprend_compute_pipeline aprend_compute_pipeline_create(aprend_instance instance, aprend_compute_pipeline_desc desc);
+aprend_compute_pipeline aprend_compute_pipeline_create(aprend_instance instance, const aprend_compute_pipeline_desc *desc);
 
 /**
  * @brief Destroys a compute pipeline.
@@ -835,6 +843,7 @@ typedef struct aprend_binding_set_t *aprend_binding_set;
  *
  * A member of `_image` the type doesn't read is ignored.
  */
+/* Frozen: an array element of a binding set. It never changes; a new need gets a new type. */
 typedef struct aprend_binding_set_entry {
 	/** The slot, as aprend_binding_desc::_binding. */
 	uint32_t _binding;
