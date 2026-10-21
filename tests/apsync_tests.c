@@ -38,11 +38,15 @@ static const char *current_test = "";
 
 static const APSYNC_CHANNEL_MODE test_channels[2] = {APSYNC_CHANNEL_ORDERED, APSYNC_CHANNEL_LATEST};
 
+// The system heap, for every session's SpudNet instance; set by main.
+static SPUD_ALLOCATOR test_allocator;
+
 static APSYNC_SESSION_DESC session_desc(const char *name, uint32_t application_version)
 {
     APSYNC_SESSION_DESC desc;
     memset(&desc, 0, sizeof(desc));
     desc.base.type = APRI_STRUCT_TYPE_APSYNC_SESSION_DESC;
+    desc.allocator = &test_allocator;
     desc.application_id = TEST_APPLICATION_ID;
     desc.application_version = application_version;
     desc.channels = test_channels;
@@ -148,6 +152,14 @@ static void test_arguments(void)
     no_limit.max_message_size = 0;
     CHECK(apsync_session_join(&no_limit, &join_desc, &session, &error) == APRESULT_INVALID_ARGUMENT);
     CHECK(session == NULL && error.message[0] != '\0');
+    APSYNC_SESSION_DESC no_allocator = desc;
+    no_allocator.allocator = NULL;
+    CHECK(apsync_session_join(&no_allocator, &join_desc, &session, NULL) == APRESULT_INVALID_ARGUMENT);
+    SPUD_ALLOCATOR no_free = test_allocator;
+    no_free.free = NULL;
+    APSYNC_SESSION_DESC half_allocator = desc;
+    half_allocator.allocator = &no_free;
+    CHECK(apsync_session_join(&half_allocator, &join_desc, &session, NULL) == APRESULT_INVALID_ARGUMENT);
     APSYNC_SESSION_DESC no_channels = desc;
     no_channels.channel_count = 0;
     CHECK(apsync_session_join(&no_channels, &join_desc, &session, NULL) == APRESULT_INVALID_ARGUMENT);
@@ -377,6 +389,7 @@ static void test_refusals(void)
 
 int main(void)
 {
+    test_allocator = spud_allocator_system();
     test_arguments();
     test_join_and_messages();
     test_roster_and_disconnect();

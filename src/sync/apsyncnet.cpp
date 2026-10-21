@@ -1371,6 +1371,12 @@ static APRESULT create_session(const APSYNC_SESSION_DESC *desc, bool hosting, ap
     if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APSYNC_SESSION_DESC))
         return fail(error, result, "desc %s", apri_struct_check_message(result));
     const APSYNC_SESSION_DESC &d = *desc;
+    if (!d.allocator)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "allocator is null");
+    if (!d.allocator->allocate)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "allocator has no allocate function");
+    if (!d.allocator->free)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "allocator has no free function");
     if (!d.channels || d.channel_count == 0 || d.channel_count > APSYNC_MAX_CHANNELS)
         return fail(error, APRESULT_INVALID_ARGUMENT, "a session has between 1 and %u channels", APSYNC_MAX_CHANNELS);
     for (uint32_t i = 0; i < d.channel_count; ++i)
@@ -1416,8 +1422,11 @@ static APRESULT create_session(const APSYNC_SESSION_DESC *desc, bool hosting, ap
 
     // The platform's networking, started for this session alone. Other
     // users of SpudNet in the process have instances of their own.
+    spudnet_instance_desc instance_desc = {};
+    instance_desc.base.type = SPUD_STRUCT_TYPE_NET_INSTANCE_DESC;
+    instance_desc.allocator = d.allocator;
     spudnet_error detail;
-    SPUDRESULT result = spudnet_instance_create(&s->instance, &detail);
+    SPUDRESULT result = spudnet_instance_create(&instance_desc, &s->instance, &detail);
     if (result != SPUD_SUCCESS)
     {
         std::string message = describe("starting the platform's networking", result, detail);

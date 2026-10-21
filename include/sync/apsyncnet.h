@@ -2,6 +2,7 @@
 #define APSYNC_NET_H
 
 #include "../apricore.h"
+#include <spudcore.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -63,7 +64,8 @@ extern "C" {
  * Nothing has to be set up first. Each session starts the platform's
  * networking for itself (a spudnet_instance of its own, spudnet.h) and
  * gives it back when it is destroyed, whatever else in the process uses
- * the network.
+ * the network. That instance's memory comes from the allocator in the
+ * session's desc.
  *
  * Not on every platform. Where SpudNet has no TCP (watchOS), the two calls
  * that make a session return APRESULT_UNSUPPORTED.
@@ -156,6 +158,14 @@ typedef enum APSYNC_CHANNEL_MODE APRI_ENUM_BASE {
  * either role needs. */
 typedef struct APSYNC_SESSION_DESC {
 	APRI_STRUCT_BASE base; /* type = APRI_STRUCT_TYPE_APSYNC_SESSION_DESC */
+
+	/* Where the memory of the session's SpudNet instance, and of every
+	 * SpudNet object the session makes, comes from (SPUD_ALLOCATOR,
+	 * spudcore.h). Copied, so the struct need not outlive the call; its
+	 * functions and user_data must outlive the session. Not yet where
+	 * ApSync's own memory comes from, which is still the C++ heap's.
+	 * NULL, or one missing a function, is refused. */
+	const SPUD_ALLOCATOR *allocator;
 
 	/* Which application this is and which version of its messages it
 	 * speaks. A joiner whose pair differs from the host's is turned away
