@@ -2357,9 +2357,12 @@ these optional features and the tests' (0x7f of the adapter's 0xeff), and
 on one with none, the first run of the staged storage buffers and of an
 indirect draw split a call a draw on Metal; its `test_feature_checks` saw
 each group 2 call made with its feature and refused without. All passed,
-Debug under Metal validation and `leaks`, and Release. Not built on
-Windows or Linux; the other callers still create their device the old way
-(`../SPUDGPU_DEVICE_MIGRATION.md`).
+Debug under Metal validation and `leaks`, and Release. Built and run on
+Windows 11 on 2026-10-22 (Debug, D3D12 and Vulkan, Intel Iris Xe and NVIDIA
+RTX A2000): every check passed on both devices of every run, the first
+devices 0x7f of 0x1dff (Iris Xe) and 0x3f of 0x1fbf (RTX A2000), with no
+debug layer or validation layer message, none under Vulkan's
+synchronization validation either. Not built on Linux.
 
 A `spudgpu_device` has exactly the `SPUDGPU_FEATURE_*` bits it was created
 with, whatever its adapter supports. The device stays the caller's: Aprend
