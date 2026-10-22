@@ -488,7 +488,7 @@ typedef struct aprend_graphics_pipeline_desc {
 	/**
 	 * The largest bias, if positive, or the smallest, if negative; 0 for no
 	 * clamp. Anything else needs a device that can clamp
-	 * (`SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp`).
+	 * (`SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP` on the instance's device).
 	 */
 	float _depth_bias_clamp;
 	/**
@@ -497,7 +497,7 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * #color_attachment_count read. Zeroed (`blend_enable` false) writes the
 	 * output as is. The presets fill one for the usual cases. Entries that
 	 * differ need a device that blends targets independently
-	 * (`SPUDGPU_DEVICE_PROPERTIES::independent_blend`). A blended pipeline
+	 * (`SPUDGPU_FEATURE_INDEPENDENT_BLEND` on the instance's device). A blended pipeline
 	 * normally clears #_depth_write and keeps #_depth_test, and its draws
 	 * are the caller's to order: back to front, or after everything opaque.
 	 * @see aprend_blend_premultiplied()
@@ -527,8 +527,8 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * #_vertex_entry_point is not read), is run with
 	 * APREND_COMMAND_DISPATCH_MESH and not with the draw commands, and reads
 	 * what it needs through its binding sets. It can only be created on a
-	 * device that supports mesh shading
-	 * (spudgpu_get_mesh_shading_capabilities()). There is no task shader.
+	 * device created with SPUDGPU_FEATURE_MESH_SHADING. There is no task
+	 * shader.
 	 */
 	aprend_shader mesh_shader;
 	/** The entry point of #mesh_shader, as #_vertex_entry_point. */
@@ -643,7 +643,7 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *         NULL, neither or both of `vertex_shader` and `mesh_shader` are
  *         given, a shader was created for another stage than the one it is
  *         given as, a mesh shader comes with vertex bindings or on a device
- *         without mesh shading,
+ *         without SPUDGPU_FEATURE_MESH_SHADING,
  *         either entry point is NULL or an empty string,
  *         `_vertex_binding_count` is above APREND_MAX_VERTEX_BINDINGS, a
  *         counted vertex binding has no elements, a `stride` of 0 or not a
@@ -657,8 +657,10 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *         multiple of 4, `_cull_mode` is not a SPUDGPU_CULL_MODE, `_depth_test` is
  *         set with `_depth_compare_op` SPUDGPU_COMPARE_OP_NEVER,
  *         `color_attachment_count` is above APREND_MAX_COLOR_TARGETS or a
- *         counted format is SPUDGPU_FORMAT_UNKNOWN, `_depth_bias_clamp` or
- *         differing `_blends` ask for what the device can't do,
+ *         counted format is SPUDGPU_FORMAT_UNKNOWN, `_depth_bias_clamp` is
+ *         not 0 on a device without SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP,
+ *         `_blends` differ on one without
+ *         SPUDGPU_FEATURE_INDEPENDENT_BLEND,
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
  *         counted entry of `_binding_layouts` is NULL or belongs to another
  *         instance, a shader is of another instance, the shaders don't match
@@ -860,7 +862,7 @@ typedef struct aprend_binding_set_entry {
 			/**
 			 * First byte of the buffer the slot sees. Inside the buffer, and
 			 * a multiple of the device's
-			 * SPUDGPU_DEVICE_PROPERTIES::uniform_buffer_offset_alignment
+			 * SPUDGPU_ADAPTER_PROPERTIES::uniform_buffer_offset_alignment
 			 * (spudgpu.h); 0 always is.
 			 */
 			uint64_t _offset;
@@ -883,7 +885,7 @@ typedef struct aprend_binding_set_entry {
 			/**
 			 * First byte of the buffer the slot sees. Inside the buffer, and
 			 * a multiple of the device's
-			 * SPUDGPU_DEVICE_PROPERTIES::storage_buffer_offset_alignment;
+			 * SPUDGPU_ADAPTER_PROPERTIES::storage_buffer_offset_alignment;
 			 * 0 always is.
 			 */
 			uint64_t _offset;

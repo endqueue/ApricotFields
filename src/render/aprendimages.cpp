@@ -1251,6 +1251,10 @@ aprend_texture_view aprend_texture_view_create_2d(
 			printf("apricot: %s: a cube array view is layers in sixes, and layer_count is %u\n", who, resolved.layer_count);
 			return nullptr;
 		}
+		if (!(texture->instance->features & SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS)) {
+			printf("apricot: %s: a cube array view needs a device created with SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS\n", who);
+			return nullptr;
+		}
 		spud_view_type = SPUDGPU_IMAGE_VIEW_TYPE_CUBE_ARRAY;
 		break;
 	case APREND_TEXTURE_VIEW_SHAPE_3D:
@@ -1268,8 +1272,8 @@ aprend_texture_view aprend_texture_view_create_2d(
 		printf("apricot: %s: a view rendered to is APREND_TEXTURE_VIEW_SHAPE_2D or _2D_ARRAY, and shape is %u\n", who, (unsigned)desc->shape);
 		return nullptr;
 	}
-	if (is_target && desc->shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY && !texture->instance->layered_rendering) {
-		printf("apricot: %s: a 2D array view rendered to needs layered rendering, which the device doesn't support\n", who);
+	if (is_target && desc->shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY && !(texture->instance->features & SPUDGPU_FEATURE_LAYERED_RENDERING)) {
+		printf("apricot: %s: a 2D array view rendered to needs a device created with SPUDGPU_FEATURE_LAYERED_RENDERING\n", who);
 		return nullptr;
 	}
 

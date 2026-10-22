@@ -599,7 +599,7 @@ enum {
 	APREND_TEXTURE_VIEW_SHAPE_CUBE       = 3,
 	/**
 	 * A multiple of six layers of a cube-capable 2D texture, as an array of
-	 * cubes.
+	 * cubes. Needs SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS on the instance's device.
 	 */
 	APREND_TEXTURE_VIEW_SHAPE_CUBE_ARRAY = 4,
 	/** A 3D texture. `base_layer` is 0 and `layer_count` is 1. */
@@ -673,10 +673,9 @@ enum {
  * cube view. A 2D array view of one layer is a layered pass too, and is not
  * interchangeable with a 2D view in the same pass.
  *
- * A layered pass needs a device that supports it
- * (SPUDGPU_DEVICE_PROPERTIES::layered_rendering of the device the instance
- * was created with): on one that doesn't, creating a 2D array view of type
- * RENDER_TAGET or DEPTH_STENCIL fails.
+ * A layered pass needs SPUDGPU_FEATURE_LAYERED_RENDERING on the device the
+ * instance was created with: on a device created without it, creating a 2D
+ * array view of type RENDER_TAGET or DEPTH_STENCIL fails.
  *
  * A storage image slot reads and writes one mip. That is what a storage
  * image is in every graphics API (an image store takes no mip level), not a
@@ -754,8 +753,9 @@ typedef struct aprend_texture_view_t *aprend_texture_view;
  *         count of 0, the range is not one the shape and `type` allow (see
  *         aprend_texture_view_desc), `aspect` is not the one the texture's
  *         format and `type` take, a 2D array view to render to is asked
- *         of a device without layered rendering, or the view can't be
- *         created.
+ *         of a device without SPUDGPU_FEATURE_LAYERED_RENDERING, a cube
+ *         array view of one without SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS, or
+ *         the view can't be created.
  *
  * @see aprend_destroy_texture_view()
  */

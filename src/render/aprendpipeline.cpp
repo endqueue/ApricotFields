@@ -274,19 +274,17 @@ static bool aprend_binding_set_entry_resource_valid(const char *who, aprend_inst
 	return true;
 }
 
-// Whether [device] can run a mesh shader pipeline. A device that can't
-// answer is one that can't.
-static bool aprend_device_supports_mesh_shading(spudgpu_device device) {
-#if SPUDGPU_EXT_MESH_SHADING
-	spudgpu_mesh_shading_capabilities caps{};
-	caps.base.type = SPUD_STRUCT_TYPE_GPU_MESH_SHADING_CAPABILITIES;
-	if (SPUDFAIL(spudgpu_get_mesh_shading_capabilities(device, &caps)))
+// Whether two blend entries blend the same way, by SpudGPU's rule: two
+// that don't blend are the same whatever their factors. Entries that differ
+// need SPUDGPU_FEATURE_INDEPENDENT_BLEND.
+static bool aprend_blends_equal(const spudgpu_blend_attachment_desc &a, const spudgpu_blend_attachment_desc &b) {
+	if (a.blend_enable != b.blend_enable)
 		return false;
-	return caps.supported;
-#else
-	(void)device;
-	return false;
-#endif
+	if (!a.blend_enable)
+		return true;
+	return a.src_color_blend_factor == b.src_color_blend_factor && a.dst_color_blend_factor == b.dst_color_blend_factor &&
+	       a.color_blend_op == b.color_blend_op && a.src_alpha_blend_factor == b.src_alpha_blend_factor &&
+	       a.dst_alpha_blend_factor == b.dst_alpha_blend_factor && a.alpha_blend_op == b.alpha_blend_op;
 }
 
 static bool aprend_shader_stage_supported(SPUDGPU_SHADER_STAGE shader_stage) {
@@ -905,8 +903,8 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 			       desc._vertex_binding_count);
 			return nullptr;
 		}
-		if (!aprend_device_supports_mesh_shading(instance->desc.device)) {
-			printf("apricot: aprend_graphics_pipeline_create: mesh_shader is given and the device doesn't support mesh shading\n");
+		if (!(instance->features & SPUDGPU_FEATURE_MESH_SHADING)) {
+			printf("apricot: aprend_graphics_pipeline_create: mesh_shader is given and the device was created without SPUDGPU_FEATURE_MESH_SHADING\n");
 			return nullptr;
 		}
 	} else {
@@ -1026,6 +1024,11 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		printf("apricot: aprend_graphics_pipeline_create: _depth_test is set but _depth_compare_op is NEVER\n");
 		return nullptr;
 	}
+	if (desc._depth_bias_clamp != 0.0f && !(instance->features & SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP)) {
+		printf("apricot: aprend_graphics_pipeline_create: _depth_bias_clamp is %g and the device was created without SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP\n",
+		       (double)desc._depth_bias_clamp);
+		return nullptr;
+	}
 	if (desc.color_attachment_count > APREND_MAX_COLOR_TARGETS) {
 		printf("apricot: aprend_graphics_pipeline_create: color_attachment_count %u is above APREND_MAX_COLOR_TARGETS\n", desc.color_attachment_count);
 		return nullptr;
@@ -1034,6 +1037,16 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		if (desc.color_attachment_formats[i] == SPUDGPU_FORMAT_UNKNOWN) {
 			printf("apricot: aprend_graphics_pipeline_create: color_attachment_formats[%u] is SPUDGPU_FORMAT_UNKNOWN\n", i);
 			return nullptr;
+		}
+	}
+	if (!(instance->features & SPUDGPU_FEATURE_INDEPENDENT_BLEND)) {
+		for (uint32_t i = 1; i < desc.color_attachment_count; ++i) {
+			if (!aprend_blends_equal(desc._blends[0], desc._blends[i])) {
+				printf("apricot: aprend_graphics_pipeline_create: _blends[%u] differs from _blends[0] and the device was created without "
+				       "SPUDGPU_FEATURE_INDEPENDENT_BLEND\n",
+				       i);
+				return nullptr;
+			}
 		}
 	}
 	if (desc._binding_layout_count > APREND_MAX_BINDING_LAYOUTS) {
@@ -1202,8 +1215,6 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	pd.depth_test_enable  = desc._depth_test;
 	pd.depth_write_enable = desc._depth_write;
 	pd.depth_compare_op   = desc._depth_compare_op;
-	// The device's limits on these are SpudGPU's to check
-	// (SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp, independent_blend).
 	pd.depth_bias_constant = desc._depth_bias_constant;
 	pd.depth_bias_slope    = desc._depth_bias_slope;
 	pd.depth_bias_clamp    = desc._depth_bias_clamp;

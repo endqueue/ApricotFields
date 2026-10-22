@@ -1245,8 +1245,9 @@ not).
 ### 2. A host-visible storage buffer on D3D12
 
 Closed 2026-10-10, compiled on all three backends. A storage buffer written directly is
-`SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE`, which SpudGPU reports per device
-(`SPUDGPU_DEVICE_PROPERTIES::device_mappable_memory`) and which D3D12 backs
+`SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE`, which a device has when it is
+created with `SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY` (since 2026-10-21;
+before, `SPUDGPU_DEVICE_PROPERTIES::device_mappable_memory`, item 39) and which D3D12 backs
 with a custom heap, not an upload heap. A device without it takes the staged
 path for storage buffers alone. The D3D12 heap has never run: an integrated
 GPU under D3D12 is the case to test first.
@@ -1678,10 +1679,11 @@ A view covers a range of its texture's mips and layers and has a shape, and a
   the vertex or mesh shader (see "State of the code"). What that leaves:
   - Rendering to several mips in one pass isn't offered, and no graphics
     API offers it.
-  - A device without `SPUDGPU_DEVICE_PROPERTIES::layered_rendering` can't
+  - A device created without `SPUDGPU_FEATURE_LAYERED_RENDERING` can't
     make a 2D array view to render to, and Aprend has no fallback: the
     caller renders a layer at a time through 2D views there. Aprend has no
-    query of its own for it; the caller reads the device's properties.
+    query of its own for it; the caller asks for the feature when it
+    creates the device (item 39).
   - The layer can't be chosen in a geometry shader, which Aprend doesn't
     take and Metal doesn't have.
   - Multiview (one draw repeated to each layer by the device, a view index
@@ -1835,7 +1837,7 @@ Left over:
   compacts, by design, since moving a block means a copy and a rebuilt
   descriptor set. Item 35 may replace the range list underneath.
 - **An owned block takes at least the device's uniform buffer offset
-  alignment** (`SPUDGPU_DEVICE_PROPERTIES::uniform_buffer_offset_alignment`,
+  alignment** (`SPUDGPU_ADAPTER_PROPERTIES::uniform_buffer_offset_alignment`,
   16 at the least) since 2026-10-18: 256 on D3D12 and Metal, often 64 on
   Vulkan. Before, 256 everywhere, since SpudGPU didn't report it.
 - **A changed block is copied whole**, not the changed bytes.
@@ -2186,8 +2188,8 @@ that a fragment shader writes as many outputs as the pipeline has targets
 
 Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16). `_depth_bias_constant`,
 `_depth_bias_slope` and `_depth_bias_clamp` on the pipeline desc, through
-SpudGPU on all three backends; a clamp needs
-`SPUDGPU_DEVICE_PROPERTIES::depth_bias_clamp`.
+SpudGPU on all three backends; a clamp needs a device created with
+`SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP` (item 39).
 
 ### 27. MSAA and resolve
 
@@ -2267,7 +2269,7 @@ Hazel: `Texture2D::GenerateMips`.
 
 Numbered out of order, as item 31. SpudGPU has both on Vulkan and D3D12 and
 compiles both out on Metal (`SPUDGPU_EXT_BUNDLES`,
-`SPUDGPU_EXT_BINDLESS_DESCRIPTOR_INDEXING`), so Aprend can't offer either as
+`SPUDGPU_EXT_BINDLESS`), so Aprend can't offer either as
 the same thing everywhere, and offers neither.
 
 - **Bundles: not planned.** A bundle is a second kind of command list,
@@ -2342,6 +2344,79 @@ Metal would need one of its own.
 - The pools and the arena stay: they place many ranges in one buffer,
   which is what one view, one barrier per buffer and a material table
   (item 21, item 33) need, and which a device allocator doesn't do.
+
+### 39. A device has only the features its caller asked for
+
+Numbered out of order, as item 31: written as item 37 on 2026-10-21, a
+number already taken by the command allocator. Closed 2026-10-21, on
+SpudGPU's adapter and device split (`../spudlib/SPUDGPU_DEVICE_TODO.md`).
+Builds on macOS over Metal with no warnings and the repo's headless tests
+pass. Run on Metal (Apple M5 Pro) on 2026-10-21 by `../apricottests`,
+converted the same day, which runs every test twice: on a device with
+these optional features and the tests' (0x7f of the adapter's 0xeff), and
+on one with none, the first run of the staged storage buffers and of an
+indirect draw split a call a draw on Metal; its `test_feature_checks` saw
+each group 2 call made with its feature and refused without. All passed,
+Debug under Metal validation and `leaks`, and Release. Not built on
+Windows or Linux; the other callers still create their device the old way
+(`../SPUDGPU_DEVICE_MIGRATION.md`).
+
+A `spudgpu_device` has exactly the `SPUDGPU_FEATURE_*` bits it was created
+with, whatever its adapter supports. The device stays the caller's: Aprend
+is handed it and never creates it (the caller keeps the queue and feature
+choices for its own needs, and two instances may share one device,
+`aprendcontext.h`). So Aprend says what it can use, in two groups:
+
+| Feature | Use | Group |
+|---|---|---|
+| `MULTI_DRAW_INDIRECT` | an indirect draw command is one call, not split to the adapter's `max_draw_indirect_count` | 1 |
+| `DEVICE_MAPPABLE_MEMORY` | storage buffers written directly, else staged | 1 |
+| `PRESENT` | `aprend_swap_chain_create` | 2 |
+| `PASS_TIMESTAMPS` | `aprend_gpu_timer_create` | 2 |
+| `MESH_SHADING` | a pipeline with `mesh_shader` | 2 |
+| `LAYERED_RENDERING` | 2D array views rendered to | 2 |
+| `CUBE_ARRAY_VIEWS` | `APREND_TEXTURE_VIEW_SHAPE_CUBE_ARRAY` | 2 |
+| `DEPTH_BIAS_CLAMP`, `INDEPENDENT_BLEND` | a pipeline's `_depth_bias_clamp`, differing `_blends` | 2 |
+
+What was done:
+
+- **Group 1, the features only Aprend's own code uses:**
+  `aprend_get_optional_gpu_features()` (`aprendcontext.h`) returns them, a
+  function so the value is the linked library's. The caller asks for
+  `aprend_get_optional_gpu_features() & supported_features` when it
+  creates the device; without them Aprend takes the other path.
+  `aprendfeatures_tests` (C, headless) checks the set.
+- **Group 2, features one of Aprend's calls needs:** each call names its
+  feature in its header comment and checks the device itself, refusing in
+  Aprend's way (NULL after printing why) before SpudGPU sees the call:
+  the swap chain, the GPU timer, a mesh pipeline, a depth bias clamp,
+  differing blends (by SpudGPU's rule: entries that don't blend are equal),
+  a 2D array view rendered to, a cube array view. The caller asks for each
+  of the calls it makes.
+- **Aprend reads the device, not the adapter, for features.**
+  `aprend_instance_create` keeps `spudgpu_get_device_features(device)` in
+  the instance (`aprend_instance_t::features`), and every check reads
+  that. Properties and limits come from
+  `spudgpu_get_adapter_properties(spudgpu_get_device_adapter(device))`:
+  `unified_memory`, the two buffer offset alignments, and
+  `max_draw_indirect_count`, which counts only on a device with
+  `MULTI_DRAW_INDIRECT` and is 1 without. `layered_rendering`, the
+  instance's copy of the old property, is gone.
+- **Confirmed: no internal pass needs a group 2 feature.** Aprend's own
+  views (mip generation, the lit placeholders, bloom and post) render to
+  2D views and read 2D, 2D array and cube views: no layered pass and no
+  cube array view, so group 1 stays the two features. No Aprend shader
+  writes `gl_Layer` or uses `nonuniformEXT` (the lit shaders' unsized
+  `tile_lights[]` is a storage buffer's last member, core SPIR-V), so none
+  needs a feature switched on behind one of these bits either.
+- The instance's command allocators are direct, so the device needs a
+  direct queue; `aprendcontext.h` says so, and SpudGPU refuses the
+  allocators otherwise.
+
+Left: `../apricottests` on D3D12 and Vulkan, where the bare device is
+also the first run of each fallback off Metal (and on D3D12 of a device
+without device-mappable memory); mesh shading and the swap chain's
+refusals, which no test covers.
 
 ## Suggested order
 
@@ -2446,6 +2521,9 @@ and 5 are closed and their numbers are not reused.
    ships, as item 22 allows (24 is written and has run on Metal,
    2026-10-17; what is left of it is in the item); and trellislib's half of the selective glow
    (`../trellislib/TODO.md`).
+
+Item 39 (a device has only its features) is written and has run on
+Metal through `../apricottests`; D3D12 and Vulkan are left.
 
 Item 37 (the command allocator) is written and has run on all three
 backends. The 20-minute D3D12 check (2026-10-16) was of an idle host that

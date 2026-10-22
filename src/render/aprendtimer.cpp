@@ -31,6 +31,10 @@ aprend_gpu_timer aprend_gpu_timer_create(
 		printf("apricot: %s: _queue is NULL\n", who);
 		return nullptr;
 	}
+	if (!(instance->features & SPUDGPU_FEATURE_PASS_TIMESTAMPS)) {
+		printf("apricot: %s: the device was created without SPUDGPU_FEATURE_PASS_TIMESTAMPS\n", who);
+		return nullptr;
+	}
 	// Two entries a slot, counted in 32 bits.
 	if (desc->_slot_count > UINT32_MAX / 2) {
 		printf("apricot: %s: _slot_count %u is too large\n", who, desc->_slot_count);

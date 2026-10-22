@@ -221,7 +221,15 @@ block near the top. A new header gets the same block.
 - Aprend calls SpudGPU's backend-agnostic C API only. It never includes a Vulkan,
   D3D12 or Metal header and never branches on the backend at runtime.
 - Aprend is handed its `spudgpu_device` in `aprend_instance_desc`. It doesn't
-  create the SpudGPU instance, enumerate devices or choose one.
+  create the SpudGPU instance, list adapters, choose one or create the device.
+- A SpudGPU device has only the features it was created with, so Aprend reads
+  features from the device (`aprend_instance_t::features`), never the
+  adapter's `supported_features`, and reads properties and limits from the
+  device's adapter. A feature only Aprend's own code uses, with a path
+  without it, goes in `aprend_get_optional_gpu_features()` for the caller to
+  ask for. A feature one call needs is named in that call's header comment
+  and checked by the call, which refuses in Aprend's way rather than passing
+  SpudGPU's refusal on. `APREND_TODO.md` item 39 has the list.
 - A choice SpudGPU leaves open is either a rendering matter, made in Aprend
   explicitly, or one Aprend takes from its own caller through a desc. It is never
   pushed back down into SpudLib as a default and never left implicit.

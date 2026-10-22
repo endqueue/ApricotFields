@@ -70,10 +70,9 @@ typedef struct aprend_gpu_timer_desc {
  * @param[in] desc     Timer configuration. Only read during the call.
  *
  * @return The timer, or NULL if @p instance or @p desc is NULL,
- *         `_slot_count` is 0, `_queue` is NULL, or the device can't write
- *         timestamps at a pass's start and end
- *         (`SPUDGPU_DEVICE_PROPERTIES::pass_timestamps`) or refuses the
- *         timer.
+ *         `_slot_count` is 0, `_queue` is NULL, the device was created
+ *         without SPUDGPU_FEATURE_PASS_TIMESTAMPS (timestamps at a pass's
+ *         start and end), or it refuses the timer.
  *
  * @see aprend_gpu_timer_destroy()
  */

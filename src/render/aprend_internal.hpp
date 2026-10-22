@@ -182,16 +182,21 @@ typedef struct aprend_instance_t {
 	 * under release_mutex, with submit_serial, on the thread using the
 	 * instance. */
 	bool upload_batch_waiting{false};
-	/* SPUDGPU_DEVICE_PROPERTIES::unified_memory of desc.device, read once at
-	 * creation. Decides where vertex, index and storage buffers are kept
-	 * (aprend_buffer_store). */
+	/* The SPUDGPU_FEATURE_* bits desc.device was created with
+	 * (spudgpu_get_device_features), read once at creation. Every feature
+	 * check reads this, never the adapter's supported_features. */
+	SPUDGPU_FEATURES features{0};
+	/* SPUDGPU_ADAPTER_PROPERTIES::unified_memory of desc.device's adapter,
+	 * read once at creation: a property, not a feature. Decides where
+	 * vertex, index and storage buffers are kept (aprend_buffer_store). */
 	bool unified_memory{false};
-	/* SPUDGPU_DEVICE_PROPERTIES::device_mappable_memory of desc.device, read
-	 * with it: whether a buffer a shader may write can be written directly
-	 * too (SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE). */
+	/* SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY in features: whether a buffer a
+	 * shader may write can be written directly too
+	 * (SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE). */
 	bool device_mappable_memory{false};
-	/* SPUDGPU_DEVICE_PROPERTIES::uniform_buffer_offset_alignment and
-	 * ::storage_buffer_offset_alignment of desc.device, read with it: what a
+	/* SPUDGPU_ADAPTER_PROPERTIES::uniform_buffer_offset_alignment and
+	 * ::storage_buffer_offset_alignment of desc.device's adapter, read with
+	 * it: what a
 	 * binding set entry's `_offset` into a uniform or storage buffer is a
 	 * multiple of. Powers of two. */
 	uint32_t uniform_buffer_offset_alignment{0};
@@ -202,13 +207,10 @@ typedef struct aprend_instance_t {
 	 * APREND_MATERIAL_ARENA_BUFFER_SIZE, which every power of two up to 256
 	 * does. */
 	uint32_t material_block_alignment{0};
-	/* SPUDGPU_DEVICE_PROPERTIES::layered_rendering of desc.device, read once
-	 * at creation: whether a pass may render to the layers of 2D array
-	 * views. */
-	bool layered_rendering{false};
-	/* SPUDGPU_DEVICE_PROPERTIES::max_draw_indirect_count of desc.device, read
-	 * once at creation: the most draws one indirect SpudGPU call takes. An
-	 * indirect draw command with more is recorded as several calls. */
+	/* SPUDGPU_ADAPTER_PROPERTIES::max_draw_indirect_count of desc.device's
+	 * adapter on a device with SPUDGPU_FEATURE_MULTI_DRAW_INDIRECT, else 1,
+	 * read once at creation: the most draws one indirect SpudGPU call takes.
+	 * An indirect draw command with more is recorded as several calls. */
 	uint32_t max_draw_indirect_count{1};
 	/* Which copy of every buffer set is current: 0 to
 	 * desc.frames_in_flight - 1. */

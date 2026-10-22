@@ -284,6 +284,11 @@ void aprend_instance_retire(
 }
 
 extern "C" {
+SPUDGPU_FEATURES aprend_get_optional_gpu_features(void) {
+	// The features only Aprend's own code uses, each with a path for a
+	// device without it (aprend_internal.hpp, aprend_instance_t::features).
+	return SPUDGPU_FEATURE_MULTI_DRAW_INDIRECT | SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY;
+}
 aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 	if (!desc)
 		return nullptr;
@@ -339,13 +344,16 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 	}
 
 	{
-		SPUDGPU_DEVICE_PROPERTIES properties{};
-		properties.base.type = SPUD_STRUCT_TYPE_GPU_DEVICE_PROPERTIES;
-		sr = spudgpu_get_device_properties(desc->device, &properties);
+		// Features from the device, which has only those it was created
+		// with; limits and properties from its adapter.
+		result->features = spudgpu_get_device_features(desc->device);
+		SPUDGPU_ADAPTER_PROPERTIES properties{};
+		properties.base.type = SPUD_STRUCT_TYPE_GPU_ADAPTER_PROPERTIES;
+		sr = spudgpu_get_adapter_properties(spudgpu_get_device_adapter(desc->device), &properties);
 		if (SPUDFAIL(sr))
 			goto failedattempt;
 		result->unified_memory         = properties.unified_memory;
-		result->device_mappable_memory = properties.device_mappable_memory;
+		result->device_mappable_memory = (result->features & SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY) != 0;
 		result->uniform_buffer_offset_alignment = properties.uniform_buffer_offset_alignment;
 		result->storage_buffer_offset_alignment = properties.storage_buffer_offset_alignment;
 		// 0 from a device that reported nothing is taken as 1: any offset.
@@ -354,8 +362,9 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc) {
 		if (result->storage_buffer_offset_alignment == 0)
 			result->storage_buffer_offset_alignment = 1;
 		result->material_block_alignment = result->uniform_buffer_offset_alignment > 16 ? result->uniform_buffer_offset_alignment : 16;
-		result->layered_rendering      = properties.layered_rendering;
-		result->max_draw_indirect_count = properties.max_draw_indirect_count;
+		// The adapter's most draws a call counts only on a device created
+		// with multi-draw indirect; one a call without it.
+		result->max_draw_indirect_count = (result->features & SPUDGPU_FEATURE_MULTI_DRAW_INDIRECT) ? properties.max_draw_indirect_count : 1;
 	}
 
 	sr = spudgpu_create_fence(desc->device, SPUDGPU_FENCE_FLAG_NONE, 0, &result->frame_fence);

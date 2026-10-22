@@ -39,6 +39,10 @@ aprend_swap_chain aprend_swap_chain_create(
 		return nullptr;
 	if (!desc->surface || !desc->queue || !desc->width || !desc->height)
 		return nullptr;
+	if (!(instance->features & SPUDGPU_FEATURE_PRESENT)) {
+		printf("apricot: aprend_swap_chain_create: the device was created without SPUDGPU_FEATURE_PRESENT\n");
+		return nullptr;
+	}
 
 	APREND_MALLOC__T(result, aprend_swap_chain_t);
 	if (!result)

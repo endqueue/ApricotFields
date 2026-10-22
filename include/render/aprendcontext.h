@@ -175,7 +175,12 @@ typedef struct aprend_instance_desc {
 	/**
 	 * The device everything of this instance is created on. Never NULL. It
 	 * is the caller's: it must outlive the instance and is not destroyed
-	 * with it.
+	 * with it. Aprend uses the features the device was created with
+	 * (spudgpu_get_device_features()), never the adapter's: the paths that
+	 * aprend_get_optional_gpu_features() names are taken only on a device
+	 * that has their feature, and a call that needs a feature names it and
+	 * refuses a device without it. The device needs a direct queue: the
+	 * instance's command allocators are direct.
 	 */
 	spudgpu_device device;
 	/**
@@ -214,6 +219,27 @@ typedef struct aprend_instance_desc {
  * @brief Opaque handle to an instance.
  */
 typedef struct aprend_instance_t *aprend_instance;
+
+/**
+ * @brief The SpudGPU features Aprend's own code takes a better path with
+ * when the device has them, and works without.
+ *
+ * For the caller to ask for, where the adapter supports them, when it
+ * creates the device it gives aprend_instance_create(): Aprend reads the
+ * device's features, so one the device wasn't created with is a path not
+ * taken. Today these are SPUDGPU_FEATURE_MULTI_DRAW_INDIRECT (an indirect
+ * draw command is one SpudGPU call, not one a draw) and
+ * SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY (a storage buffer is written
+ * directly, not staged). Features that one of Aprend's calls needs are not
+ * here: each such call names its feature, and the caller asks for it if it
+ * makes the call.
+ *
+ * A function, not a macro, so the value is the linked library's, not the
+ * header's the caller compiled against. Safe from any thread.
+ *
+ * @return The features, SPUDGPU_FEATURE_* bits.
+ */
+SPUDGPU_FEATURES aprend_get_optional_gpu_features(void);
 
 /**
  * @brief Creates an instance on a device.

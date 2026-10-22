@@ -320,4 +320,8 @@ if (APRICOTFIELDS_BUILD_TESTS)
     target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
     target_link_libraries(aprendreflect_tests PRIVATE ApricotFields)
     add_test(NAME aprendreflect_tests COMMAND aprendreflect_tests)
+    # The features Aprend's own code uses, from C.
+    add_executable(aprendfeatures_tests tests/aprendfeatures_tests.c)
+    target_link_libraries(aprendfeatures_tests PRIVATE ApricotFields)
+    add_test(NAME aprendfeatures_tests COMMAND aprendfeatures_tests)
 endif ()

@@ -72,8 +72,9 @@ typedef struct aprend_swap_chain_t *aprend_swap_chain;
  *                     the call.
  *
  * @return The swap chain, or NULL if @p instance or @p desc is NULL,
- *         `surface` or `queue` is NULL, `width` or `height` is 0, or the
- *         device refuses the swap chain.
+ *         `surface` or `queue` is NULL, `width` or `height` is 0, the
+ *         device was created without SPUDGPU_FEATURE_PRESENT, or it refuses
+ *         the swap chain.
  *
  * @see aprend_swap_chain_destroy()
  */

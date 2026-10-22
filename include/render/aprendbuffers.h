@@ -25,8 +25,9 @@
  *
  * @par Where a buffer is kept
  * Where a vertex, index or storage buffer is kept follows the device's
- * memory (SPUDGPU_DEVICE_PROPERTIES::unified_memory and
- * ::device_mappable_memory, read when the instance is created), and the
+ * memory (SPUDGPU_ADAPTER_PROPERTIES::unified_memory of its adapter, and
+ * SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY if the device was created with it,
+ * read when the instance is created), and the
  * calls behave the same either way.
  *
  * On a device whose memory is the system's, the buffer is mapped and a
