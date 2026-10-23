@@ -22,6 +22,10 @@ static SPUDRESULT aprend_swap_chain_create_native(aprend_swap_chain_t *sc) {
 	scd.buffer_count    = sc->desc.buffer_count;
 	scd.format          = sc->desc.format;
 	scd.present_mode    = sc->desc.present_mode;
+	// Aprend's back buffers are the window's size and it scales with a draw
+	// of its own (APREND_TODO.md item 40), so the compositor has nothing to
+	// scale: one to one, which every surface takes.
+	scd.present_scaling = SPUDGPU_PRESENT_SCALING_ONE_TO_ONE;
 	scd.fullscreen_mode = SPUDGPU_FULLSCREEN_MODE_WINDOWED;
 	// APREND_COMMAND_PRESENT_TEXTURE copies into the back buffer.
 	scd.usage = SPUDGPU_IMAGE_USAGE_TRANSFER_DST;

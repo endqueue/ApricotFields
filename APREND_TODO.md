@@ -2308,7 +2308,8 @@ tone curve, then the lit pipeline's stages under item 24.
 
 ### 40. Present scaling: a source of another size than the back buffer
 
-Numbered out of order, as item 31. **Decided 2026-10-23, not started.**
+Numbered out of order, as item 31. **Decided 2026-10-23; Aprend's half not
+started, SpudGPU's half done (2026-10-23, see "Swap chain scaling" below).**
 `PRESENT_TEXTURE` is a copy, and since 2026-10-22 it refuses a source of
 another format than the back buffers or smaller than them (item 38). That
 stays the default; scaling is a mode the caller names, never chosen for it.
@@ -2376,13 +2377,18 @@ struct {
   `APREND_PRESENT_SCALING`; a filter other than LINEAR or NEAREST; a
   border color not finite (ASPECT_FIT); a source without shader-resource
   usage (draw modes).
-- **Swap chain scaling**: Aprend creates its swap chains with SpudGPU's
-  one-to-one scaling once SpudGPU has it (a back buffer the window's size,
-  nothing for the compositor to scale). Letting a caller choose the
-  compositor's scaling instead (back buffers at the source's size, an EXACT
-  copy, the compositor stretching for free, where
-  `spudgpu_get_surface_present_scalings` says the surface takes it) is a
-  later option, after SpudGPU's half.
+- **Swap chain scaling: SpudGPU's half is done (2026-10-23).** SpudGPU's
+  swap chain names a required `SPUDGPU_PRESENT_SCALING` (ONE_TO_ONE,
+  STRETCH, ASPECT_FIT; NONE refused), and
+  `spudgpu_get_surface_present_scalings` says which a surface takes.
+  `aprend_swap_chain_create` passes ONE_TO_ONE, which every surface takes:
+  a back buffer the window's size, nothing for the compositor to scale.
+  Compiled and run on Metal only (macOS); D3D12 and Vulkan written, not
+  run (`spudlib/CLAUDE.md`). Letting a caller choose the compositor's
+  scaling instead (back buffers at the source's size, an EXACT copy, the
+  compositor stretching for free, where the query says the surface takes
+  it) is a later option, not added: it would be a field on
+  `aprend_swap_chain_desc`.
 
 **Tests** (`../apricottests`, no window): the present shader drawn into an
 offscreen target standing in for a back buffer (the draw is the same

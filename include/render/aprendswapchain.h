@@ -63,9 +63,12 @@ typedef struct aprend_swap_chain_desc {
 typedef struct aprend_swap_chain_t *aprend_swap_chain;
 
 /**
- * @brief Creates a swap chain on a surface. It is windowed, and its back
- * buffers are copy destinations: APREND_COMMAND_PRESENT_TEXTURE copies into
- * one.
+ * @brief Creates a swap chain on a surface. It is windowed, its back
+ * buffers are copy destinations (APREND_COMMAND_PRESENT_TEXTURE copies into
+ * one), and its present scaling is SPUDGPU_PRESENT_SCALING_ONE_TO_ONE: a
+ * back buffer of another size than the window is shown pixel for pixel from
+ * the top left, never scaled by the compositor. The caller resizes the swap
+ * chain to the window's size (aprend_swap_chain_resize()).
  *
  * @param[in] instance Instance whose device the swap chain is created on.
  * @param[in] desc     Swap chain configuration. Copied: only read during
