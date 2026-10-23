@@ -118,7 +118,7 @@ typedef struct aprend_draw_list_desc {
  * A value: it is copied by aprend_draw_list_add(). Two draws are of one
  * mesh when every field read below is the same. A range of a pool
  * (aprendbuffers.h) is a mesh with the pool's block as its buffer and the
- * range's start as #_first or #_base_vertex.
+ * range's start as `_first` or `_base_vertex`.
  */
 /* Frozen: a value, copied by every aprend_draw_list_add(). It never changes; a new need gets a new type. */
 typedef struct aprend_draw_mesh {

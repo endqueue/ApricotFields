@@ -25,6 +25,13 @@ static void aprend_cmd_use_store(
 		cmd_list->staged_stores.push_back(store);
 }
 
+/* Adds [handle] to what [cmd_list]'s compile names (used_handles), for
+ * aprend_instance_forget. NULL is ignored. Throws std::bad_alloc. */
+static void aprend_cmd_use_handle(aprend_command_list cmd_list, const void *handle) {
+	if (handle)
+		cmd_list->used_handles.insert(handle);
+}
+
 /* The most levels a bloom of [source] spreads through: its level 0 is half
  * the size of the source's first mip, and each level halves again down to
  * 1 texel. */
@@ -143,9 +150,7 @@ static bool aprend_cmd_list_enlist(aprend_command_list cmd_list) {
 
 /* Whether the compile of [cmd_list] reads [used] at submit. */
 static bool aprend_cmd_list_uses(aprend_command_list cmd_list, const void *used) {
-	for (const auto &use : cmd_list->layout_uses)
-		if (use.tracking == used)
-			return true;
+	// A texture's tracking is in used_handles from its first layout_use.
 	for (const aprend_buffer_store *store : cmd_list->used_stores)
 		if (store == used)
 			return true;
@@ -158,7 +163,9 @@ static bool aprend_cmd_list_uses(aprend_command_list cmd_list, const void *used)
 	for (const auto &timer_use : cmd_list->timer_uses)
 		if (timer_use.timer == used)
 			return true;
-	return false;
+	if (cmd_list->present_swap_chain == used)
+		return true;
+	return cmd_list->used_handles.count(used) != 0;
 }
 
 void aprend_instance_forget(
@@ -214,22 +221,22 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	cmd_list->label_storage.clear();
 	cmd_list->recording_error = false;
 	cmd_list->layout_uses.clear();
+	cmd_list->layout_index.clear();
 	cmd_list->storage_hazards.clear();
 	cmd_list->staged_stores.clear();
 	cmd_list->used_stores.clear();
+	cmd_list->used_handles.clear();
 	cmd_list->buffer_states.clear();
 	cmd_list->materials.clear();
 	aprend_render_target_give_back(cmd_list);
 	cmd_list->compiled           = false;
 	cmd_list->present_swap_chain = nullptr;
 }
-void aprend_send_command(
+/* aprend_send_command's checks and copies. Throws std::bad_alloc from the
+ * list's vectors, which aprend_send_command catches. */
+static void aprend_send_command_recorded(
     aprend_command_list cmd_list,
     APREND_COMMAND cmd) {
-	if (!cmd_list)
-		return;
-	if (cmd._type == APREND_COMMAND_NONE)
-		return;
 
 	// The three commands that stand for others are expanded into them here,
 	// from the pass or list as it is now, and are not recorded themselves.
@@ -771,6 +778,24 @@ void aprend_send_command(
 
 	cmd_list->commands.emplace_back(cmd);
 }
+void aprend_send_command(
+    aprend_command_list cmd_list,
+    APREND_COMMAND cmd) {
+	if (!cmd_list)
+		return;
+	if (cmd._type == APREND_COMMAND_NONE)
+		return;
+	// Every array copy and the command itself grow a vector, and no C++
+	// exception leaves a C entry point: a command that can't be kept fails
+	// the list's next compile, as a malformed one does. Whatever of it was
+	// copied is freed by the reset.
+	try {
+		aprend_send_command_recorded(cmd_list, cmd);
+	} catch (const std::bad_alloc &) {
+		printf("aprend: aprend_send_command: out of memory; the list fails its compile until it is reset\n");
+		cmd_list->recording_error = true;
+	}
+}
 
 /* Where [cmd_list] keeps the layout of (mip, layer) of [range]'s texture, as
  * an index into layout_uses, adding it the first time the list uses that
@@ -781,14 +806,17 @@ static size_t aprend_cmd_layout_use(
     const aprend_texture_range &range,
     uint32_t mip,
     uint32_t layer) {
-	for (size_t i = 0; i < cmd_list->layout_uses.size(); ++i) {
-		const auto &use = cmd_list->layout_uses[i];
-		if (use.image == range.image && use.mip == mip && use.layer == layer)
-			return i;
-	}
+	const aprend_subresource_key key{range.image, mip, layer};
+	const auto found = cmd_list->layout_index.find(key);
+	if (found != cmd_list->layout_index.end())
+		return found->second;
 	SPUDGPU_IMAGE_LAYOUT *tracked = range.tracking->at(mip, layer);
 	cmd_list->layout_uses.push_back({range.image, mip, layer, tracked, range.tracking, *tracked, *tracked, true, true});
-	return cmd_list->layout_uses.size() - 1;
+	const size_t index = cmd_list->layout_uses.size() - 1;
+	cmd_list->layout_index.emplace(key, index);
+	// What aprend_instance_forget looks for when the texture goes.
+	cmd_list->used_handles.insert(range.tracking);
+	return index;
 }
 
 /* Moves every mip of every layer in [range] into [layout]. Unless
@@ -800,7 +828,8 @@ static size_t aprend_cmd_layout_use(
  * is what [skip_if_same] is for.
  *
  * The subresources of a range are usually all in one layout, and then it is
- * one barrier over the range; where they differ, each is moved from its own.
+ * one barrier over the range; where they differ, each run of mips of a layer
+ * that share a layout is one barrier from it.
  *
  * Tracks the layouts in [cmd_list]'s own layout_uses, never on the texture:
  * a texture's layouts only change once the list is actually submitted.
@@ -832,25 +861,35 @@ static void aprend_cmd_transition_range(
 		spudgpu_cmd_image_barrier_subresource(cmd_list->cmd_list, range.image, &spud_range, from, layout);
 	}
 	for (uint32_t layer = 0; layer < range.layer_count; ++layer) {
-		for (uint32_t mip = 0; mip < range.mip_count; ++mip) {
-			const size_t index = aprend_cmd_layout_use(cmd_list, range, range.base_mip + mip, range.base_layer + layer);
-			auto &use          = cmd_list->layout_uses[index];
-			bool barrier       = uniform;
-			if (!uniform && !(skip_if_same && use.final_layout == layout)) {
-				spudgpu_image_view_desc_subresource_range one{};
-				one.base_mip_level    = use.mip;
-				one.mip_level_count   = 1;
-				one.base_array_layer  = use.layer;
-				one.array_layer_count = 1;
-				spudgpu_cmd_image_barrier_subresource(cmd_list->cmd_list, range.image, &one, use.final_layout, layout);
+		uint32_t mip = 0;
+		while (mip < range.mip_count) {
+			// The run of mips from [mip] in one layout: one barrier from it,
+			// or none where it is there already and that is allowed.
+			const size_t first             = aprend_cmd_layout_use(cmd_list, range, range.base_mip + mip, range.base_layer + layer);
+			const SPUDGPU_IMAGE_LAYOUT run = cmd_list->layout_uses[first].final_layout;
+			uint32_t end                   = mip + 1;
+			while (!uniform && end < range.mip_count &&
+			       cmd_list->layout_uses[aprend_cmd_layout_use(cmd_list, range, range.base_mip + end, range.base_layer + layer)].final_layout == run)
+				++end;
+			bool barrier = uniform;
+			if (!uniform && !(skip_if_same && run == layout)) {
+				spudgpu_image_view_desc_subresource_range runs{};
+				runs.base_mip_level    = range.base_mip + mip;
+				runs.mip_level_count   = end - mip;
+				runs.base_array_layer  = range.base_layer + layer;
+				runs.array_layer_count = 1;
+				spudgpu_cmd_image_barrier_subresource(cmd_list->cmd_list, range.image, &runs, run, layout);
 				barrier = true;
 			}
-			// A barrier orders everything before it, storage writes included.
-			if (barrier) {
-				use.storage_accessed = false;
-				use.storage_written  = false;
+			for (; mip < end; ++mip) {
+				auto &use = cmd_list->layout_uses[aprend_cmd_layout_use(cmd_list, range, range.base_mip + mip, range.base_layer + layer)];
+				// A barrier orders everything before it, storage writes included.
+				if (barrier) {
+					use.storage_accessed = false;
+					use.storage_written  = false;
+				}
+				use.final_layout = layout;
 			}
-			use.final_layout = layout;
 		}
 	}
 }
@@ -902,6 +941,20 @@ static bool aprend_cmd_present_texture(
 		return false;
 	}
 
+	// The copy converts nothing on D3D12 and Metal, so a source of another
+	// format would be undefined there; and a smaller one would leave part of
+	// what is shown undefined, from a back buffer moved out of UNDEFINED.
+	if (src->desc.format != actual.format) {
+		printf("aprend: PRESENT_TEXTURE with a source of format %u, and the back buffers are of format %u\n", (unsigned)src->desc.format,
+		       (unsigned)actual.format);
+		return false;
+	}
+	if (src->desc.width < actual.width || src->desc.height < actual.height) {
+		printf("aprend: PRESENT_TEXTURE with a %ux%u source, smaller than the %ux%u back buffer (aprend_swap_chain_get_back_buffer_size)\n",
+		       src->desc.width, src->desc.height, actual.width, actual.height);
+		return false;
+	}
+
 	spudgpu_command_list cmd = cmd_list->cmd_list;
 	// What is presented is mip 0 of layer 0, and only that is moved.
 	aprend_texture_range presented{};
@@ -914,8 +967,9 @@ static bool aprend_cmd_present_texture(
 	aprend_cmd_transition_range(cmd_list, presented, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, false);
 	spudgpu_cmd_image_barrier_view(cmd, back_view, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST);
 
-	uint32_t width  = src->desc.width < actual.width ? src->desc.width : actual.width;
-	uint32_t height = src->desc.height < actual.height ? src->desc.height : actual.height;
+	// The source covers the back buffer: the back buffer's size is copied.
+	const uint32_t width  = actual.width;
+	const uint32_t height = actual.height;
 	spudgpu_image_blit_desc blit{};
 	blit.src_array_layer_count = 1;
 	blit.src_x1                = width;
@@ -932,6 +986,7 @@ static bool aprend_cmd_present_texture(
 
 	cmd_list->present_swap_chain  = sc;
 	cmd_list->present_image_index = sc->acquired_image;
+	cmd_list->present_generation  = sc->generation;
 	return true;
 }
 
@@ -1079,6 +1134,7 @@ static void aprend_cmd_begin_rendering(
 	for (uint32_t i = 0; i < p._color_target_count; ++i) {
 		const aprend_color_target &target = p._color_targets[i];
 		aprend_cmd_transition_view(cmd_list, target.view, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		aprend_cmd_use_handle(cmd_list, target.view);
 
 		spudgpu_color_attachment_desc &color = desc.color_attachments[i];
 		color.image_view                     = target.view->image_view;
@@ -1090,6 +1146,7 @@ static void aprend_cmd_begin_rendering(
 	const aprend_depth_target &depth = p._depth_target;
 	if (depth.view) {
 		aprend_cmd_transition_view(cmd_list, depth.view, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		aprend_cmd_use_handle(cmd_list, depth.view);
 
 		desc.depth_attachment.image_view       = depth.view->image_view;
 		desc.depth_attachment.depth_load_op    = depth.depth_load_op;
@@ -1617,6 +1674,28 @@ static bool aprend_cmd_put_binding_set(
 		return false;
 	}
 	slot_sets[slot] = set;
+	// The set, and what its descriptors point at: a destroy of any of them,
+	// or an update of the set, refuses the list at submit.
+	aprend_cmd_use_handle(cmd_list, set);
+	for (uint32_t i = 0; i < set->entry_count; ++i) {
+		const aprend_binding_set_entry &entry = set->entries[i];
+		switch (entry._type) {
+		case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+			aprend_cmd_use_handle(cmd_list, entry._resource._uniform._buffer);
+			// A buffer set's copies are destroyed one by one with it.
+			if (aprend_uniform_buffer_set buffers = entry._resource._uniform._set)
+				for (uint32_t copy = 0; copy < buffers->buffer_count; ++copy)
+					aprend_cmd_use_handle(cmd_list, buffers->buffers[copy]);
+			break;
+		case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+			// Its store is taken below, which a destroy looks for.
+			break;
+		default:
+			aprend_cmd_use_handle(cmd_list, entry._resource._image._view);
+			aprend_cmd_use_handle(cmd_list, entry._resource._image._sampler);
+			break;
+		}
+	}
 	// The stores of the descriptor set this frame binds. Taken whether or not
 	// a draw reads the slot: copying a buffer nothing reads yet is harmless.
 	const uint32_t frame_slot                               = aprend_binding_set_frame_slot(set, cmd_list->compiled_frame);
@@ -1673,7 +1752,7 @@ static bool aprend_cmd_generate_mips(
 			// A barrier whether or not it is there already, as for a pass's
 			// targets.
 			aprend_cmd_transition_range(cmd_list, one, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, false);
-			aprend_record_mip_pass(cmd_list->cmd_list, pipeline, chain->steps[(size_t)layer * levels + i], aprend_mip_size(texture->desc.width, mip),
+			aprend_record_mip_pass(cmd_list->cmd_list, pipeline, chain->steps[(size_t)layer * levels + i], chain->filter, aprend_mip_size(texture->desc.width, mip),
 			                       aprend_mip_size(texture->desc.height, mip));
 			aprend_cmd_transition_range(cmd_list, one, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, false);
 		}
@@ -2141,9 +2220,40 @@ static bool aprend_cmd_prepare_lit_scenes(aprend_command_list cmd_list) {
 	return true;
 }
 
+/* Adds the views a built-in effect's [command] names to what [cmd_list]'s
+ * compile names: they are read only through the recording, as a pass's
+ * targets are. What the effect's own objects hold (an environment's cubes,
+ * an exposure's textures) are the objects', and go with them. Throws
+ * std::bad_alloc. */
+static void aprend_cmd_use_command_views(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	switch (command._type) {
+	case APREND_COMMAND_BLOOM:
+		aprend_cmd_use_handle(cmd_list, command._params._bloom._source);
+		aprend_cmd_use_handle(cmd_list, command._params._bloom._target);
+		break;
+	case APREND_COMMAND_TONE_MAP:
+		aprend_cmd_use_handle(cmd_list, command._params._tone_map._source);
+		aprend_cmd_use_handle(cmd_list, command._params._tone_map._target);
+		break;
+	case APREND_COMMAND_LIT_ENVIRONMENT:
+		aprend_cmd_use_handle(cmd_list, command._params._lit_environment._source);
+		break;
+	case APREND_COMMAND_LIT_AMBIENT_OCCLUSION:
+		aprend_cmd_use_handle(cmd_list, command._params._lit_ambient_occlusion._depth);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_ambient_occlusion._target);
+		break;
+	case APREND_COMMAND_AUTO_EXPOSURE:
+		aprend_cmd_use_handle(cmd_list, command._params._auto_exposure._source);
+		break;
+	default:
+		break;
+	}
+}
+
 bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return false;
+	APREND_ENTER(cmd_list->instance, "aprend_command_list_compile");
 	cmd_list->compiled = false;
 	aprend_cmd_list_unlist(cmd_list);
 	// A recording of this frame that was never submitted is recorded over;
@@ -2159,9 +2269,11 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 		}
 	}
 	cmd_list->layout_uses.clear();
+	cmd_list->layout_index.clear();
 	cmd_list->storage_hazards.clear();
 	cmd_list->staged_stores.clear();
 	cmd_list->used_stores.clear();
+	cmd_list->used_handles.clear();
 	cmd_list->buffer_states.clear();
 	cmd_list->present_swap_chain = nullptr;
 	// The last compile was not submitted, or this one would find nothing:
@@ -2245,6 +2357,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 		// list (aprend_cmd_prepare_lit_scenes) included.
 		for (size_t command_index = 0; ok && command_index < cmd_list->commands.size(); ++command_index) {
 			const APREND_COMMAND &command = cmd_list->commands[command_index];
+			aprend_cmd_use_command_views(cmd_list, command);
 			switch (command._type) {
 			case APREND_COMMAND_DRAW:
 			case APREND_COMMAND_DRAW_INDEXED:
@@ -2360,6 +2473,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				}
 				spudgpu_cmd_bind_pipeline(cmd, p._pipeline->pipeline);
 				bound_pipeline = p._pipeline;
+				aprend_cmd_use_handle(cmd_list, p._pipeline);
 				// Not guaranteed to survive a pipeline change on every backend:
 				// the next draw binds them again. Vertex buffers do survive one
 				// on every API; a draw binds a slot again only where the new
@@ -2437,6 +2551,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				}
 				spudgpu_cmd_bind_compute_pipeline(cmd, p._pipeline->pipeline);
 				bound_compute_pipeline = p._pipeline;
+				aprend_cmd_use_handle(cmd_list, p._pipeline);
 				// Not guaranteed to survive a pipeline change on every backend:
 				// the next dispatch binds them again.
 				for (aprend_binding_set &applied : applied_compute_sets)
@@ -2734,9 +2849,11 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 		aprend_render_target_give_back(cmd_list);
 		cmd_list->timer_uses.clear();
 		cmd_list->layout_uses.clear();
+		cmd_list->layout_index.clear();
 		cmd_list->storage_hazards.clear();
 		cmd_list->staged_stores.clear();
 		cmd_list->used_stores.clear();
+		cmd_list->used_handles.clear();
 		cmd_list->buffer_states.clear();
 		cmd_list->materials.clear();
 		cmd_list->present_swap_chain = nullptr;
@@ -2748,16 +2865,17 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_queue queue) {
 	if (!cmd_list || !queue)
 		return false;
+	APREND_ENTER(cmd_list->instance, "aprend_command_list_submit");
 	if (!cmd_list->compiled) {
 		printf("aprend: submit of a command list without a successful compile since its last submit\n");
 		return false;
 	}
-	// Before anything the list uses is read: a texture, buffer, material or
-	// GPU timer it was compiled against may be gone.
+	// Before anything the list uses is read: something it was compiled
+	// against may be gone (aprend_instance_forget).
 	{
 		std::lock_guard<std::mutex> lock(cmd_list->instance->release_mutex);
 		if (cmd_list->stale) {
-			printf("aprend: submit refused: a texture, buffer, material or GPU timer the list uses was destroyed or resized since it was compiled; recompile it\n");
+			printf("aprend: submit refused: something the list uses was destroyed, resized or updated since it was compiled; recompile it\n");
 			return false;
 		}
 	}
@@ -2784,6 +2902,10 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 	if (sc) {
 		// The list copies into one specific acquired back buffer; it's only
 		// valid while that same one is still acquired and unsubmitted.
+		if (sc->generation != cmd_list->present_generation) {
+			printf("aprend: submit refused: the swap chain this list presents into was resized since it was compiled; recompile it\n");
+			return false;
+		}
 		if (sc->acquired_image != cmd_list->present_image_index || sc->submitted) {
 			printf("aprend: submit refused: the back buffer this list presents into is no longer the acquired one; recompile it\n");
 			return false;

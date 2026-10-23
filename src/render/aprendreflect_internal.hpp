@@ -11,6 +11,8 @@
 
 #include "render/aprendshader.h"
 
+#include <spudgpu.h>
+
 #include <deque>
 #include <string>
 #include <vector>
@@ -24,6 +26,22 @@ struct aprend_reflection_store {
 	std::vector<aprend_shader_resource> resources{};
 	std::vector<aprend_shader_member> members{};
 	std::vector<aprend_shader_input> inputs{};
+	/* What the public view has no field for (aprend_shader_reflection is
+	 * frozen), kept for Aprend's own checks. */
+	/* A storage image the entry point uses whose GLSL declares a format
+	 * (`layout(rgba8)`): the format a view bound there has to be, the one
+	 * Vulkan's table of compatible formats gives. A declared format SpudGPU
+	 * has no format for, and an image declared without one, isn't listed. */
+	struct storage_format {
+		uint32_t set;
+		uint32_t binding;
+		SPUDGPU_FORMAT format;
+	};
+	std::vector<storage_format> storage_formats{};
+	/* A fragment shader's color outputs by location, view.color_output_count
+	 * of them: the kind of number each writes, NONE for a location in that
+	 * span it doesn't write. Empty for any other stage. */
+	std::vector<APREND_SHADER_SCALAR_TYPE> output_types{};
 	/* Every name the view points at. A deque, so adding one never moves the
 	 * ones already pointed at. */
 	std::deque<std::string> strings{};

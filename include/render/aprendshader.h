@@ -193,7 +193,7 @@ enum {
  * A block's members are listed flat: a member that is a struct is listed as
  * its members, and an array of structs as the members of each element. A
  * member that is an array of a scalar, vector or matrix is one entry with
- * #array_count elements.
+ * `array_count` elements.
  */
 /* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
 typedef struct aprend_shader_member {

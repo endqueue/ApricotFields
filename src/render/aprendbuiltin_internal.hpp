@@ -92,6 +92,13 @@ bool aprend_builtin_bloom_prepare(aprend_instance instance);
 /* The bloom layout; made by aprend_builtin_bloom_prepare, NULL before it. */
 aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance);
 
+/* The push constants of Aprend's downsample shader: [mode][0] is 1 for an
+ * exact box filter (SPUDGPU_FILTER_LINEAR), 0 for a nearest one. 16 bytes,
+ * as a uvec4. */
+struct aprend_downsample_params {
+	uint32_t mode[4];
+};
+
 /* The downsample pipeline rendering to [format], made if it doesn't exist,
  * with its shaders and layout. NULL, printed, if one can't be made. */
 aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);

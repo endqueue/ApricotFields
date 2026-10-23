@@ -106,6 +106,89 @@ inline bool aprend_texture_ranges_overlap(const aprend_texture_range &a, const a
 	return true;
 }
 
+/* The kind of number a shader reads from or writes to a texel of [format]:
+ * FLOAT for float, normalized and sRGB formats and the compressed ones,
+ * UINT and INT for the unsigned and signed integer formats. NONE for
+ * UNKNOWN, a typeless format, and a depth or stencil format, whose aspect
+ * says what is read. */
+inline APREND_SHADER_SCALAR_TYPE aprend_format_scalar_type(SPUDGPU_FORMAT format) {
+	switch (format) {
+	case SPUDGPU_FORMAT_R32G32B32A32_UINT:
+	case SPUDGPU_FORMAT_R32G32B32_UINT:
+	case SPUDGPU_FORMAT_R16G16B16A16_UINT:
+	case SPUDGPU_FORMAT_R32G32_UINT:
+	case SPUDGPU_FORMAT_R10G10B10A2_UINT:
+	case SPUDGPU_FORMAT_R8G8B8A8_UINT:
+	case SPUDGPU_FORMAT_R16G16_UINT:
+	case SPUDGPU_FORMAT_R32_UINT:
+	case SPUDGPU_FORMAT_R8G8_UINT:
+	case SPUDGPU_FORMAT_R16_UINT:
+	case SPUDGPU_FORMAT_R8_UINT:
+		return APREND_SHADER_SCALAR_TYPE_UINT;
+	case SPUDGPU_FORMAT_R32G32B32A32_SINT:
+	case SPUDGPU_FORMAT_R32G32B32_SINT:
+	case SPUDGPU_FORMAT_R16G16B16A16_SINT:
+	case SPUDGPU_FORMAT_R32G32_SINT:
+	case SPUDGPU_FORMAT_R8G8B8A8_SINT:
+	case SPUDGPU_FORMAT_R16G16_SINT:
+	case SPUDGPU_FORMAT_R32_SINT:
+	case SPUDGPU_FORMAT_R8G8_SINT:
+	case SPUDGPU_FORMAT_R16_SINT:
+	case SPUDGPU_FORMAT_R8_SINT:
+		return APREND_SHADER_SCALAR_TYPE_INT;
+	case SPUDGPU_FORMAT_UNKNOWN:
+	case SPUDGPU_FORMAT_R32G32B32A32_TYPELESS:
+	case SPUDGPU_FORMAT_R32G32B32_TYPELESS:
+	case SPUDGPU_FORMAT_R16G16B16A16_TYPELESS:
+	case SPUDGPU_FORMAT_R32G32_TYPELESS:
+	case SPUDGPU_FORMAT_R32G8X24_TYPELESS:
+	case SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT:
+	case SPUDGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+	case SPUDGPU_FORMAT_X32_TYPELESS_G8X24_UINT:
+	case SPUDGPU_FORMAT_R10G10B10A2_TYPELESS:
+	case SPUDGPU_FORMAT_R8G8B8A8_TYPELESS:
+	case SPUDGPU_FORMAT_R16G16_TYPELESS:
+	case SPUDGPU_FORMAT_R32_TYPELESS:
+	case SPUDGPU_FORMAT_D32_FLOAT:
+	case SPUDGPU_FORMAT_R24G8_TYPELESS:
+	case SPUDGPU_FORMAT_D24_UNORM_S8_UINT:
+	case SPUDGPU_FORMAT_R24_UNORM_X8_TYPELESS:
+	case SPUDGPU_FORMAT_X24_TYPELESS_G8_UINT:
+	case SPUDGPU_FORMAT_R8G8_TYPELESS:
+	case SPUDGPU_FORMAT_R16_TYPELESS:
+	case SPUDGPU_FORMAT_D16_UNORM:
+	case SPUDGPU_FORMAT_R8_TYPELESS:
+	case SPUDGPU_FORMAT_BC1_TYPELESS:
+	case SPUDGPU_FORMAT_BC2_TYPELESS:
+	case SPUDGPU_FORMAT_BC3_TYPELESS:
+	case SPUDGPU_FORMAT_BC4_TYPELESS:
+	case SPUDGPU_FORMAT_BC5_TYPELESS:
+	case SPUDGPU_FORMAT_B8G8R8A8_TYPELESS:
+	case SPUDGPU_FORMAT_B8G8R8X8_TYPELESS:
+	case SPUDGPU_FORMAT_BC6H_TYPELESS:
+	case SPUDGPU_FORMAT_BC7_TYPELESS:
+		return APREND_SHADER_SCALAR_TYPE_NONE;
+	default:
+		// The video formats (AYUV and on) are read through a conversion,
+		// not as the texel is; say nothing of them.
+		if ((uint32_t)format >= (uint32_t)SPUDGPU_FORMAT_AYUV && format != SPUDGPU_FORMAT_B4G4R4A4_UNORM)
+			return APREND_SHADER_SCALAR_TYPE_NONE;
+		return APREND_SHADER_SCALAR_TYPE_FLOAT;
+	}
+}
+
+/* [type]'s name, for a message. */
+inline const char *aprend_scalar_type_name(APREND_SHADER_SCALAR_TYPE type) {
+	switch (type) {
+	case APREND_SHADER_SCALAR_TYPE_FLOAT: return "float";
+	case APREND_SHADER_SCALAR_TYPE_INT: return "a signed integer";
+	case APREND_SHADER_SCALAR_TYPE_UINT: return "an unsigned integer";
+	case APREND_SHADER_SCALAR_TYPE_BOOL: return "a boolean";
+	case APREND_SHADER_SCALAR_TYPE_OTHER: return "another kind of number";
+	default: return "nothing";
+	}
+}
+
 /* Whether [format] is a depth format that also has a stencil. */
 inline bool aprend_format_has_stencil(SPUDGPU_FORMAT format) {
 	return format == SPUDGPU_FORMAT_D24_UNORM_S8_UINT || format == SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT;
@@ -274,6 +357,11 @@ typedef struct aprend_texture_view_t
 /* The mips and layers [view] covers, with the image and where that
  * texture's layouts are tracked. Views are of a 2D or a 3D texture, nothing
  * else. */
+/* The format of the texture [view] is of: a view's format is its texture's. */
+inline SPUDGPU_FORMAT aprend_texture_view_format(const aprend_texture_view_t *view) {
+	return view->dimension == APREND_TEXTURE_DIMENSION_3D ? view->texture._t3d->desc.format : view->texture._t2d->desc.format;
+}
+
 inline aprend_texture_range aprend_texture_view_range(aprend_texture_view_t *view) {
 	aprend_texture_range range{};
 	if (view->dimension == APREND_TEXTURE_DIMENSION_3D) {
@@ -341,13 +429,16 @@ bool aprend_texture2d_mip_chain(
     aprend_graphics_pipeline *out_pipeline);
 
 /* Records the pass that renders [step]'s target, a level [width] by
- * [height], from its source with [pipeline]. Both views are already in the
- * layouts the pass needs: the source in SHADER_READ_ONLY, the target in
+ * [height], from its source with [pipeline], filtered as [filter] (the
+ * chain's): LINEAR an exact box over the source texels each target texel
+ * covers, NEAREST one texel. Both views are already in the layouts the pass
+ * needs: the source in SHADER_READ_ONLY, the target in
  * COLOR_ATTACHMENT_OPTIMAL. */
 void aprend_record_mip_pass(
     spudgpu_command_list cmd,
     aprend_graphics_pipeline pipeline,
     const aprend_mip_step &step,
+    SPUDGPU_FILTER filter,
     uint32_t width,
     uint32_t height);
 

@@ -356,6 +356,7 @@ bool aprend_texture2d_update(
     void **ppData) {
 	if (!(texture && width && height && ppData))
 		return false;
+	APREND_ENTER(texture->instance, "aprend_texture2d_update");
 	if (!queue)
 		return false;
 	if (!(*ppData))
@@ -434,6 +435,7 @@ bool aprend_texture2d_get_data(
     void **ppData) {
 	if (!(texture && width && height && ppData))
 		return false;
+	APREND_ENTER(texture->instance, "aprend_texture2d_get_data");
 	if (!queue)
 		return false;
 	if (!(*ppData))
@@ -636,10 +638,13 @@ void aprend_record_mip_pass(
     spudgpu_command_list cmd,
     aprend_graphics_pipeline pipeline,
     const aprend_mip_step &step,
+    SPUDGPU_FILTER filter,
     uint32_t width,
     uint32_t height) {
+	aprend_downsample_params params{};
+	params.mode[0] = filter == SPUDGPU_FILTER_LINEAR ? 1u : 0u;
 	// Every texel is drawn, so what the level held is not loaded.
-	aprend_record_fullscreen_pass(cmd, pipeline, step.target->image_view, width, height, SPUDGPU_LOAD_OP_DONT_CARE, step.set, nullptr, 0);
+	aprend_record_fullscreen_pass(cmd, pipeline, step.target->image_view, width, height, SPUDGPU_LOAD_OP_DONT_CARE, step.set, &params, sizeof(params));
 }
 
 extern "C" {
@@ -652,6 +657,7 @@ bool aprend_texture2d_generate_mips(
 		printf("apricot: aprend_texture2d_generate_mips: texture is NULL\n");
 		return false;
 	}
+	APREND_ENTER(texture->instance, "aprend_texture2d_generate_mips");
 	if (!queue) {
 		printf("apricot: aprend_texture2d_generate_mips: queue is NULL\n");
 		return false;
@@ -696,7 +702,7 @@ bool aprend_texture2d_generate_mips(
 			for (uint32_t i = 0; i < levels; ++i) {
 				const uint32_t mip = base_mip + i + 1;
 				move(mip, layer, *texture->tracking.at(mip, layer), SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-				aprend_record_mip_pass(cmd, pipeline, chain->steps[(size_t)layer * levels + i], aprend_mip_size(texture->desc.width, mip),
+				aprend_record_mip_pass(cmd, pipeline, chain->steps[(size_t)layer * levels + i], chain->filter, aprend_mip_size(texture->desc.width, mip),
 				                       aprend_mip_size(texture->desc.height, mip));
 				move(mip, layer, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
 			}
@@ -727,6 +733,7 @@ bool aprend_texture2d_resize(
     uint32_t new_height) {
 	if (!texture)
 		return false;
+	APREND_ENTER(texture->instance, "aprend_texture2d_resize");
 	if (!new_width)
 		return false;
 	if (!new_height)
@@ -877,6 +884,7 @@ bool aprend_texture3d_update(
     void **ppData) {
 	if (!(texture && width && height && depth && ppData))
 		return false;
+	APREND_ENTER(texture->instance, "aprend_texture3d_update");
 	if (!queue)
 		return false;
 	if (!(*ppData))
@@ -962,6 +970,7 @@ bool aprend_texture3d_get_data(
     void **ppData) {
 	if (!(texture && width && height && depth && ppData))
 		return false;
+	APREND_ENTER(texture->instance, "aprend_texture3d_get_data");
 	if (!queue)
 		return false;
 	if (!(*ppData))
@@ -1056,6 +1065,7 @@ bool aprend_texture3d_resize(
     uint32_t new_depth) {
 	if (!texture)
 		return false;
+	APREND_ENTER(texture->instance, "aprend_texture3d_resize");
 	if (!new_width)
 		return false;
 	if (!new_height)
@@ -1393,6 +1403,8 @@ void aprend_destroy_texture_view(aprend_texture_view view) {
 	else
 		--view->texture._t3d->live_views;
 #endif
+	// A compiled list that names it is refused at submit.
+	aprend_instance_forget(view->instance, view);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(view->instance, view, &aprend_release_handle<aprend_texture_view_t>);
 }
@@ -1454,6 +1466,8 @@ aprend_sampler aprend_sampler_create(
 void aprend_sampler_destroy(aprend_sampler sampler) {
 	if (!sampler)
 		return;
+	// A compiled list whose sets hold it is refused at submit.
+	aprend_instance_forget(sampler->instance, sampler);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(sampler->instance, sampler, &aprend_release_handle<aprend_sampler_t>);
 }

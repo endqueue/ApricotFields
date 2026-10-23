@@ -106,6 +106,55 @@ bool aprend_stage_matches(SPUDGPU_SHADER_STAGE stage, spv::ExecutionModel model)
 	}
 }
 
+/* The SpudGPU format a storage image declared with [format] (GLSL's
+ * `layout(rgba8)`) is viewed in: Vulkan's table of formats compatible with
+ * each SPIR-V image format, which is one format each. UNKNOWN for an image
+ * declared without one, and for one SpudGPU has no format for. */
+SPUDGPU_FORMAT aprend_spirv_image_format(spv::ImageFormat format) {
+	switch (format) {
+	case spv::ImageFormatRgba32f: return SPUDGPU_FORMAT_R32G32B32A32_FLOAT;
+	case spv::ImageFormatRgba16f: return SPUDGPU_FORMAT_R16G16B16A16_FLOAT;
+	case spv::ImageFormatR32f: return SPUDGPU_FORMAT_R32_FLOAT;
+	case spv::ImageFormatRgba8: return SPUDGPU_FORMAT_R8G8B8A8_UNORM;
+	case spv::ImageFormatRgba8Snorm: return SPUDGPU_FORMAT_R8G8B8A8_SNORM;
+	case spv::ImageFormatRg32f: return SPUDGPU_FORMAT_R32G32_FLOAT;
+	case spv::ImageFormatRg16f: return SPUDGPU_FORMAT_R16G16_FLOAT;
+	case spv::ImageFormatR11fG11fB10f: return SPUDGPU_FORMAT_R11G11B10_FLOAT;
+	case spv::ImageFormatR16f: return SPUDGPU_FORMAT_R16_FLOAT;
+	case spv::ImageFormatRgba16: return SPUDGPU_FORMAT_R16G16B16A16_UNORM;
+	case spv::ImageFormatRgb10A2: return SPUDGPU_FORMAT_R10G10B10A2_UNORM;
+	case spv::ImageFormatRg16: return SPUDGPU_FORMAT_R16G16_UNORM;
+	case spv::ImageFormatRg8: return SPUDGPU_FORMAT_R8G8_UNORM;
+	case spv::ImageFormatR16: return SPUDGPU_FORMAT_R16_UNORM;
+	case spv::ImageFormatR8: return SPUDGPU_FORMAT_R8_UNORM;
+	case spv::ImageFormatRgba16Snorm: return SPUDGPU_FORMAT_R16G16B16A16_SNORM;
+	case spv::ImageFormatRg16Snorm: return SPUDGPU_FORMAT_R16G16_SNORM;
+	case spv::ImageFormatRg8Snorm: return SPUDGPU_FORMAT_R8G8_SNORM;
+	case spv::ImageFormatR16Snorm: return SPUDGPU_FORMAT_R16_SNORM;
+	case spv::ImageFormatR8Snorm: return SPUDGPU_FORMAT_R8_SNORM;
+	case spv::ImageFormatRgba32i: return SPUDGPU_FORMAT_R32G32B32A32_SINT;
+	case spv::ImageFormatRgba16i: return SPUDGPU_FORMAT_R16G16B16A16_SINT;
+	case spv::ImageFormatRgba8i: return SPUDGPU_FORMAT_R8G8B8A8_SINT;
+	case spv::ImageFormatR32i: return SPUDGPU_FORMAT_R32_SINT;
+	case spv::ImageFormatRg32i: return SPUDGPU_FORMAT_R32G32_SINT;
+	case spv::ImageFormatRg16i: return SPUDGPU_FORMAT_R16G16_SINT;
+	case spv::ImageFormatRg8i: return SPUDGPU_FORMAT_R8G8_SINT;
+	case spv::ImageFormatR16i: return SPUDGPU_FORMAT_R16_SINT;
+	case spv::ImageFormatR8i: return SPUDGPU_FORMAT_R8_SINT;
+	case spv::ImageFormatRgba32ui: return SPUDGPU_FORMAT_R32G32B32A32_UINT;
+	case spv::ImageFormatRgba16ui: return SPUDGPU_FORMAT_R16G16B16A16_UINT;
+	case spv::ImageFormatRgba8ui: return SPUDGPU_FORMAT_R8G8B8A8_UINT;
+	case spv::ImageFormatR32ui: return SPUDGPU_FORMAT_R32_UINT;
+	case spv::ImageFormatRgb10a2ui: return SPUDGPU_FORMAT_R10G10B10A2_UINT;
+	case spv::ImageFormatRg32ui: return SPUDGPU_FORMAT_R32G32_UINT;
+	case spv::ImageFormatRg16ui: return SPUDGPU_FORMAT_R16G16_UINT;
+	case spv::ImageFormatRg8ui: return SPUDGPU_FORMAT_R8G8_UINT;
+	case spv::ImageFormatR16ui: return SPUDGPU_FORMAT_R16_UINT;
+	case spv::ImageFormatR8ui: return SPUDGPU_FORMAT_R8_UINT;
+	default: return SPUDGPU_FORMAT_UNKNOWN;
+	}
+}
+
 APREND_SHADER_SCALAR_TYPE aprend_scalar_type(const spirv_cross::SPIRType &type) {
 	switch (type.basetype) {
 	case spirv_cross::SPIRType::Float:
@@ -354,8 +403,12 @@ struct aprend_reflector {
 			}
 			out_resource.image_scalar_type   = aprend_scalar_type(compiler.get_type(image.type));
 			out_resource.image_depth_compare = image.depth;
-			if (type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE)
-				out_resource.read_only = compiler.has_decoration(resource.id, spv::DecorationNonWritable);
+			if (type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+				out_resource.read_only       = compiler.has_decoration(resource.id, spv::DecorationNonWritable);
+				const SPUDGPU_FORMAT format  = aprend_spirv_image_format(image.format);
+				if (format != SPUDGPU_FORMAT_UNKNOWN && out_resource.used)
+					out.storage_formats.push_back({out_resource.set, out_resource.binding, format});
+			}
 		}
 		out.resources.push_back(out_resource);
 		return true;
@@ -463,13 +516,20 @@ struct aprend_reflector {
 
 		if (stage == SPUDGPU_SHADER_STAGE_FRAGMENT) {
 			for (const spirv_cross::Resource &r : resources.stage_outputs) {
+				if (!used(r.id))
+					continue;
 				const spirv_cross::SPIRType &type = compiler.get_type(r.type_id);
 				uint32_t locations                = 1;
 				for (size_t dim = 0; dim < type.array.size(); ++dim)
 					locations *= type.array[dim] ? type.array[dim] : 1;
-				const uint32_t end = compiler.get_decoration(r.id, spv::DecorationLocation) + locations;
-				if (used(r.id) && end > out.view.color_output_count)
+				const uint32_t first = compiler.get_decoration(r.id, spv::DecorationLocation);
+				const uint32_t end   = first + locations;
+				if (end > out.view.color_output_count)
 					out.view.color_output_count = end;
+				if (out.output_types.size() < end)
+					out.output_types.resize(end, APREND_SHADER_SCALAR_TYPE_NONE);
+				for (uint32_t location = first; location < end; ++location)
+					out.output_types[location] = aprend_scalar_type(type);
 			}
 		}
 

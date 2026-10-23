@@ -82,8 +82,11 @@
  * thread, and what a destroy call leaves to be released later is released
  * inside a later call the caller makes, never behind its back.
  *
- * None of this is checked. A call from a second thread is a data race, not
- * a failure the call reports.
+ * A call from a second thread is a data race, not a failure the call
+ * reports. A Debug build of Aprend checks the rule for the calls the list
+ * above names: one that finds another thread inside the instance prints so,
+ * with its own name, and goes on (as Vulkan's validation layer reports an
+ * object used by two threads at once). A Release build checks nothing.
  *
  * @par Destroying
  * A destroy call of anything the GPU uses - a buffer, a texture or a view of
@@ -99,14 +102,15 @@
  * Two things this does not cover:
  *
  * - A command list compiled against an object and submitted after the
- *   object was destroyed. The release waits for submissions, not compiles.
- *   For a texture (2D or 3D), a vertex, index or storage buffer, a material
- *   and a GPU timer, aprend_command_list_submit() refuses such a list, and
- *   the same after a texture is resized; for anything else (a view, a
- *   sampler, a pipeline, a binding set) nothing checks it and the GPU would
- *   use what is gone. Either way, destroy an object after the last
- *   submission that uses it, not after the last compile, and reset or
- *   recompile any list that still names it.
+ *   object was destroyed. The release waits for submissions, not compiles,
+ *   so aprend_command_list_submit() refuses such a list instead: one that
+ *   names a destroyed texture (2D or 3D) or view of one, a vertex, index,
+ *   uniform or storage buffer, a sampler, a pipeline, a binding set or
+ *   anything a set it binds holds, a material, a GPU timer or a swap chain;
+ *   one compiled before a texture was resized, a binding set updated or a
+ *   swap chain resized. Compiling it again is what the caller does then.
+ *   Destroy an object after the last submission that uses it, not after
+ *   the last compile, to keep a list submittable.
  * - Work the caller submits to SpudGPU itself, which the instance never
  *   sees.
  *

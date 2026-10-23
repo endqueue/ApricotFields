@@ -211,9 +211,12 @@ enum {
 	/**
 	 * Copies `_source` into `_swap_chain`'s acquired back buffer
 	 * (aprendswapchain.h) and leaves it ready to present. Outside any pass;
-	 * at most one per list. Where the sizes differ, only the overlapping
-	 * top-left region is copied. The back buffer must have been acquired
-	 * before compiling.
+	 * at most one per list. The back buffer must have been acquired before
+	 * compiling. `_source` is in the back buffers' format (the copy converts
+	 * nothing on D3D12 and Metal) and at least their size
+	 * (aprend_swap_chain_get_back_buffer_size()): every texel shown is one
+	 * of the source's, and a larger source is cropped to its top-left
+	 * region. The compile fails otherwise.
 	 */
 	APREND_COMMAND_PRESENT_TEXTURE        = 13,
 	/**
@@ -969,12 +972,14 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * the current frame's transient memory (aprendmaterial.h, "When uniform
  * values take effect").
  *
- * A list is refused if a texture, vertex, index or storage buffer,
- * material or GPU timer it was compiled against has been destroyed since,
- * from any thread, or a texture it uses resized: its barriers and copies
- * name what is gone. Recompile it once what it names exists again. Nothing
- * of a refused list is read. Views, samplers, pipelines and binding sets
- * are not checked (aprendcontext.h, "Destroying").
+ * A list is refused if anything it was compiled against has been destroyed
+ * since, from any thread - a texture or view, a buffer, a sampler, a
+ * pipeline, a binding set or anything one it binds holds, a material, a GPU
+ * timer, a swap chain - or a texture it uses resized, a binding set it
+ * binds updated (aprend_binding_set_update()), or the swap chain it
+ * presents into resized: its barriers, copies and recorded commands name
+ * what is gone. Recompile it once what it names exists again. Nothing of a
+ * refused list is read (aprendcontext.h, "Destroying").
  *
  * A compile is submitted once. To run the same recorded commands again,
  * compile the list again and submit that: a SpudGPU command list is
@@ -985,7 +990,8 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  *
  * A list with a PRESENT_TEXTURE must be submitted on its swap chain's
  * queue, while the back buffer it was compiled against is still the
- * acquired one; follow it with aprend_swap_chain_present().
+ * acquired one of the same back buffers (no resize since); follow it with
+ * aprend_swap_chain_present().
  *
  * @param[in] cmd_list List to submit.
  * @param[in] queue    Queue to submit on: the instance's one queue.

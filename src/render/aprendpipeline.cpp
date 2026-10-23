@@ -367,6 +367,38 @@ static const char *aprend_stage_name(SPUDGPU_SHADER_STAGE stage) {
 // Adds the images it uses to [images] and the storage bindings it writes to
 // [writes]. False, printed for [who], at the first mismatch. Throws
 // std::bad_alloc from [images] or [writes].
+/* Whether [desc]'s fragment shader writes each of its color targets, and
+ * only those, as the kind of number each target's format holds. A target
+ * the shader doesn't write gets undefined values on every API (SpudGPU has
+ * no write mask to leave it alone); a location with no target is refused
+ * by Metal; and a float written to an integer target, or the other way
+ * round, is undefined. False, printed for [who], if not. */
+static bool aprend_pipeline_check_outputs(const char *who, const aprend_graphics_pipeline_desc &desc) {
+	const aprend_reflection_store &fragment = desc.fragment_shader->reflection;
+	const uint32_t outputs                  = fragment.view.color_output_count;
+	if (outputs > desc.color_attachment_count) {
+		printf("apricot: %s: the fragment shader writes color location %u, and the pipeline has %u color targets\n", who, outputs - 1,
+		       desc.color_attachment_count);
+		return false;
+	}
+	for (uint32_t i = 0; i < desc.color_attachment_count; ++i) {
+		const APREND_SHADER_SCALAR_TYPE written = i < fragment.output_types.size() ? fragment.output_types[i] : APREND_SHADER_SCALAR_TYPE_NONE;
+		if (written == APREND_SHADER_SCALAR_TYPE_NONE) {
+			printf("apricot: %s: the fragment shader doesn't write color location %u, and the pipeline has a target there, which would be left "
+			       "undefined\n",
+			       who, i);
+			return false;
+		}
+		const APREND_SHADER_SCALAR_TYPE holds = aprend_format_scalar_type(desc.color_attachment_formats[i]);
+		if (holds != APREND_SHADER_SCALAR_TYPE_NONE && written != holds) {
+			printf("apricot: %s: the fragment shader writes %s to color location %u, and its target's format %u holds %s\n", who,
+			       aprend_scalar_type_name(written), i, (unsigned)desc.color_attachment_formats[i], aprend_scalar_type_name(holds));
+			return false;
+		}
+	}
+	return true;
+}
+
 static bool aprend_pipeline_check_shader(
     const char *who,
     aprend_shader shader,
@@ -415,8 +447,13 @@ static bool aprend_pipeline_check_shader(
 			       stage, resource.set, resource.binding, resource.name);
 			return false;
 		}
-		if (resource.image_shape != APREND_TEXTURE_VIEW_SHAPE_NONE)
-			images.push_back({resource.set, resource.binding, resource.image_shape, resource.image_scalar_type});
+		if (resource.image_shape != APREND_TEXTURE_VIEW_SHAPE_NONE) {
+			SPUDGPU_FORMAT format = SPUDGPU_FORMAT_UNKNOWN;
+			for (const aprend_reflection_store::storage_format &declared : shader->reflection.storage_formats)
+				if (declared.set == resource.set && declared.binding == resource.binding)
+					format = declared.format;
+			images.push_back({resource.set, resource.binding, resource.image_shape, resource.image_scalar_type, format});
+		}
 		const bool storage = resource.type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE || resource.type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 		if (storage && !resource.read_only && !aprend_storage_writes_hold(writes, resource.set, resource.binding))
 			writes.push_back({resource.set, resource.binding});
@@ -466,20 +503,6 @@ static APREND_SHADER_SCALAR_TYPE aprend_element_scalar_type(APREND_VERTEX_ELEMEN
 		return APREND_SHADER_SCALAR_TYPE_UINT;
 	default:
 		return APREND_SHADER_SCALAR_TYPE_NONE;
-	}
-}
-
-// A kind of number, for messages.
-static const char *aprend_scalar_type_name(APREND_SHADER_SCALAR_TYPE type) {
-	switch (type) {
-	case APREND_SHADER_SCALAR_TYPE_FLOAT:
-		return "float";
-	case APREND_SHADER_SCALAR_TYPE_INT:
-		return "int";
-	case APREND_SHADER_SCALAR_TYPE_UINT:
-		return "uint";
-	default:
-		return "no kind a vertex element gives";
 	}
 }
 
@@ -590,6 +613,24 @@ bool aprend_binding_set_matches_images(
 			if (view->desc.aspect == APREND_TEXTURE_VIEW_ASPECT_DEPTH && expectation.scalar_type != APREND_SHADER_SCALAR_TYPE_FLOAT) {
 				printf("aprend: %s: set %u binding %u element %u is a depth, and the shader reads it as other than a float\n", who, slot,
 				       entry._binding, entry._array_element);
+				return false;
+			}
+			const SPUDGPU_FORMAT format = aprend_texture_view_format(view);
+			// What a read gives follows the format's kind of number on every
+			// API: a float or normalized one reads as float, an integer one as
+			// its own. Read as another, the result is undefined on Vulkan and
+			// D3D12 and refused by Metal's validation.
+			const APREND_SHADER_SCALAR_TYPE reads = aprend_format_scalar_type(format);
+			if (view->desc.aspect == APREND_TEXTURE_VIEW_ASPECT_COLOR && reads != APREND_SHADER_SCALAR_TYPE_NONE &&
+			    expectation.scalar_type != reads) {
+				printf("aprend: %s: set %u binding %u element %u is a view of format %u, which reads as %s, and the shader reads it as %s\n", who,
+				       slot, entry._binding, entry._array_element, (unsigned)format, aprend_scalar_type_name(reads),
+				       aprend_scalar_type_name(expectation.scalar_type));
+				return false;
+			}
+			if (expectation.format != SPUDGPU_FORMAT_UNKNOWN && format != expectation.format) {
+				printf("aprend: %s: set %u binding %u element %u is a storage image view of format %u, and the shader declares format %u there\n",
+				       who, slot, entry._binding, entry._array_element, (unsigned)format, (unsigned)expectation.format);
 				return false;
 			}
 		}
@@ -1150,6 +1191,8 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		          aprend_pipeline_check_shader(who, desc.fragment_shader, desc._fragment_entry_point, desc._binding_layouts,
 		                                       desc._binding_layout_count, desc._push_constant_ranges, desc._push_constant_range_count,
 		                                       result->images, result->storage_writes);
+		if (ok)
+			ok = aprend_pipeline_check_outputs(who, desc);
 		if (ok && !desc.mesh_shader)
 			ok = aprend_pipeline_plan_vertex_input(who, result->desc, desc.vertex_shader, plan);
 		if (!ok) {
@@ -1267,6 +1310,8 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p) {
 	if (!p)
 		return;
+	// A compiled list that binds it is refused at submit.
+	aprend_instance_forget(p->instance, p);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_graphics_pipeline_t>);
 }
@@ -1454,6 +1499,8 @@ aprend_compute_pipeline aprend_compute_pipeline_create(
 void aprend_compute_pipeline_destroy(aprend_compute_pipeline p) {
 	if (!p)
 		return;
+	// A compiled list that binds it is refused at submit.
+	aprend_instance_forget(p->instance, p);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_compute_pipeline_t>);
 }
@@ -1507,6 +1554,32 @@ aprend_binding_layout aprend_binding_layout_create(
 	}
 
 	return aprend_binding_layout_build(instance, bindings, binding_count, "aprend_binding_layout_create");
+}
+
+// Whether two declarations of one block, [a_count] members from [a] and
+// [b_count] from [b], agree: the shorter's members are the first of the
+// longer's, each with the same name, type and place. Two stages may declare
+// one block to different lengths (each the members it reads); two that lay
+// a member out differently would each read the other's writes wrongly.
+static bool aprend_block_declarations_agree(const aprend_shader_member *a, uint32_t a_count, const aprend_shader_member *b, uint32_t b_count) {
+	const uint32_t count = a_count < b_count ? a_count : b_count;
+	for (uint32_t m = 0; m < count; ++m) {
+		if (strcmp(a[m].name, b[m].name) != 0)
+			return false;
+		if (a[m].type != b[m].type)
+			return false;
+		if (a[m].offset != b[m].offset)
+			return false;
+		if (a[m].array_count != b[m].array_count)
+			return false;
+		if (a[m].array_stride != b[m].array_stride)
+			return false;
+		if (a[m].matrix_stride != b[m].matrix_stride)
+			return false;
+		if (a[m].row_major != b[m].row_major)
+			return false;
+	}
+	return true;
 }
 
 aprend_binding_layout aprend_binding_layout_create_from_shaders(
@@ -1575,8 +1648,16 @@ aprend_binding_layout aprend_binding_layout_create_from_shaders(
 				return nullptr;
 			}
 			binding._stages |= reflection.stage;
+			// An array read to different lengths: the layout has the longest.
 			if (resource.count > binding._count)
 				binding._count = resource.count;
+			if (resource.member_count > 0 &&
+			    !aprend_block_declarations_agree(source_members[index] + sources[index]->first_member, sources[index]->member_count,
+			                                     reflection.members + resource.first_member, resource.member_count)) {
+				printf("apricot: %s: set %u binding %u is a block the shaders declare with different members (one is not the start of the other)\n",
+				       who, set, resource.binding);
+				return nullptr;
+			}
 			// The block as the shader that declares it largest has it.
 			if (resource.block_size > sources[index]->block_size) {
 				sources[index]        = &resource;
@@ -1738,6 +1819,7 @@ aprend_binding_set aprend_binding_set_create(
 		printf("apricot: aprend_binding_set_create: layout is NULL\n");
 		return nullptr;
 	}
+	APREND_ENTER(layout->instance, "aprend_binding_set_create");
 	if (!entries) {
 		printf("apricot: aprend_binding_set_create: entries is NULL\n");
 		return nullptr;
@@ -1932,6 +2014,7 @@ bool aprend_binding_set_update(
 		printf("apricot: %s: set is NULL\n", who);
 		return false;
 	}
+	APREND_ENTER(set->instance, "aprend_binding_set_update");
 	if (!entries) {
 		printf("apricot: %s: entries is NULL\n", who);
 		return false;
@@ -2001,12 +2084,17 @@ bool aprend_binding_set_update(
 	std::swap(set->storage_stores, fresh->storage_stores);
 	std::swap(set->storage_store_capacity, fresh->storage_store_capacity);
 	std::swap(set->storage_store_counts, fresh->storage_store_counts);
+	// A list compiled before would bind the old descriptor sets, which go to
+	// the release queue now and may be gone before it is submitted.
+	aprend_instance_forget(set->instance, set);
 	aprend_binding_set_destroy(fresh);
 	return true;
 }
 void aprend_binding_set_destroy(aprend_binding_set set) {
 	if (!set)
 		return;
+	// A compiled list that binds it is refused at submit.
+	aprend_instance_forget(set->instance, set);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(set->instance, set, &aprend_release_handle<aprend_binding_set_t>);
 }

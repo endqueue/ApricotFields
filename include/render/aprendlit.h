@@ -633,6 +633,7 @@ typedef struct aprend_lit_sun_shadow {
  *
  * The shadow pass materials of the cascades get their matrices here too.
  *
+ * @param[in] scene  Scene to change.
  * @param[in] shadow The shadow, or NULL for none. Its map must outlive its
  *                   use by the scene.
  *
@@ -745,6 +746,7 @@ typedef struct aprend_lit_light {
  * @brief Sets a scene's point and spot lights, replacing the ones it had.
  * Spot shadows name lights by their place in this list.
  *
+ * @param[in] scene  Scene to change.
  * @param[in] lights The lights; NULL with a count of 0 for none.
  * @param[in] count  How many: up to APREND_LIT_MAX_LIGHTS.
  *
@@ -781,6 +783,7 @@ typedef struct aprend_lit_spot_shadow {
  * Shadow @p i is rendered into layer i of @p map, binding
  * aprend_lit_scene_get_spot_shadow_material() for it at set 0.
  *
+ * @param[in] scene          Scene to change.
  * @param[in] map            A SHADER_RESOURCE view, DEPTH aspect, shaped
  *                           2D_ARRAY, with a layer for each shadow; NULL with
  *                           a count of 0.
@@ -851,6 +854,7 @@ bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambie
  * sky (APREND_COMMAND_LIT_AMBIENT_OCCLUSION makes one from a depth buffer),
  * which darkens the ambient light there.
  *
+ * @param[in] scene     Scene to change.
  * @param[in] occlusion A SHADER_RESOURCE 2D view of color, or NULL for none.
  *                      It must outlive its use by the scene.
  * @param[in] strength  How much of it is applied, 0 to 1.

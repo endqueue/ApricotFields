@@ -87,7 +87,8 @@ aprend_swap_chain aprend_swap_chain_create(
  *
  * Waits for the queue to go idle first, so nothing in flight still uses it.
  * Unlike the other destroy calls it is not deferred (aprendcontext.h,
- * "Destroying").
+ * "Destroying"). A compiled, unsubmitted command list that presents into it
+ * is refused at submit.
  *
  * @param[in] swap_chain Swap chain to destroy. NULL is accepted and does
  *                       nothing.
@@ -98,7 +99,9 @@ void aprend_swap_chain_destroy(aprend_swap_chain swap_chain);
  * @brief Recreates the back buffers at a new size.
  *
  * Waits for the queue to go idle first. Drops any acquired, not yet
- * presented back buffer.
+ * presented back buffer. A command list compiled to present into the old
+ * back buffers is refused at submit (aprend_command_list_submit()), even
+ * when the new swap chain's acquired back buffer has the same index.
  *
  * @param[in] swap_chain Swap chain to resize.
  * @param[in] width      New width in pixels. Never 0.
@@ -139,10 +142,33 @@ bool aprend_swap_chain_get_desc(
  * @param[in] swap_chain Swap chain to acquire from.
  *
  * @return false if @p swap_chain is NULL, it has no back buffers (a failed
- *         resize), or a list presenting into the acquired back buffer was
- *         submitted and it has not been presented yet.
+ *         resize), a list presenting into the acquired back buffer was
+ *         submitted and it has not been presented yet, or SpudGPU acquired
+ *         no image (printed); no back buffer is acquired then.
  */
 bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain);
+
+/**
+ * @brief Reads the size of the back buffers as they were made.
+ *
+ * Usually the size asked for at creation or the last resize, but the surface
+ * can dictate another on some backends (on Vulkan, a window not yet laid
+ * out). APREND_COMMAND_PRESENT_TEXTURE needs a source at least this size.
+ *
+ * @param[in]  swap_chain Swap chain to read.
+ * @param[out] out_width  Receives the back buffers' width in pixels.
+ * @param[out] out_height Receives their height in pixels.
+ *
+ * @return false, with nothing written, if @p swap_chain, @p out_width or
+ *         @p out_height is NULL, the swap chain has no back buffers (a
+ *         failed resize), or SpudGPU can't say.
+ *
+ * @see aprend_swap_chain_get_desc()
+ */
+bool aprend_swap_chain_get_back_buffer_size(
+    aprend_swap_chain swap_chain,
+    uint32_t *out_width,
+    uint32_t *out_height);
 
 /**
  * @brief Presents the acquired back buffer, after the list that presents

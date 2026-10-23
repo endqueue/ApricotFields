@@ -3,12 +3,19 @@
 
 /* Populates framebuffer->color_attachments / depth_attachment from
  * framebuffer->desc. On partial failure, whatever was already created is left
- * in place for the caller to clean up (via aprend_framebuffer_destroy_attachments). */
+ * in place for the caller to clean up (via aprend_framebuffer_destroy_attachments).
+ * Throws nothing: the vectors are reserved first, and no push_back below
+ * grows them past that. */
 static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuffer) {
 	const aprend_framebuffer_desc &desc = framebuffer->desc;
 
-	framebuffer->color_attachments.reserve(desc.attachment_count);
-	framebuffer->owned_color_textures.reserve(desc.attachment_count);
+	try {
+		framebuffer->color_attachments.reserve(desc.attachment_count);
+		framebuffer->owned_color_textures.reserve(desc.attachment_count);
+	} catch (const std::bad_alloc &) {
+		printf("apricot: aprend_framebuffer: out of memory for %u attachments\n", desc.attachment_count);
+		return false;
+	}
 	for (uint32_t i = 0; i < desc.attachment_count; ++i) {
 		const aprend_framebuffer_texture_spec &spec = desc.attachments[i];
 
@@ -116,12 +123,28 @@ extern "C" {
 aprend_framebuffer aprend_framebuffer_create(
     aprend_instance instance,
     const aprend_framebuffer_desc *desc) {
-	if (!instance || !desc)
+	if (!instance)
+		return nullptr;
+	if (!desc)
 		return nullptr;
 	if (!aprend_base_ok("aprend_framebuffer_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC))
 		return nullptr;
-	if (!(desc->width && desc->height && desc->attachment_count && desc->attachments))
+	if (desc->width == 0) {
+		printf("apricot: aprend_framebuffer_create: width is 0\n");
 		return nullptr;
+	}
+	if (desc->height == 0) {
+		printf("apricot: aprend_framebuffer_create: height is 0\n");
+		return nullptr;
+	}
+	if (desc->attachment_count == 0) {
+		printf("apricot: aprend_framebuffer_create: attachment_count is 0\n");
+		return nullptr;
+	}
+	if (!desc->attachments) {
+		printf("apricot: aprend_framebuffer_create: attachments is NULL\n");
+		return nullptr;
+	}
 
 	aprend_framebuffer_t *result = (aprend_framebuffer_t *)malloc(sizeof(aprend_framebuffer_t));
 	if (!result)
@@ -134,7 +157,12 @@ aprend_framebuffer aprend_framebuffer_create(
 	// Copy the attachment specs out of the caller's array — desc->attachments
 	// may point at a local of the caller's, which
 	// won't survive until the next aprend_framebuffer_resize() call.
-	result->attachment_specs.assign(desc->attachments, desc->attachments + desc->attachment_count);
+	try {
+		result->attachment_specs.assign(desc->attachments, desc->attachments + desc->attachment_count);
+	} catch (const std::bad_alloc &) {
+		printf("apricot: aprend_framebuffer_create: out of memory\n");
+		goto failedattempt;
+	}
 	result->desc.attachments = result->attachment_specs.data();
 
 	if (!aprend_framebuffer_create_attachments(result))
@@ -167,7 +195,11 @@ bool aprend_framebuffer_resize(
     aprend_framebuffer framebuffer,
     uint32_t width,
     uint32_t height) {
-	if (!(framebuffer && width && height))
+	if (!framebuffer)
+		return false;
+	if (width == 0)
+		return false;
+	if (height == 0)
 		return false;
 	if (framebuffer->desc.width == width && framebuffer->desc.height == height)
 		return true;
@@ -186,6 +218,7 @@ bool aprend_framebuffer_clear_colors(
     float a) {
 	if (!framebuffer)
 		return false;
+	APREND_ENTER(framebuffer->instance, "aprend_framebuffer_clear_colors");
 	if (!queue)
 		return false;
 	if (framebuffer->color_attachments.empty())
@@ -228,6 +261,7 @@ bool aprend_framebuffer_clear_depth(
     uint32_t stencil) {
 	if (!framebuffer)
 		return false;
+	APREND_ENTER(framebuffer->instance, "aprend_framebuffer_clear_depth");
 	if (!queue)
 		return false;
 	if (!framebuffer->has_depth_attachment)

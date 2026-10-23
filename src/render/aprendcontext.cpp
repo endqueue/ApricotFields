@@ -395,6 +395,7 @@ bool aprend_instance_get_desc(
 uint32_t aprend_instance_next_frame(aprend_instance instance) {
 	if (!instance)
 		return 0;
+	APREND_ENTER(instance, "aprend_instance_next_frame");
 	// The batch is the frame's, recorded into its allocator and reading its
 	// transient memory: it goes before the frame ends, if nothing has taken
 	// it. If it can't, it is dropped, since the next turn of this index
@@ -445,6 +446,7 @@ uint32_t aprend_instance_get_frame_index(aprend_instance instance) { return inst
 bool aprend_instance_wait_idle(aprend_instance instance) {
 	if (!instance)
 		return false;
+	APREND_ENTER(instance, "aprend_instance_wait_idle");
 	// Waiting for everything includes what is recorded and not yet
 	// submitted.
 	uint64_t serial = 0;

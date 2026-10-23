@@ -501,6 +501,8 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer) {
 	if (!buffer)
 		return;
+	// A compiled list whose sets hold it is refused at submit.
+	aprend_instance_forget(buffer->instance, buffer);
 	// Released once the GPU has finished everything submitted so far.
 	aprend_instance_retire(buffer->instance, buffer, &aprend_release_handle<aprend_uniform_buffer_t>);
 }
@@ -649,6 +651,7 @@ bool aprend_vertex_buffer_update(aprend_vertex_buffer buffer, uint64_t offset, u
 		printf("apricot: %s: buffer is NULL\n", who);
 		return false;
 	}
+	APREND_ENTER(buffer->instance, "aprend_vertex_buffer_update");
 	if (size == 0) {
 		printf("apricot: %s: size is 0\n", who);
 		return false;
@@ -738,6 +741,7 @@ spudgpu_buffer_view aprend_index_buffer_get_spudgpu_buffer_view(aprend_index_buf
 bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offset, uint32_t index_count, const void *pData) {
 	if (!buffer)
 		return false;
+	APREND_ENTER(buffer->instance, "aprend_index_buffer_update");
 	if (index_count == 0)
 		return false;
 	if (!pData)
@@ -826,6 +830,7 @@ void aprend_storage_buffer_destroy(aprend_storage_buffer buffer) {
 bool aprend_storage_buffer_update(aprend_storage_buffer buffer, uint64_t local_offset, uint64_t size, const void *pData) {
 	if (!buffer)
 		return false;
+	APREND_ENTER(buffer->instance, "aprend_storage_buffer_update");
 	if (size == 0)
 		return false;
 	if (!pData)

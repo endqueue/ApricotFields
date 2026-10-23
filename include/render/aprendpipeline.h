@@ -147,7 +147,10 @@ aprend_binding_layout aprend_binding_layout_create(
  * aprend_binding_layout_get_uniform_layout() and a material
  * (aprendmaterial.h) read. Where two shaders declare one binding the names
  * and members of the first that uses it are kept, and the block of the one
- * that declares it largest.
+ * that declares it largest. Two declarations of one block may differ in
+ * length, each shader declaring the members up to the last it reads, but
+ * the shorter's members must be the first of the longer's: the same names,
+ * types, offsets, array counts and strides.
  *
  * @param[in] instance     Instance whose device the layout is created on.
  * @param[in] shaders      The shaders whose declarations make the layout:
@@ -162,7 +165,8 @@ aprend_binding_layout aprend_binding_layout_create(
  *
  * @return The layout, or NULL if an argument is NULL or 0, a shader is of
  *         another instance, no shader uses a binding of @p set, two shaders
- *         declare one binding with different types, a set has more than
+ *         declare one binding with different types, or one block with
+ *         members that differ (not one the start of the other), a set has more than
  *         APREND_MAX_BINDINGS_PER_LAYOUT bindings, or the layout can't be
  *         created. Each is printed.
  *
@@ -967,8 +971,8 @@ aprend_binding_set aprend_binding_set_create(
  * which is a buffer set's job (aprendbuffers.h).
  *
  * @warning A command list compiled before the update and not yet submitted
- * still binds what the set held. Compile it again before submitting it:
- * nothing checks.
+ * would bind the old descriptor sets, which may be gone by the time it
+ * runs: aprend_command_list_submit() refuses it. Compile it again.
  *
  * Every resource the set holds must still be alive, the ones not named here
  * as well: they are all written again.

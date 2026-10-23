@@ -59,9 +59,12 @@
  * list that binds it is compiled, from what it holds then, and builds it
  * again at the next compile after any of its resources is set to something
  * else. Building it again is aprend_binding_set_update(): it costs what
- * creating a set does, and a command list compiled before the change and
- * submitted after it still reads what the material held at its compile. So
- * a resource is set before the compile of every list that is to see it.
+ * creating a set does. A command list compiled before the change and
+ * submitted before the set is built again reads what the material held at
+ * its compile; once another compile has built it again, the earlier list
+ * is refused at submit (its descriptor sets are on their way out) and is
+ * compiled again. So a resource is set before the compile of every list
+ * that is to see it.
  * Every binding must hold something by then: aprend_material_is_complete().
  *
  * @par Copying, and what an unset binding holds

@@ -38,6 +38,9 @@
 #include <deque>
 #include <string>
 #include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 /* A caller's based struct, checked as every Aprend call that takes one checks
@@ -89,7 +92,12 @@ inline ApriMat4 from_glm(const glm::mat4 &m) {
  * ============================================================ */
 #define APREND_MALLOC__T(var, T) T *var = (T *)malloc(sizeof(T))
 #define APREND_CONSTRUCT__T(var, T) var = new (var) T()
-#define APREND_DESTRUCT__T(var, T) var->~T(); free(var)
+/* One statement, so it is whole under an `if` with no braces. */
+#define APREND_DESTRUCT__T(var, T) \
+	do {                           \
+		(var)->~T();               \
+		free(var);                 \
+	} while (0)
 
 /* Binding sets per descriptor pool of a binding layout. Sets are small and a
  * layout with more than a handful is rare, so this is sized to make a second
@@ -268,6 +276,12 @@ typedef struct aprend_instance_t {
 	 * list here is not changed by its own thread until it is taken off, so
 	 * what it uses can be read under release_mutex. Under release_mutex. */
 	std::vector<aprend_command_list> compiled_lists{};
+	/* The thread inside one of the calls APREND_ENTER guards, and how deep
+	 * (a guarded call may make another): Debug builds' check of the rule in
+	 * aprendcontext.h ("Threads"). In every build, so the struct is the same
+	 * in each; only Debug builds read or write them. */
+	std::atomic<std::thread::id> entered_thread{};
+	uint32_t entered_depth{0};
 	/* Guards release_queue, release_head and upload_batch_waiting, and makes
 	 * a new submit_serial and the batch it carried change together for
 	 * aprend_instance_retire; and compiled_lists, with each list's
@@ -276,6 +290,54 @@ typedef struct aprend_instance_t {
 	 * entry under it. It is never held while a release function runs. */
 	std::mutex release_mutex{};
 } aprend_instance_t;
+
+/* Debug builds' check of the rule in aprendcontext.h ("Threads"): one
+ * thread at a time inside an instance, which may be a different thread from
+ * call to call. Each call that meets in state the instance holds (the ones
+ * that header lists) opens with APREND_ENTER; a second thread entering while
+ * one is inside is a broken rule, which would otherwise be a silent race,
+ * and is printed with the call it was in - as Vulkan's validation layer
+ * reports an object used by two threads at once. The same thread entering
+ * again (a guarded call making another) is not. Nothing is refused: the
+ * call goes on, as it would in Release, where the guard is nothing. */
+class aprend_instance_entry {
+  public:
+	aprend_instance_entry(aprend_instance instance, const char *who) {
+#if _DEBUG
+		const std::thread::id me = std::this_thread::get_id();
+		std::thread::id expected{};
+		if (instance->entered_thread.compare_exchange_strong(expected, me)) {
+			instance_                = instance;
+			instance->entered_depth = 1;
+		} else if (expected == me) {
+			instance_ = instance;
+			++instance->entered_depth;
+		} else {
+			printf("aprend: %s: called while another thread is inside the instance; an instance is used by one thread at a time (aprendcontext.h, "
+			       "\"Threads\")\n",
+			       who);
+		}
+#else
+		(void)instance;
+		(void)who;
+#endif
+	}
+	~aprend_instance_entry() {
+#if _DEBUG
+		if (instance_ && --instance_->entered_depth == 0)
+			instance_->entered_thread.store(std::thread::id{});
+#endif
+	}
+	aprend_instance_entry(const aprend_instance_entry &)            = delete;
+	aprend_instance_entry &operator=(const aprend_instance_entry &) = delete;
+
+  private:
+#if _DEBUG
+	/* NULL if this entry found another thread inside. */
+	aprend_instance instance_{nullptr};
+#endif
+};
+#define APREND_ENTER(instance, who) aprend_instance_entry aprend_entry_guard_(instance, who)
 
 /* Queues [object], a handle of [instance] or something one owns, to be
  * released with [release] once every submission made so far has finished,
@@ -298,12 +360,9 @@ typedef struct aprend_instance_t {
  *
  * What it can't see is a command list that was compiled against the object
  * and not yet submitted: the serial is taken at retirement, so such a list,
- * submitted afterwards, runs after the object may already be gone. For what
- * a submission reads on the CPU - a texture's tracked layouts, a buffer's
- * staged writes, a material, a GPU timer - the destroy call also calls
- * aprend_instance_forget, and the submission is refused. For the rest (a
- * pipeline, a binding set, a view, which only the recorded commands name),
- * not using a destroyed object in a later submission stays the caller's. */
+ * submitted afterwards, would run after the object may already be gone. So
+ * every destroy call of something a compile records also calls
+ * aprend_instance_forget, and such a submission is refused. */
 void aprend_instance_retire(
     aprend_instance instance,
     void *object,
@@ -311,11 +370,14 @@ void aprend_instance_retire(
 
 /* Marks stale every compiled, unsubmitted command list that uses [used]: a
  * texture's aprend_texture_layouts, a buffer's aprend_buffer_store, a
- * material or a GPU timer. aprend_command_list_submit refuses a stale list,
- * so it never reads [used] again; compiling it again clears the mark.
- * Called by the destroy calls of those four, from any thread, and by a
- * texture's resize, which replaces what its layouts describe. Takes
- * release_mutex. Needs no memory. */
+ * material, a GPU timer, a swap chain, or a handle in the list's
+ * used_handles (a pipeline, binding set, view, sampler or uniform buffer).
+ * aprend_command_list_submit refuses a stale list, so it never reads [used]
+ * again and the GPU never runs commands that name it; compiling it again
+ * clears the mark. Called by the destroy calls of all of those, from any
+ * thread; by a texture's resize, which replaces what its layouts describe;
+ * and by aprend_binding_set_update, whose old descriptor sets the list
+ * would bind. Takes release_mutex. Needs no memory. */
 void aprend_instance_forget(
     aprend_instance instance,
     const void *used);
@@ -506,6 +568,21 @@ typedef struct aprend_gpu_timer_t {
 	std::vector<uint64_t> written_frame{};
 } aprend_gpu_timer_t;
 
+/* One mip of one layer of one image: what a command list keeps a layout
+ * for (aprend_command_list_t::layout_uses), and its index's key. */
+struct aprend_subresource_key {
+	spudgpu_image image;
+	uint32_t mip;
+	uint32_t layer;
+	bool operator==(const aprend_subresource_key &other) const { return image == other.image && mip == other.mip && layer == other.layer; }
+};
+struct aprend_subresource_key_hash {
+	size_t operator()(const aprend_subresource_key &key) const {
+		const size_t h = std::hash<const void *>()(key.image);
+		return h ^ (((size_t)key.mip << 16 | (size_t)key.layer) * 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2));
+	}
+};
+
 typedef struct aprend_command_list_t {
 	char *debug_name{nullptr};
 	aprend_command_list_t() = default;
@@ -525,6 +602,15 @@ typedef struct aprend_command_list_t {
 	/* Every buffer store the last compile found in use, staged or not, once
 	 * each: what aprend_instance_forget looks for. */
 	std::vector<aprend_buffer_store *> used_stores{};
+	/* Every handle the last compile's recording names that a submission
+	 * reads only through the recorded commands: pipelines, binding sets and
+	 * what they hold (views, samplers, uniform buffers), and the views of
+	 * pass targets and of the built-in effects' commands. What
+	 * aprend_instance_forget looks for besides the above, so a list that
+	 * names a destroyed one, or a binding set updated since, is refused at
+	 * submit. A hash set: a list may name thousands, and a destroy call
+	 * looks in every compiled list. */
+	std::unordered_set<const void *> used_handles{};
 	/* The state of each multi-state buffer store as the compile walks the
 	 * list, from the first point the list uses it. Every such store starts
 	 * the list in its use_state: aprend_command_list_submit puts it there
@@ -605,6 +691,10 @@ typedef struct aprend_command_list_t {
 		bool storage_written;
 	};
 	std::vector<layout_use> layout_uses{};
+	/* Where each subresource's entry is in layout_uses: a list may touch
+	 * every mip of every layer of many textures, and each barrier looks its
+	 * subresources up. Cleared with layout_uses. */
+	std::unordered_map<aprend_subresource_key, size_t, aprend_subresource_key_hash> layout_index{};
 	/* The same for each storage buffer store the list uses through a set,
 	 * from the first point it does. */
 	struct storage_hazard {
@@ -627,6 +717,8 @@ typedef struct aprend_command_list_t {
 	 * synchronized path for such a list. */
 	aprend_swap_chain present_swap_chain{nullptr};
 	uint32_t present_image_index{0};
+	/* present_swap_chain's generation at the compile. */
+	uint64_t present_generation{0};
 } aprend_command_list_t;
 
 #define APREND_SWAP_CHAIN_NO_IMAGE 0xFFFFFFFFu
@@ -642,6 +734,12 @@ typedef struct aprend_swap_chain_t {
 	uint32_t acquired_image{APREND_SWAP_CHAIN_NO_IMAGE};
 	/* A list presenting into acquired_image has been submitted. */
 	bool submitted{false};
+	/* Counts the SpudGPU swap chains made for this handle: creation and each
+	 * resize that replaced the back buffers. A list that presents records
+	 * the count it was compiled against, and submit refuses it once a resize
+	 * has moved it on, since a new swap chain's back buffer may have the
+	 * index of the old one's. */
+	uint64_t generation{0};
 } aprend_swap_chain_t;
 
 typedef struct aprend_uniform_buffer_t {
@@ -763,6 +861,9 @@ struct aprend_image_expectation {
 	uint32_t binding;
 	APREND_TEXTURE_VIEW_SHAPE shape;
 	APREND_SHADER_SCALAR_TYPE scalar_type;
+	/* A storage image's declared format (`layout(rgba8)`), which its view
+	 * has to be in; UNKNOWN for one declared without, and for anything else. */
+	SPUDGPU_FORMAT format;
 };
 
 /* A storage image or storage buffer binding a pipeline's shaders write:
@@ -785,8 +886,11 @@ inline bool aprend_storage_writes_hold(const std::vector<aprend_storage_write> &
 
 /* False, printed, if a texture view [set] holds is not what [expected]
  * declares at its binding, for a pipeline that has [set] at [slot]: another
- * shape, or a stencil read as anything but an unsigned integer, or a depth
- * read as one. [who] names the command. */
+ * shape; a stencil read as anything but an unsigned integer, or a depth read
+ * as one; a color format whose kind of number (float, normalized or not,
+ * signed or unsigned integer) is not the one the shader reads; or, for a
+ * storage image declared with a format, a view in another. [who] names the
+ * command. */
 bool aprend_binding_set_matches_images(
     const aprend_binding_set_t *set,
     uint32_t slot,

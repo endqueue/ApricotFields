@@ -118,7 +118,10 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 	desc.depth_format                 = SPUDGPU_FORMAT_UNKNOWN;
 	desc._binding_layouts[0]          = builtins.downsample_layout;
 	desc._binding_layout_count        = 1;
-	desc._push_constant_range_count   = 0;
+	desc._push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_FRAGMENT;
+	desc._push_constant_ranges[0].offset      = 0;
+	desc._push_constant_ranges[0].size        = sizeof(aprend_downsample_params);
+	desc._push_constant_range_count           = 1;
 
 	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
 	if (!pipeline) {

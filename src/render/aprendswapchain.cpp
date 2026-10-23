@@ -25,7 +25,10 @@ static SPUDRESULT aprend_swap_chain_create_native(aprend_swap_chain_t *sc) {
 	scd.fullscreen_mode = SPUDGPU_FULLSCREEN_MODE_WINDOWED;
 	// APREND_COMMAND_PRESENT_TEXTURE copies into the back buffer.
 	scd.usage = SPUDGPU_IMAGE_USAGE_TRANSFER_DST;
-	return spudgpu_create_swap_chain(sc->instance->desc.device, &scd, &sc->swap_chain);
+	const SPUDRESULT sr = spudgpu_create_swap_chain(sc->instance->desc.device, &scd, &sc->swap_chain);
+	// New back buffers: a list compiled against the old ones is refused.
+	++sc->generation;
+	return sr;
 }
 
 extern "C" {
@@ -61,8 +64,11 @@ aprend_swap_chain aprend_swap_chain_create(
 	return result;
 }
 void aprend_swap_chain_destroy(aprend_swap_chain swap_chain) {
-	if (swap_chain)
-		APREND_DESTRUCT__T(swap_chain, aprend_swap_chain_t);
+	if (!swap_chain)
+		return;
+	// A compiled list that presents into it would read it at submit.
+	aprend_instance_forget(swap_chain->instance, swap_chain);
+	APREND_DESTRUCT__T(swap_chain, aprend_swap_chain_t);
 }
 bool aprend_swap_chain_resize(
 	aprend_swap_chain swap_chain,
@@ -116,8 +122,34 @@ bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain) {
 		// compile): it's still ours to use, so keep it.
 		return true;
 	}
-	swap_chain->acquired_image = spudgpu_swap_chain_acquire_next_image(swap_chain->swap_chain);
+	const uint32_t image = spudgpu_swap_chain_acquire_next_image(swap_chain->swap_chain);
+	// SpudGPU's acquire hands back UINT32_MAX when no image could be had.
+	if (image == SPUD_UINT32_MAX) {
+		printf("aprend: aprend_swap_chain_acquire: SpudGPU acquired no back buffer\n");
+		return false;
+	}
+	swap_chain->acquired_image = image;
 	swap_chain->submitted      = false;
+	return true;
+}
+bool aprend_swap_chain_get_back_buffer_size(
+	aprend_swap_chain swap_chain,
+	uint32_t *out_width,
+	uint32_t *out_height) {
+	if (!swap_chain)
+		return false;
+	if (!out_width)
+		return false;
+	if (!out_height)
+		return false;
+	if (!swap_chain->swap_chain)
+		return false;
+	spudgpu_swap_chain_desc actual{};
+	actual.base.type = SPUD_STRUCT_TYPE_GPU_SWAP_CHAIN_DESC;
+	if (SPUDFAIL(spudgpu_get_swap_chain_desc(swap_chain->swap_chain, &actual)))
+		return false;
+	*out_width  = actual.width;
+	*out_height = actual.height;
 	return true;
 }
 bool aprend_swap_chain_present(aprend_swap_chain swap_chain) {
