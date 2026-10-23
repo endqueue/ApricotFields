@@ -16,6 +16,7 @@
 #include "render/aprendcontext.h"
 
 #include "aprendranges_internal.hpp"
+#include "../apriplaindata.hpp"
 
 #include <vector>
 
@@ -65,6 +66,7 @@ struct aprend_pool_allocation {
 	uint32_t next{APREND_POOL_NO_ALLOCATION};
 	uint8_t state{UNUSED};
 };
+APRI_PLAIN_DATA(aprend_pool_allocation);
 
 struct aprend_pool_core {
 	aprend_instance instance{nullptr};

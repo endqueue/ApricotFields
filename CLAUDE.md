@@ -122,6 +122,8 @@ block near the top. A new header gets the same block.
   file's generation, per the table above.
 - **No allocating `new` and no `delete`: allocate and free by hand.** Which
   allocator depends on whether the object's type has a constructor.
+  `./check.sh conventions` counts each allocating `new` (`std::make_unique`
+  too) and `delete` in `src/`; the old ones below are in `check.baseline`.
 - **A type with a constructor:** `malloc`, check the pointer, then construct the
   object in place in that memory. `malloc`, not `calloc`, because the constructor
   is what initialises it. The in-place form needs `<new>`.
@@ -172,6 +174,25 @@ block near the top. A new header gets the same block.
 - About half of the existing checks are joined (`if (!instance || !desc)`), mostly
   in Aprend. Write new checks line by line; split an old joined one only when you
   are already changing that function.
+- **Data is plain structs, kept in arrays, not objects.** Behaviour is free
+  functions over plain structs, as at the C boundary; inside `src/` too:
+  - The element of an array a frame iterates (Aprend's commands, a draw
+    list's draws and batches, the pools' range tables) is trivially copyable
+    and standard layout: `APRI_PLAIN_DATA(T)` (`src/apriplaindata.hpp`), a
+    static_assert beside its type. `./check.sh plain-data` fails on such an
+    array whose element has none. A record a per-frame loop reads also has a
+    size budget, `APRI_HOT_RECORD(T, bytes)` in cache lines, so a field
+    added to it is a decision.
+  - No class hierarchies or `virtual`, no `std::shared_ptr` or
+    `std::function`, no node-based containers (`std::map`, `std::set`,
+    `std::list`, `std::unordered_*`) for anything iterated per frame, and no
+    array of pointers to objects allocated one at a time: each is an
+    indirect call or a pointer chase per element. Where the data is
+    singular, cold or shaped from outside (a long-lived handle, a parse at
+    load time, a third-party interface) they are fine. `./check.sh
+    conventions` counts each use; the allowed ones and the old code still to
+    convert are in `check.baseline` with reasons. Existing code is converted
+    only when it is changed for another reason.
 
 ## Public headers
 
@@ -194,7 +215,8 @@ block near the top. A new header gets the same block.
   `@param[in]`/`[out]`, `@return`, `@warning` and `@see`. A parameter is `@p
   name` in prose, a function `name()`, a member of the same struct `#member`,
   and a field or command member in backticks. `aprendimages.h` is the model.
-  The `Doxyfile` at the repo root builds them; it should report no warnings.
+  The `Doxyfile` at the repo root builds them; it reports no warnings,
+  checked by `./check.sh doxygen`.
 - The other modules' headers are `/* */` comments that name parameters in
   `[brackets]`. Don't mix the two styles in one header.
 - Math types crossing the API are the `Apri*` structs from `aprimath.h`. They are

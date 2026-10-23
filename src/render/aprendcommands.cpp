@@ -4,6 +4,7 @@
 #include "aprendlit_internal.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 
 aprend_command_list_t::~aprend_command_list_t() {
@@ -28,8 +29,13 @@ static void aprend_cmd_use_store(
 /* Adds [handle] to what [cmd_list]'s compile names (used_handles), for
  * aprend_instance_forget. NULL is ignored. Throws std::bad_alloc. */
 static void aprend_cmd_use_handle(aprend_command_list cmd_list, const void *handle) {
-	if (handle)
-		cmd_list->used_handles.insert(handle);
+	if (!handle)
+		return;
+	const uint64_t key = (uint64_t)(uintptr_t)handle;
+	// The hash is the address: a match is the same handle.
+	if (cmd_list->used_handles.find(key, [](uint32_t) { return true; }))
+		return;
+	cmd_list->used_handles.add(key, 0);
 }
 
 /* The most levels a bloom of [source] spreads through: its level 0 is half
@@ -165,7 +171,7 @@ static bool aprend_cmd_list_uses(aprend_command_list cmd_list, const void *used)
 			return true;
 	if (cmd_list->present_swap_chain == used)
 		return true;
-	return cmd_list->used_handles.count(used) != 0;
+	return cmd_list->used_handles.find((uint64_t)(uintptr_t)used, [](uint32_t) { return true; }) != nullptr;
 }
 
 void aprend_instance_forget(
@@ -213,12 +219,8 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	const size_t preserve_size = cmd_list->commands.size();
 	cmd_list->commands.clear();
 	cmd_list->commands.reserve(preserve_size);
-	cmd_list->color_target_storage.clear();
-	cmd_list->vertex_buffer_storage.clear();
-	cmd_list->viewport_storage.clear();
-	cmd_list->scissor_rect_storage.clear();
-	cmd_list->push_constant_storage.clear();
-	cmd_list->label_storage.clear();
+	cmd_list->side_bytes.clear();
+	cmd_list->side_refs.clear();
 	cmd_list->recording_error = false;
 	cmd_list->layout_uses.clear();
 	cmd_list->layout_index.clear();
@@ -232,11 +234,64 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	cmd_list->compiled           = false;
 	cmd_list->present_swap_chain = nullptr;
 }
+/* Copies [size] bytes from [bytes] to the end of [cmd_list]'s side_bytes,
+ * at an offset aligned for anything a command points at, and returns that
+ * offset. Throws std::bad_alloc. */
+static uint32_t aprend_cmd_keep(aprend_command_list cmd_list, const void *bytes, size_t size) {
+	constexpr size_t align = alignof(std::max_align_t);
+	const size_t offset    = (cmd_list->side_bytes.size() + align - 1) & ~(align - 1);
+	cmd_list->side_bytes.resize(offset + size);
+	memcpy(cmd_list->side_bytes.data() + offset, bytes, size);
+	return (uint32_t)offset;
+}
+
+/* Points each command that has a copy in [cmd_list]'s side_bytes at it:
+ * after recording, when side_bytes no longer grows, and before anything
+ * reads a command's array. */
+static void aprend_cmd_point_at_copies(aprend_command_list cmd_list) {
+	uint8_t *bytes = cmd_list->side_bytes.data();
+	for (const aprend_command_list_t::side_ref &ref : cmd_list->side_refs) {
+		APREND_COMMAND &cmd = cmd_list->commands[ref.command];
+		void *copy          = bytes + ref.offset;
+		switch (cmd._type) {
+		case APREND_COMMAND_BEGIN_RENDERING:
+			cmd._params._begin_rendering._color_targets = (aprend_color_target *)copy;
+			break;
+		case APREND_COMMAND_BEGIN_LABEL:
+			cmd._params._begin_label._label = (const char *)copy;
+			break;
+		case APREND_COMMAND_SET_VERTEX_BUFFERS:
+			cmd._params._set_vertex_buffers._vertex_buffers = (aprend_vertex_buffer *)copy;
+			break;
+		case APREND_COMMAND_SET_VIEWPORTS:
+			cmd._params._set_viewports._viewports = (SPUDGPU_VIEWPORT *)copy;
+			break;
+		case APREND_COMMAND_SET_SCISSOR_RECTS:
+			cmd._params._set_scissor_rects._scissor_rects = (SPUDGPU_SCISSOR_RECT *)copy;
+			break;
+		case APREND_COMMAND_PUSH_CONSTANTS:
+			cmd._params._push_constants._data = copy;
+			break;
+		default:
+			break;
+		}
+	}
+}
+
 /* aprend_send_command's checks and copies. Throws std::bad_alloc from the
  * list's vectors, which aprend_send_command catches. */
 static void aprend_send_command_recorded(
     aprend_command_list cmd_list,
     APREND_COMMAND cmd) {
+	// Where this command's copy is in side_bytes, if it has one: recorded
+	// in side_refs with the command, once every check has passed.
+	bool has_copy        = false;
+	uint32_t copy_offset = 0;
+	auto keep            = [&](const void *bytes, size_t size) {
+		copy_offset = aprend_cmd_keep(cmd_list, bytes, size);
+		has_copy    = true;
+		return (void *)(cmd_list->side_bytes.data() + copy_offset);
+	};
 
 	// The three commands that stand for others are expanded into them here,
 	// from the pass or list as it is now, and are not recorded themselves.
@@ -331,8 +386,7 @@ static void aprend_send_command_recorded(
 			return;
 		}
 		if (p._color_target_count > 0) {
-			cmd_list->color_target_storage.emplace_back(p._color_targets, p._color_targets + p._color_target_count);
-			p._color_targets = cmd_list->color_target_storage.back().data();
+			p._color_targets = (aprend_color_target *)keep(p._color_targets, sizeof(aprend_color_target) * p._color_target_count);
 		} else {
 			p._color_targets = nullptr;
 		}
@@ -340,8 +394,8 @@ static void aprend_send_command_recorded(
 
 	if (cmd._type == APREND_COMMAND_BEGIN_LABEL) {
 		auto &p = cmd._params._begin_label;
-		cmd_list->label_storage.emplace_back(p._label ? p._label : "");
-		p._label = cmd_list->label_storage.back().c_str();
+		const char *label = p._label ? p._label : "";
+		p._label          = (const char *)keep(label, strlen(label) + 1);
 	}
 
 	// The array commands below are copied the same way: the caller's array
@@ -372,8 +426,7 @@ static void aprend_send_command_recorded(
 			}
 		}
 		if (p._vertex_buffer_count > 0) {
-			cmd_list->vertex_buffer_storage.emplace_back(p._vertex_buffers, p._vertex_buffers + p._vertex_buffer_count);
-			p._vertex_buffers = cmd_list->vertex_buffer_storage.back().data();
+			p._vertex_buffers = (aprend_vertex_buffer *)keep(p._vertex_buffers, sizeof(aprend_vertex_buffer) * p._vertex_buffer_count);
 		} else {
 			p._vertex_buffers = nullptr;
 		}
@@ -405,8 +458,7 @@ static void aprend_send_command_recorded(
 			return;
 		}
 		if (p._viewport_count > 0) {
-			cmd_list->viewport_storage.emplace_back(p._viewports, p._viewports + p._viewport_count);
-			p._viewports = cmd_list->viewport_storage.back().data();
+			p._viewports = (SPUDGPU_VIEWPORT *)keep(p._viewports, sizeof(SPUDGPU_VIEWPORT) * p._viewport_count);
 		} else {
 			p._viewports = nullptr;
 		}
@@ -420,8 +472,7 @@ static void aprend_send_command_recorded(
 			return;
 		}
 		if (p._scissor_rect_count > 0) {
-			cmd_list->scissor_rect_storage.emplace_back(p._scissor_rects, p._scissor_rects + p._scissor_rect_count);
-			p._scissor_rects = cmd_list->scissor_rect_storage.back().data();
+			p._scissor_rects = (SPUDGPU_SCISSOR_RECT *)keep(p._scissor_rects, sizeof(SPUDGPU_SCISSOR_RECT) * p._scissor_rect_count);
 		} else {
 			p._scissor_rects = nullptr;
 		}
@@ -548,9 +599,7 @@ static void aprend_send_command_recorded(
 			cmd_list->recording_error = true;
 			return;
 		}
-		const uint8_t *bytes = (const uint8_t *)p._data;
-		cmd_list->push_constant_storage.emplace_back(bytes, bytes + p._size);
-		p._data = cmd_list->push_constant_storage.back().data();
+		p._data = keep(p._data, p._size);
 	}
 	if (cmd._type == APREND_COMMAND_BLOOM) {
 		const auto &p = cmd._params._bloom;
@@ -776,6 +825,8 @@ static void aprend_send_command_recorded(
 		}
 	}
 
+	if (has_copy)
+		cmd_list->side_refs.push_back({(uint32_t)cmd_list->commands.size(), copy_offset});
 	cmd_list->commands.emplace_back(cmd);
 }
 void aprend_send_command(
@@ -806,16 +857,19 @@ static size_t aprend_cmd_layout_use(
     const aprend_texture_range &range,
     uint32_t mip,
     uint32_t layer) {
-	const aprend_subresource_key key{range.image, mip, layer};
-	const auto found = cmd_list->layout_index.find(key);
-	if (found != cmd_list->layout_index.end())
-		return found->second;
+	const uint64_t hash = aprend_subresource_hash(range.image, mip, layer);
+	const uint32_t *found = cmd_list->layout_index.find(hash, [&](uint32_t at) {
+		const aprend_command_list_t::layout_use &use = cmd_list->layout_uses[at];
+		return use.image == range.image && use.mip == mip && use.layer == layer;
+	});
+	if (found)
+		return *found;
 	SPUDGPU_IMAGE_LAYOUT *tracked = range.tracking->at(mip, layer);
 	cmd_list->layout_uses.push_back({range.image, mip, layer, tracked, range.tracking, *tracked, *tracked, true, true});
 	const size_t index = cmd_list->layout_uses.size() - 1;
-	cmd_list->layout_index.emplace(key, index);
+	cmd_list->layout_index.add(hash, (uint32_t)index);
 	// What aprend_instance_forget looks for when the texture goes.
-	cmd_list->used_handles.insert(range.tracking);
+	aprend_cmd_use_handle(cmd_list, range.tracking);
 	return index;
 }
 
@@ -2287,6 +2341,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	cmd_list->materials.clear();
 	if (cmd_list->recording_error)
 		return false;
+	aprend_cmd_point_at_copies(cmd_list);
 
 	// Every material's binding set is built before anything is recorded: a
 	// pass looks ahead at the sets its draws read (aprend_cmd_prepare_pass_

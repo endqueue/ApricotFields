@@ -12,6 +12,8 @@ endif()
 add_library(ApricotFields STATIC
         src/apricotfields.cpp
         src/apricore.cpp
+        src/aprihashindex.hpp
+        src/apriplaindata.hpp
         src/apristructbase.hpp
         src/render/aprend_internal.hpp
         src/render/aprendcontext.cpp
@@ -314,6 +316,11 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(aprendranges_tests tests/aprendranges_tests.cpp)
     target_include_directories(aprendranges_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
     add_test(NAME aprendranges_tests COMMAND aprendranges_tests)
+    # The open-addressing table under Aprend's command lists, an internal
+    # header too.
+    add_executable(aprihashindex_tests tests/aprihashindex_tests.cpp)
+    target_include_directories(aprihashindex_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME aprihashindex_tests COMMAND aprihashindex_tests)
     # SPIR-V reflection, and writing a member where the reflection lays it
     # out: no device either, so it sees src/render too.
     add_executable(aprendreflect_tests tests/aprendreflect_tests.cpp)

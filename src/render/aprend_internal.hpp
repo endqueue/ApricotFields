@@ -30,6 +30,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "../aprihashindex.hpp"
+#include "../apriplaindata.hpp"
 #include "../apristructbase.hpp"
 
 #include <atomic>
@@ -570,18 +572,13 @@ typedef struct aprend_gpu_timer_t {
 
 /* One mip of one layer of one image: what a command list keeps a layout
  * for (aprend_command_list_t::layout_uses), and its index's key. */
-struct aprend_subresource_key {
-	spudgpu_image image;
-	uint32_t mip;
-	uint32_t layer;
-	bool operator==(const aprend_subresource_key &other) const { return image == other.image && mip == other.mip && layer == other.layer; }
-};
-struct aprend_subresource_key_hash {
-	size_t operator()(const aprend_subresource_key &key) const {
-		const size_t h = std::hash<const void *>()(key.image);
-		return h ^ (((size_t)key.mip << 16 | (size_t)key.layer) * 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2));
-	}
-};
+/* What a command list's layout_index hashes a subresource to: its image's
+ * address, its mip and its layer mixed into 64 bits. Two may share one;
+ * the index's entries are checked against layout_uses. */
+static inline uint64_t aprend_subresource_hash(spudgpu_image image, uint32_t mip, uint32_t layer) {
+	const uint64_t h = (uint64_t)(uintptr_t)image;
+	return h ^ (((uint64_t)mip << 16 | (uint64_t)layer) * 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2));
+}
 
 typedef struct aprend_command_list_t {
 	char *debug_name{nullptr};
@@ -608,9 +605,11 @@ typedef struct aprend_command_list_t {
 	 * pass targets and of the built-in effects' commands. What
 	 * aprend_instance_forget looks for besides the above, so a list that
 	 * names a destroyed one, or a binding set updated since, is refused at
-	 * submit. A hash set: a list may name thousands, and a destroy call
-	 * looks in every compiled list. */
-	std::unordered_set<const void *> used_handles{};
+	 * submit. A hash set, by address (the value is unused): a list may name
+	 * thousands, and a destroy call looks in every compiled list. Open
+	 * addressing, cleared and refilled by every compile without allocating
+	 * once it has grown. */
+	apri_hash_index used_handles{};
 	/* The state of each multi-state buffer store as the compile walks the
 	 * list, from the first point the list uses it. Every such store starts
 	 * the list in its use_state: aprend_command_list_submit puts it there
@@ -622,6 +621,7 @@ typedef struct aprend_command_list_t {
 		aprend_buffer_store *store;
 		SPUDGPU_RESOURCE_STATE state;
 	};
+	APRI_PLAIN_DATA(buffer_state);
 	std::vector<buffer_state> buffer_states{};
 	/* The instance's frame index and frame number at the last compile. A
 	 * list is submittable only in the frame it was compiled in: its
@@ -636,30 +636,37 @@ typedef struct aprend_command_list_t {
 		aprend_gpu_timer timer;
 		uint32_t slot;
 	};
+	APRI_PLAIN_DATA(timer_use);
 	std::vector<timer_use> timer_uses{};
 	/* What the last compile took from the instance's render target pool,
 	 * given back if that compile is never submitted (compiled again, reset,
 	 * failed, destroyed) and kept by the submission if it is. */
+	APRI_PLAIN_DATA(aprend_pool_take);
 	std::vector<aprend_pool_take> pool_takes{};
-	/* A copy of each BEGIN_LABEL's text, so recorded commands never point at
-	 * caller memory. A deque, as a vector's growth would move a short
-	 * string's characters along with it. */
-	std::deque<std::string> label_storage{};
 	/* Every material a SET_MATERIAL of the last compile names, once each:
 	 * submit writes their uniform values into the frame's copy first. */
+	APRI_PLAIN_DATA(aprend_material);
 	std::vector<aprend_material> materials{};
+	/* Compiling walks every command, every frame: two cache lines each, the
+	 * size aprendcommands.h pads every command to. */
+	APRI_PLAIN_DATA(APREND_COMMAND);
+	APRI_HOT_RECORD(APREND_COMMAND, 2 * APRI_CACHE_LINE);
 	std::vector<APREND_COMMAND> commands{};
-	/* Owned copies of each BEGIN_RENDERING's color target array, so recorded
-	 * commands never point at caller memory. Each inner vector's buffer stays
-	 * put when the outer vector grows (moves don't reallocate it). */
-	std::vector<std::vector<aprend_color_target>> color_target_storage{};
-	/* The same for the arrays of SET_VERTEX_BUFFERS, SET_VIEWPORTS and
-	 * SET_SCISSOR_RECTS. */
-	std::vector<std::vector<aprend_vertex_buffer>> vertex_buffer_storage{};
-	std::vector<std::vector<SPUDGPU_VIEWPORT>> viewport_storage{};
-	std::vector<std::vector<SPUDGPU_SCISSOR_RECT>> scissor_rect_storage{};
-	/* And the bytes of PUSH_CONSTANTS. */
-	std::vector<std::vector<uint8_t>> push_constant_storage{};
+	/* Owned copies of what commands point at, so recorded commands never
+	 * point at caller memory: each BEGIN_LABEL's text, and the arrays of
+	 * BEGIN_RENDERING, SET_VERTEX_BUFFERS, SET_VIEWPORTS, SET_SCISSOR_RECTS
+	 * and PUSH_CONSTANTS, one after another, each at an offset aligned for
+	 * any of them. Cleared, not freed, by a reset, so a list recorded every
+	 * frame stops allocating once it has grown. Growing moves the bytes, so
+	 * side_refs keeps where each command's copy is, and a compile points
+	 * the commands at it again before it reads any (nothing grows then). */
+	std::vector<uint8_t> side_bytes{};
+	struct side_ref {
+		uint32_t command; /* its index in commands */
+		uint32_t offset;  /* where its copy starts in side_bytes */
+	};
+	APRI_PLAIN_DATA(side_ref);
+	std::vector<side_ref> side_refs{};
 	/* Set by aprend_send_command on a malformed command; fails compile until reset. */
 	bool recording_error{false};
 
@@ -690,11 +697,13 @@ typedef struct aprend_command_list_t {
 		bool storage_accessed;
 		bool storage_written;
 	};
+	APRI_PLAIN_DATA(layout_use);
 	std::vector<layout_use> layout_uses{};
-	/* Where each subresource's entry is in layout_uses: a list may touch
-	 * every mip of every layer of many textures, and each barrier looks its
-	 * subresources up. Cleared with layout_uses. */
-	std::unordered_map<aprend_subresource_key, size_t, aprend_subresource_key_hash> layout_index{};
+	/* Where each subresource's entry is in layout_uses, by
+	 * aprend_subresource_hash(): a list may touch every mip of every layer
+	 * of many textures, and each barrier looks its subresources up. Open
+	 * addressing; cleared with layout_uses, keeping its slots. */
+	apri_hash_index layout_index{};
 	/* The same for each storage buffer store the list uses through a set,
 	 * from the first point it does. */
 	struct storage_hazard {
@@ -702,6 +711,7 @@ typedef struct aprend_command_list_t {
 		bool accessed;
 		bool written;
 	};
+	APRI_PLAIN_DATA(storage_hazard);
 	std::vector<storage_hazard> storage_hazards{};
 	/* The last compile succeeded, so the spudgpu list is closed and submittable. */
 	bool compiled{false};
@@ -1200,6 +1210,10 @@ typedef struct aprend_draw_list_t {
 		/* Where its instances start in instance_bytes, in instances. */
 		uint32_t first_instance;
 	};
+	/* A build reads every draw to sort them into batches: two cache lines,
+	 * nearly all of it the mesh. */
+	APRI_PLAIN_DATA(draw);
+	APRI_HOT_RECORD(draw, 2 * APRI_CACHE_LINE);
 	std::vector<draw> draws{};
 	/* Every draw's instance bytes, in the order they were added. */
 	std::vector<uint8_t> instance_bytes{};
@@ -1213,6 +1227,9 @@ typedef struct aprend_draw_list_t {
 		uint32_t first_instance;
 		uint32_t instance_count;
 	};
+	/* Expanding the list walks every batch: four to a cache line. */
+	APRI_PLAIN_DATA(batch);
+	APRI_HOT_RECORD(batch, APRI_CACHE_LINE / 4);
 	std::vector<batch> batches{};
 	/* Scratch for the build's sort, kept so a build of a list of the same
 	 * size allocates nothing. */

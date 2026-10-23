@@ -12,6 +12,8 @@
 
 #include <stdint.h>
 
+#include "../apriplaindata.hpp"
+
 #include <cstddef>
 #include <vector>
 
@@ -19,6 +21,7 @@ struct aprend_range_span {
 	uint32_t offset;
 	uint32_t count;
 };
+APRI_PLAIN_DATA(aprend_range_span);
 
 struct aprend_range_list {
 	/* Elements in the run; 0 for a list that holds nothing. */
