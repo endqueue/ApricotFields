@@ -33,7 +33,8 @@ unfinished in it.
     beyond the picture being right. That list is as of 2026-10-12. Since,
     `../apricottests` has run compute and storage ordering, the staged path
     (on the RTX A2000) and indirect draws (see "Suggested order", step 1);
-    and on 2026-10-22, on Metal only, a layered pass and mesh shading.
+    and on 2026-10-22 on Metal, and on 2026-10-23 on D3D12 and Vulkan, a
+    layered pass and mesh shading.
   - The repo's headless tests passed then. Two of them are Aprend's and
     need no device (`aprendranges_tests`, `aprendreflect_tests`, both
     registered with ctest); what is known of each run is in the last
@@ -295,7 +296,10 @@ unfinished in it.
   - No shader that writes a layer had been through SpudGPU's SPIR-V
     cross-compile to HLSL or MSL, and no layered pass had run on any
     backend, until `test_layered_pass` (2026-10-22) ran one on Metal, the
-    layer chosen in the vertex shader. Not run on D3D12 or Vulkan.
+    layer chosen in the vertex shader; on D3D12 and Vulkan on 2026-10-23
+    (Iris Xe and RTX A2000), where Vulkan needed
+    `VK_EXT_shader_viewport_index_layer` enabled for the SPIR-V 1.0 shader
+    (item 39).
 - **View aspects and stencil sampling, written 2026-10-11 and compiled on
   all three backends** (item 16):
   - `aprend_texture_view_desc::aspect` (COLOR, DEPTH, STENCIL,
@@ -313,7 +317,9 @@ unfinished in it.
     correctly sampled on D3D12 before. The D3D12 run of 2026-10-11 was
     without these changes; the build recorded on 2026-10-12 has them.
   - No stencil had been sampled on any backend until
-    `test_stencil_sampling` (2026-10-22, Metal only).
+    `test_stencil_sampling` (2026-10-22 on Metal; 2026-10-23 on D3D12 and
+    Vulkan. Its shader takes the larger of `.r` and `.g`, so which one
+    each API fills isn't something the run shows).
 - **`aprend_binding_set_update`, written 2026-10-11 and compiled on all
   three backends** (item 9): points some of a set's slots at other resources
   and keeps the handle. The set keeps a copy of the entries it was built
@@ -1236,13 +1242,33 @@ unfinished in it.
   getter's base). Run on Windows, D3D12 and Vulkan, on 2026-10-22 (item
   39's run).
 - **Section A of the autonomous work plan, written 2026-10-22; run on
-  Metal only** (Apple M5 Pro: `../apricottests` Debug under Metal API and
-  shader validation with warnings fatal, both devices, every test passing;
-  Release under `leaks`, none; ApricotFields' headless tests, spudlib's,
-  and trellislib's 17 and Latran's 33 over it, all passing, with no Aprend
-  message in any of them). Not built on Windows or Linux: the barrier and
-  combined sampler changes in particular want a D3D12 and a Vulkan run under
-  their validation layers. Each point is closed in its item below:
+  Metal, then on Windows over D3D12 and Vulkan on 2026-10-23** (Apple M5
+  Pro: `../apricottests` Debug under Metal API and shader validation with
+  warnings fatal, both devices, every test passing; Release under `leaks`,
+  none; ApricotFields' headless tests, spudlib's, and two callers' tests
+  (17 and 33) over it, all passing, with no Aprend message in any of them).
+  Not built on Linux. The Windows run, against ApricotFields `8c79f76` and
+  spudlib `1810c98` with the fixes below: Windows 11, Debug,
+  `../apricottests` on the Intel Iris Xe (`--device 0`, adapter 0x1dff,
+  first device 0x7f) and the NVIDIA RTX A2000 (`--device 1`, 0x1fbf, first
+  device 0x23f), each on its two devices; D3D12 with its debug layer
+  printing (no debugger), Vulkan with `VK_LAYER_KHRONOS_validation`, plain
+  and under synchronization validation. Every check passed in all six
+  runs, with no debug layer or validation message and no Aprend line but
+  the refusals each test expects. Synchronization validation found no
+  hazard on either device, so the run-at-a-time barriers of item 17 hold
+  there (`test_generate_mips`, `_command`, `test_bloom`,
+  `test_storage_ordering`, `test_sampled_mip_views`, all in it). None of
+  the reflection checks refused a pipeline or view an older test passes.
+  The first Vulkan run found two validation errors, each fixed (spudlib,
+  ApricotFields), every check still passing: a mesh shader module was
+  created on a device without mesh shading (the SPIR-V needs
+  `VK_EXT_mesh_shader` even as a module), and the layered pass's vertex
+  shader, SPIR-V 1.0, declares `ShaderViewportIndexLayerEXT`, which needs
+  `VK_EXT_shader_viewport_index_layer` beside `shaderOutputLayer` (item
+  39). The same two callers' tests pass over it on both backends, no
+  Aprend message, and a caller's host ran on both (item 38).
+  Each point is closed in its item below:
   - **Stale lists, for everything a recording names** (item 32): a command
     list records, in a hash set (`used_handles`), every pipeline and
     binding set it binds and what each set holds (views, samplers, uniform
@@ -1267,7 +1293,10 @@ unfinished in it.
     Metal) or smaller than them (the rest of what is shown was undefined);
     a larger one is cropped, as before. `aprend_swap_chain_get_back_buffer_size`
     (new) reads the size SpudGPU made them at, which the surface may decide.
-    No test makes a swap chain: the tests have no window.
+    No test makes a swap chain: the tests have no window. A caller's host
+    ran over it on Windows on 2026-10-23 (D3D12 and Vulkan, RTX A2000; see
+    item 38): on Vulkan the size check found that the caller sized its
+    image to the size it asked for, not the size the surface gave.
   - **Item 8**: `APREND_DESTRUCT__T` is one statement; `aprend_send_command`
     catches `std::bad_alloc` (the list then fails its compile, as for a
     malformed command); `aprend_framebuffer_create` and `_resize` reserve
@@ -1288,7 +1317,8 @@ unfinished in it.
     meets in instance state opens with `APREND_ENTER`, which prints when a
     second thread enters while one is inside. Not tested: two threads
     can't be made to overlap inside a call on purpose. It never fired in
-    any of the runs above.
+    any of the runs above, nor on Windows on 2026-10-23, in a caller's
+    host that renders off its UI thread (D3D12 and Vulkan).
   - **Layouts** (item 17): a list finds a subresource's entry through a
     hash map, and a range in more than one layout is moved a run of mips
     of a layer at a time.
@@ -1300,14 +1330,22 @@ unfinished in it.
     their sampler at an argument index of its own.
     `test_push_constants_unused` and `test_combined_image_samplers` fail
     against the old code (the first stops the run under validation, the
-    second's shader didn't compile) and pass now.
+    second's shader didn't compile) and pass now. Both pass on D3D12 and
+    Vulkan (2026-10-23), combined samplers on both GPUs and both devices.
   - **First runs**: `test_layered_pass` (a layered pass, the layer chosen in
     the vertex shader), `test_mesh_shading` (a mesh shader pipeline drawn),
     `test_stencil_sampling` (a stencil cleared and read as an unsigned
     integer), `test_cube_array_sampling` (a cube array sampled), and in
-    `test_feature_checks` a mesh pipeline and a swap chain refused without
-    their features. Each passed on Metal on its first run; none has run on
-    D3D12 or Vulkan.
+    `test_feature_checks` a mesh shader and a swap chain refused without
+    their features. Each passed on Metal on its first run, and on D3D12 and
+    Vulkan on 2026-10-23: the layered pass and the cube array on the first
+    device of both GPUs (the Iris Xe's D3D12 adapter has
+    `VPAndRTArrayIndexFromAnyShaderFeedingRasterizer`), skipped on the
+    featureless ones; the mesh shader on the RTX A2000's first device only
+    (`quad.mesh`, SPIR-V 1.5, through SPIRV-Cross to HLSL on D3D12), the
+    Iris Xe having no mesh shading on either API; the stencil read on every
+    device. `test_feature_checks` refused a mesh *shader*, not a pipeline,
+    from 2026-10-23 (item 39).
 
 ## Wrong things
 
@@ -1447,7 +1485,15 @@ been reproduced.
   destroying the swap chain refuses it as well.
 - **Done: `PRESENT_TEXTURE` checks size and format** (2026-10-22). A
   source of another format than the back buffers, or smaller than them, is
-  refused at compile; a larger one is cropped to its top-left region.
+  refused at compile; a larger one is cropped to its top-left region. Run
+  on Windows on 2026-10-23 in a caller's host (Debug, RTX A2000), its
+  window resized 46 times, 40 of them 50 ms apart, then left rendering a
+  minute: silent on D3D12, and on Vulkan refused 11 frames of the fast
+  resizes, each source the previous size and the back buffer the window's
+  current one (Vulkan's swap chain takes the surface's `currentExtent`,
+  which had moved on). The frame after each was drawn. The caller now
+  sizes its image from `aprend_swap_chain_get_back_buffer_size` after
+  each create and resize; rerun, 92 resizes on each backend, no refusal.
 - **Done: `aprend_swap_chain_acquire` refuses a failed acquire**
   (2026-10-22). SpudGPU's acquire does say it failed, with `UINT32_MAX`;
   Aprend kept that as the index and returned true.
@@ -1488,8 +1534,9 @@ code"). Left over:
   `SPUDGPU_METAL_COMBINED_SAMPLER_INDEX_BASE` past the binding, in the
   shader's argument buffer and the layout's encoder; before, only the
   texture was written and a shader with one didn't compile.
-  `test_combined_image_samplers` passed on Metal; not run on D3D12 or
-  Vulkan, which implemented it already.
+  `test_combined_image_samplers` passed on Metal, and on D3D12 and Vulkan
+  (which implemented it already) on 2026-10-23, both GPUs, debug and
+  validation layers silent.
 
 ### 10. Push constants: what is left
 
@@ -1538,7 +1585,8 @@ or per instance (see "State of the code"). Left over:
   (2026-10-22, spudlib). SpudGPU's Metal backend sends render push
   constants at the next draw now, so an encoder never ends with bytes no
   draw used, which Metal's validation with warnings fatal stopped for.
-  `test_push_constants_unused`.
+  `test_push_constants_unused`; it passes on D3D12 and Vulkan too
+  (2026-10-23), where nothing had needed changing.
 
 ### 12. Frames in flight: what is left
 
@@ -1578,7 +1626,10 @@ buffer with one the GPU is reading. Left over:
     of two threads inside it at once, not of one thread remembered: each
     call that meets in instance state enters, and one that finds another
     thread inside prints, as Vulkan's validation layer does for an object
-    used by two threads. Not tested by forcing an overlap.
+    used by two threads. Not tested by forcing an overlap. It never fired
+    on Windows on 2026-10-23 either: `../apricottests`, a caller's tests
+    and a caller's host that renders off its UI thread, over D3D12 and
+    Vulkan.
   - Command memory for each thread, so different lists can be compiled
     from different threads as they can already be recorded. Each frame
     index has an allocator of its own now (item 37); recording in parallel
@@ -1822,7 +1873,9 @@ shader. Left over:
 - **A range whose subresources differ is moved a run at a time**
   (2026-10-22): each run of mips of a layer that share a layout is one
   barrier. Runs across layers aren't merged. On Metal the barriers do
-  nothing, so this wants a Vulkan run under synchronization validation.
+  nothing; Vulkan's synchronization validation found no hazard on
+  2026-10-23 (`../apricottests`, Iris Xe and RTX A2000, both devices of
+  each), with D3D12's debug layer silent too.
 - **A resize to a different mip count replaces the layout storage**, so a
   list compiled before the resize holds pointers into what was freed. With
   the same mip count the storage is kept. The header says to recompile after
@@ -1853,7 +1906,8 @@ the sets its draws read (see "State of the code").
   Views, samplers, pipelines, binding sets and what they hold, uniform
   buffers and swap chains are refused as textures, buffers, materials and
   timers were (2026-10-18), through `used_handles` (see "State of the
-  code", "Section A").
+  code", "Section A"). `test_stale_handles` passed on Metal, and on D3D12
+  and Vulkan on 2026-10-23.
 - **A list leaves a sampled texture in `SHADER_READ_ONLY` and a storage image
   in `GENERAL`.** Nothing puts it back. Right for most uses; written down
   because the immediate operations do put a texture back.
@@ -1876,7 +1930,8 @@ Left over:
   format against its view's, a sampled or storage view's kind of number
   against the shader's, and each color output against its target (written,
   and of its kind of number). A vertex element's component count is
-  deliberately not (item 11).
+  deliberately not (item 11). On D3D12 and Vulkan (2026-10-23) these
+  refused nothing an older test passes.
 - **The bindings of one set must agree across stages** in type; different
   array sizes take the largest, and two declarations of one block must be
   one the start of the other (2026-10-22: refused otherwise), the longer
@@ -2335,8 +2390,8 @@ function with a view and a size): STRETCH of a 2x2 four-color source onto
 64x64 (each quadrant its color); ASPECT_FIT of a 32x16 source onto 64x64
 (bars of the border color above and below, the source between); NEAREST
 against LINEAR at a quadrant's edge; a float source onto an 8-bit target;
-each refusal. The swap chain itself is only checked in a host (Trellis or
-Latran) on each backend.
+each refusal. The swap chain itself is only checked in a caller's host on
+each backend.
 
 **Why not a blit:** SpudGPU's blit resamples only on Vulkan; on D3D12 and
 Metal it is a copy (`spudgpu.h`).
@@ -2429,7 +2484,8 @@ frame makes nothing new. Left:
   over each target texel's footprint (two and a bit source texels on an
   odd side), read with `texelFetch`, so every source texel weighs the
   same; on an even side it is the 2x2 average it was. A nearest one is one
-  texel, as before. `test_generate_mips_odd`; run on Metal only.
+  texel, as before. `test_generate_mips_odd`; run on Metal, and on D3D12
+  and Vulkan on 2026-10-23.
 - **The first generation in a format makes a pipeline**, and a texture's
   first of a base level and filter its views and sets, inside whatever
   call or compile it is.
@@ -2550,7 +2606,7 @@ choices for its own needs, and two instances may share one device,
 | `DEVICE_MAPPABLE_MEMORY` | storage buffers written directly, else staged | 1 |
 | `PRESENT` | `aprend_swap_chain_create` | 2 |
 | `PASS_TIMESTAMPS` | `aprend_gpu_timer_create` | 2 |
-| `MESH_SHADING` | a pipeline with `mesh_shader` | 2 |
+| `MESH_SHADING` | a mesh shader, and so a pipeline with `mesh_shader` | 2 |
 | `LAYERED_RENDERING` | 2D array views rendered to | 2 |
 | `CUBE_ARRAY_VIEWS` | `APREND_TEXTURE_VIEW_SHAPE_CUBE_ARRAY` | 2 |
 | `DEPTH_BIAS_CLAMP`, `INDEPENDENT_BLEND` | a pipeline's `_depth_bias_clamp`, differing `_blends` | 2 |
@@ -2566,7 +2622,8 @@ What was done:
 - **Group 2, features one of Aprend's calls needs:** each call names its
   feature in its header comment and checks the device itself, refusing in
   Aprend's way (NULL after printing why) before SpudGPU sees the call:
-  the swap chain, the GPU timer, a mesh pipeline, a depth bias clamp,
+  the swap chain, the GPU timer, a mesh shader (since 2026-10-23; a mesh
+  pipeline before), a depth bias clamp,
   differing blends (by SpudGPU's rule: entries that don't blend are equal),
   a 2D array view rendered to, a cube array view. The caller asks for each
   of the calls it makes.
@@ -2594,8 +2651,35 @@ What was done:
 Metal (and on D3D12 of a device without device-mappable memory), is done
 (2026-10-22, above). Mesh shading and the swap chain's refusals are covered
 since 2026-10-22 (`test_feature_checks`, and a mesh pipeline drawn in
-`test_mesh_shading`), run on Metal only. Left: Linux, where it is not
-built.
+`test_mesh_shading`), run on Metal, and on D3D12 and Vulkan on 2026-10-23
+(Windows 11, Debug, Iris Xe and RTX A2000, first devices 0x7f and 0x23f).
+That run found two things on Vulkan, both fixed:
+
+- **A mesh shader was made on a device without mesh shading.**
+  `aprend_shader_create_spirv` passed it to SpudGPU, whose Vulkan backend
+  made the `VkShaderModule`; its SPIR-V declares `MeshShadingEXT`, which
+  needs `VK_EXT_mesh_shader` enabled even for a module (two validation
+  errors for the capability and extension, two for the device's mesh
+  output limits of 0). D3D12 and Metal
+  cross-compile with no device and took it. Now
+  `aprend_shader_create_spirv` and `_read_from_file_spirv` refuse a mesh
+  shader without the feature, printing, and `spudgpu_create_shader_module`
+  refuses a mesh or task module with
+  `SPUDRESULT_GPU_EXT_MESH_SHADING_NOT_SUPPORTED` on every backend. The
+  pipeline check stays, now unreachable through a shader of the same
+  device. `test_feature_checks` expects the shader refused, not the
+  pipeline.
+- **A layered pass's vertex shader wasn't valid on Vulkan.** `gl_Layer`
+  in a vertex shader compiled to SPIR-V 1.0 (glslc's default) is the
+  `ShaderViewportIndexLayerEXT` capability, which needs
+  `VK_EXT_shader_viewport_index_layer`; `shaderOutputLayer` alone covers
+  only SPIR-V 1.5's `ShaderLayer`. SpudGPU's Vulkan adapter now has
+  `SPUDGPU_FEATURE_LAYERED_RENDERING` only with the extension and
+  `shaderOutputViewportIndex` as well (the extension needs both on), and
+  the device enables all three. Both GPUs here keep the bit.
+
+Rerun, every check passed with no message, plain and under
+synchronization validation. Left: Linux, where it is not built.
 
 ## Suggested order
 

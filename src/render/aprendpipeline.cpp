@@ -300,6 +300,17 @@ static bool aprend_shader_stage_supported(SPUDGPU_SHADER_STAGE shader_stage) {
 	}
 }
 
+// False, printed for [who], if [shader_stage] needs a feature [instance]'s
+// device was created without. A mesh shader module is refused there on every
+// backend: on Vulkan the SPIR-V itself needs VK_EXT_mesh_shader enabled.
+static bool aprend_shader_stage_feature_ok(aprend_instance instance, SPUDGPU_SHADER_STAGE shader_stage, const char *who) {
+	if (shader_stage == SPUDGPU_SHADER_STAGE_MESH && !(instance->features & SPUDGPU_FEATURE_MESH_SHADING)) {
+		printf("apricot: %s: a mesh shader and the device was created without SPUDGPU_FEATURE_MESH_SHADING\n", who);
+		return false;
+	}
+	return true;
+}
+
 // Reflects [size] bytes of SPIR-V into [shader]'s reflection. False, printed
 // for [who], if it can't be. [code] is the caller's and may not be aligned to
 // 4, so the words are read through a copy where it isn't.
@@ -754,6 +765,8 @@ aprend_shader aprend_shader_create_spirv(
 		return nullptr;
 	if (!aprend_shader_stage_supported(shader_stage))
 		return nullptr;
+	if (!aprend_shader_stage_feature_ok(instance, shader_stage, "aprend_shader_create_spirv"))
+		return nullptr;
 
 	APREND_MALLOC__T(result, aprend_shader_t);
 	if (!result)
@@ -839,6 +852,8 @@ aprend_shader aprend_shader_read_from_file_spirv(
 	if (!instance || !filename)
 		return nullptr;
 	if (!aprend_shader_stage_supported(shader_stage))
+		return nullptr;
+	if (!aprend_shader_stage_feature_ok(instance, shader_stage, "aprend_shader_read_from_file_spirv"))
 		return nullptr;
 
 	uint8_t *data      = nullptr;

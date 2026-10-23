@@ -72,7 +72,10 @@ typedef struct aprend_shader_t *aprend_shader;
  *                         SPUDGPU_SHADER_STAGE_VERTEX,
  *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
  *                         SPUDGPU_SHADER_STAGE_COMPUTE and
- *                         SPUDGPU_SHADER_STAGE_MESH are accepted.
+ *                         SPUDGPU_SHADER_STAGE_MESH are accepted, the last
+ *                         only on a device created with
+ *                         SPUDGPU_FEATURE_MESH_SHADING (refused, printed,
+ *                         without it).
  *
  * @return The shader, or NULL if @p instance or @p filename is NULL,
  *         @p shader_stage is not accepted, the file doesn't exist or can't be
@@ -102,7 +105,10 @@ aprend_shader aprend_shader_read_from_file_spirv(
  *                         SPUDGPU_SHADER_STAGE_VERTEX,
  *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
  *                         SPUDGPU_SHADER_STAGE_COMPUTE and
- *                         SPUDGPU_SHADER_STAGE_MESH are accepted.
+ *                         SPUDGPU_SHADER_STAGE_MESH are accepted, the last
+ *                         only on a device created with
+ *                         SPUDGPU_FEATURE_MESH_SHADING (refused, printed,
+ *                         without it).
  *
  * @return The shader, or NULL if @p instance or @p spirv_code is NULL,
  *         @p spirv_size is 0 or not a multiple of 4, @p shader_stage is not
