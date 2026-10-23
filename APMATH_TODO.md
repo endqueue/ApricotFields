@@ -16,10 +16,10 @@ and triangulation).
   vendored under `../.deps/Clipper2` and `../.deps/earcut.hpp`.
   `apmath_poly_offset_edges` and its tests, added after, likewise build and
   pass (reported 2026-10-15). `apmath_poly_skeleton` and its tests were added
-  after that, and are written, not compiled.
+  after that.
 - **2026-10-17, macOS (Apple M5 Pro), Debug and Release:** all nine of
   ApricotFields' headless tests pass, `apmathpoly_tests` and the skeleton's
-  among them, and trellislib's model tests (roofs use the offset) pass over
+  among them, and a caller's model tests (its roofs use the offset) pass over
   it. Before that day's fix `apmathpoly_tests` failed one check,
   `offset_moves`: a square moved in past half its width came out as a 2x2
   square, not nothing (see "Offset: edges that go", below).

@@ -9,16 +9,17 @@ that file. `apricotfields.h` doesn't include it yet.
 
 Items 1-4, the design bugs that were cheap to fix before implementing and
 expensive after, are fixed in the header, and so are items 5, 6 and 11 (6 and 11 as
-one design, sized for Apricot later becoming a game engine). Buses (item 10) are the
-remaining missing feature that would force API changes later, so design them in now
-even if they're built later. Everything else can be added without breaking callers.
+one design, sized for Apricot later becoming a game engine). Buses (item 10), the
+last missing feature that would have forced API changes later, are built.
+Everything else can be added without breaking callers.
 
 Cues and sound banks - names over the mixer, defined by a manifest and its WAVs - are
 `include/audio/apaudiocues.h` (`src/audio/apaudiocues.cpp`), general purpose so any
 application has them. Its only test is `test_cues_clear_banks` in
 `tests/apaudio_tests.c`, which loads banks from memory and clears them
 (`apaudio_cues_clear_banks()`); the manifest's rules, playing, sustained playings
-and ducking are untested here. That call and its test are written, not compiled.
+and ducking are untested here. That call and its test are compiled and pass on
+macOS (2026-10-22).
 
 ## Wrong things: design bugs in the draft
 
@@ -189,11 +190,13 @@ sounds like one in front. For an accessibility use, that's actively wrong.
 
 ## Real gaps: things a good framework has
 
-### 10. Buses (submix groups)
+### 10. Buses (submix groups) - built
 
-No way to group voices (UI, feedback, ambience) with their own gain and mute, and no
-ducking (automatically lowering one group while another plays). Design this in now:
-retrofitting it changes `apaudio_play`.
+Voices are routed to buses (`apaudio_bus_*`), a tree under the master bus, each
+with its own gain, rate, mute and pause; modifiers scale buses together, and a
+modifier with a bus trigger is ducking (lowering one bus while another plays).
+`test_buses` and `test_modifiers` in `tests/apaudio_tests.c` cover them. Still to
+come: processing on a bus's own mix, effects and metering (`apaudio.h`).
 
 ### 11. Voice priority and virtual voices - fixed, with item 6
 
@@ -246,5 +249,6 @@ Not ApAudio's to decide, but nothing in the design prompts its callers to handle
   category, or sounds are silenced by the ringer switch and fight with other apps'
   audio. Nothing in SpudAudio or ApAudio models that yet.
 - **Following the default device** when it changes is the caller's job by design.
-  It's blocked on SpudAudio's CoreAudio device events
-  (`spudaudio_set_device_event_callback` returns `SPUDRESULT_NOT_IMPLEMENTED_YET`).
+  SpudAudio reports device events on CoreAudio, WASAPI and ALSA
+  (`spudaudio_set_device_event_callback`); only the stub built with no audio API
+  refuses.

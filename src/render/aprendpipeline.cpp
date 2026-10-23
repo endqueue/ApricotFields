@@ -734,6 +734,63 @@ aprend_shader aprend_shader_create_spirv(
 	return result;
 }
 
+/* Reads the whole file at [filename] into a malloc'd block. Its SpudFiles
+ * instance is over the system heap and lives for the call: Aprend keeps no
+ * files open. The file is shared with every other reader, writer and
+ * rename, since nothing here minds them. SPUDRESULT_SFS_NOT_FOUND when no
+ * file is there; a size that isn't whole SPIR-V words is
+ * SPUDRESULT_DESC_INVALID_PARAMETERS, after printing why. */
+static SPUDRESULT aprend_read_spirv_file(const char *filename, uint8_t **out_data, uint64_t *out_size) {
+	*out_data = nullptr;
+	*out_size = 0;
+	const SPUD_ALLOCATOR allocator = spud_allocator_system();
+	sfs_instance_desc files_desc   = {};
+	files_desc.base.type           = SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC;
+	files_desc.allocator           = &allocator;
+	sfs_instance files             = nullptr;
+	SPUDRESULT sr                  = sfs_instance_create(&files_desc, &files);
+	if (SPUDFAIL(sr))
+		return sr;
+
+	sfs_open_desc open_desc = {};
+	open_desc.base.type     = SPUD_STRUCT_TYPE_FILES_OPEN_DESC;
+	open_desc.path          = filename;
+	open_desc.access        = SFS_ACCESS_READ;
+	open_desc.create        = SFS_CREATE_OPEN_EXISTING;
+	open_desc.share         = SFS_SHARE_READ | SFS_SHARE_WRITE | SFS_SHARE_DELETE;
+	sfs_file file           = nullptr;
+	sr                      = sfs_file_open(files, &open_desc, &file);
+	uint64_t size           = 0;
+	if (!SPUDFAIL(sr))
+		sr = sfs_file_get_size(file, &size);
+	if (!SPUDFAIL(sr) && (size == 0 || size % 4 != 0)) {
+		printf("apricot: aprend_shader_read_from_file_spirv: '%s' is %llu bytes, not a whole number of SPIR-V words\n", filename,
+		       (unsigned long long)size);
+		sr = SPUDRESULT_DESC_INVALID_PARAMETERS;
+	}
+	uint8_t *data = nullptr;
+	if (!SPUDFAIL(sr)) {
+		data = (uint8_t *)malloc(size);
+		if (!data)
+			sr = SPUDRESULT_OUT_OF_MEMORY;
+	}
+	if (!SPUDFAIL(sr)) {
+		uint64_t read = 0;
+		sr            = sfs_file_read_at(file, 0, data, size, &read);
+		if (!SPUDFAIL(sr) && read != size)
+			sr = SPUDRESULT_API_SPECIFIC_FAILURE; // shrunk while being read
+	}
+	sfs_file_close(file);
+	sfs_instance_destroy(files);
+	if (SPUDFAIL(sr)) {
+		free(data);
+		return sr;
+	}
+	*out_data = data;
+	*out_size = size;
+	return SPUD_SUCCESS;
+}
+
 aprend_shader aprend_shader_read_from_file_spirv(
     aprend_instance instance,
     const char *filename,
@@ -743,51 +800,19 @@ aprend_shader aprend_shader_read_from_file_spirv(
 	if (!aprend_shader_stage_supported(shader_stage))
 		return nullptr;
 
-	if (!sfs_file_exists(filename))
+	uint8_t *data      = nullptr;
+	uint64_t data_size = 0;
+	SPUDRESULT sr      = aprend_read_spirv_file(filename, &data, &data_size);
+	if (sr == SPUDRESULT_SFS_NOT_FOUND || sr == SPUDRESULT_DESC_INVALID_PARAMETERS)
 		return nullptr;
 
 	APREND_MALLOC__T(result, aprend_shader_t);
-	if (!result)
+	if (!result) {
+		free(data);
 		return nullptr;
+	}
 	APREND_CONSTRUCT__T(result, aprend_shader_t);
-
 	result->instance = instance;
-
-	SPUDRESULT sr      = SPUD_SUCCESS;
-	uint8_t *data      = nullptr;
-	uint64_t data_size = 0;
-
-	SFS_FILE_OPEN_ATTRIBUTES ofa = {};
-	ofa.str_file_path            = filename;
-	ofa.access_mode              = SFS_EFILE_ACCESS_MODE_READ;
-	sfs_file file;
-	sr = sfs_file_open(ofa, &file);
-	if (SPUDFAIL(sr))
-		goto failedattempt;
-	sr = sfs_file_get_size(file, &data_size);
-	if (SPUDFAIL(sr)) {
-		sfs_file_release(file);
-		goto failedattempt;
-	}
-	if (data_size == 0 || data_size % 4 != 0) {
-		printf("apricot: aprend_shader_read_from_file_spirv: '%s' is %llu bytes, not a whole number of SPIR-V words\n", filename,
-		       (unsigned long long)data_size);
-		sfs_file_release(file);
-		APREND_DESTRUCT__T(result, aprend_shader_t);
-		return nullptr;
-	}
-	data = (uint8_t *)malloc(data_size);
-	if (!data) {
-		sfs_file_release(file);
-		APREND_DESTRUCT__T(result, aprend_shader_t);
-		return nullptr;
-	}
-	sr = sfs_file_read(file, data, data_size);
-	if (SPUDFAIL(sr)) {
-		sfs_file_release(file);
-		goto failedattempt;
-	}
-	sr = sfs_file_release(file);
 	if (SPUDFAIL(sr))
 		goto failedattempt;
 

@@ -12,7 +12,7 @@ unfinished in it.
 
 - **Compiled on macOS on 2026-10-10; run there in part.** Everything in this section
   built with no errors and no warnings: Aprend with Clang, against
-  SpudGPU's Metal backend, through trellislib's `trellislib-macos-metal`
+  SpudGPU's Metal backend, through a caller's macOS Metal
   preset. That is two builds the same day: the first covered the three
   lists that follow, the second everything after them. Each needed one fix
   outside this repo. The first: `spudgpu.h` had lost the declarations of the
@@ -30,7 +30,10 @@ unfinished in it.
     still stands for everything else: no push constant set, nothing
     staged, no compute, no indirect draw, no view of part of a texture, no
     layered pass. Nothing checked the release queue for an early release
-    beyond the picture being right.
+    beyond the picture being right. That list is as of 2026-10-12. Since,
+    `../apricottests` has run compute and storage ordering, the staged path
+    (on the RTX A2000) and indirect draws (see "Suggested order", step 1);
+    no layered pass and no mesh shading has run.
   - The repo's headless tests passed then. Two of them are Aprend's and
     need no device (`aprendranges_tests`, `aprendreflect_tests`, both
     registered with ctest); what is known of each run is in the last
@@ -43,8 +46,9 @@ unfinished in it.
   0. The rest of the section was built there by 2026-10-12 (the bullet
   after the Linux one). That
   is the first build of this code outside macOS and the first of a SpudGPU
-  backend other than Metal. The backend was D3D12 (Trellis_Avalonia);
-  Vulkan has not been built on Windows. As on macOS, it exercises what
+  backend other than Metal. The backend was D3D12 (a caller's host);
+  Vulkan has not been built on Windows (it was on 2026-10-16, by
+  `../apricottests`). As on macOS, it exercises what
   that application uses and no more (the list above); whether the device
   had memory of its own, which is what would have run the staged path, is
   not recorded either.
@@ -100,10 +104,10 @@ unfinished in it.
     the texture readback staging buffers are `READBACK`.
   - A vertex or index buffer is `UPLOAD` on a device whose memory is the
     system's and `DEVICE` with a staging buffer otherwise, as before.
-  - A storage buffer is `DEVICE_MAPPABLE` where
-    `SPUDGPU_DEVICE_PROPERTIES::device_mappable_memory` says the device has
-    it, and `DEVICE` with a staging buffer otherwise (was item 2).
-    `aprend_instance_create` reads the property beside `unified_memory`.
+  - A storage buffer is `DEVICE_MAPPABLE` on a device created with
+    `SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY` (before 2026-10-21, a device
+    property), and `DEVICE` with a staging buffer otherwise (was item 2).
+    `aprend_instance_create` reads the device's features (item 39).
   - Every write through a mapping is followed by `spudgpu_flush_buffer`:
     `aprend_buffer_store_write`, `aprend_uniform_buffer_update` (whose buffer
     stays mapped) and both texture update paths. The readbacks already called
@@ -157,7 +161,8 @@ unfinished in it.
     and `aprend_command_list_submit` copies the dirty range across in an
     upload list submitted ahead of the list's own. Uniform buffers are
     host-visible on every device. `aprend_instance_create` reads
-    `SPUDGPU_DEVICE_PROPERTIES::unified_memory`, and the copy uses
+    `SPUDGPU_ADAPTER_PROPERTIES::unified_memory` of the device's adapter
+    (before 2026-10-21, a device property), and the copy uses
     `SPUDGPU_RESOURCE_STATE_COPY_DEST`: both are new in SpudGPU, and built
     on all three backends since. The vertex and index update calls check their range.
   - Frame pacing (item 12). The instance has a fence; every submission
@@ -275,16 +280,16 @@ unfinished in it.
 - **Layered passes, written 2026-10-10 and compiled on all three
   backends** (item 16):
   - A view of type RENDER_TAGET or DEPTH_STENCIL may be a 2D array of one
-    mip, on a device that reports
-    `SPUDGPU_DEVICE_PROPERTIES::layered_rendering` (read once into the
-    instance); on any other, creating one fails.
+    mip, on a device created with `SPUDGPU_FEATURE_LAYERED_RENDERING`
+    (before 2026-10-21, a device property read once into the instance);
+    on any other, creating one fails.
   - BEGIN_RENDERING over 2D array views is a layered pass: the compile
     refuses targets that differ in shape or layer count, and the layer count
     goes to SpudGPU as `spudgpu_rendering_begin_desc::layer_count` (0 for a
     pass over 2D views). Layouts and conflicts needed nothing new: a target
     is already moved, and checked for overlap, over its view's range.
   - SpudGPU changes it rests on, built on all three backends: `layer_count`, the
-    `layered_rendering` property (which enables `shaderOutputLayer` on
+    layered rendering feature (then a property; it enables `shaderOutputLayer` on
     Vulkan where the device has it), and Metal pipelines always stating
     their primitive class, which Metal requires in a layered pass.
   - No shader that writes a layer has been through SpudGPU's SPIR-V
@@ -495,9 +500,9 @@ unfinished in it.
     resource into a shader's argument buffer struct, so a shader that uses
     some of a set's bindings reads the right ones (spudlib/CLAUDE.md has
     what is still a gap). Vulkan's and D3D12's sides have run, in the
-    D3D12 and Vulkan runs below. On 2026-10-17 Trellis_Avalonia also built
-    and ran over them on Windows, D3D12 and Vulkan, and Trellis_macOS over
-    the Metal changes (reported); Trellis uses no lit surface, comparison
+    D3D12 and Vulkan runs below. On 2026-10-17 a caller's hosts also built
+    and ran over them on Windows, D3D12 and Vulkan, and on macOS over
+    the Metal changes (reported); that caller uses no lit surface, comparison
     sampler or depth-only pass, so that shows only that they break nothing
     there.
   - **What has run.** `../apricottests`, on an Apple M5 Pro (2026-10-17),
@@ -586,9 +591,8 @@ unfinished in it.
   - The lit scene's light tiles and its placeholder, written by a shader
     only, are `ONCE` with no data: on a device with memory of its own they
     had a staging copy each that was never written.
-  - Callers changed in the same change: trellislib's four vertex buffers
-    (`src/trellisscene.cpp`) and latran's four mesh buffers
-    (`core/src/latranrender.cpp`) are `ONCE`; none is ever updated.
+  - Callers changed in the same change: two callers in the workspace, whose
+    four vertex or mesh buffers each are `ONCE`; none is ever updated.
     `../apricottests` passes `MANY` for the one buffer it updates and
     `ONCE` for the rest.
   - `../apricottests`' `test_buffer_writes`: a `MANY` buffer written in two
@@ -596,7 +600,7 @@ unfinished in it.
     and refused an update; a create with `writes` 0 refused; two pool
     ranges of one block drawn from where the pool put them, and the block
     refusing an update. Passed on Metal (Apple M5 Pro, Debug), 2026-10-18,
-    with every other test, and trellislib's and latran's tests pass over
+    with every other test, and callers' tests pass over
     it. That device is unified, so the buffers were written directly and
     none of the new staged code ran there. It ran first on the RTX A2000
     (memory of its own): every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
@@ -640,7 +644,7 @@ unfinished in it.
     after a compile and refused at submit, and a list that goes). Every
     test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
     validation with warnings fatal, and Release under `leaks` (none).
-    trellislib's and latran's tests pass over it. On Metal the barriers do
+    Callers' tests pass over it. On Metal the barriers do
     nothing; every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
     the validation layer with synchronization validation, on the Iris Xe
     and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
@@ -691,8 +695,8 @@ unfinished in it.
     copy of a lit material with its values. Passed on Metal (Apple M5
     Pro), Debug under Metal API and shader validation with warnings
     fatal and Release under `leaks` (none), with every other test.
-    latran's 26 suites pass over it, and trellislib's 10. Of trellislib's,
-    `trellislib_model_tests` failed once, in the first run after the
+    Two callers' tests pass over it, 26 suites and 10. Of the 10, a
+    model test failed once, in the first run after the
     relink, with its output lost; nine runs since passed, and it calls
     no material code. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
     the validation layer with synchronization validation, on the Iris Xe
@@ -725,7 +729,7 @@ unfinished in it.
     names find `UINT32_MAX`, an index past the layout and NULL data are
     refused. Passed on Metal (Apple M5 Pro), Debug under Metal API and
     shader validation with warnings fatal and Release under `leaks`
-    (none), with every other test; latran's and trellislib's tests pass
+    (none), with every other test; callers' tests pass
     over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
     the validation layer with synchronization validation, on the Iris Xe
     and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
@@ -764,12 +768,13 @@ unfinished in it.
     creates, and a block of no uniforms made with a size and written as
     bytes. Every test passed on Metal (Apple M5 Pro), Debug under Metal
     API and shader validation with warnings fatal and Release under
-    `leaks` (none); latran's and trellislib's tests pass over it. Not
+    `leaks` (none); callers' tests pass over it. Not
     built on Windows or Linux.
 - **Buffer offsets follow the device's alignment, written 2026-10-18; run
   on Metal** (the rest of the uniform buffer review).
   - SpudGPU reports `uniform_buffer_offset_alignment` and
-    `storage_buffer_offset_alignment` in `SPUDGPU_DEVICE_PROPERTIES`:
+    `storage_buffer_offset_alignment` in `SPUDGPU_ADAPTER_PROPERTIES`
+    (`SPUDGPU_DEVICE_PROPERTIES` until 2026-10-21):
     Vulkan's `minUniformBufferOffsetAlignment` and
     `minStorageBufferOffsetAlignment`; D3D12's 256 and 16 (a constant buffer
     view's placement, a raw buffer view's first byte); 256 for both on
@@ -789,13 +794,13 @@ unfinished in it.
     they returned false silently.
   - `aprend_uniform::size` is `array_count`: it was an element count named
     a size. Source-compatible for a caller that fills the struct by
-    position (trellislib does); one that names the field changes the name.
+    position (a caller in the workspace does); one that names the field changes the name.
   - `../apricottests`' `test_uniform_buffer_index`: the alignments SpudGPU
     reports are powers of two up to 256, an entry at the device's own
     alignment is taken and one at 4 refused (both, on Metal's 256). Every
     test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
     validation with warnings fatal and Release under `leaks` (none);
-    latran's and trellislib's tests pass over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
+    callers' tests pass over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
     the validation layer with synchronization validation, on the Iris Xe
     and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
     what that run found). Not built on Linux.
@@ -843,10 +848,9 @@ unfinished in it.
   - A vertex pool's desc takes `vertex_stride` in place of a layout.
     Aprend's lit layouts have their strides (`sizeof(aprend_lit_vertex)`,
     `sizeof(aprend_lit_instance)`).
-  - Callers in the same change: trellislib (its four layouts,
-    `src/trellisrenderresources.cpp`; four vertex buffers sized in bytes,
-    `src/trellisscene.cpp`; the solid pool's stride, `src/trellissolids.cpp`),
-    latran (`core/src/latranrender.cpp`) and `../apricottests`.
+  - Callers in the same change: the callers in the workspace (vertex
+    layouts, vertex buffers sized in bytes, a solid pool's stride) and
+    `../apricottests`.
   - `../apricottests`' `test_vertex_layouts`: six refused pipelines (stride
     0, stride 10, an offset of 2, an element past the stride, an unknown
     type, a `uint` input fed by an `INT` element); the pipeline's copy of a
@@ -855,13 +859,13 @@ unfinished in it.
     alone; a `uint` input that draws for 7 and not for 3; two draws past
     the end of a 6-vertex buffer refused. Every test passed on Metal (Apple
     M5 Pro), Debug under Metal API and shader validation with warnings
-    fatal and Release under `leaks` (none); latran's and trellislib's tests
+    fatal and Release under `leaks` (none); callers' tests
     pass over it. Every test passed on Windows on 2026-10-18, D3D12 under its debug layer and Vulkan under
     the validation layer with synchronization validation, on the Iris Xe
     and the RTX A2000 (reported; step 2 and 3 of "Suggested order" have
     what that run found). Not built on Linux. That includes D3D12, whose
     vertex view's stride is what the per-stride views are for.
-    Trellis_Avalonia and latran ran over it on Windows the same day
+    Two callers ran over it on Windows the same day
     (reported).
 - **Shader reflection, written 2026-10-11 and compiled on all three
   backends** (item 18; closes item 1). Type-checked with GCC 11 as the
@@ -917,9 +921,9 @@ unfinished in it.
     submits writing the material's frame copies (since replaced by the
     material arena, below) with the "read in this
     turn" rule, three frames, and teardown through the release queue,
-    with no sanitizer error. The same harness made trellislib's four
+    with no sanitizer error. The same harness made a caller's four
     pipelines (geometry, line, solid, overlay) the way
-    `trellisrenderresources.cpp` does, from its GLSL compiled with glslang,
+    that caller does, from its GLSL compiled with glslang,
     and none was refused by the new checks. That exercises Aprend's logic
     and none of SpudGPU, so nothing is known about any backend from it.
   - Push constants are checked per member the stage uses (SPIR-V's active
@@ -992,13 +996,13 @@ unfinished in it.
     copy after earlier submissions' reads is SpudGPU's, unverified on every
     backend, as for the staged buffers (item 13).
 - **No tests in this repo of anything that needs a device.** There is no
-  `tests/aprend_tests.*`: the repo's tests are headless with no GPU. The two
-  parts of Aprend that run without a device each have a test, both
+  `tests/aprend_tests.*`: the repo's tests are headless with no GPU. The three
+  parts of Aprend that run without a device each have a test, all
   registered with ctest behind `APRICOTFIELDS_BUILD_TESTS`:
-  `tests/aprendranges_tests.cpp` (the pools' range list; whether it has
-  been built or run is not recorded) and `tests/aprendreflect_tests.cpp`
-  (reflection; passed in a scratch build on Linux, not recorded as run
-  through this repo's CMake). The tests that need a device are
+  `tests/aprendranges_tests.cpp` (the pools' range list),
+  `tests/aprendreflect_tests.cpp` (reflection; passed in a scratch build
+  on Linux) and `tests/aprendfeatures_tests.c` (the optional feature set,
+  item 39). The tests that need a device are
   `../apricottests` (`aprend_gpu_tests`), run on Metal (macOS) and on D3D12
   and Vulkan (Windows).
 - **Reviewed by reading on 2026-10-13; nothing compiled or run for it.**
@@ -1009,10 +1013,10 @@ unfinished in it.
   found already fixed was taken out of items 8, 12, 14 and 20. No code was
   changed.
 - **Multiple render targets, depth bias, debug labels and GPU timers,
-  written 2026-10-15; compiled on macOS over Metal through Trellis_macOS, which ran (reported 2026-10-16)** (items 25, 26, 29):
-  - The Trellis run used one color target, no bias, no labels and no
+  written 2026-10-15; compiled on macOS over Metal through a caller's macOS host, which ran (reported 2026-10-16)** (items 25, 26, 29):
+  - The host's run used one color target, no bias, no labels and no
     timer, so it shows the arrays and the new pipeline checks build and
-    pass for what Trellis draws, and no more.
+    pass for what that host draws, and no more.
   - **Run on Windows on 2026-10-16 by `../apricottests`, all passed:** D3D12
     on an NVIDIA RTX A2000 Laptop (memory of its own) and an Intel Iris Xe
     (unified), debug layer clean; Vulkan on both, validation clean.
@@ -1068,16 +1072,16 @@ unfinished in it.
   - `aprend_gpu_timer` (`aprendtimer.h`): slots a pass is timed into,
     through `BEGIN_RENDERING`'s `_timer` and `_timer_slot` or a render
     pass's, kept once for each frame in flight and read a frame late.
-  - Every caller in the workspace follows: spudgpusamples, libdemo,
-    trellislib, Latran and `../apricottests` set the formats as arrays.
+  - Every caller in the workspace follows: spudgpusamples,
+    `../apricottests` and the rest set the formats as arrays.
   - What to check first: a pipeline with two targets on each backend; a
     shadow pass's bias; labels in RenderDoc, PIX and Xcode; a timer's
     reading against a known cost, on Metal above all.
 - **Command memory for each frame and the upload batch, written 2026-10-15;
-  compiled on macOS over Metal through Trellis_macOS, which ran (reported 2026-10-16)** (items 37 and 6):
+  compiled on macOS over Metal through a caller's macOS host, which ran (reported 2026-10-16)** (items 37 and 6):
   - On Metal there is no allocator memory to leak, so the run shows the
     per-frame lists and the batch work there, not that the D3D12 leak is
-    gone. Whether Trellis updated or read back a texture in the run is not
+    gone. Whether the host updated or read back a texture in the run is not
     recorded.
   - An instance has a SpudGPU command allocator for each frame index, and
     the SpudGPU lists recorded from it. `aprend_instance_next_frame` resets
@@ -1129,17 +1133,17 @@ unfinished in it.
     minutes on D3D12 with memory watched.
   - **Run on macOS on 2026-10-16 by `../apricottests`, all passed**, with
     `test_updates_batched`, under Metal validation (see the entry above).
-  - **Memory flat on D3D12, reported 2026-10-16:** Trellis_Avalonia on
+  - **Memory flat on D3D12, reported 2026-10-16:** a caller's host on
     Windows over D3D12 ran idle for 20 minutes with no growth in memory,
     the check item 37 was waiting on. Whether its viewport drew frames
     throughout while idle, and on which device, isn't recorded.
-    **It showed less than it seemed** (found 2026-10-17): trellislib never
+    **It showed less than it seemed** (found 2026-10-17): that caller never
     called `aprend_instance_next_frame` - it waits for the GPU after every
     render and kept one frame in flight, so it saw no need - and an idle
     window doesn't render. So the per-frame allocators were never reset
     under a host, and every compile took a new SpudGPU list. It came to
     light when a viewport glow's bloom took a new pooled chain every frame
-    and ran out of memory. trellislib now turns the frame after each render
+    and ran out of memory. That caller now turns the frame after each render
     call's wait. Memory over minutes of rendering, not idling, is still to
     be watched.
 - **Bloom and post-processing, written 2026-10-16; run on Metal the same
@@ -1183,7 +1187,7 @@ unfinished in it.
   2026-10-16; run on Metal the same day** (items 22, 31, 7):
   - GLSL in `shaders/` is compiled to SPIR-V by glslc at build time and
     embedded in the library as C arrays (`-mfmt=c`), on every platform, as
-    trellislib and `../apricottests` already do: nothing to deploy or load
+    callers in the workspace and `../apricottests` already do: nothing to deploy or load
     at run time. glslc is now needed on Apple too. The block that compiled
     `apricot_default.vert`/`.frag` to `.spv` files on Windows and Linux
     only, and linked Vulkan for it, is gone with those shaders (item 7);
@@ -1226,8 +1230,8 @@ unfinished in it.
   2026-10-20** (M5 Pro): `../apricottests` passes, Debug under Metal API and
   shader validation with warnings fatal, with a new `test_struct_bases`
   (a zeroed base, another struct's type and a chained struct refused; the
-  getter's base). Not compiled for D3D12 or Vulkan: the backends are
-  untouched, but every caller's desc changed, so a Windows run is due.
+  getter's base). Run on Windows, D3D12 and Vulkan, on 2026-10-22 (item
+  39's run).
 
 ## Wrong things
 
@@ -1320,10 +1324,10 @@ today:
   with no braces only the destructor is guarded:
   `aprend_swap_chain_destroy` is the one such use, and is saved by
   `free(NULL)` being allowed.
-- **Two comments name a function of a caller**
+- **Done: two comments named a function of a caller**
   (`create_offscreen_color_target`, in `aprendframes.cpp` and
   `aprendimages_internal.hpp`), which `CLAUDE.md` rules out. They mean "the
-  caller's array may be a local".
+  caller's array may be a local". Both say that now (2026-10-22).
 - **`aprend_framebuffer_texture_spec::use_for_gui`** does exactly what
   `shader_resource` does and names what a caller does with the texture.
   Removing it changes the header and every caller that sets it.
@@ -1334,15 +1338,15 @@ today:
 
 ### 37. The instance's command allocator is never reset
 
-Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Each frame index
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Each frame index
 has its own allocator, reset by `aprend_instance_next_frame` after its wait,
 and a recording takes a list of the current frame's; a list compiled in
 one frame is refused at submit in a later one. SpudGPU needed no new call
 for it: a list stays tied to the allocator it was created on, which is what
 Vulkan requires, and Aprend keeps lists for each frame. The D3D12 leak it
 fixes was found by reading and never measured before the fix; after it,
-Trellis_Avalonia ran idle on D3D12 for 20 minutes with memory flat
-(reported 2026-10-16) - which showed little, as trellislib didn't turn the
+a caller's host ran idle on D3D12 for 20 minutes with memory flat
+(reported 2026-10-16) - which showed little, as that caller didn't turn the
 frame until 2026-10-17 (see "State of the code"). Left: memory watched
 over minutes of a host rendering.
 
@@ -1617,13 +1621,11 @@ Compute is in (see "State of the code"): compute shaders,
 `aprend_compute_pipeline`, and `SET_COMPUTE_PIPELINE` and `DISPATCH` in the
 same command list as rendering, outside a pass. Left over:
 
-- **Every storage buffer and storage image of a dispatch's sets gets an
-  ordering barrier before it**, and the same before a pass for the sets its
-  draws read. A set doesn't say whether the shader writes a slot, so Aprend
-  can't leave out the ones that are only read. Correct, and more than is
-  needed. Reflection (item 18) is written and says which storage bindings
-  are read-only (`aprend_shader_resource::read_only`); nothing carries that
-  to a pipeline or a command list yet, so the barriers are as they were.
+- **Storage barriers follow what the shaders write** (item 32,
+  2026-10-18): a pipeline records the storage bindings its shaders write
+  (`storage_writes`, from reflection's `!aprend_shader_resource::read_only`),
+  and the command list uses it to leave out the ordering barrier between
+  two reads (see "State of the code").
 - **A buffer a shader writes has no way back to the CPU**: there is no
   storage buffer readback.
 - **A compute pipeline lasts until the next pass or present**, and is set
@@ -1852,8 +1854,6 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
 "State of the code"). Hazel: `RenderPass.h`, `ComputePass.h`,
 `Renderer::BeginRenderPass`. Left over:
 
-- **One color target**, until a pipeline can describe more (item 25).
-  `APREND_RENDER_PASS_MAX_COLOR_TARGETS` is 1 for that reason.
 - **The render area is always the whole target**, and the viewport and
   scissor cover it. A caller wanting less sends its own SET_VIEWPORTS
   after the begin, or BEGIN_RENDERING by hand.
@@ -1863,11 +1863,6 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
   Reflection (item 18) is written and a layout made from shaders has its
   bindings' names; a pass doesn't use them. A material does, so a pass's
   named inputs today are a material at one of its slots.
-- **A depth-only pass doesn't render on D3D12.** Aprend accepts a pass
-  with no color target, and SpudGPU's D3D12 `spudgpu_cmd_begin_rendering`
-  returns early without one (`../spudlib/CLAUDE.md`, "Known gaps").
-  Shadow maps (item 26) need it. SpudLib's to fix; Aprend says nothing
-  when it happens.
 - **A pass over a framebuffer with a borrowed texture reports the wrong
   size after a resize.** `aprend_framebuffer_resize` doesn't resize an
   `existing_texture`, and `aprend_render_pass_get_size` returns the
@@ -1914,10 +1909,10 @@ by the instance (`aprendbuiltin_internal.hpp`). A caller's shaders are
 still SPIR-V it hands over: item 18 has Aprend reflect them, so SPIR-V is
 all it needs. Written 2026-10-16 and run on all three backends by `../apricottests` (mip generation and bloom draw with them; D3D12 and Vulkan by 2026-10-17). Left:
 
-- **No runtime compilation, includes, macros, cache or reload**, for the
-  caller's shaders or Aprend's. Aprend's shaders share nothing yet; when two
-  do, glslc's `-I` and `#include` (`GL_GOOGLE_include_directive`) at build
-  time are enough, with no compiler at run time. Hazel:
+- **No runtime compilation, macros, cache or reload**, for the
+  caller's shaders or Aprend's. Aprend's shaders share `.glslh` includes
+  through glslc's `-I shaders` and `#include` (`GL_GOOGLE_include_directive`)
+  at build time, with no compiler at run time. Hazel:
   `VulkanShaderCompiler`, `ShaderPreprocessor`, `VulkanShaderCache`,
   `ShaderPack`.
 - **Variants.** One pipeline per target format is made on demand. A
@@ -2035,8 +2030,8 @@ space. That is Unreal's split - a vertex factory per kind of geometry, a
 shading model per kind of surface, a material that only hands over values
 - not Hazel's, whose one PBR shader is tied to its one vertex layout and
 keeps its material values in push constants. Aprend's own vertex shaders
-are there for a caller with no geometry of its own; trellislib keeps its
-own. Set 0 for the view and set 1 for the material is the usual order of
+are there for a caller with no geometry of its own; a caller with its
+own keeps it. Set 0 for the view and set 1 for the material is the usual order of
 binding frequency. There is no scene graph: what is drawn, in what order
 and into which shadow map is the caller's, and Aprend gives it the
 matrices (`aprend_lit_fit_sun_cascades`,
@@ -2095,7 +2090,7 @@ the code"). What was decided:
   of the effects are the scene renderer's (`SceneRenderer`,
   `AddPostProcessingPasses`). Aprend's building blocks are commands; the
   order and settings belong to whatever owns the caller's frame
-  (trellislib's renderer), not to Aprend. The textures an effect needs in
+  (the caller's renderer), not to Aprend. The textures an effect needs in
   between come from a pool the instance keeps (as Unreal's), not from a
   handle the caller makes. No header of its own: the command's doc
   describes bloom, `aprendcontext.h` the pool.
@@ -2176,7 +2171,7 @@ there, not by this list. These are what Aprend can't do until it does.
 
 ### 25. Multiple render targets per pipeline
 
-Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). SpudGPU's
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). SpudGPU's
 pipeline desc has a format and a blend state for each color attachment
 (`color_attachment_formats`, `blend_attachments`, `color_attachment_count`)
 and Aprend's mirrors it (`color_attachment_formats`, `_blends`). A render
@@ -2186,7 +2181,7 @@ that a fragment shader writes as many outputs as the pipeline has targets
 
 ### 26. Depth bias
 
-Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16). `_depth_bias_constant`,
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16). `_depth_bias_constant`,
 `_depth_bias_slope` and `_depth_bias_clamp` on the pipeline desc, through
 SpudGPU on all three backends; a clamp needs a device created with
 `SPUDGPU_FEATURE_DEPTH_BIAS_CLAMP` (item 39).
@@ -2205,7 +2200,7 @@ test or op state on the pipeline. Hazel leaves stencil off as well.
 
 ### 29. GPU timing and debug markers
 
-Closed 2026-10-15; run in Trellis_macOS on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Debug labels are
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Debug labels are
 `APREND_COMMAND_BEGIN_LABEL` and `END_LABEL`; GPU time is an
 `aprend_gpu_timer` (`aprendtimer.h`) whose slots a pass is timed into, read
 `frames_in_flight` frames later. Left:
@@ -2416,10 +2411,10 @@ What was done:
   direct queue; `aprendcontext.h` says so, and SpudGPU refuses the
   allocators otherwise.
 
-Left: `../apricottests` on D3D12 and Vulkan, where the bare device is
-also the first run of each fallback off Metal (and on D3D12 of a device
-without device-mappable memory); mesh shading and the swap chain's
-refusals, which no test covers.
+`../apricottests` on D3D12 and Vulkan, the first run of each fallback off
+Metal (and on D3D12 of a device without device-mappable memory), is done
+(2026-10-22, above). Left: Linux, where it is not built; mesh shading and
+the swap chain's refusals, which no test covers.
 
 ## Suggested order
 
@@ -2432,7 +2427,10 @@ and 5 are closed and their numbers are not reused.
      2026-10-11 and on Vulkan (Linux) by 2026-10-12, covering only what it
      uses (see "State of the code"). No push constant set, staging,
      compute, indirect draw, partial view or layered pass has run on any
-     of the three. `../apricottests` (`aprend_gpu_tests`)
+     of the three (as of 2026-10-12; since, `../apricottests` has run
+     compute and storage ordering, the staged path on the RTX A2000 and
+     indirect draws, below and in step 3; no layered pass and no mesh
+     shading has run). `../apricottests` (`aprend_gpu_tests`)
      is written for this: push constants, a buffer update (staged on a
      device with its own memory), sampled views of one mip, rendering to
      one mip and sampling it in a later pass, each checked by reading the
@@ -2479,7 +2477,7 @@ and 5 are closed and their numbers are not reused.
    built on macOS and every test passed on Metal (Apple M5 Pro), Debug
    under Metal API and shader validation with warnings fatal, both resize
    tests refusing as they should, and Release under `leaks` (none);
-   latran's and trellislib's tests pass over them.
+   callers' tests pass over them.
    The shared upload path for
    textures is written (item 6), and staged buffers don't use it: a
    transient span is taken back at the next frame, and a buffer may be
@@ -2522,15 +2520,17 @@ and 5 are closed and their numbers are not reused.
    all three. Bloom (item 36) is written and `test_bloom` has passed on
    all three (2026-10-17). Then 23 and 24, each a shader Aprend
    ships, as item 22 allows (24 is written and has run on Metal,
-   2026-10-17; what is left of it is in the item); and trellislib's half of the selective glow
-   (`../trellislib/TODO.md`).
+   2026-10-17; what is left of it is in the item); and the caller's half
+   of the selective glow.
 
 Item 39 (a device has only its features) is written and has run on
-Metal through `../apricottests`; D3D12 and Vulkan are left.
+Metal through `../apricottests`, and on D3D12 and Vulkan on 2026-10-22.
+Left: Linux; mesh shading and the swap chain's refusals, which no test
+covers.
 
 Item 37 (the command allocator) is written and has run on all three
 backends. The 20-minute D3D12 check (2026-10-16) was of an idle host that
-never turned Aprend's frame; trellislib turns it since 2026-10-17, and
+never turned Aprend's frame; that caller turns it since 2026-10-17, and
 memory over minutes of rendering is still to be watched. Item 38's points are small
 and independent; fix each when its function is next touched (the division
 by zero is fixed).
@@ -2539,7 +2539,7 @@ Item 2 is closed and its D3D12 heap has never run: it belongs to step 1's
 "run it on a device with its own memory", on an integrated GPU under
 D3D12.
 
-Items 7, 22, 27, 28, 30, 33 and 34 wait until something needs them, decides
+Items 22, 27, 28, 30, 33 and 34 wait until something needs them, decides
 them or SpudGPU gains them. Item 35's SpudLib half is written (heaps and
 placed resources, 2026-10-11, not run on a GPU); its Aprend half, the
 device allocator, is not started and waits on those heaps having run.

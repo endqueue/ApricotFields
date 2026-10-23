@@ -132,7 +132,7 @@ aprend_framebuffer aprend_framebuffer_create(
 	result->desc     = *desc;
 
 	// Copy the attachment specs out of the caller's array — desc->attachments
-	// may point at a stack-local (see create_offscreen_color_target), which
+	// may point at a local of the caller's, which
 	// won't survive until the next aprend_framebuffer_resize() call.
 	result->attachment_specs.assign(desc->attachments, desc->attachments + desc->attachment_count);
 	result->desc.attachments = result->attachment_specs.data();

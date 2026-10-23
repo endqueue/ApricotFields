@@ -11,7 +11,7 @@ BIM. What the bytes mean belongs to its caller.
 
 - **macOS has run** (2026-10-08). It builds with the `apricotfields-macos-metal`
   preset with no errors or warnings, as written, and `apsync_tests` passes: 53
-  runs in a row, and in ctest beside the other three. Windows and Linux have not
+  runs in a row, and in ctest beside the others. Windows and Linux have not
   been compiled. `src/sync/apsyncnet.cpp` and `apsync_internal.hpp` are back in
   `CMakeLists.txt`.
 - **One test program, in ctest:** `tests/apsync_tests.c` runs a host and its
@@ -30,14 +30,14 @@ BIM. What the bytes mean belongs to its caller.
 
 ## How it leans on SpudNet
 
-`SPUDNET_TODO.md` says the Windows and Linux backends have never run and that
-macOS has only run over loopback. ApSync is written to need as little of what is
+SpudNet's test has passed on macOS, and on Windows and Linux on 2026-10-14
+(261 checks then), over loopback only (`../spudlib/CLAUDE.md`). ApSync is written to need as little of what is
 unconfirmed as it can. Each line is something to revisit when the SpudNet item
 behind it is settled.
 
 | SpudNet's state | What ApSync does about it | Where |
 |---|---|---|
-| Only macOS has run; several results (`SYSTEM_TIMED_OUT` among them) have never been seen from any backend | Reads only two results as meaningful: success, and `TIMED_OUT` from a `SPUDNET_NO_WAIT` call. Anything else ends that connection; which failure it was only picks the words in the event | `flush_peer`, `receive_peer`, `accept_peers` |
+| Run over loopback only (macOS, Windows, Linux); several results (`SYSTEM_TIMED_OUT` among them) have never been seen from any backend | Reads only two results as meaningful: success, and `TIMED_OUT` from a `SPUDNET_NO_WAIT` call. Anything else ends that connection; which failure it was only picks the words in the event | `flush_peer`, `receive_peer`, `accept_peers` |
 | TCP keep-alive is a missing piece, and the system takes minutes to give a silent peer up | Its own heartbeat and silence time-out, set by the caller (`heartbeat_interval_ms`, `peer_timeout_ms`) | `run_timers` |
 | Which clock a time limit counts on across a sleep differs by backend | Uses no SpudNet time limit for liveness: `std::chrono::steady_clock` throughout. Whether that counts sleep still differs by system, so a session may or may not survive one | `run_timers`, `next_timeout` |
 | "Being named is a reason to try, not a promise"; drain until `TIMED_OUT` | Every receive and accept is `SPUDNET_NO_WAIT` in a loop that ends on `TIMED_OUT` | `receive_peer`, `accept_peers` |

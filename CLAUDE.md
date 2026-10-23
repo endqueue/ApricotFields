@@ -21,8 +21,6 @@ so in its opening comment, along with what the module deliberately does *not* do
   values and hand them back unchanged.
 - A new capability that only one caller wants is still written for any caller, or
   it goes in that caller instead.
-- `include/cad/` and `src/cad/` are empty leftovers of the deprecated ApCAD. Don't
-  put anything in them.
 
 ## Module map
 
@@ -35,7 +33,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
 
-`apricotfields.h` is not a full umbrella: it includes every Aprend header (thirteen) and
+`apricotfields.h` is not a full umbrella: it includes every Aprend header (fifteen) and
 nothing of the other modules. Callers include the module header they need.
 
 Each module that has unfinished work keeps it in `AP<MODULE>_TODO.md` at the repo
@@ -289,11 +287,12 @@ handled the same way: find the rule it meets and follow the rule.
 
 ## Tests
 
-Headless, no GPU, no window: `tests/ap<module>_tests.*`, one executable per module,
+Headless, no GPU, no window: `tests/ap<module>*_tests.*`, one or more executables per module,
 registered with `add_test` behind `APRICOTFIELDS_BUILD_TESTS`.
 
 - Tests for a C header are written in C on purpose, to prove the header compiles
-  and links as C. Keep them `.c`.
+  and links as C. Keep them `.c`. The one exception is `tests/aparchive_tests.cpp`,
+  which is C++ (it uses `std::vector`).
 - No framework: a `CHECK(condition)` macro, a `failures` counter, `test_*`
   functions called from `main`, exit code 1 on any failure.
 - A new module ships with its tests file; a new call ships with a test in the

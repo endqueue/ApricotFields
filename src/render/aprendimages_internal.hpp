@@ -308,7 +308,7 @@ typedef struct aprend_framebuffer_t
     aprend_instance instance;
     aprend_framebuffer_desc desc;
     // Owns the attachment specs desc.attachments points at — the caller's
-    // array (see create_offscreen_color_target's stack-local color_spec) is
+    // array (which may be a local of the caller's) is
     // not guaranteed to outlive this framebuffer, but aprend_framebuffer_resize
     // re-reads desc.attachments on every resize, long after creation returns.
     std::vector<aprend_framebuffer_texture_spec> attachment_specs;
