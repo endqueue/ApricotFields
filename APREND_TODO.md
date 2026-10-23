@@ -2309,7 +2309,8 @@ tone curve, then the lit pipeline's stages under item 24.
 ### 40. Present scaling: a source of another size than the back buffer
 
 Numbered out of order, as item 31. **Decided 2026-10-23; Aprend's half not
-started, SpudGPU's half done (2026-10-23, see "Swap chain scaling" below).**
+started, SpudGPU's half done (2026-10-23, run on Metal, D3D12 and Vulkan;
+see "Swap chain scaling" below).**
 `PRESENT_TEXTURE` is a copy, and since 2026-10-22 it refuses a source of
 another format than the back buffers or smaller than them (item 38). That
 stays the default; scaling is a mode the caller names, never chosen for it.
@@ -2383,8 +2384,23 @@ struct {
   `spudgpu_get_surface_present_scalings` says which a surface takes.
   `aprend_swap_chain_create` passes ONE_TO_ONE, which every surface takes:
   a back buffer the window's size, nothing for the compositor to scale.
-  Compiled and run on Metal only (macOS); D3D12 and Vulkan written, not
-  run (`spudlib/CLAUDE.md`). Letting a caller choose the compositor's
+  Compiled and run on Metal (macOS); on 2026-10-23 also compiled and run on
+  Windows 11 over D3D12 and Vulkan (Debug, debug layer and validation on,
+  `spudlib/CLAUDE.md`), where SpudGPU's Vulkan backend needed two fixes
+  first (a crash in the scaling query on a device with
+  `VK_KHR_swapchain_maintenance1`, and ASPECT_FIT offered on a Win32
+  surface and shown as a stretch). Aprend's swap chains ran in two
+  callers' windows: each of the two, on both backends (one on both GPUs,
+  Intel Iris Xe and NVIDIA RTX A2000, the other on the RTX A2000), resized
+  by hand. The picture was never stretched or squashed while the window
+  was resized; one caller's redrew continuously during the drag, the
+  other's scene stopped moving during the drag and its picture either
+redrew during it or only once the drag ended (reported). No debug
+  layer or validation message (synchronization validation too on Vulkan),
+  and each closed with exit 0. Vulkan's one-to-one on the Iris Xe is the
+  unscaled swap chain at the window's size (it has no
+  `swapchain_maintenance1`); on the RTX A2000 it is the extension's
+  one-to-one. Not run: Linux. Letting a caller choose the compositor's
   scaling instead (back buffers at the source's size, an EXACT copy, the
   compositor stretching for free, where the query says the surface takes
   it) is a later option, not added: it would be a field on
