@@ -16,11 +16,81 @@ static bool aprend_draw_same_batch(const aprend_draw_list_t::draw &a, const apre
 
 // The order of APREND_DRAW_LIST_ORDER_BATCHED: by material, then by mesh.
 // Neither means anything to the GPU; the point is that equal draws end up
-// next to each other, and draws of one material together.
-static bool aprend_draw_batch_less(const aprend_draw_list_t::draw &a, const aprend_draw_list_t::draw &b) {
+// next to each other, and draws of one material together, in an order that
+// is the same on every run. A key's handles are the first draws naming them
+// (aprend_draw_list_t::sort_key), so no address decides it.
+static bool aprend_draw_key_less(const aprend_draw_list_t::sort_key &a, const aprend_draw_list_t::sort_key &b) {
 	if (a.material != b.material)
-		return (uintptr_t)a.material < (uintptr_t)b.material;
-	return memcmp(&a.mesh, &b.mesh, sizeof(aprend_draw_mesh)) < 0;
+		return a.material < b.material;
+	if (a.vertex_buffers != b.vertex_buffers)
+		return a.vertex_buffers < b.vertex_buffers;
+	if (a.index_buffer != b.index_buffer)
+		return a.index_buffer < b.index_buffer;
+	if (a.first != b.first)
+		return a.first < b.first;
+	if (a.count != b.count)
+		return a.count < b.count;
+	if (a.base_vertex != b.base_vertex)
+		return a.base_vertex < b.base_vertex;
+	return a.draw < b.draw;
+}
+
+// 64 bits of a handle, for a table that finds its first draw. Only finds:
+// the hash orders nothing.
+static uint64_t aprend_draw_hash(const void *handle) {
+	return (uint64_t)(uintptr_t)handle;
+}
+
+static uint64_t aprend_draw_hash_vertex_buffers(const aprend_draw_mesh &mesh) {
+	uint64_t hash = mesh._vertex_buffer_count;
+	for (uint32_t i = 0; i < mesh._vertex_buffer_count; ++i)
+		hash = (hash ^ (uint64_t)(uintptr_t)mesh._vertex_buffers[i]) * 0x100000001B3ull;
+	return hash;
+}
+
+// The index of the first draw before [index] in [table] that [same] says
+// names the same handle as draw [index], adding [index] if none does.
+// Throws std::bad_alloc.
+template <typename Same>
+static uint32_t aprend_draw_first(apri_hash_index &table, uint64_t hash, uint32_t index, Same &&same) {
+	if (const uint32_t *found = table.find(hash, same))
+		return *found;
+	table.add(hash, index);
+	return index;
+}
+
+// Fills [list]'s sort keys, one a draw, and sorts them. Throws
+// std::bad_alloc.
+static void aprend_draw_sort_batched(aprend_draw_list list) {
+	const std::vector<aprend_draw_list_t::draw> &draws = list->draws;
+	list->first_material.clear();
+	list->first_vertex_buffers.clear();
+	list->first_index_buffer.clear();
+	list->sort_keys.resize(draws.size());
+	for (uint32_t i = 0; i < (uint32_t)draws.size(); ++i) {
+		const aprend_draw_list_t::draw &draw = draws[i];
+		const aprend_draw_mesh &mesh         = draw.mesh;
+		aprend_draw_list_t::sort_key &key    = list->sort_keys[i];
+		key.material = aprend_draw_first(list->first_material, aprend_draw_hash(draw.material), i,
+		                                 [&](uint32_t at) { return draws[at].material == draw.material; });
+		// The slots past the count are zero (aprend_draw_list_add), so the
+		// whole array compares.
+		key.vertex_buffers = aprend_draw_first(list->first_vertex_buffers, aprend_draw_hash_vertex_buffers(mesh), i, [&](uint32_t at) {
+			return draws[at].mesh._vertex_buffer_count == mesh._vertex_buffer_count &&
+			       memcmp(draws[at].mesh._vertex_buffers, mesh._vertex_buffers, sizeof(mesh._vertex_buffers)) == 0;
+		});
+		key.index_buffer = aprend_draw_first(list->first_index_buffer, aprend_draw_hash(mesh._index_buffer), i,
+		                                     [&](uint32_t at) { return draws[at].mesh._index_buffer == mesh._index_buffer; });
+		key.first       = mesh._first;
+		key.count       = mesh._count;
+		key.base_vertex = mesh._base_vertex;
+		key.draw        = i;
+	}
+	// The key ends in the draw's index, so no two are equal: std::sort's
+	// order is the only one, and needs no buffer as std::stable_sort does.
+	std::sort(list->sort_keys.begin(), list->sort_keys.end(), aprend_draw_key_less);
+	for (uint32_t i = 0; i < (uint32_t)draws.size(); ++i)
+		list->order[i] = list->sort_keys[i].draw;
 }
 
 bool aprend_draw_list_expand(aprend_command_list cmd_list, aprend_draw_list list, uint32_t material_slot) {
@@ -282,13 +352,12 @@ bool aprend_draw_list_build(aprend_draw_list list) {
 	const uint32_t stride = list->desc._instance_stride;
 	try {
 		list->order.resize(list->draws.size());
-		for (uint32_t i = 0; i < (uint32_t)list->draws.size(); ++i)
-			list->order[i] = i;
-		// Stable, so instances of one batch stay in the order they were
-		// added in.
-		if (list->desc._order == APREND_DRAW_LIST_ORDER_BATCHED)
-			std::stable_sort(list->order.begin(), list->order.end(),
-			                 [list](uint32_t a, uint32_t b) { return aprend_draw_batch_less(list->draws[a], list->draws[b]); });
+		if (list->desc._order == APREND_DRAW_LIST_ORDER_BATCHED) {
+			aprend_draw_sort_batched(list);
+		} else {
+			for (uint32_t i = 0; i < (uint32_t)list->draws.size(); ++i)
+				list->order[i] = i;
+		}
 
 		// Batches in order, each draw's instances following the one before
 		// it in the batch: the instance a batch starts at is where the

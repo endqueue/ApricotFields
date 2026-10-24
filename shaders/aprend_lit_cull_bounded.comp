@@ -1,0 +1,11 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Aprend's tiled light culling with depth bounds
+// (APREND_COMMAND_LIT_CULL_LIGHTS): aprend_lit_cull.glslh, each tile's near
+// and far planes at the least and most depth its texels hold in the view's
+// depth buffer, so a light whose range lies wholly in front of or behind
+// what a tile shows is left out of its list.
+
+#define APREND_LIT_CULL_BOUNDED
+#include "aprend_lit_cull.glslh"

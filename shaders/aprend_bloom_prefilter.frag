@@ -8,10 +8,17 @@
 // red, green and blue and applied to all four channels, so premultiplied
 // alpha stays premultiplied and the glow carries its own coverage.
 //
+// With a mask (set 1), each tap is the source times the mask's red at the
+// same place in [0, 1], before the taps are summed: a masked texel adds
+// nothing, however bright, rather than being blurred into its neighbours
+// and then weighted.
+//
 // Places are taken from gl_FragCoord, as aprend_downsample.frag explains.
 
 layout(set = 0, binding = 0) uniform texture2D source_level;
 layout(set = 0, binding = 1) uniform sampler source_sampler;
+layout(set = 1, binding = 0) uniform texture2D mask_level;
+layout(set = 1, binding = 1) uniform sampler mask_sampler;
 
 layout(push_constant) uniform BloomParams {
     float threshold;
@@ -19,12 +26,19 @@ layout(push_constant) uniform BloomParams {
     float radius;
     float intensity;
     vec2 target_size;
+    // 1 to weight the prefilter's taps by the mask at set 1, 0 to read none.
+    float use_mask;
+    // What the lens dirt at set 1 adds to the composite's glow; 0 for none.
+    float lens_dirt_intensity;
 } params;
 
 layout(location = 0) out vec4 out_color;
 
 vec4 tap(vec2 uv) {
-    return textureLod(sampler2D(source_level, source_sampler), uv, 0.0);
+    vec4 texel = textureLod(sampler2D(source_level, source_sampler), uv, 0.0);
+    if (params.use_mask > 0.5)
+        texel *= textureLod(sampler2D(mask_level, mask_sampler), uv, 0.0).r;
+    return texel;
 }
 
 void main() {

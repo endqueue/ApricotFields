@@ -77,6 +77,14 @@ enum {
 	 * Each material is bound once. Instances keep the order they were added
 	 * in within their batch. For draws whose order doesn't matter: opaque
 	 * geometry with depth testing.
+	 *
+	 * The order is the same on every run for the same draws added in the
+	 * same order, whatever order the objects they name were made in: no
+	 * address decides it. Materials come in the order each was first
+	 * added. Within a material, meshes come grouped by their vertex buffers
+	 * and then by their index buffer, each in the order it was first added
+	 * (the draws of one block of a pool together, say), and then by
+	 * `_first`, `_count` and `_base_vertex`, lowest first.
 	 */
 	APREND_DRAW_LIST_ORDER_BATCHED   = 0,
 	/**

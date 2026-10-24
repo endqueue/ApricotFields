@@ -6,7 +6,11 @@
 // aprend_get_fullscreen_vertex_shader(), drawn before the surfaces: each
 // texel looks along its ray through the view's inverse view_projection, and
 // reads the environment's picture there, times its intensity and the
-// exposure, written out as the surface is. Black with no environment.
+// exposure, written out as the surface is. Black with no environment. The
+// sun's disc over it, with or without one: the sun's radiance spread over
+// the disc's solid angle, so it carries the light the sun lights surfaces
+// with (pi times radiance, as the surface scales light), its edge
+// softened over the change in angle across a texel.
 
 #include "aprend_lit_scene.glslh"
 #include "aprend_lit_bindings.glslh"
@@ -29,6 +33,18 @@ void main() {
         vec3 d = vec3(dot(u_lit_scene.environment_rotation[0].xyz, direction), dot(u_lit_scene.environment_rotation[1].xyz, direction),
                       dot(u_lit_scene.environment_rotation[2].xyz, direction));
         color  = u_lit_scene.environment_intensity * textureLod(samplerCube(environment_specular, environment_sampler), d, 0.0).rgb;
+    }
+    float versine = u_lit_scene.sun_radiance.w;
+    if (versine > 0.0) {
+        // How far off the sun's centre the ray is, as 1 - cos, beside the
+        // disc's: the two are compared where they are small without the
+        // cancellation a cos near 1 has.
+        vec3 off      = direction - u_lit_scene.sun_direction.xyz;
+        float away    = 0.5 * dot(off, off);
+        float texel   = max(fwidth(away), 1e-9);
+        float inside  = clamp((versine - away) / texel + 0.5, 0.0, 1.0);
+        float solid   = 2.0 * 3.14159265359 * versine;
+        color += inside * 3.14159265359 / solid * u_lit_scene.sun_radiance.rgb;
     }
     color *= u_lit_scene.exposure;
     if (u_lit_scene.output_encoding == 1u) {

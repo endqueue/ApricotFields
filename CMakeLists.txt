@@ -175,6 +175,8 @@ set(APRICOTFIELDS_SHADERS
         aprend_bloom_upsample.frag
         aprend_bloom_composite.frag
         aprend_tone_map.frag
+        aprend_blur.frag
+        aprend_outline.frag
         aprend_lit.vert
         aprend_lit.frag
         aprend_lit_shadow.vert
@@ -184,19 +186,24 @@ set(APRICOTFIELDS_SHADERS
         aprend_environment_prefilter.frag
         aprend_environment_irradiance.frag
         aprend_environment_sky.frag
+        aprend_environment_hosek.frag
         aprend_lit_depth_cutout.frag
         aprend_lit_sky.frag
         aprend_lit_cull.comp
+        aprend_lit_cull_bounded.comp
         aprend_lit_brdf_lut.frag
         aprend_lit_occlusion.frag
         aprend_lit_occlusion_blur.frag
         aprend_exposure_luminance.frag
         aprend_exposure_adapt.frag
+        aprend_exposure_histogram.comp
+        aprend_exposure_adapt_histogram.frag
 )
 # What the shaders include (#include, GL_GOOGLE_include_directive), from
 # shaders/: every shader is compiled again when one of them changes.
 set(APRICOTFIELDS_SHADER_INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_scene.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_cull.glslh
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_vertex.glslh
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_environment.glslh
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_material.glslh
@@ -282,6 +289,38 @@ declare_vendored_or_fetch_sources(earcut earcut.hpp
         include/mapbox/earcut.hpp)
 FetchContent_MakeAvailable(earcut)
 target_include_directories(ApricotFields PRIVATE ${earcut_SOURCE_DIR}/include)
+
+# Hosek and Wilkie's sky model, version 1.4a (APREND_COMMAND_LIT_SKY's
+# HOSEK_WILKIE): its RGB coefficients alone, which aprendlit.cpp cooks for a
+# sun and an air. 3-clause BSD licence, in the data file itself and in its
+# README.txt. The authors' release is a zip, so it is pinned by its hash.
+# The data file declares its tables as writable globals, which a library
+# here may not have, so it is read here as it is and written into the build
+# directory with every table static and const (aprend_hosek_rgb.inc); the
+# file itself is left untouched.
+set(APRICOTFIELDS_HOSEK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/HosekWilkie-1.4a")
+if (EXISTS "${APRICOTFIELDS_HOSEK_DIR}/ArHosekSkyModelData_RGB.h")
+    message(STATUS "hosek_wilkie: using vendored ${APRICOTFIELDS_HOSEK_DIR}")
+else ()
+    message(STATUS "hosek_wilkie: no vendored copy under .deps/, fetching the 1.4a release")
+    FetchContent_Declare(hosek_wilkie
+            URL https://cgg.mff.cuni.cz/projects/SkylightModelling/HosekWilkie_SkylightModel_C_Source.1.4a.zip
+            URL_HASH SHA256=743e81a7fcbed06408490a303dcf1315083d7988a11fc69608e66f6e5417f9de
+            SOURCE_SUBDIR sources-only-not-a-directory)
+    FetchContent_MakeAvailable(hosek_wilkie)
+    # The zip holds the release's folder beside a __MACOSX one.
+    set(APRICOTFIELDS_HOSEK_DIR "${hosek_wilkie_SOURCE_DIR}/HosekWilkie_SkylightModel_C_Source.1.4a")
+endif ()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${APRICOTFIELDS_HOSEK_DIR}/ArHosekSkyModelData_RGB.h")
+file(READ "${APRICOTFIELDS_HOSEK_DIR}/ArHosekSkyModelData_RGB.h" _hosek_rgb)
+string(REPLACE "datasetsRGB" "aprend_hosek_datasetsRGB" _hosek_rgb "${_hosek_rgb}")
+string(REPLACE "datasetRGB" "aprend_hosek_datasetRGB" _hosek_rgb "${_hosek_rgb}")
+string(REPLACE "double* aprend_hosek_" "static const double *const aprend_hosek_" _hosek_rgb "${_hosek_rgb}")
+string(REPLACE "double aprend_hosek_" "static const double aprend_hosek_" _hosek_rgb "${_hosek_rgb}")
+file(MAKE_DIRECTORY ${APRICOTFIELDS_SHADER_INC_DIR})
+file(CONFIGURE OUTPUT ${APRICOTFIELDS_SHADER_INC_DIR}/aprend_hosek_rgb.inc CONTENT "${_hosek_rgb}" @ONLY)
+# For a caller's tests that work the model out in C to compare with.
+set(APRICOTFIELDS_HOSEK_RGB_INC ${APRICOTFIELDS_SHADER_INC_DIR}/aprend_hosek_rgb.inc CACHE INTERNAL "")
 
 # No floating-point contraction where ApMath's polygons compute in doubles:
 # results must be the same bits on every platform. MSVC doesn't contract

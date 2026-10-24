@@ -34,6 +34,9 @@ static const uint32_t s_lit_sky_frag_spv[] =
 static const uint32_t s_lit_cull_comp_spv[] =
 #include "aprend_lit_cull.comp.spv.inc"
     ;
+static const uint32_t s_lit_cull_bounded_comp_spv[] =
+#include "aprend_lit_cull_bounded.comp.spv.inc"
+    ;
 static const uint32_t s_environment_from_cube_frag_spv[] =
 #include "aprend_environment_from_cube.frag.spv.inc"
     ;
@@ -48,6 +51,9 @@ static const uint32_t s_environment_irradiance_frag_spv[] =
     ;
 static const uint32_t s_environment_sky_frag_spv[] =
 #include "aprend_environment_sky.frag.spv.inc"
+    ;
+static const uint32_t s_environment_hosek_frag_spv[] =
+#include "aprend_environment_hosek.frag.spv.inc"
     ;
 static const uint32_t s_lit_brdf_lut_frag_spv[] =
 #include "aprend_lit_brdf_lut.frag.spv.inc"
@@ -64,18 +70,27 @@ static const uint32_t s_exposure_luminance_frag_spv[] =
 static const uint32_t s_exposure_adapt_frag_spv[] =
 #include "aprend_exposure_adapt.frag.spv.inc"
     ;
+static const uint32_t s_exposure_histogram_comp_spv[] =
+#include "aprend_exposure_histogram.comp.spv.inc"
+    ;
+static const uint32_t s_exposure_adapt_histogram_frag_spv[] =
+#include "aprend_exposure_adapt_histogram.frag.spv.inc"
+    ;
 static const uint32_t s_tone_map_frag_spv[] =
 #include "aprend_tone_map.frag.spv.inc"
     ;
 
 static_assert(sizeof(aprend_lit_vertex) == 48, "aprend_lit_vertex is 48 bytes");
 static_assert(sizeof(aprend_lit_instance) == 64, "aprend_lit_instance is 64 bytes");
-static_assert(sizeof(aprend_lit_scene_block) == 960 + 64 * APREND_LIT_MAX_LIGHTS, "AprendLitScene's std140 size");
-static_assert(sizeof(aprend_lit_material_block) == 128, "AprendLitMaterial's std140 size");
+static_assert(sizeof(aprend_lit_scene_block) == 960 + 64 * 6 * APREND_LIT_MAX_POINT_SHADOWS + 16 * APREND_LIT_MAX_POINT_SHADOWS + 64 * APREND_LIT_MAX_LIGHTS,
+              "AprendLitScene's std140 size");
+static_assert(sizeof(aprend_lit_material_block) == 256, "AprendLitMaterial's std140 size");
 static_assert(sizeof(aprend_lit_shadow_pass_block) == 64, "AprendLitShadowPass's std140 size");
 static_assert(sizeof(aprend_occlusion_block) == 176, "AprendOcclusionPass's std140 size");
+static_assert(sizeof(aprend_hosek_sky_block) == 160, "AprendHosekSky's std140 size");
 static_assert(sizeof(aprend_environment_params) % 8 == 0 && sizeof(aprend_sky_params) % 8 == 0 && sizeof(aprend_tone_map_params) % 8 == 0 &&
-                  sizeof(aprend_adapt_params) % 8 == 0 && sizeof(aprend_size_params) % 8 == 0,
+                  sizeof(aprend_adapt_params) % 8 == 0 && sizeof(aprend_size_params) % 8 == 0 &&
+                  sizeof(aprend_histogram_params) % 8 == 0 && sizeof(aprend_histogram_adapt_params) % 8 == 0,
               "a push Metal aligns to 8 bytes is a multiple of 8");
 
 // ---- Checks -------------------------------------------------------------------------
@@ -150,6 +165,7 @@ static bool aprend_lit_check_scene_block(aprend_binding_layout layout) {
 	    {"inverse_view_projection", MEMBER(B, inverse_view_projection)},
 	    {"sun_shadow_view_projection", MEMBER(B, sun_shadow_view_projection)},
 	    {"spot_shadow_view_projection", MEMBER(B, spot_shadow_view_projection)},
+	    {"point_shadow_view_projection", MEMBER(B, point_shadow_view_projection)},
 	    {"eye_position", MEMBER(B, eye_position)},
 	    {"view_direction", MEMBER(B, view_direction)},
 	    {"sun_direction", MEMBER(B, sun_direction)},
@@ -161,6 +177,7 @@ static bool aprend_lit_check_scene_block(aprend_binding_layout layout) {
 	    {"sun_shadow_splits", MEMBER(B, sun_shadow_splits)},
 	    {"sun_shadow_params", MEMBER(B, sun_shadow_params)},
 	    {"spot_shadow_params", MEMBER(B, spot_shadow_params)},
+	    {"point_shadow_params", MEMBER(B, point_shadow_params)},
 	    {"target_size", MEMBER(B, target_size)},
 	    {"environment_intensity", MEMBER(B, environment_intensity)},
 	    {"environment_mips", MEMBER(B, environment_mips)},
@@ -196,6 +213,7 @@ static bool aprend_lit_check_material_block(aprend_binding_layout layout) {
 	    {"clearcoat_roughness", MEMBER(B, clearcoat_roughness)},
 	    {"maps", MEMBER(B, maps)},
 	    {"uv_transform", MEMBER(B, uv_transform)},
+	    {"map_uv_transform", MEMBER(B, map_uv_transform)},
 	};
 	return aprend_lit_check_block(layout, 0, "AprendLitMaterial", (uint32_t)sizeof(B), members, COUNT_OF(members));
 }
@@ -203,6 +221,15 @@ static bool aprend_lit_check_material_block(aprend_binding_layout layout) {
 static bool aprend_lit_check_shadow_pass_block(aprend_binding_layout layout) {
 	const expected_member members[] = {{"view_projection", 0}};
 	return aprend_lit_check_block(layout, 0, "AprendLitShadowPass", (uint32_t)sizeof(aprend_lit_shadow_pass_block), members, 1);
+}
+
+static bool aprend_lit_check_hosek_block(aprend_binding_layout layout) {
+	typedef aprend_hosek_sky_block B;
+	const expected_member members[] = {
+	    {"config", MEMBER(B, config)},
+	    {"radiance", MEMBER(B, radiance)},
+	};
+	return aprend_lit_check_block(layout, 0, "AprendHosekSky", (uint32_t)sizeof(B), members, COUNT_OF(members));
 }
 
 static bool aprend_lit_check_occlusion_block(aprend_binding_layout layout) {
@@ -435,6 +462,10 @@ static const struct {
     {s_exposure_luminance_frag_spv, sizeof(s_exposure_luminance_frag_spv), APREND_EXPOSURE_LUMINANCE_FORMAT, sizeof(aprend_size_params),
      "exposure luminance"},
     {s_exposure_adapt_frag_spv, sizeof(s_exposure_adapt_frag_spv), APREND_EXPOSURE_FORMAT, sizeof(aprend_adapt_params), "exposure adapt"},
+    {s_environment_hosek_frag_spv, sizeof(s_environment_hosek_frag_spv), APREND_ENVIRONMENT_FORMAT, sizeof(aprend_sky_params),
+     "Hosek-Wilkie sky"},
+    {s_exposure_adapt_histogram_frag_spv, sizeof(s_exposure_adapt_histogram_frag_spv), APREND_EXPOSURE_FORMAT,
+     sizeof(aprend_histogram_adapt_params), "exposure adapt from a histogram"},
 };
 
 // Every pass's fragment shader, the pass layout (a texture at 0, a sampler
@@ -473,6 +504,33 @@ static bool aprend_lit_prepare_passes(aprend_instance instance) {
 			return false;
 		}
 	}
+	if (!lit.histogram_comp) {
+		lit.histogram_comp =
+		    aprend_shader_create_spirv(instance, s_exposure_histogram_comp_spv, sizeof(s_exposure_histogram_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE);
+		if (!lit.histogram_comp) {
+			printf("apricot: Aprend's exposure histogram shader can't be created\n");
+			return false;
+		}
+	}
+	if (!lit.histogram_layout) {
+		// The histogram's dispatch writes the bins and the adapting pass
+		// reads them: one layout, so one set serves both.
+		aprend_shader readers[2] = {lit.histogram_comp, lit.pass_frags[APREND_LIT_PASS_ADAPT_HISTOGRAM]};
+		lit.histogram_layout     = aprend_binding_layout_create_from_shaders(instance, readers, 2, 0);
+		if (!lit.histogram_layout) {
+			printf("apricot: the binding layout of Aprend's exposure histogram can't be created\n");
+			return false;
+		}
+	}
+	if (!lit.hosek_layout) {
+		lit.hosek_layout = aprend_binding_layout_create_from_shaders(instance, &lit.pass_frags[APREND_LIT_PASS_HOSEK_SKY], 1, 0);
+		if (!lit.hosek_layout || !aprend_lit_check_hosek_block(lit.hosek_layout)) {
+			aprend_binding_layout_destroy(lit.hosek_layout);
+			lit.hosek_layout = nullptr;
+			printf("apricot: the binding layout of Aprend's Hosek-Wilkie sky can't be created\n");
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -491,7 +549,13 @@ aprend_graphics_pipeline aprend_lit_pass_pipeline(aprend_instance instance, uint
 	else if (pass == APREND_LIT_PASS_OCCLUSION) {
 		layouts[0] = lit.occlusion_layout;
 		count      = 2;
-	} else if (pass == APREND_LIT_PASS_ADAPT)
+	} else if (pass == APREND_LIT_PASS_HOSEK_SKY)
+		layouts[0] = lit.hosek_layout;
+	else if (pass == APREND_LIT_PASS_ADAPT_HISTOGRAM) {
+		layouts[0] = lit.histogram_layout;
+		count      = 2;
+	}
+	else if (pass == APREND_LIT_PASS_ADAPT)
 		count = 2;
 	lit.pass_pipelines[pass] = aprend_lit_fullscreen_pipeline(instance, lit.pass_frags[pass], layouts, count, s_passes[pass].format,
 	                                                         s_passes[pass].push_size, s_passes[pass].name);
@@ -550,6 +614,29 @@ aprend_graphics_pipeline aprend_lit_tone_map_pipeline(aprend_instance instance, 
 	                                  "tone map");
 }
 
+aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance) {
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	if (lit.histogram_pipeline)
+		return lit.histogram_pipeline;
+	if (!aprend_lit_prepare_passes(instance))
+		return nullptr;
+	aprend_compute_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
+	desc._debug_name = "aprend exposure histogram";
+	desc.compute_shader                       = lit.histogram_comp;
+	desc._entry_point                         = "main";
+	desc._binding_layouts[0]                  = lit.histogram_layout;
+	desc._binding_layout_count                = 1;
+	desc._push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_COMPUTE;
+	desc._push_constant_ranges[0].offset      = 0;
+	desc._push_constant_ranges[0].size        = sizeof(aprend_histogram_params);
+	desc._push_constant_range_count           = 1;
+	lit.histogram_pipeline                    = aprend_compute_pipeline_create(instance, &desc);
+	if (!lit.histogram_pipeline)
+		printf("apricot: Aprend's exposure histogram pipeline can't be created\n");
+	return lit.histogram_pipeline;
+}
+
 aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 	aprend_lit_builtins &lit = instance->builtins.lit;
 	if (lit.cull_pipeline)
@@ -581,6 +668,61 @@ aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 	if (!lit.cull_pipeline)
 		printf("apricot: Aprend's light culling pipeline can't be created\n");
 	return lit.cull_pipeline;
+}
+
+aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instance) {
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	if (lit.cull_bounded_pipeline)
+		return lit.cull_bounded_pipeline;
+	if (!aprend_lit_cull_pipeline(instance) || !aprend_lit_prepare_passes(instance))
+		return nullptr;
+	if (!lit.cull_bounded_comp) {
+		lit.cull_bounded_comp =
+		    aprend_shader_create_spirv(instance, s_lit_cull_bounded_comp_spv, sizeof(s_lit_cull_bounded_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE);
+		if (!lit.cull_bounded_comp) {
+			printf("apricot: Aprend's light culling shader with depth bounds can't be created\n");
+			return nullptr;
+		}
+	}
+	// Set 0 as the unbounded culling's, so the scene's cull material serves
+	// both; set 1 the depth, in a layout of its own that the compute stage
+	// sees (the pass layout's are the fragment stage's).
+	if (!lit.cull_depth_layout) {
+		lit.cull_depth_layout = aprend_binding_layout_create_from_shaders(instance, &lit.cull_bounded_comp, 1, 1);
+		if (!lit.cull_depth_layout) {
+			printf("apricot: the depth layout of Aprend's light culling with depth bounds can't be created\n");
+			return nullptr;
+		}
+	}
+	aprend_compute_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
+	desc._debug_name = "aprend light culling with depth bounds";
+	desc.compute_shader        = lit.cull_bounded_comp;
+	desc._entry_point          = "main";
+	desc._binding_layouts[0]   = lit.cull_layout;
+	desc._binding_layouts[1]   = lit.cull_depth_layout;
+	desc._binding_layout_count = 2;
+	lit.cull_bounded_pipeline  = aprend_compute_pipeline_create(instance, &desc);
+	if (!lit.cull_bounded_pipeline)
+		printf("apricot: Aprend's light culling pipeline with depth bounds can't be created\n");
+	return lit.cull_bounded_pipeline;
+}
+
+aprend_binding_set aprend_texture_view_cull_depth_set(aprend_texture_view view) {
+	if (view->cull_depth_set)
+		return view->cull_depth_set;
+	aprend_instance instance = view->instance;
+	aprend_binding_set_entry entries[2]{};
+	entries[0]._binding                  = 0;
+	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	entries[0]._resource._image._view    = view;
+	entries[1]._binding                  = 1;
+	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+	entries[1]._resource._image._sampler = instance->builtins.lit.environment_sampler;
+	view->cull_depth_set                 = aprend_binding_set_create(instance->builtins.lit.cull_depth_layout, entries, 2);
+	if (!view->cull_depth_set)
+		printf("apricot: the binding set that reads a depth view for light culling can't be created\n");
+	return view->cull_depth_set;
 }
 
 aprend_binding_set aprend_texture_view_environment_set(aprend_texture_view view) {
@@ -615,9 +757,14 @@ void aprend_lit_builtins_destroy(aprend_instance instance) {
 		pipeline = nullptr;
 	}
 	aprend_compute_pipeline_destroy(lit.cull_pipeline);
-	lit.cull_pipeline                = nullptr;
-	aprend_binding_layout *layouts[] = {&lit.tone_map_layout, &lit.pass_layout,   &lit.occlusion_layout, &lit.cull_layout,
-	                                    &lit.material_layout, &lit.shadow_layout, &lit.scene_layout};
+	lit.cull_pipeline = nullptr;
+	aprend_compute_pipeline_destroy(lit.cull_bounded_pipeline);
+	lit.cull_bounded_pipeline = nullptr;
+	aprend_compute_pipeline_destroy(lit.histogram_pipeline);
+	lit.histogram_pipeline           = nullptr;
+	aprend_binding_layout *layouts[] = {&lit.tone_map_layout, &lit.pass_layout,       &lit.occlusion_layout, &lit.hosek_layout,
+	                                    &lit.histogram_layout, &lit.cull_depth_layout, &lit.cull_layout,      &lit.material_layout,
+	                                    &lit.shadow_layout,    &lit.scene_layout};
 	for (aprend_binding_layout *layout : layouts) {
 		aprend_binding_layout_destroy(*layout);
 		*layout = nullptr;
@@ -626,6 +773,10 @@ void aprend_lit_builtins_destroy(aprend_instance instance) {
 	lit.tone_map_frag = nullptr;
 	aprend_shader_destroy(lit.cull_comp);
 	lit.cull_comp = nullptr;
+	aprend_shader_destroy(lit.cull_bounded_comp);
+	lit.cull_bounded_comp = nullptr;
+	aprend_shader_destroy(lit.histogram_comp);
+	lit.histogram_comp = nullptr;
 	for (aprend_shader &shader : lit.pass_frags) {
 		aprend_shader_destroy(shader);
 		shader = nullptr;
@@ -844,6 +995,10 @@ aprend_material aprend_lit_material_create(aprend_instance instance) {
 	block.maps                = 0;
 	block.uv_transform[0]     = 1.0f;
 	block.uv_transform[5]     = 1.0f;
+	for (float *rows : block.map_uv_transform) {
+		rows[0] = 1.0f;
+		rows[5] = 1.0f;
+	}
 	memcpy(slot->bytes, &block, sizeof(block));
 	slot->dirty = true;
 	return material;
@@ -950,6 +1105,57 @@ bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, a
 	return true;
 }
 
+bool aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_LIT_MAP map, const float transform[6]) {
+	static const char who[]    = "aprend_lit_material_set_map_uv_transform";
+	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
+	if (!slot)
+		return false;
+	if (map > APREND_LIT_MAP_EMISSION) {
+		printf("apricot: %s: %u is not an APREND_LIT_MAP\n", who, map);
+		return false;
+	}
+	if (!transform) {
+		printf("apricot: %s: transform is NULL\n", who);
+		return false;
+	}
+	if (!all_finite(transform, 6)) {
+		printf("apricot: %s: a value of transform is not a finite number\n", who);
+		return false;
+	}
+	aprend_lit_material_block block;
+	memcpy(&block, slot->bytes, sizeof(block));
+	const float rows[8] = {transform[0], transform[1], transform[2], 0.0f, transform[3], transform[4], transform[5], 0.0f};
+	memcpy(block.map_uv_transform[map], rows, sizeof(rows));
+	memcpy(slot->bytes, &block, sizeof(block));
+	slot->dirty = true;
+	return true;
+}
+
+bool aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_LIT_MAP map, float out_transform[6]) {
+	static const char who[]    = "aprend_lit_material_get_map_uv_transform";
+	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
+	if (!slot)
+		return false;
+	if (map > APREND_LIT_MAP_EMISSION) {
+		printf("apricot: %s: %u is not an APREND_LIT_MAP\n", who, map);
+		return false;
+	}
+	if (!out_transform) {
+		printf("apricot: %s: out_transform is NULL\n", who);
+		return false;
+	}
+	aprend_lit_material_block block;
+	memcpy(&block, slot->bytes, sizeof(block));
+	const float *r = block.map_uv_transform[map];
+	out_transform[0] = r[0];
+	out_transform[1] = r[1];
+	out_transform[2] = r[2];
+	out_transform[3] = r[4];
+	out_transform[4] = r[5];
+	out_transform[5] = r[6];
+	return true;
+}
+
 bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler) {
 	static const char who[] = "aprend_lit_material_set_sampler";
 	if (!aprend_lit_material_slot(material, who))
@@ -963,6 +1169,7 @@ bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sa
 
 aprend_lit_environment_t::~aprend_lit_environment_t() {
 	// Each goes through the release queue on its own.
+	aprend_material_destroy(this->sky_material);
 	aprend_destroy_texture_view(this->irradiance_cube);
 	for (aprend_texture_view view : this->irradiance_faces)
 		aprend_destroy_texture_view(view);
@@ -1095,17 +1302,129 @@ uint32_t aprend_lit_environment_get_specular_mip_count(aprend_lit_environment en
 
 } // extern "C"
 
+aprend_material aprend_lit_environment_sky_material(aprend_lit_environment environment) {
+	if (environment->sky_material)
+		return environment->sky_material;
+	aprend_material_desc desc{};
+	desc.base                 = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
+	desc._layout              = environment->instance->builtins.lit.hosek_layout;
+	environment->sky_material = aprend_material_create(environment->instance, &desc);
+	if (!environment->sky_material)
+		printf("apricot: LIT_SKY: the material of an environment's Hosek-Wilkie sky can't be made\n");
+	return environment->sky_material;
+}
+
+// ---- Hosek and Wilkie's sky -------------------------------------------------------------
+//
+// The coefficients are Hosek and Wilkie's, version 1.4a, under their
+// licence:
+//
+//   Copyright (c) 2012 - 2013, Lukas Hosek and Alexander Wilkie
+//   All rights reserved. Published under the 3-clause BSD license (the
+//   full text is at the top of the dataset, aprend_hosek_rgb.inc, which
+//   CMakeLists.txt makes from their ArHosekSkyModelData_RGB.h).
+//
+// The cooking follows their ArHosekSkyModel_CookConfiguration and
+// ArHosekSkyModel_CookRadianceConfiguration: each coefficient is a quintic
+// Bezier over six control points in the cube root of the sun's elevation,
+// mixed between the two turbidities either side and the albedos 0 and 1.
+
+#include "aprend_hosek_rgb.inc"
+
+// The Bezier of control points [points] (each [stride] doubles apart) at
+// [e], 0 to 1.
+static double aprend_hosek_bezier(const double *points, int stride, double e) {
+	const double f    = 1.0 - e;
+	const double b[6] = {f * f * f * f * f,         5.0 * f * f * f * f * e, 10.0 * f * f * f * e * e,
+	                     10.0 * f * f * e * e * e, 5.0 * f * e * e * e * e, e * e * e * e * e};
+	double sum        = 0.0;
+	for (int k = 0; k < 6; ++k)
+		sum += b[k] * points[k * stride];
+	return sum;
+}
+
+// One channel's nine coefficients ([dataset]) or radiance ([rad_dataset]),
+// cooked: [count] values, each [count] * 6 doubles to an albedo's
+// turbidity, 10 turbidities to an albedo.
+static void aprend_hosek_cook_channel(const double *dataset, int count, double turbidity, double albedo, double e, double *out) {
+	const int lower      = (int)turbidity;
+	const double above   = turbidity - (double)lower;
+	const int block      = count * 6;
+	const double weights[2][2] = {{(1.0 - albedo) * (1.0 - above), (1.0 - albedo) * above}, {albedo * (1.0 - above), albedo * above}};
+	for (int i = 0; i < count; ++i) {
+		double value = 0.0;
+		for (int a = 0; a < 2; ++a) {
+			for (int t = 0; t < 2; ++t) {
+				// The turbidity above 10 has no data, and no weight there.
+				if (lower + t > 10)
+					continue;
+				const double *points = dataset + block * 10 * a + block * (lower + t - 1) + i;
+				value += weights[a][t] * aprend_hosek_bezier(points, count, e);
+			}
+		}
+		out[i] = value;
+	}
+}
+
+// The extended Perez function of [config] at [theta] and [gamma], as their
+// ArHosekSkyModel_GetRadianceInternal has it.
+static double aprend_hosek_perez(const double config[9], double theta, double gamma) {
+	const double cos_gamma = std::cos(gamma);
+	const double exp_m     = std::exp(config[4] * gamma);
+	const double ray_m     = cos_gamma * cos_gamma;
+	const double mie_m     = (1.0 + cos_gamma * cos_gamma) / std::pow(1.0 + config[8] * config[8] - 2.0 * config[8] * cos_gamma, 1.5);
+	const double zenith    = std::sqrt(std::cos(theta));
+	return (1.0 + config[0] * std::exp(config[1] / (std::cos(theta) + 0.01))) *
+	       (config[2] + config[3] * exp_m + config[5] * ray_m + config[6] * mie_m + config[7] * zenith);
+}
+
+void aprend_lit_hosek_cook(const float sun[3], float turbidity, const float albedo[3], float intensity, aprend_hosek_sky_block *out) {
+	const double pi        = 3.14159265358979323846;
+	const double elevation = std::asin(std::clamp((double)sun[1], 0.0, 1.0));
+	const double e         = std::pow(elevation / (pi / 2.0), 1.0 / 3.0);
+	double config[3][9];
+	double radiance[3];
+	for (int c = 0; c < 3; ++c) {
+		aprend_hosek_cook_channel(aprend_hosek_datasetsRGB[c], 9, turbidity, albedo[c], e, config[c]);
+		aprend_hosek_cook_channel(aprend_hosek_datasetsRGBRad[c], 1, turbidity, albedo[c], e, &radiance[c]);
+	}
+	// The zenith's luminance (Rec. 709's, the dataset's primaries), at the
+	// sun's angle from it.
+	const double zenith_gamma = pi / 2.0 - elevation;
+	double zenith[3];
+	for (int c = 0; c < 3; ++c)
+		zenith[c] = aprend_hosek_perez(config[c], 0.0, zenith_gamma) * radiance[c];
+	const double luminance = 0.2126 * zenith[0] + 0.7152 * zenith[1] + 0.0722 * zenith[2];
+	const double scale     = luminance > 0.0 ? (double)intensity / luminance : 0.0;
+	for (int i = 0; i < 9; ++i) {
+		for (int c = 0; c < 3; ++c)
+			out->config[i][c] = (float)config[c][i];
+		out->config[i][3] = 0.0f;
+	}
+	for (int c = 0; c < 3; ++c)
+		out->radiance[c] = (float)(radiance[c] * scale);
+	out->radiance[3] = 0.0f;
+}
+
 // ---- Scenes -------------------------------------------------------------------------
 
-// The block's lights' spot shadow indices, from the spot shadows' lights.
+// The block's lights' spot and point shadow indices, from the shadows'
+// lights.
 static void aprend_lit_scene_resolve_shadows(aprend_lit_scene scene) {
 	aprend_lit_scene_block &b = scene->block;
-	for (uint32_t i = 0; i < APREND_LIT_MAX_LIGHTS; ++i)
+	for (uint32_t i = 0; i < APREND_LIT_MAX_LIGHTS; ++i) {
 		b.lights[i].outer_shadow[1] = -1.0f;
+		b.lights[i].outer_shadow[2] = -1.0f;
+	}
 	for (uint32_t s = 0; s < scene->spot_shadow_count; ++s) {
 		const uint32_t light = scene->spot_shadow_lights[s];
 		if (light < b.light_count && b.lights[light].radiance_type[3] > 0.5f)
 			b.lights[light].outer_shadow[1] = (float)s;
+	}
+	for (uint32_t s = 0; s < scene->point_shadow_count; ++s) {
+		const uint32_t light = scene->point_shadow_lights[s];
+		if (light < b.light_count && b.lights[light].radiance_type[3] < 0.5f)
+			b.lights[light].outer_shadow[2] = (float)s;
 	}
 }
 
@@ -1124,6 +1443,8 @@ static void aprend_lit_scene_free(aprend_lit_scene scene) {
 	for (aprend_material material : scene->sun_shadow_materials)
 		aprend_material_destroy(material);
 	for (aprend_material material : scene->spot_shadow_materials)
+		aprend_material_destroy(material);
+	for (aprend_material material : scene->point_shadow_materials)
 		aprend_material_destroy(material);
 	aprend_material_destroy(scene->cull_material);
 	aprend_material_destroy(scene->occlusion_material);
@@ -1161,6 +1482,8 @@ aprend_lit_scene aprend_lit_scene_create(aprend_instance instance) {
 		material = aprend_material_create(instance, &desc);
 	for (aprend_material &material : scene->spot_shadow_materials)
 		material = aprend_material_create(instance, &desc);
+	for (aprend_material &material : scene->point_shadow_materials)
+		material = aprend_material_create(instance, &desc);
 	desc._layout              = lit.cull_layout;
 	scene->cull_material      = aprend_material_create(instance, &desc);
 	desc._layout              = lit.occlusion_layout;
@@ -1171,10 +1494,13 @@ aprend_lit_scene aprend_lit_scene_create(aprend_instance instance) {
 		ok = ok && material;
 	for (aprend_material material : scene->spot_shadow_materials)
 		ok = ok && material;
+	for (aprend_material material : scene->point_shadow_materials)
+		ok = ok && material;
 	aprend_material m = scene->material;
 	ok                = ok && aprend_material_set_storage_buffer(m, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr);
 	ok                = ok && aprend_material_set_texture(m, "sun_shadow_map", 0, lit.placeholder_depth_view);
 	ok                = ok && aprend_material_set_texture(m, "spot_shadow_map", 0, lit.placeholder_depth_view);
+	ok                = ok && aprend_material_set_texture(m, "point_shadow_map", 0, lit.placeholder_depth_view);
 	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler", 0, lit.shadow_sampler);
 	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler_reversed", 0, lit.shadow_sampler_reversed);
 	ok                = ok && aprend_material_set_texture(m, "environment_specular", 0, lit.placeholder_cube_view);
@@ -1210,6 +1536,10 @@ aprend_material aprend_lit_scene_get_sun_shadow_material(aprend_lit_scene scene,
 
 aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene, uint32_t index) {
 	return scene && index < APREND_LIT_MAX_SPOT_SHADOWS ? scene->spot_shadow_materials[index] : nullptr;
+}
+
+aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scene, uint32_t index, uint32_t face) {
+	return scene && index < APREND_LIT_MAX_POINT_SHADOWS && face < 6 ? scene->point_shadow_materials[index * 6 + face] : nullptr;
 }
 
 bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *view) {
@@ -1311,10 +1641,25 @@ bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun)
 		printf("apricot: %s: the sun has radiance and no direction\n", who);
 		return false;
 	}
+	if (!finite(sun->disc_angle)) {
+		printf("apricot: %s: disc_angle is not a finite number\n", who);
+		return false;
+	}
+	if (sun->disc_angle < 0.0f) {
+		printf("apricot: %s: disc_angle is negative\n", who);
+		return false;
+	}
+	if (sun->disc_angle > 0.5f) {
+		printf("apricot: %s: disc_angle %g is above 0.5\n", who, (double)sun->disc_angle);
+		return false;
+	}
 	aprend_lit_scene_block &b = scene->block;
 	unit3(sun->direction, b.sun_direction);
 	memcpy(b.sun_radiance, sun->radiance, sizeof(float) * 3);
-	b.sun_radiance[3] = 0.0f;
+	// 1 - cos of the disc's angle, in the w the shader leaves: 0 for none,
+	// as a zeroed block has it. Worked out in double, since for the
+	// earth's sun it is 1e-5.
+	b.sun_radiance[3] = (float)(1.0 - std::cos((double)sun->disc_angle));
 	aprend_lit_scene_commit(scene);
 	return true;
 }
@@ -1536,6 +1881,73 @@ bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_vi
 	return true;
 }
 
+bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const aprend_lit_point_shadow *shadows, uint32_t count,
+                                        bool reversed_depth) {
+	static const char who[] = "aprend_lit_scene_set_point_shadows";
+	if (!scene) {
+		printf("apricot: %s: scene is NULL\n", who);
+		return false;
+	}
+	if (count > APREND_LIT_MAX_POINT_SHADOWS) {
+		printf("apricot: %s: %u point shadows, and a scene holds %u\n", who, count, APREND_LIT_MAX_POINT_SHADOWS);
+		return false;
+	}
+	if (count > 0 && !shadows) {
+		printf("apricot: %s: shadows is NULL with a count of %u\n", who, count);
+		return false;
+	}
+	if (count > 0 && !aprend_lit_shadow_map_valid(scene, map, count * 6, who))
+		return false;
+	for (uint32_t i = 0; i < count; ++i) {
+		const aprend_lit_point_shadow &s = shadows[i];
+		if (!all_finite(&s.view_projection[0][0], 6 * 16)) {
+			printf("apricot: %s: a value of shadow %u's matrices is not a finite number\n", who, i);
+			return false;
+		}
+		if (!aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, who))
+			return false;
+		for (uint32_t j = 0; j < i; ++j) {
+			if (shadows[j].light == s.light) {
+				printf("apricot: %s: shadows %u and %u name one light, %u\n", who, j, i, s.light);
+				return false;
+			}
+		}
+	}
+	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
+	if (!aprend_material_set_texture(scene->material, "point_shadow_map", 0, count ? map : lit.placeholder_depth_view))
+		return false;
+	aprend_lit_scene_block &b = scene->block;
+	for (uint32_t i = 0; i < APREND_LIT_MAX_POINT_SHADOWS; ++i) {
+		for (uint32_t face = 0; face < 6; ++face) {
+			float *matrix = b.point_shadow_view_projection[i * 6 + face];
+			if (i < count)
+				memcpy(matrix, shadows[i].view_projection[face], sizeof(float) * 16);
+			else
+				memset(matrix, 0, sizeof(float) * 16);
+			aprend_lit_shadow_pass_block pass{};
+			memcpy(pass.view_projection, matrix, sizeof(pass.view_projection));
+			aprend_lit_write_block(scene->point_shadow_materials[i * 6 + face], "u_lit_shadow_pass", &pass, sizeof(pass));
+		}
+		if (i < count) {
+			const aprend_lit_point_shadow &s = shadows[i];
+			b.point_shadow_params[i][0]       = s.depth_bias;
+			b.point_shadow_params[i][1]       = s.normal_offset;
+			b.point_shadow_params[i][2]       = s.softness;
+			b.point_shadow_params[i][3]       = s.strength;
+			scene->point_shadow_lights[i]     = s.light;
+		} else {
+			memset(b.point_shadow_params[i], 0, sizeof(float) * 4);
+		}
+	}
+	scene->point_shadow_count = count;
+	if (reversed_depth)
+		b.flags |= APREND_LIT_SCENE_FLAG_POINT_REVERSED;
+	else
+		b.flags &= ~APREND_LIT_SCENE_FLAG_POINT_REVERSED;
+	aprend_lit_scene_commit(scene);
+	return true;
+}
+
 bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambient *ambient) {
 	static const char who[] = "aprend_lit_scene_set_ambient";
 	if (!scene || !ambient) {
@@ -1626,6 +2038,20 @@ bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_textu
 	return true;
 }
 
+bool aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read) {
+	if (!scene) {
+		printf("apricot: aprend_lit_scene_set_bent_normals: scene is NULL\n");
+		return false;
+	}
+	aprend_lit_scene_block &b = scene->block;
+	if (read)
+		b.flags |= APREND_LIT_SCENE_FLAG_BENT_NORMALS;
+	else
+		b.flags &= ~APREND_LIT_SCENE_FLAG_BENT_NORMALS;
+	aprend_lit_scene_commit(scene);
+	return true;
+}
+
 // ---- Fitting shadows --------------------------------------------------------------
 
 bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_sun_shadow *out_shadow) {
@@ -1673,6 +2099,9 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 	const glm::vec3 sun = glm::normalize(sun_in);
 	const float n = f.near_depth, fa = f.far_depth;
 	float start = n;
+	// The split before the last: where the stretch the surface shader
+	// blends over at the end of the last cascade began (0 before the first).
+	float before = 0.0f;
 	for (uint32_t c = 0; c < f.cascade_count; ++c) {
 		// Zhang's practical split: a mix of even and logarithmic.
 		const float t     = (float)(c + 1) / (float)f.cascade_count;
@@ -1682,8 +2111,11 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 		// The stretch's eight corners, and the sphere round them: its
 		// radius depends on the stretch's shape alone, so it doesn't change
 		// as the view turns.
+		// Each cascade after the first reaches back over the last tenth of
+		// the one before, which the surface shader blends into it.
+		const float reach     = c == 0 ? start : std::max(n, start - 0.1f * (start - before));
 		glm::vec3 corners[8];
-		const float depths[2] = {start, end};
+		const float depths[2] = {reach, end};
 		for (int k = 0; k < 2; ++k) {
 			const float d          = depths[k];
 			const float hh         = f.orthographic ? f.half_height : d * std::tan(f.fov_y * 0.5f);
@@ -1719,6 +2151,7 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 		matrix = projection * view;
 		memcpy(out_shadow->view_projection[c], &matrix, sizeof(float) * 16);
 		out_shadow->split_depths[c] = end;
+		before                      = c == 0 ? 0.0f : start;
 		start                       = end;
 	}
 	for (uint32_t c = f.cascade_count; c < APREND_LIT_MAX_CASCADES; ++c) {
@@ -1726,6 +2159,46 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 		out_shadow->split_depths[c] = 0.0f;
 	}
 	out_shadow->cascade_count = f.cascade_count;
+	return true;
+}
+
+bool aprend_lit_point_shadow_view_projection(const aprend_lit_light *light, uint32_t face, float near_depth, bool reversed_depth,
+                                             float out_view_projection[16]) {
+	static const char who[] = "aprend_lit_point_shadow_view_projection";
+	if (!light) {
+		printf("apricot: %s: light is NULL\n", who);
+		return false;
+	}
+	if (!out_view_projection) {
+		printf("apricot: %s: out_view_projection is NULL\n", who);
+		return false;
+	}
+	if (light->type != APREND_LIT_LIGHT_TYPE_POINT) {
+		printf("apricot: %s: the light is not a point light\n", who);
+		return false;
+	}
+	if (!aprend_lit_light_valid(*light, 0, who))
+		return false;
+	if (face >= 6) {
+		printf("apricot: %s: face %u is not below 6\n", who, face);
+		return false;
+	}
+	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range)) {
+		printf("apricot: %s: near_depth is not between 0 and the light's range\n", who);
+		return false;
+	}
+	static const glm::vec3 axes[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+	const glm::vec3 position = vec3_of(light->position), axis = axes[face];
+	// Any up that isn't the axis: what the matrix renders is what the
+	// surface reads through it.
+	const glm::vec3 up = face == 2 || face == 3 ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
+	// A margin past 90 degrees, as a spot's has past its cone, for the taps
+	// of a soft shadow near a face's edge.
+	const float fov            = 2.0f * std::atan(1.05f);
+	const glm::mat4 projection = reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
+	                                            : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range);
+	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
+	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
 	return true;
 }
 
@@ -1761,6 +2234,8 @@ bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float
 // ---- Exposures ----------------------------------------------------------------------
 
 aprend_exposure_t::~aprend_exposure_t() {
+	aprend_binding_set_destroy(this->histogram_set);
+	aprend_storage_buffer_set_destroy(this->histogram);
 	for (int i = 0; i < 2; ++i) {
 		aprend_destroy_texture_view(this->value_views[i]);
 		aprend_destroy_texture_view(this->value_targets[i]);
@@ -1787,6 +2262,23 @@ aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_ex
 		printf("apricot: %s: the key and rates are above 0, and min_log below max_log, all finite\n", who);
 		return nullptr;
 	}
+	if (!(d.low_share >= 0.0f)) {
+		printf("apricot: %s: low_share is negative or not a number\n", who);
+		return nullptr;
+	}
+	if (!(d.high_share <= 1.0f)) {
+		printf("apricot: %s: high_share is above 1 or not a number\n", who);
+		return nullptr;
+	}
+	if (!(d.low_share < d.high_share)) {
+		printf("apricot: %s: low_share %g is not below high_share %g\n", who, (double)d.low_share, (double)d.high_share);
+		return nullptr;
+	}
+	// Every texel measured is the log average, exactly, through the
+	// luminance texture's mips; leaving some out takes a histogram.
+	const bool histogram = d.low_share > 0.0f || d.high_share < 1.0f;
+	if (histogram && !aprend_lit_histogram_pipeline(instance))
+		return nullptr;
 	APREND_MALLOC__T(exposure, aprend_exposure_t);
 	if (!exposure) {
 		printf("apricot: %s: out of memory\n", who);
@@ -1806,8 +2298,26 @@ aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_ex
 		exposure->value_views[i]   = exposure->values[i] ? aprend_lit_whole_view(exposure->values[i], false) : nullptr;
 		ok                         = exposure->value_targets[i] && exposure->value_views[i];
 	}
+	if (ok && histogram) {
+		exposure->histogram = aprend_storage_buffer_set_create(instance, APREND_EXPOSURE_BINS * sizeof(uint32_t), APREND_STORAGE_BUFFER_USAGE_NONE,
+		                                                       APREND_BUFFER_WRITES_ONCE, nullptr);
+		if (exposure->histogram) {
+			aprend_binding_set_entry entries[3]{};
+			entries[0]._binding                  = 0;
+			entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			entries[0]._resource._image._view    = exposure->luminance_view;
+			entries[1]._binding                  = 1;
+			entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+			entries[1]._resource._image._sampler = instance->builtins.lit.environment_sampler;
+			entries[2]._binding                  = 2;
+			entries[2]._type                     = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			entries[2]._resource._storage._set   = exposure->histogram;
+			exposure->histogram_set              = aprend_binding_set_create(instance->builtins.lit.histogram_layout, entries, 3);
+		}
+		ok = exposure->histogram_set != nullptr;
+	}
 	if (!ok) {
-		printf("apricot: %s: a texture or view can't be created\n", who);
+		printf("apricot: %s: a texture, view, buffer or set can't be created\n", who);
 		APREND_DESTRUCT__T(exposure, aprend_exposure_t);
 		return nullptr;
 	}

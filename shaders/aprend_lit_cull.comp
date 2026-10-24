@@ -1,70 +1,8 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-// Aprend's tiled light culling (aprendlit.h): for each tile of the view's
-// target, the point and spot lights whose sphere of range reaches into the
-// tile's frustum, written as a count and a list the surface shader reads
-// in place of every light. A tile's frustum is the view_projection's four
-// side planes cut to the tile's rectangle in clip space (Gribb and
-// Hartmann's extraction), and its near and far planes; a sphere is kept
-// unless it lies wholly outside one. Without depth bounds a tile runs the
-// whole depth of the view, which is Hazel's forward+ before its pre-depth.
-// One invocation a tile.
+// Aprend's tiled light culling (aprendlit.h), each tile over the whole depth
+// of the view: aprend_lit_cull.glslh, without depth bounds. Recorded at the
+// top of a list that binds a scene with a target size.
 
-#include "aprend_lit_scene.glslh"
-
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
-
-layout(set = 0, binding = 1, std430) writeonly buffer AprendLitTiles {
-    uint tile_lights[];
-};
-
-vec4 row(mat4 m, int i) {
-    return vec4(m[0][i], m[1][i], m[2][i], m[3][i]);
-}
-
-// Whether [center] with [radius] reaches the inside of [plane] (inside where
-// dot(plane, (p, 1)) >= 0).
-bool reaches(vec4 plane, vec3 center, float radius) {
-    float l = length(plane.xyz);
-    return l == 0.0 || (dot(plane.xyz, center) + plane.w) / l >= -radius;
-}
-
-void main() {
-    uint index = gl_GlobalInvocationID.x;
-    uint tiles = u_lit_scene.tiles_x * u_lit_scene.tiles_y;
-    if (index >= tiles)
-        return;
-    uint tx = index % u_lit_scene.tiles_x;
-    uint ty = index / u_lit_scene.tiles_x;
-    // The tile's rectangle in normalized device coordinates: +Y down the
-    // target, as SpudGPU's clip space has it, so row 0 is at y = -1.
-    vec2 size = u_lit_scene.target_size.xy;
-    float t   = float(u_lit_scene.tile_size);
-    vec2 lo   = vec2(float(tx) * t, float(ty) * t) / size * 2.0 - 1.0;
-    vec2 hi   = min(vec2(float(tx + 1u) * t, float(ty + 1u) * t) / size, vec2(1.0)) * 2.0 - 1.0;
-    mat4 m    = u_lit_scene.view_projection;
-    vec4 r0 = row(m, 0), r1 = row(m, 1), r2 = row(m, 2), r3 = row(m, 3);
-    vec4 planes[6];
-    planes[0] = r0 - lo.x * r3; // x / w >= lo.x
-    planes[1] = hi.x * r3 - r0; // x / w <= hi.x
-    planes[2] = r1 - lo.y * r3;
-    planes[3] = hi.y * r3 - r1;
-    planes[4] = r2;             // z >= 0
-    planes[5] = r3 - r2;        // z <= w
-
-    uint first = index * uint(APREND_LIT_MAX_TILE_LIGHTS + 1);
-    uint count = 0u;
-    for (uint i = 0u; i < min(u_lit_scene.light_count, uint(APREND_LIT_MAX_LIGHTS)) && count < uint(APREND_LIT_MAX_TILE_LIGHTS); ++i) {
-        vec3 c   = u_lit_scene.lights[i].position_range.xyz;
-        float r  = u_lit_scene.lights[i].position_range.w;
-        bool in_ = true;
-        for (int p = 0; p < 6 && in_; ++p)
-            in_ = reaches(planes[p], c, r);
-        if (in_) {
-            tile_lights[first + 1u + count] = i;
-            ++count;
-        }
-    }
-    tile_lights[first] = count;
-}
+#include "aprend_lit_cull.glslh"

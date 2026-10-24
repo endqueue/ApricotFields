@@ -128,6 +128,27 @@ enum {
 };
 
 /**
+ * @brief The analytic sky APREND_COMMAND_LIT_SKY fills an environment from.
+ */
+typedef uint32_t APREND_LIT_SKY_MODEL;
+enum {
+	/**
+	 * Preetham, Shirley and Smits' ("A Practical Analytic Model for
+	 * Daylight", 1999), Hazel's sky: Perez's distribution of luminance and
+	 * chromaticity. Turbidity 1.7 to 10.
+	 */
+	APREND_LIT_SKY_MODEL_PREETHAM     = 0,
+	/**
+	 * Hosek and Wilkie's ("An Analytic Model for Full Spectral Sky-Dome
+	 * Radiance", 2012), in its native RGB: fitted to brute-force
+	 * simulations of the atmosphere, with a truer horizon and glow round
+	 * the sun than Preetham's, and the ground's albedo lighting the sky
+	 * from below. Turbidity 1 to 10, the ground's albedo 0 to 1.
+	 */
+	APREND_LIT_SKY_MODEL_HOSEK_WILKIE = 1,
+};
+
+/**
  * @brief Upper bound on color targets in one BEGIN_RENDERING pass.
  *
  * aprend_color_target and aprend_depth_target (aprendimages.h) describe how
@@ -135,6 +156,16 @@ enum {
  * STORE.
  */
 #define APREND_MAX_COLOR_TARGETS SPUDGPU_MAX_COLOR_ATTACHMENTS
+
+/**
+ * @brief The largest `_sigma` of APREND_COMMAND_BLUR, in texels: a blur
+ * reaches three times its sigma each way, so at most 96 texels.
+ *
+ * A wider blur is the source drawn down to a smaller texture, blurred there
+ * and drawn up again (APREND_COMMAND_DRAW_TEXTURE), at a fraction of the
+ * cost.
+ */
+#define APREND_BLUR_MAX_SIGMA 32.0f
 
 /**
  * @brief Which command an APREND_COMMAND is, and so which member of its
@@ -468,6 +499,27 @@ enum {
 	 * so a glow over a clear target is seen once the target is composited
 	 * over something else.
 	 *
+	 * `_mask`, if not NULL, weights what glows texel by texel: each tap of
+	 * step 1 is the source times the mask's red at the same place in
+	 * [0, 1], so a masked texel adds nothing to the glow, bright or not,
+	 * and the rest of the source glows as without a mask. It picks what
+	 * glows without a source of its own.
+	 *
+	 * `_lens_dirt`, if not NULL, is laid over the whole target (stretched
+	 * to it, read at the same place in [0, 1]) and brightens the glow in
+	 * step 4 where it falls: what is added is the glow times
+	 * (1 + dirt * `_lens_dirt_intensity`) in color; alpha is the glow's
+	 * alone. Dirt shows only where there is glow, as smudges on a lens
+	 * light up only where light crosses them.
+	 *
+	 * The mask and the dirt are each a SHADER_RESOURCE view, 2D, of color,
+	 * in a format a shader reads as floats, of any size, written by
+	 * anything submitted before or earlier in the list; the first mip of
+	 * each is read through a linear filter, and moved into
+	 * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. The dirt shares no mip of a
+	 * layer with the target. `_lens_dirt_intensity` is not negative and is
+	 * a number, and is not read without `_lens_dirt`.
+	 *
 	 * `_source` is a SHADER_RESOURCE view, 2D, of color, written by
 	 * anything submitted before or earlier in the list; its first mip is
 	 * read, and moved into SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target`
@@ -532,28 +584,43 @@ enum {
 	APREND_COMMAND_LIT_ENVIRONMENT             = 31,
 	/**
 	 * Fills `_environment` (aprendlit.h) from a daylight sky, outside a
-	 * pass: Preetham, Shirley and Smits' analytic model (Hazel's sky too) at
-	 * `_turbidity` (2, clear, to 10, hazy) with the sun towards
-	 * `_sun_direction` in the environment's space (+Y up), scaled so the
-	 * zenith's radiance is `_intensity`; below the horizon, the horizon's
-	 * light times `_ground_albedo`. Then prefiltered as LIT_ENVIRONMENT's
-	 * picture is. The sun's disc is not drawn: the sun is the scene's own
-	 * light (aprend_lit_scene_set_sun()), and a disc would only be blurred
-	 * into the rougher mips.
+	 * pass: the analytic model `_model` names (APREND_LIT_SKY_MODEL:
+	 * Preetham's, Hazel's sky too, or Hosek and Wilkie's) at `_turbidity`
+	 * (2, clear, to 10, hazy) with the sun towards `_sun_direction` in the
+	 * environment's space (+Y up), scaled so the zenith's luminance is
+	 * `_intensity`; below the horizon, the horizon's light times
+	 * `_ground_albedo`, which Hosek and Wilkie's model also takes as the
+	 * light the ground sends back up into the sky. Then prefiltered as
+	 * LIT_ENVIRONMENT's picture is. The sun's disc is not drawn here: the
+	 * sun is the scene's own light (aprend_lit_scene_set_sun()), and a disc
+	 * would only be blurred into the rougher mips; the sky shader draws it
+	 * (aprend_lit_sun::disc_angle). Hosek and Wilkie's model is defined for
+	 * a sun at or above the horizon, and one below is taken at it.
+	 *
+	 * Hosek and Wilkie's model is cooked on the CPU at the compile, from
+	 * the authors' dataset, into a material the environment keeps; the
+	 * environment holds one sky at a time, so two fills of one environment
+	 * in one list leave the last.
 	 */
 	APREND_COMMAND_LIT_SKY                     = 32,
 	/**
 	 * Ambient occlusion from a depth buffer, outside a pass: how open each
 	 * texel of `_depth` is to the sky, from the depth round it, out to
-	 * `_radius` in the scene's units and darkened by `_intensity` (1 as
-	 * measured), then smoothed over 4x4 texels, written into `_target`'s red.
+	 * `_radius` in the scene's units, raised to the power `_intensity` (1 as
+	 * measured), then smoothed over 4x4 texels, written into `_target`'s red;
+	 * and the bent normal, the average direction that is open (unit, in the
+	 * scene's space, as 0.5 + 0.5 b), into its green, blue and alpha, for a
+	 * target that has them (aprend_lit_scene_set_bent_normals() reads it).
 	 * `_depth` is a SHADER_RESOURCE view, DEPTH aspect, 2D, of a depth buffer
 	 * rendered through `_scene`'s view_projection (a depth pre-pass), at the
 	 * view's target size; `_target` a RENDER_TAGET 2D view of a color format
 	 * at that size, which aprend_lit_scene_set_ambient_occlusion() then
 	 * names. Positions come back through the view's view_projection, so it
-	 * must be invertible. A horizon-based estimate (HBAO's; GTAO's in
-	 * spirit), eight directions of four steps.
+	 * must be invertible. Ground-truth ambient occlusion (Jimenez et al.,
+	 * 2016; Hazel's XeGTAO): four slices through each texel's view ray, two
+	 * horizons in each found by four steps either side (a sample fading out
+	 * over the outer 0.615 of the radius), the visible arc between them
+	 * integrated with the cosine, so a texel nothing stands over reads 1.
 	 */
 	APREND_COMMAND_LIT_AMBIENT_OCCLUSION       = 33,
 	/**
@@ -589,6 +656,106 @@ enum {
 	 * with a filter the set that reads it, which the view keeps.
 	 */
 	APREND_COMMAND_DRAW_TEXTURE                = 35,
+	/**
+	 * Blurs `_source` into `_target`: a Gaussian of `_sigma` texels of the
+	 * target, replacing what the target held, color and alpha alike.
+	 * Outside a pass.
+	 *
+	 * Separable, as a Gaussian is: one pass across, from the source into a
+	 * SPUDGPU_FORMAT_R16G16B16A16_FLOAT texture of the target's size taken
+	 * from the instance's pool (aprendcontext.h, "Textures a command uses
+	 * in between"), and one down, from it into the target. Each texel is
+	 * the sum of its neighbours out to three sigma each way, weighted by
+	 * exp(-d^2 / (2 sigma^2)) for a neighbour d texels off and normalized
+	 * to sum to 1; past an edge, the edge texel stands in. The taps are
+	 * read in pairs through a linear filter, one sample for two texels.
+	 *
+	 * `_source` is a SHADER_RESOURCE view, 2D, of color, of one mip,
+	 * written by anything submitted before or earlier in the list, and
+	 * moved into SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target` is a
+	 * RENDER_TAGET view, 2D, in a format a blur renders onto (the formats
+	 * aprend_texture2d_generate_mips() takes), of the size of the source's
+	 * mip: a paired tap reads two texels only where the texture it reads
+	 * has the target's texels. A blur at a smaller size is the source drawn
+	 * down to it first (APREND_COMMAND_DRAW_TEXTURE). It is left in
+	 * SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. The two share no mip of
+	 * a layer. `_sigma` is above 0, a number, and at most
+	 * APREND_BLUR_MAX_SIGMA.
+	 *
+	 * It binds pipelines and sets of its own, as BLOOM does. The first blur
+	 * onto a target format makes its pipeline, the first of a size a pooled
+	 * texture, and the first that reads a view the set that reads it,
+	 * which the view keeps (the set a BLOOM of the view reads through).
+	 */
+	APREND_COMMAND_BLUR                        = 36,
+	/**
+	 * Draws an outline `_width` texels wide round what `_mask` covers, in
+	 * `_color`, over what `_target` holds. Outside a pass.
+	 *
+	 * A texel of the mask is inside where its red is above 0.5. Each texel
+	 * outside is covered by the outline as far as its centre is within
+	 * `_width` + 1 of the nearest inside texel's centre: by `_width` + 1
+	 * less that distance, held to [0, 1]. So the texels along a straight
+	 * edge are covered by `_width` (up to 1), and an outline of a whole
+	 * `_width` covers that many texels out from the edge, its outer side
+	 * softened by the distance's fraction. Texels inside the mask are left
+	 * as they are. The outline is laid over the target as `_color` at its
+	 * alpha times the coverage would be (the target's color times one less
+	 * that, plus `_color` times it; alpha likewise).
+	 *
+	 * The distances come from a jump flood (Rong and Tan, 2006): a pass
+	 * marking the mask's texels, a pass for each halving of a jump from
+	 * the first power of two that reaches `_width` + 1 down to 1, one more
+	 * of 1, and the pass that draws, ping-ponging between two
+	 * SPUDGPU_FORMAT_R32G32_FLOAT textures of the target's size taken from
+	 * the instance's pool (aprendcontext.h, "Textures a command uses in
+	 * between"). A wide outline costs a pass more for each doubling of its
+	 * width, not a pass more a texel.
+	 *
+	 * `_mask` is a SHADER_RESOURCE view, 2D, of color, of one mip, in a
+	 * format a shader reads as floats, written by anything submitted before
+	 * or earlier in the list, and moved into
+	 * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target` is a RENDER_TAGET
+	 * view, 2D, of the size of the mask's mip, in a format an outline
+	 * renders onto (the formats aprend_texture2d_generate_mips() takes),
+	 * left in SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. The two share
+	 * no mip of a layer. `_color` is linear RGBA, its alpha not
+	 * premultiplied: each finite, red, green and blue not negative, alpha
+	 * from 0 to 1. `_width` is above 0 and a number.
+	 *
+	 * It binds pipelines and sets of its own, as BLOOM does. The first
+	 * outline makes its pipelines, the first onto a target format the
+	 * drawing pass's for it, the first of a size two pooled textures, and
+	 * the first that reads a view the set that reads it, which the view
+	 * keeps.
+	 */
+	APREND_COMMAND_OUTLINE                     = 37,
+	/**
+	 * Culls `_scene`'s point and spot lights (aprendlit.h) for each tile of
+	 * its view with depth bounds, outside a pass: as the cull a compile
+	 * records at the top of a list for a scene with a target size, each
+	 * tile's list holding the lights whose range reaches its frustum, but
+	 * with the frustum's near and far planes at the least and most depth
+	 * the tile's texels hold in `_depth`, so a light wholly in front of or
+	 * behind what a tile shows (behind a wall, under a floor) is left out
+	 * of its list (Hazel's forward+ culls against its pre-depth the same
+	 * way). A tile keeps APREND_LIT_MAX_TILE_LIGHTS lights at most, so fewer
+	 * lights to a tile is also fewer dropped.
+	 *
+	 * `_depth` is a SHADER_RESOURCE view, DEPTH aspect, 2D, of a depth
+	 * buffer rendered through the scene's view_projection (a depth
+	 * pre-pass) at the view's target size, written before the command,
+	 * earlier in the list or before it; it is moved into
+	 * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. The scene's view has a target
+	 * size and a view_projection.
+	 *
+	 * A list that holds this command for a scene has no cull at its top for
+	 * that scene: the surfaces that read the tiles are drawn after the
+	 * command. It binds a pipeline and sets of its own, so a compute
+	 * pipeline is set again after it before a dispatch, as after a pass;
+	 * the binding set slots are not touched.
+	 */
+	APREND_COMMAND_LIT_CULL_LIGHTS             = 38,
 };
 
 /**
@@ -771,6 +938,20 @@ typedef struct APREND_COMMAND {
 			float _intensity;
 			/** How many levels the glow is spread through. */
 			uint32_t _levels;
+			/**
+			 * NULL, or a SHADER_RESOURCE 2D view of color whose red weights
+			 * how much each texel of the source glows, read at the same
+			 * place in [0, 1]: 1 as without it, 0 not at all.
+			 */
+			aprend_texture_view _mask;
+			/**
+			 * NULL, or a SHADER_RESOURCE 2D view of color laid over the
+			 * whole target, whose color times `_lens_dirt_intensity`
+			 * brightens the glow where it falls: lens dirt.
+			 */
+			aprend_texture_view _lens_dirt;
+			/** How much `_lens_dirt` adds to the glow. Not read without `_lens_dirt`. */
+			float _lens_dirt_intensity;
 		} _bloom;
 		/** APREND_COMMAND_TONE_MAP. */
 		struct {
@@ -789,6 +970,8 @@ typedef struct APREND_COMMAND {
 			float _turbidity;
 			float _intensity;
 			float _ground_albedo[3];
+			/** Which sky: APREND_LIT_SKY_MODEL_PREETHAM (0) or _HOSEK_WILKIE. */
+			APREND_LIT_SKY_MODEL _model;
 		} _lit_sky;
 		/** APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
 		struct {
@@ -819,6 +1002,33 @@ typedef struct APREND_COMMAND {
 			/** Where the source doesn't reach, linear RGBA. Not read for STRETCH. */
 			float _border_color[4];
 		} _draw_texture;
+		/** APREND_COMMAND_BLUR. */
+		struct {
+			/** What is blurred. */
+			aprend_texture_view _source;
+			/** What the blur replaces. */
+			aprend_texture_view _target;
+			/** The Gaussian's sigma, in texels of the target. */
+			float _sigma;
+		} _blur;
+		/** APREND_COMMAND_OUTLINE. */
+		struct {
+			/** What the outline goes round: red above 0.5 is inside. */
+			aprend_texture_view _mask;
+			/** What the outline is drawn over. */
+			aprend_texture_view _target;
+			/** Linear RGBA, alpha not premultiplied. */
+			float _color[4];
+			/** How far out from the mask the outline reaches, in texels. */
+			float _width;
+		} _outline;
+		/** APREND_COMMAND_LIT_CULL_LIGHTS. */
+		struct {
+			/** The scene whose lights are culled. */
+			aprend_lit_scene _scene;
+			/** The view's depth, the tiles' bounds. */
+			aprend_texture_view _depth;
+		} _lit_cull_lights;
 		/** APREND_COMMAND_GENERATE_MIPS. */
 		struct {
 			/** The texture, of the list's instance. */
@@ -916,7 +1126,12 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   source or target view of the wrong type, shape or aspect, a target in
  *   a format a bloom doesn't render onto, a source and target that share a
  *   mip of a layer, `_levels` 0 or more than the source's size allows, a
- *   setting that is negative or not a number, or a `_radius` of 0;
+ *   setting that is negative or not a number, or a `_radius` of 0; or a
+ *   `_mask` or `_lens_dirt` of another instance, not a SHADER_RESOURCE 2D
+ *   view of color, or in a format a shader doesn't read as floats, a
+ *   `_lens_dirt` that shares a mip of a layer with the target, or, with a
+ *   `_lens_dirt`, a `_lens_dirt_intensity` that is negative or not a
+ *   number;
  * - a TONE_MAP with a NULL source or target, one of another instance, a view
  *   of the wrong type, shape or aspect, a source of more than one mip, a
  *   source and target that share a mip of a layer, a target in a format it
@@ -926,9 +1141,10 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   instance, or a source that is not a SHADER_RESOURCE view of color
  *   shaped CUBE or 2D;
  * - a TONE_MAP whose `_auto_exposure` is of another instance;
- * - a LIT_SKY with a NULL environment or one of another instance, a sun
- *   direction of 0, a turbidity outside 1.7 to 10, a negative intensity or
- *   albedo, or a value that is not a number;
+ * - a LIT_SKY with a NULL environment or one of another instance, a
+ *   `_model` that is not an APREND_LIT_SKY_MODEL, a sun direction of 0, a
+ *   turbidity outside its model's range, a negative intensity or albedo, an
+ *   albedo above 1 for HOSEK_WILKIE, or a value that is not a number;
  * - a LIT_AMBIENT_OCCLUSION with a NULL scene, depth or target, one of
  *   another instance, a depth that is not a SHADER_RESOURCE 2D view of
  *   depth, a target that is not a RENDER_TAGET 2D view of a format it
@@ -936,7 +1152,22 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   0 or an intensity below 0;
  * - an AUTO_EXPOSURE with a NULL exposure or source, one of another
  *   instance, a source that is not a SHADER_RESOURCE 2D view of color of one
- *   mip, or a `_delta_time` that is negative or not a number.
+ *   mip, or a `_delta_time` that is negative or not a number;
+ * - a BLUR with a NULL source or target, one of another instance, a source
+ *   that is not a SHADER_RESOURCE 2D view of color of one mip, a target
+ *   that is not a RENDER_TAGET 2D view in a format a blur renders onto, a
+ *   target of another size than the source, a source and target that
+ *   share a mip of a layer, or a `_sigma` that is
+ *   not above 0, not a number or above APREND_BLUR_MAX_SIGMA;
+ * - an OUTLINE with a NULL mask or target, one of another instance, a mask
+ *   that is not a SHADER_RESOURCE 2D view of color of one mip in a format a
+ *   shader reads as floats, a target that is not a RENDER_TAGET 2D view in
+ *   a format an outline renders onto, a target of another size than the
+ *   mask, a mask and target that share a mip of a layer, a `_color` with a
+ *   value that is not finite, a negative red, green or blue or an alpha
+ *   outside 0 to 1, or a `_width` that is not above 0 or not a number;
+ * - a LIT_CULL_LIGHTS with a NULL scene or depth, one of another instance,
+ *   or a depth that is not a SHADER_RESOURCE 2D view of depth.
  *
  * BEGIN_RENDER_PASS, SET_COMPUTE_PASS and DRAW_LIST are expanded here into
  * the commands they stand for, read from the pass or list as it is now (see
@@ -1008,9 +1239,10 @@ void aprend_send_command(
  *         - a SET_MATERIAL whose material is not complete
  *           (aprend_material_is_complete()) or whose binding set can't be
  *           built;
- *         - a BLOOM inside a pass, whose source has nothing in it
- *           (written neither before the list nor earlier in it) or no
- *           longer holds `_levels` (resized since it was sent), or whose
+ *         - a BLOOM inside a pass, whose source, mask or lens dirt has
+ *           nothing in it (written neither before the list nor earlier
+ *           in it), whose source no longer holds `_levels` (resized since
+ *           it was sent), or whose
  *           pipelines, sets or pooled texture can't be made;
  *         - a TONE_MAP inside a pass, whose source has nothing in it, or
  *           whose pipeline or set can't be made;
@@ -1019,6 +1251,15 @@ void aprend_send_command(
  *           LIT_AMBIENT_OCCLUSION or AUTO_EXPOSURE inside a pass, whose
  *           source or depth has nothing in it, or whose pipelines, views,
  *           sets or pooled textures can't be made;
+ *         - a BLUR inside a pass, whose source has nothing in it, whose
+ *           source and target are no longer one size (resized), or
+ *           whose pipelines, sets or pooled texture can't be made;
+ *         - an OUTLINE inside a pass, whose mask has nothing in it, whose
+ *           mask and target are no longer one size (resized), or whose
+ *           pipelines, sets or pooled textures can't be made;
+ *         - a LIT_CULL_LIGHTS inside a pass, whose depth has nothing in
+ *           it, whose scene's view has no target size or one other than
+ *           the depth's size, or whose pipeline or sets can't be made;
  *         - a GENERATE_MIPS inside a pass, or whose base level has nothing
  *           in some layer: written neither by anything submitted before nor
  *           earlier in the list; or whose views, sets or pipeline can't be

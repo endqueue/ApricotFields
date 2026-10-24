@@ -2,6 +2,8 @@
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
 
+#include "../apristructbase.hpp"
+
 #include <cstdio>
 
 /* Retires [target]'s views and then its texture, and frees the entry. */
@@ -141,6 +143,43 @@ void aprend_render_target_give_back(aprend_command_list_t *cmd_list) {
 	cmd_list->pool_takes.clear();
 }
 
+/* Whether [target] was taken in a frame the GPU may still be running, or
+ * by a compile of this frame: what nothing may destroy yet. */
+static bool aprend_pooled_target_busy(const aprend_render_target_pool &pool, const aprend_pooled_target *target) {
+	return target->taken && target->taken_frame >= pool.free_below;
+}
+
+/* The bytes of [target]'s texels, every level, as its format counts them. */
+static uint64_t aprend_pooled_target_bytes(const aprend_pooled_target *target) {
+	const uint64_t bits = spudgpu_format_bit_count(target->format);
+	uint64_t texels     = 0;
+	for (uint32_t level = 0; level < target->levels; ++level)
+		texels += (uint64_t)aprend_mip_size(target->width, level) * aprend_mip_size(target->height, level);
+	return texels * bits / 8;
+}
+
+/* Retires every entry of [instance]'s pool that isn't busy and whose last
+ * use is more than [idle_frames] frames back, or at least [idle_frames] when
+ * [at_least] is set; returns how many. */
+static uint32_t aprend_render_target_pool_retire(aprend_instance instance, uint64_t idle_frames, bool at_least) {
+	aprend_render_target_pool &pool = instance->render_targets;
+	const uint64_t frame            = instance->frame_number;
+	uint32_t retired                = 0;
+	size_t kept                     = 0;
+	for (aprend_pooled_target *target : pool.targets) {
+		const uint64_t idle = frame - target->used_frame;
+		const bool old      = at_least ? idle >= idle_frames : idle > idle_frames;
+		if (!aprend_pooled_target_busy(pool, target) && old) {
+			aprend_pooled_target_release(target);
+			++retired;
+			continue;
+		}
+		pool.targets[kept++] = target;
+	}
+	pool.targets.resize(kept);
+	return retired;
+}
+
 void aprend_render_target_pool_begin_frame(aprend_instance instance) {
 	aprend_render_target_pool &pool = instance->render_targets;
 	const uint64_t frame            = instance->frame_number;
@@ -149,18 +188,7 @@ void aprend_render_target_pool_begin_frame(aprend_instance instance) {
 	// frame and every one before it have finished.
 	if (frame >= in_flight)
 		pool.free_below = frame - in_flight + 1;
-
-	size_t kept = 0;
-	for (aprend_pooled_target *target : pool.targets) {
-		const bool free = !target->taken || target->taken_frame < pool.free_below;
-		const bool idle = frame - target->used_frame > APREND_RENDER_TARGET_IDLE_FRAMES;
-		if (free && idle) {
-			aprend_pooled_target_release(target);
-			continue;
-		}
-		pool.targets[kept++] = target;
-	}
-	pool.targets.resize(kept);
+	aprend_render_target_pool_retire(instance, APREND_RENDER_TARGET_IDLE_FRAMES, false);
 }
 
 void aprend_render_target_pool_destroy(aprend_instance instance) {
@@ -168,3 +196,52 @@ void aprend_render_target_pool_destroy(aprend_instance instance) {
 		aprend_pooled_target_release(target);
 	instance->render_targets.targets.clear();
 }
+
+extern "C" {
+
+bool aprend_instance_get_render_target_pool(
+    aprend_instance instance,
+    aprend_render_target_pool_info *out_info) {
+	static const char who[] = "aprend_instance_get_render_target_pool";
+	if (!instance) {
+		printf("apricot: %s: instance is NULL\n", who);
+		return false;
+	}
+	if (!out_info) {
+		printf("apricot: %s: out_info is NULL\n", who);
+		return false;
+	}
+	if (const APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO)) {
+		printf("apricot: %s: out_info %s\n", who, apri_struct_check_message(result));
+		return false;
+	}
+	APREND_ENTER(instance, who);
+	const aprend_render_target_pool &pool = instance->render_targets;
+	out_info->texture_count               = 0;
+	out_info->busy_count                  = 0;
+	out_info->bytes                       = 0;
+	out_info->busy_bytes                  = 0;
+	for (const aprend_pooled_target *target : pool.targets) {
+		const uint64_t bytes = aprend_pooled_target_bytes(target);
+		out_info->texture_count++;
+		out_info->bytes += bytes;
+		if (aprend_pooled_target_busy(pool, target)) {
+			out_info->busy_count++;
+			out_info->busy_bytes += bytes;
+		}
+	}
+	return true;
+}
+
+uint32_t aprend_instance_trim_render_targets(
+    aprend_instance instance,
+    uint32_t idle_frames) {
+	if (!instance) {
+		printf("apricot: aprend_instance_trim_render_targets: instance is NULL\n");
+		return 0;
+	}
+	APREND_ENTER(instance, "aprend_instance_trim_render_targets");
+	return aprend_render_target_pool_retire(instance, idle_frames, true);
+}
+
+} // extern "C"

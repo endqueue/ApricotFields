@@ -1,0 +1,51 @@
+#version 450
+
+// APREND_COMMAND_AUTO_EXPOSURE's histogram, for an exposure that leaves the
+// darkest and brightest of a picture out of its measure: how many texels of
+// the exposure's log luminance texture (aprend_exposure_luminance.frag, mip
+// 0) fall in each of 64 even bins from min_log to max_log, the ends taking
+// what is past them. Each group of 16x16 texels counts into its own bins in
+// shared memory, then adds them to the buffer's: one atomic a bin a group,
+// not one a texel (Unreal's PostProcessHistogram works the same way). A
+// dispatch with `clear` set, one group, empties the buffer first.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// AprendExposureHistogram's set 0, shared with aprend_exposure_adapt_histogram.frag.
+layout(set = 0, binding = 0) uniform texture2D luminance;
+layout(set = 0, binding = 1) uniform sampler luminance_sampler;
+layout(set = 0, binding = 2, std430) buffer AprendExposureBins {
+    uint bins[64];
+};
+
+// AprendHistogramParams in aprendlit_internal.hpp.
+layout(push_constant) uniform HistogramParams {
+    float min_log;
+    float max_log;
+    uint clear; // 1: set every bin to 0 and nothing else
+    uint size;  // the luminance texture's side
+} params;
+
+shared uint group_bins[64];
+
+void main() {
+    uint index = gl_LocalInvocationIndex;
+    if (params.clear != 0u) {
+        if (index < 64u)
+            bins[index] = 0u;
+        return;
+    }
+    if (index < 64u)
+        group_bins[index] = 0u;
+    barrier();
+    uvec2 texel = gl_GlobalInvocationID.xy;
+    if (texel.x < params.size && texel.y < params.size) {
+        float l   = texelFetch(sampler2D(luminance, luminance_sampler), ivec2(texel), 0).r;
+        float t   = (l - params.min_log) / (params.max_log - params.min_log);
+        uint bin  = uint(clamp(int(floor(t * 64.0)), 0, 63));
+        atomicAdd(group_bins[bin], 1u);
+    }
+    barrier();
+    if (index < 64u && group_bins[index] != 0u)
+        atomicAdd(bins[index], group_bins[index]);
+}

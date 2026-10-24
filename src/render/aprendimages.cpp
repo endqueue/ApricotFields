@@ -248,6 +248,8 @@ aprend_texture_view_t::~aprend_texture_view_t() {
 		aprend_release_handle<aprend_binding_set_t>(this->bloom_set);
 	if (this->environment_set)
 		aprend_release_handle<aprend_binding_set_t>(this->environment_set);
+	if (this->cull_depth_set)
+		aprend_release_handle<aprend_binding_set_t>(this->cull_depth_set);
 	for (aprend_binding_set set : this->present_sets)
 		if (set)
 			aprend_release_handle<aprend_binding_set_t>(set);

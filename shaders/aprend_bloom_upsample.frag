@@ -19,6 +19,10 @@ layout(push_constant) uniform BloomParams {
     float radius;
     float intensity;
     vec2 target_size;
+    // 1 to weight the prefilter's taps by the mask at set 1, 0 to read none.
+    float use_mask;
+    // What the lens dirt at set 1 adds to the composite's glow; 0 for none.
+    float lens_dirt_intensity;
 } params;
 
 layout(location = 0) out vec4 out_color;

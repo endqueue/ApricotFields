@@ -31,6 +31,7 @@ struct aprend_lit_scene_block {
 	float inverse_view_projection[16];
 	float sun_shadow_view_projection[APREND_LIT_MAX_CASCADES][16];
 	float spot_shadow_view_projection[APREND_LIT_MAX_SPOT_SHADOWS][16];
+	float point_shadow_view_projection[APREND_LIT_MAX_POINT_SHADOWS * 6][16];
 	float eye_position[4];
 	float view_direction[4];
 	float sun_direction[4];
@@ -42,6 +43,7 @@ struct aprend_lit_scene_block {
 	float sun_shadow_splits[4];
 	float sun_shadow_params[4];
 	float spot_shadow_params[APREND_LIT_MAX_SPOT_SHADOWS][4];
+	float point_shadow_params[APREND_LIT_MAX_POINT_SHADOWS][4];
 	float target_size[4];
 	float environment_intensity;
 	float environment_mips;
@@ -66,6 +68,8 @@ enum : uint32_t {
 	APREND_LIT_SCENE_FLAG_TILES         = 8u,
 	APREND_LIT_SCENE_FLAG_OCCLUSION     = 16u,
 	APREND_LIT_SCENE_FLAG_SPOT_REVERSED = 32u,
+	APREND_LIT_SCENE_FLAG_BENT_NORMALS  = 64u,
+	APREND_LIT_SCENE_FLAG_POINT_REVERSED = 128u,
 };
 
 /* AprendLitShadowPass in shaders/aprend_lit_shadow_pass.glslh. */
@@ -89,6 +93,9 @@ struct aprend_lit_material_block {
 	uint32_t maps;
 	float padding[3];
 	float uv_transform[8];
+	/* Each map's own, after uv_transform: two rows (vec4s) a map, in
+	 * APREND_LIT_MAP order. */
+	float map_uv_transform[4][8];
 };
 
 /* AprendOcclusionPass in shaders/aprend_lit_occlusion.frag. */
@@ -121,6 +128,24 @@ struct aprend_sky_params {
 	float ground[4];
 };
 
+/* AprendHosekSky in shaders/aprend_environment_hosek.frag, std140: each
+ * channel's nine coefficients (in the dataset's order) and radiance, in a
+ * vec4's red, green and blue. */
+struct aprend_hosek_sky_block {
+	float config[9][4];
+	float radiance[4];
+};
+
+/* Cooks Hosek and Wilkie's RGB sky for a sun towards [sun] (unit, +Y up; a
+ * sun below the horizon is taken at it), the air's [turbidity] (1 to 10) and
+ * the ground's [albedo] (each 0 to 1), from the authors' dataset, its
+ * radiance scaled so the zenith's luminance is [intensity]. */
+void aprend_lit_hosek_cook(const float sun[3], float turbidity, const float albedo[3], float intensity, aprend_hosek_sky_block *out);
+
+/* The material of [environment]'s Hosek-Wilkie coefficients, made if it
+ * isn't (the passes prepared). NULL, printed, if it can't be. */
+aprend_material aprend_lit_environment_sky_material(aprend_lit_environment environment);
+
 /* ToneMapParams in shaders/aprend_tone_map.frag. */
 struct aprend_tone_map_params {
 	float target_size[2];
@@ -142,6 +167,31 @@ struct aprend_adapt_params {
 	uint32_t first;
 };
 
+/* HistogramParams in shaders/aprend_exposure_histogram.comp. */
+struct aprend_histogram_params {
+	float min_log;
+	float max_log;
+	uint32_t clear;
+	uint32_t size;
+};
+
+/* AdaptParams in shaders/aprend_exposure_adapt_histogram.frag, 48 bytes. */
+struct aprend_histogram_adapt_params {
+	float key;
+	float min_log;
+	float max_log;
+	float up_rate;
+	float down_rate;
+	float delta_time;
+	float low;
+	float high;
+	uint32_t first;
+	uint32_t unused[3];
+};
+
+/* The bins of an exposure's histogram. */
+#define APREND_EXPOSURE_BINS 64u
+
 /* The push of the passes that take only their target's size. */
 struct aprend_size_params {
 	float target_size[2];
@@ -162,7 +212,9 @@ enum {
 	APREND_LIT_PASS_BLUR          = 7, /* ambient occlusion smoothed */
 	APREND_LIT_PASS_LUMINANCE     = 8, /* log luminance for an exposure */
 	APREND_LIT_PASS_ADAPT         = 9, /* an exposure adapted */
-	APREND_LIT_PASS_COUNT         = 10,
+	APREND_LIT_PASS_HOSEK_SKY     = 10, /* Hosek and Wilkie's sky into a radiance cube face */
+	APREND_LIT_PASS_ADAPT_HISTOGRAM = 11, /* an exposure adapted from a histogram */
+	APREND_LIT_PASS_COUNT         = 12,
 };
 
 /* The format of every texture of an environment. */
@@ -175,8 +227,8 @@ enum {
 #define APREND_EXPOSURE_LUMINANCE_SIZE 256u
 #define APREND_EXPOSURE_LUMINANCE_FORMAT SPUDGPU_FORMAT_R16_FLOAT
 #define APREND_EXPOSURE_FORMAT SPUDGPU_FORMAT_R32_FLOAT
-/* Raw ambient occlusion, before the blur. */
-#define APREND_OCCLUSION_FORMAT SPUDGPU_FORMAT_R16_FLOAT
+/* Raw ambient occlusion, before the blur: the openness and the bent normal. */
+#define APREND_OCCLUSION_FORMAT SPUDGPU_FORMAT_R16G16B16A16_FLOAT
 
 /* What an instance makes for lit surfaces, each NULL until first needed
  * (aprend_builtins::lit). */
@@ -190,9 +242,23 @@ struct aprend_lit_builtins {
 	aprend_shader cull_comp{nullptr};
 	aprend_binding_layout cull_layout{nullptr};
 	aprend_compute_pipeline cull_pipeline{nullptr};
+	/* Culling with depth bounds (APREND_COMMAND_LIT_CULL_LIGHTS): set 0 the
+	 * cull layout, set 1 a depth view's environment set (the pass layout). */
+	aprend_shader cull_bounded_comp{nullptr};
+	aprend_binding_layout cull_depth_layout{nullptr};
+	aprend_compute_pipeline cull_bounded_pipeline{nullptr};
 	/* Set 0 of the occlusion pass: its block. Its set 1 is a view's
 	 * environment set (a texture and a sampler). */
 	aprend_binding_layout occlusion_layout{nullptr};
+	/* Set 0 of the Hosek-Wilkie sky pass: its cooked coefficients
+	 * (aprend_hosek_sky_block). */
+	aprend_binding_layout hosek_layout{nullptr};
+	/* An exposure's histogram: the compute shader that counts it, the
+	 * layout of set 0 it shares with the pass that adapts from it (the
+	 * luminance texture, a sampler, the bins), and its pipeline. */
+	aprend_shader histogram_comp{nullptr};
+	aprend_binding_layout histogram_layout{nullptr};
+	aprend_compute_pipeline histogram_pipeline{nullptr};
 	/* What an empty binding holds: a placeholder of the binding's shape,
 	 * never written and never read (a flag in the block says the binding is
 	 * empty). Depth ones for the shadow maps, which a comparison sampler
@@ -257,8 +323,16 @@ aprend_graphics_pipeline aprend_lit_blur_pipeline(aprend_instance instance, SPUD
  * printed, if it can't be. */
 aprend_graphics_pipeline aprend_lit_tone_map_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
 
+/* The exposure histogram's compute pipeline, made if it isn't (the passes
+ * prepared). NULL, printed, if it can't be. */
+aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance);
+
 /* The light culling pipeline, made if it isn't. */
 aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance);
+
+/* The light culling pipeline with depth bounds, made if it isn't (the
+ * passes prepared). NULL, printed, if it can't be. */
+aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instance);
 
 /* The BRDF lookup texture and its views, made if they aren't. */
 bool aprend_lit_prepare_brdf_lut(aprend_instance instance);
@@ -267,6 +341,12 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance);
  * sampler, kept by the view (aprend_texture_view_t::environment_set). NULL,
  * printed, if it can't be made. */
 aprend_binding_set aprend_texture_view_environment_set(aprend_texture_view view);
+
+/* The set of the bounded culling's depth layout (its set 1) reading [view]
+ * through the environment sampler, kept by the view
+ * (aprend_texture_view_t::cull_depth_set). The bounded culling pipeline has
+ * been made. NULL, printed, if it can't be made. */
+aprend_binding_set aprend_texture_view_cull_depth_set(aprend_texture_view view);
 
 /* ---- Environments, scenes and exposures --------------------------------- */
 
@@ -292,6 +372,9 @@ typedef struct aprend_lit_environment_t {
 	aprend_texture2d irradiance{nullptr};
 	aprend_texture_view irradiance_faces[6]{};
 	aprend_texture_view irradiance_cube{nullptr};
+	/* Of the Hosek-Wilkie layout: the coefficients the last
+	 * APREND_COMMAND_LIT_SKY of that model cooked, made by the first. */
+	aprend_material sky_material{nullptr};
 } aprend_lit_environment_t;
 
 typedef struct aprend_lit_scene_t {
@@ -303,6 +386,8 @@ typedef struct aprend_lit_scene_t {
 	 * sun's cascades and the spots' shadows. */
 	aprend_material sun_shadow_materials[APREND_LIT_MAX_CASCADES]{};
 	aprend_material spot_shadow_materials[APREND_LIT_MAX_SPOT_SHADOWS]{};
+	/* Six a point shadow: [6 * index + face]. */
+	aprend_material point_shadow_materials[APREND_LIT_MAX_POINT_SHADOWS * 6]{};
 	/* Of the cull layout: the block, and the tiles to write. */
 	aprend_material cull_material{nullptr};
 	/* Of the occlusion layout: the matrices and the command's settings. */
@@ -318,6 +403,9 @@ typedef struct aprend_lit_scene_t {
 	 * indices each time the lights or the shadows change. */
 	uint32_t spot_shadow_lights[APREND_LIT_MAX_SPOT_SHADOWS]{};
 	uint32_t spot_shadow_count{0};
+	/* The point shadows' lights, likewise. */
+	uint32_t point_shadow_lights[APREND_LIT_MAX_POINT_SHADOWS]{};
+	uint32_t point_shadow_count{0};
 	/* What the ambient light names, or NULL. */
 	aprend_lit_environment environment{nullptr};
 } aprend_lit_scene_t;
@@ -341,6 +429,11 @@ typedef struct aprend_exposure_t {
 	/* Whether an AUTO_EXPOSURE has been compiled: before, there is no
 	 * exposure to ease from. */
 	bool adapted{false};
+	/* For an exposure that leaves some of the picture out (low above 0 or
+	 * high below 1): its bins, a copy for each frame, and the set of the
+	 * histogram layout that reads the luminance texture and writes them. */
+	aprend_storage_buffer_set histogram{nullptr};
+	aprend_binding_set histogram_set{nullptr};
 } aprend_exposure_t;
 
 #endif // APREND_LIT_INTERNAL_HPP

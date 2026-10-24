@@ -6,6 +6,7 @@
 #define APREND_LIT_MAX_LIGHTS 128
 #define APREND_LIT_MAX_CASCADES 4
 #define APREND_LIT_MAX_SPOT_SHADOWS 4
+#define APREND_LIT_MAX_POINT_SHADOWS 4
 // Lights a tile of the view lists at most; one more is its count.
 #define APREND_LIT_MAX_TILE_LIGHTS 63
 
@@ -13,7 +14,7 @@ struct AprendLitLight {
     vec4 position_range;  // xyz: where it is. w: its range
     vec4 radiance_type;   // rgb: color times strength. w: 0 point, 1 spot
     vec4 direction_inner; // xyz: a spot's axis, unit. w: cos of its inner angle
-    vec4 outer_shadow;    // x: cos of a spot's outer angle. y: its spot shadow, or -1
+    vec4 outer_shadow;    // x: cos of a spot's outer angle. y: its spot shadow, or -1. z: a point light's point shadow, or -1
 };
 
 // Bits of AprendLitScene.flags.
@@ -23,16 +24,20 @@ const uint APREND_LIT_SCENE_ENVIRONMENT    = 4u;  // the environment cubes hold 
 const uint APREND_LIT_SCENE_TILES          = 8u;  // tile_lights holds this view's lists
 const uint APREND_LIT_SCENE_OCCLUSION      = 16u; // ambient_occlusion is this view's
 const uint APREND_LIT_SCENE_SPOT_REVERSED  = 32u; // spot shadows rendered near at 1
+const uint APREND_LIT_SCENE_BENT_NORMALS   = 64u; // ambient_occlusion's gba is a bent normal, read for diffuse ambient light
+const uint APREND_LIT_SCENE_POINT_REVERSED = 128u; // point shadows rendered near at 1
 
 layout(set = 0, binding = 0) uniform AprendLitScene {
     mat4 view_projection;
     mat4 inverse_view_projection;
     mat4 sun_shadow_view_projection[APREND_LIT_MAX_CASCADES];
     mat4 spot_shadow_view_projection[APREND_LIT_MAX_SPOT_SHADOWS];
+    // Six a point shadow, its faces +X, -X, +Y, -Y, +Z, -Z: layer 6i + f of point_shadow_map.
+    mat4 point_shadow_view_projection[APREND_LIT_MAX_POINT_SHADOWS * 6];
     vec4 eye_position;
     vec4 view_direction;          // xyz unit: the way the view looks
     vec4 sun_direction;           // xyz unit, towards the sun
-    vec4 sun_radiance;
+    vec4 sun_radiance;            // rgb: color times strength. w: 1 - cos of its disc's angle, 0 for none
     vec4 ambient_up;              // xyz unit
     vec4 ambient_sky;
     vec4 ambient_ground;
@@ -40,6 +45,7 @@ layout(set = 0, binding = 0) uniform AprendLitScene {
     vec4 sun_shadow_splits;       // how far along view_direction each cascade reaches
     vec4 sun_shadow_params;       // x depth bias, y normal offset, z softness, w strength
     vec4 spot_shadow_params[APREND_LIT_MAX_SPOT_SHADOWS]; // the same, for each
+    vec4 point_shadow_params[APREND_LIT_MAX_POINT_SHADOWS]; // and for each point shadow
     vec4 target_size;             // xy: the view's target in texels; zw: their reciprocals
     float environment_intensity;
     float environment_mips;       // the specular chain's mip count

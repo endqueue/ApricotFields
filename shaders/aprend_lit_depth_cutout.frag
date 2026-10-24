@@ -17,7 +17,7 @@ void main() {
         return;
     float opacity = u_lit_material.base_color.a;
     if ((u_lit_material.maps & MAP_BASE_COLOR) != 0u)
-        opacity *= texture(sampler2D(base_color_map, material_sampler), material_uv(in_uv)).a;
+        opacity *= texture(sampler2D(base_color_map, material_sampler), map_uv(material_uv(in_uv), MAP_INDEX_BASE_COLOR)).a;
     if (opacity < u_lit_material.alpha_cutoff)
         discard;
 }

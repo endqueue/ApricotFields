@@ -22,7 +22,10 @@ layout(set = 1, binding = 0) uniform AprendLitMaterial {
     float clearcoat;      // 0 to 1: how much of a clear coat there is
     float clearcoat_roughness;
     uint maps;
-    vec4 uv_transform[2]; // rows of a 2x3 matrix
+    vec4 uv_transform[2]; // rows of a 2x3 matrix, before every map
+    // Each map's own, after uv_transform: rows 2m and 2m + 1 for map m
+    // (base color, normal, ORM, emission, as the MAP_ bits number them).
+    vec4 map_uv_transform[8];
 } u_lit_material;
 layout(set = 1, binding = 1) uniform texture2D base_color_map;
 layout(set = 1, binding = 2) uniform texture2D normal_map;
@@ -30,6 +33,18 @@ layout(set = 1, binding = 3) uniform texture2D orm_map;
 layout(set = 1, binding = 4) uniform texture2D emission_map;
 layout(set = 1, binding = 5) uniform sampler material_sampler;
 
+// Map indices of map_uv_transform, in MAP_ bit order.
+const uint MAP_INDEX_BASE_COLOR = 0u;
+const uint MAP_INDEX_NORMAL     = 1u;
+const uint MAP_INDEX_ORM        = 2u;
+const uint MAP_INDEX_EMISSION   = 3u;
+
 vec2 material_uv(vec2 uv) {
     return vec2(dot(u_lit_material.uv_transform[0].xyz, vec3(uv, 1.0)), dot(u_lit_material.uv_transform[1].xyz, vec3(uv, 1.0)));
+}
+
+// Where map [map] is read for [uv], after material_uv().
+vec2 map_uv(vec2 uv, uint map) {
+    return vec2(dot(u_lit_material.map_uv_transform[2u * map].xyz, vec3(uv, 1.0)),
+                dot(u_lit_material.map_uv_transform[2u * map + 1u].xyz, vec3(uv, 1.0)));
 }

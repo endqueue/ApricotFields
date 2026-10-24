@@ -1385,6 +1385,41 @@ unfinished in it.
     with warnings fatal; two callers' tests over it. **Not built on Windows
     or Linux**: the command list's recording path is every backend's, so it
     wants a D3D12 and a Vulkan run.
+- **Section B of the autonomous work plan, from 2026-10-24; run on Metal
+  only** (Apple M5 Pro: `../apricottests` Debug under Metal API and shader
+  validation with warnings fatal, both devices, and Release under `leaks`;
+  ApricotFields' headless tests; two callers' tests over it; the
+  workspace's `./check.sh`). Item 40 is recorded in its item. Each point is
+  closed in its item below:
+  - **A draw list's batched order is the same on every run** (item 21):
+    keyed by the first draw naming each material, set of vertex buffers and
+    index buffer, never by an address. `test_draw_list_order` is new, and
+    fails against the old order. No API change.
+  - **Post-processing** (item 36): BLOOM's `_mask` and `_lens_dirt`;
+    `aprend_instance_get_render_target_pool()` and
+    `aprend_instance_trim_render_targets()`; `APREND_COMMAND_BLUR` (36), a
+    separable Gaussian; `APREND_COMMAND_OUTLINE` (37), a jump flood. Two
+    built-in shaders (`aprend_blur.frag`, `aprend_outline.frag`), and the
+    blur and outline take from the render target pool. Four tests, each
+    against the formula worked out in C, each shown to fail against a
+    broken version. Additive API. The new commands record passes and
+    barriers through the same functions BLOOM uses, so they want a D3D12
+    and a Vulkan run, synchronization validation included.
+  - **Lighting** (item 24): cascade blending; a sun disc
+    (`aprend_lit_sun::disc_angle`) and Hosek and Wilkie's sky
+    (`APREND_LIT_SKY_MODEL`, their dataset vendored and cooked on the CPU);
+    a histogram for exposure (`low_share`, `high_share`, a compute
+    dispatch); per-map uv transforms; GTAO proper with bent normals
+    (`aprend_lit_scene_set_bent_normals`); point-light shadows
+    (`aprend_lit_scene_set_point_shadows`, six faces a light); depth
+    bounds for the tiles (`APREND_COMMAND_LIT_CULL_LIGHTS`). Fields appended
+    to two unreleased based structs (`aprend_lit_sun`,
+    `aprend_exposure_desc`) and to the lit material block; the rest is new
+    calls and commands. Each test against the formula worked out in C, and
+    shown to fail against a broken or old version. A SpudGPU Metal fix
+    (redundant compute set binds). New compute dispatches and barriers
+    (the histogram, the bounded cull) want a D3D12 and a Vulkan run under
+    synchronization validation; the point shadows' 2D array lookups too.
 
 ## Wrong things
 
@@ -2073,11 +2108,41 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
 - **No culling and no GPU-driven path.** The list draws what it is given;
   culling is the caller's, and an indirect path built by a compute shader
   waits on item 34.
-- **Batched order sorts by handle value.** Draws of one material are
-  together and each material is bound once, but which material comes first
-  follows its address, which changes from run to run. Nothing sorts front
-  to back for early depth rejection: that needs a depth the caller would
-  hand over.
+- **Batched order is the same on every run (done 2026-10-24; run on Metal
+  only).** It sorted by handle value: draws of one material were together
+  and each material bound once, but which came first followed addresses,
+  which change from run to run. Now each handle a draw names (material,
+  set of vertex buffers, index buffer) is keyed by the index of the first
+  draw that names it, found through `apri_hash_index` tables the list
+  keeps, and the build sorts plain `sort_key`s (material, vertex buffers,
+  index buffer, `_first`, `_count`, `_base_vertex`, the draw's own index)
+  with `std::sort`; the last field makes the order total, so instances of
+  a batch keep their order without a stable sort. Equal lists, added in
+  the same order, build into the same order whatever order their objects
+  were made in; the caller decides it by the order it adds. The header
+  says so (`APREND_DRAW_LIST_ORDER_BATCHED`). No API change.
+  - Compared: Hazel's draw lists are `std::map<MeshKey, ...>`, ordered by
+    (mesh asset, submesh, material asset, selected), the assets by their
+    `UUID`: random when an asset is made, the same every run once saved,
+    and unrelated to the order anything was loaded. Unreal (as I know it,
+    not checked against source) sorts a pass's mesh draw commands by a
+    64-bit `FMeshDrawCommandSortKey`, which for the base pass is built
+    from hashes of the shaders' pointers under its masked and background
+    bits, so its order within a bucket also follows addresses; it merges
+    equal commands into instanced draws by state buckets, a hash of the
+    command's contents. Aprend has no persistent id to sort by (Hazel's
+    asset handle is an application concept) and no content hash that
+    tells two materials of one layout apart, so the first appearance in
+    the list is the key: it is the caller's order, it groups exactly as
+    before (each material bound once, each mesh one batch), and reading it
+    is one table lookup a handle.
+  - `../apricottests`' `test_draw_list_order`: one list built twice, from
+    materials made A then B and then B then A (four alive at once), the
+    draws added in one order (B whole, A left, B right): red left and cyan
+    right both times. Against the address order it fails, the first
+    build on one device and the second on the other.
+  - Left: nothing sorts front to back for early depth rejection: that
+    needs a depth, or a key, the caller would hand over, which is API.
 - **No pipeline per draw.** Draws that need different pipelines are in
   different lists, each replayed after its own SET_SHADER_PIPELINE.
 - **A second build in one frame takes transient memory again**; the first
@@ -2115,6 +2180,15 @@ The memory for it is there: transient spans (`aprendtransient.h`, see "State
 of the code") are what a batch of quads or glyphs is written into each
 frame. Not there: the batcher, the shaders, a font atlas, and uniform data
 from transient memory (a binding set reads a buffer, not a span).
+
+**Not started, on 2026-10-24, by decision.** The glyph batch needs ApText,
+which doesn't exist (`APTEXT_TODO.md`). The quads, lines, circles and debug
+drawing have no design here to build without it: only their memory and the
+glyph batch's shape are written down. What a batch's data is (push
+constants, or uniform data from transient memory, which isn't built), what
+space a batch is in and how its camera reaches it, and what the kinds are,
+are design session item A3 (`../DESIGN_SESSION_AGENDA.md`), whose
+recommendation is a one-page design approved before it is built.
 
 #### Text: the design (decided 2026-10-15, not started)
 
@@ -2192,7 +2266,10 @@ shows it isn't enough.
 
 ### 24. Lighting: what is left
 
-Written 2026-10-17 and run on Metal (see "State of the code"). Against the
+Written 2026-10-17 and run on Metal (see "State of the code"). **Every
+box but screen-space reflections, transmission and variants done
+2026-10-24, run on Metal only** (below); those three wait on bigger designs
+or measurements, as the plan has them. Against the
 chain Hazel's `SceneRenderer::FlushDrawList` runs - directional and spot
 shadow maps, pre-depth, tiled light culling, skybox, PBR geometry, GTAO,
 SSR, bloom, composite - Aprend has every stage but screen-space
@@ -2234,27 +2311,183 @@ Left:
       second target (a variant of the surface shader, and a pipeline of
       two targets, item 25), then a ray march over depth and a resolve.
       Hazel does it deferred-style over its own G-buffer outputs.
-- [ ] **Shadows from point lights** (a cube map each, six passes).
-- [ ] **Depth bounds for the tiles**: without a depth pre-pass a tile's
+- [x] **Shadows from point lights** (a cube map each, six passes). Done
+      2026-10-24, run on Metal only: `aprend_lit_scene_set_point_shadows()`
+      with `aprend_lit_point_shadow` (frozen: a light and six face
+      matrices, bias, offset, softness, strength), up to
+      `APREND_LIT_MAX_POINT_SHADOWS` (4); face f of shadow i in layer
+      6i + f of a 2D array depth map, rendered through
+      `aprend_lit_scene_get_point_shadow_material(scene, i, f)`;
+      `aprend_lit_point_shadow_view_projection(light, face, near, reversed)`
+      frames each face, a perspective a little past 90 degrees (the tangent
+      of its half angle 1.05) so a soft shadow's taps near a face's edge
+      stay inside its map. The surface picks the face by the largest axis
+      of the fragment's offset from the light and looks that layer up as a
+      spot's (`point_shadow_map`, set 0 binding 11; the light block's
+      `outer_shadow.z`). Compared: Hazel has no point-light shadows (its
+      point lights are unshadowed; its spot lights have maps). Unreal's
+      forward renderer shadows point lights through cube maps, one draw a
+      face or one layered pass into a cube render target (as I know it).
+      A cube array view would need `SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS`, and a
+      layered pass `LAYERED_RENDERING`, both optional; a 2D array of six
+      layers a light, rendered a face a pass and looked up by the
+      fragment's axis, needs neither, at six passes a light, as the item
+      had it. `test_lit_point_shadows`: a light 0.5 over the ground, the
+      caster at 0.25; texels reached through the -Z and the -X face read 0,
+      their mirrors through -Z and +X the formula (189, 91 against 188.8 and
+      90.9), and without the shadow each left texel reads its mirror; five
+      refusals. It fails with the lights not linked to their shadows.
+- [x] **Depth bounds for the tiles**: without a depth pre-pass a tile's
       frustum runs the whole depth of the view (Hazel's forward+ uses its
       pre-depth for each tile's range), so a light behind a wall is kept.
       A pass that reduces a depth buffer per tile, and culling against it.
+      Done 2026-10-24, run on Metal only: `APREND_COMMAND_LIT_CULL_LIGHTS`
+      (38), a scene and its view's depth, recorded where the caller puts it
+      (after the depth pre-pass); its tiles' near and far planes are at the
+      least and most depth the tile's texels hold, read by the culling
+      thread of each tile (`aprend_lit_cull_bounded.comp`, the body shared
+      with the unbounded shader through `aprend_lit_cull.glslh`). A list
+      holding one for a scene has no cull at its top for that scene. The
+      depth is read through a set the view keeps, in a layout the compute
+      stage sees (`aprend_texture_view_t::cull_depth_set`). Compared:
+      Hazel's `LightCulling.glsl` is a group a tile reducing its pre-depth
+      in shared memory, then culling; Unreal's forward renderer builds a
+      clustered light grid (depth slices, froxels) that needs no pre-pass
+      (as I know it). The item chose bounds from a pre-pass, as Hazel's;
+      clusters are the alternative if a pre-pass is ever too dear. A
+      thread a tile reads its 256 texels serially, where Hazel's group
+      reduces them in parallel: measured when it shows.
+      `test_lit_tile_depth_bounds`: 69 decoy lights behind the ground set
+      before one real one; culled over the whole depth, the middle tiles
+      fill with decoys and drop the real light (1024 texels dark); culled
+      against the depth, the picture is the untiled one texel for texel;
+      two refusals.
 - [ ] **Transmission** (glTF's KHR_materials_transmission): refraction of
       what is behind, needing a copy of the opaque picture.
-- [ ] **A sun disc** in the sky shader (left out of the environment on
+- [x] **A sun disc** in the sky shader (left out of the environment on
       purpose, where it would only blur), and Hosek-Wilkie's sky for a
-      better horizon than Preetham's.
-- [ ] **Cascade blending**: a fragment takes one cascade; a blend over the
+      better horizon than Preetham's. Done 2026-10-24, run on Metal only.
+      - The disc: `aprend_lit_sun::disc_angle` (appended; 0 for none, to
+        0.5 radians), drawn by `APREND_LIT_SHADER_SKY_FRAGMENT` over the
+        environment, or over black: the sun's radiance spread over the
+        disc's solid angle (pi times radiance over 2 pi (1 - cos)), so it
+        carries the light the sun lights surfaces with, its edge softened
+        over a texel's change in angle (1 - cos compared, not cos, which
+        cancels near 1). It rides in `sun_radiance.w` of the scene block.
+        Compared: Hazel's Preetham sky draws no disc; Unreal's sky
+        atmosphere draws the directional light's disc from its source
+        angle, with limb darkening (as I know it). Aprend's is a uniform
+        disc of the sun's own energy; limb darkening is left.
+        `test_lit_sky`: 128 inside against 128 worked out in C, 0 outside,
+        left and right alike; two refusals. Fails against the old shader.
+      - Hosek-Wilkie: `APREND_COMMAND_LIT_SKY` gains `_model`
+        (`APREND_LIT_SKY_MODEL_PREETHAM` 0, `_HOSEK_WILKIE` 1). The
+        authors' 1.4a RGB dataset (3-clause BSD) is vendored at
+        `../.deps/HosekWilkie-1.4a`, or fetched by its zip's SHA-256; CMake
+        writes it into the build with every table `static const`
+        (`aprend_hosek_rgb.inc`; their file declares writable globals,
+        which `check.sh mutable-globals` refuses), and `aprendlit.cpp`
+        cooks the nine coefficients and the radiance of each channel for
+        the sun's elevation, the turbidity and the ground's albedo (their
+        Bezier in the cube root of the elevation), scaled so the zenith's
+        luminance is the intensity. The coefficients reach the pass
+        (`aprend_environment_hosek.frag`) through a material the
+        environment keeps; the dataset's order has the paper's I and H at
+        7 and 8. Compared: Hazel has Preetham only (`PreethamSky.glsl`).
+        Unreal's sky atmosphere is Hillaire's physically based model
+        (scattering lookup tables), past an analytic sky; its older
+        `SkySphere` was a hand-made blend. Hosek-Wilkie is the analytic
+        model fitted to brute-force simulation, with a truer horizon and
+        circumsolar glow than Preetham's; the published cost is the
+        coefficients, cooked on the CPU per fill. `test_lit_sky`: the
+        zenith and 10 degrees up towards and away from the sun, each
+        channel against the model worked out in C from the same dataset
+        (the test includes the generated file), equal in every channel;
+        three refusals. Fails with the coefficients in the paper's order.
+- [x] **Cascade blending**: a fragment takes one cascade; a blend over the
       last stretch of each would hide the seam between them (only the
-      last fades out now).
-- [ ] **GTAO proper** (Jimenez et al.: cosine-weighted horizons and a
+      last fades out now). Done 2026-10-24, run on Metal only: each
+      cascade blends into the next over the last tenth of its own stretch
+      (from the split before it, or the eye) by a smoothstep, the last into
+      no shadow over its own; `aprend_lit_fit_sun_cascades` makes each
+      cascade after the first reach back over that tenth, so the blend
+      reads two maps that both cover it. The tenth is Aprend's, as the
+      last cascade's fade already was. Compared: Hazel blends two cascades
+      over a band centred on each split, its width a renderer setting (1
+      unit); Unreal over a fraction of each cascade's length at its far
+      end (`CascadeTransitionFraction` on the light, as I know it, 0.1 the
+      usual). Aprend's is Unreal's shape: the far end, so the nearer, finer
+      cascade is the one that fades. `test_lit_cascades`: the ground 5
+      along the view, split at 5.25, an empty cascade blended into a
+      shadowed one and the other way round, and a shadowed last fading
+      out, each against smoothstep in C (59, 68, 47 against 59.4, 68.6,
+      47.2); the fit reaches back over the band. Fails against the old
+      shader (128, 0, 68).
+- [x] **GTAO proper** (Jimenez et al.: cosine-weighted horizons and a
       bent normal) in place of the horizon-based estimate, and at half
-      resolution with an upsample, when it is measured.
-- [ ] **A histogram for exposure** (Unreal's), which can leave the
+      resolution with an upsample, when it is measured. Done 2026-10-24
+      but the half resolution (not measured), run on Metal only:
+      `aprend_lit_occlusion.frag` is the paper's estimator: four slices
+      through each texel's own view ray turned by the 4x4 pattern, two
+      horizons each from four steps either side (a sample's weight fading
+      over the outer 0.615 of the radius, XeGTAO's), clamped to the
+      projected normal's hemisphere, the visible arc integrated with the
+      cosine in closed form and weighted by the projected normal's length;
+      `_intensity` is now a power on the result (1 as measured). The bent
+      normal (the paper's Algorithm 2) goes into the target's green, blue
+      and alpha, averaged by the blur; `aprend_lit_scene_set_bent_normals()`
+      has the surface look its diffuse ambient light up along it. The raw
+      intermediate is R16G16B16A16_FLOAT. Compared: Hazel runs Intel's
+      XeGTAO, the same estimator in compute, view-space, with a denoise
+      pass; its bent normals are an option, off, and read by nothing.
+      Unreal's GTAO (r.AmbientOcclusion.Method) is Jimenez's too, with
+      temporal accumulation (as I know it). Aprend's is the estimator in a
+      fragment pass with its 4x4 blur, no temporal part (Aprend keeps no
+      history). `test_lit_ambient_occlusion`: on the step's lower side,
+      where the normal is the view vector in every slice, 32 texels at
+      radius 0.3 and at 0.6 against the estimator worked out in C over the
+      same samples and blur (188 against 188.4 at the step); the bent
+      normal straight at the eye far off and leaning away from the step
+      beside it; the surface's diffuse ambient light along a bent normal of
+      +X half the sky (127) and along its own normal the sky (255). The old
+      estimator gets all 32 wrong at radius 0.6.
+- [x] **A histogram for exposure** (Unreal's), which can leave the
       darkest and brightest few percent out, in place of the log
-      average.
-- [ ] **Per-map uv transforms** (KHR_texture_transform's), one for all
-      maps now.
+      average. Done 2026-10-24, run on Metal only:
+      `aprend_exposure_desc::low_share` and `high_share` (appended); 0 and
+      1 measure every texel by the exact log average as before; otherwise
+      `aprend_exposure_histogram.comp` counts the luminance texture into 64
+      bins over min_log to max_log (a group's bins in shared memory, one
+      atomic a bin a group), into a storage buffer set the exposure keeps,
+      emptied by a first dispatch; `aprend_exposure_adapt_histogram.frag`
+      averages the bins between the shares (a bin split where a share's
+      edge falls, each standing for its middle) and adapts as before.
+      Compared: Unreal's eye adaptation is this (`PostProcessHistogram`,
+      64 bins, low and high percent; its defaults 0.1 and 0.9, as I know
+      them); Hazel has no adapting exposure. `test_auto_exposure`: half
+      the picture at 2^-1.875 and half at 2^3.125 (bin middles); the
+      darkest 40% exposes by the dark half (46 there), from 60% up by the
+      bright (46 there, 1 in the dark half), each against key / L in C;
+      three refusals. The log-average path reads 7 there.
+      The run found a SpudGPU Metal bug: binding a compute set already
+      bound at its index set the argument buffer again, which validation
+      refuses (the histogram binds one set for two dispatches); the
+      compute encoder now keeps what it has at each index, as it keeps its
+      pipeline state (spudlib).
+- [x] **Per-map uv transforms** (KHR_texture_transform's), one for all
+      maps now. Done 2026-10-24, run on Metal only:
+      `aprend_lit_material_set_map_uv_transform()` and `_get_` (a 2x3
+      matrix a map, applied after the material's own, the identity at
+      create, copied by `aprend_material_copy`, left alone by
+      `set_values`); the material block grows to 256 bytes. A call rather
+      than a field of `aprend_lit_material_values`, since glTF's transform
+      is per texture and `set_map` is per map. Compared: Hazel has one
+      tiling for a material; Unreal's material graph transforms any
+      texture's coordinates as the author wires it. Aprend's is glTF's.
+      `test_lit_surface`: the base color map's own transform undoes the
+      material's offset (red), the emission map's identity reads where the
+      material's puts it (green) until its own moves it back (red); three
+      refusals. Fails with the per-map transform ignored.
 - [ ] **Variants**: branches on the encoding, the map bits, the shadows
       and the tiles are at run time; a shader per case, or specialization
       constants (item 22), when a measurement shows them.
@@ -2262,7 +2495,9 @@ Left:
 ### 36. Post-processing, and bloom first
 
 **Bloom written 2026-10-16, run on Metal the same day** (see "State of
-the code"). What was decided:
+the code"). **Its lens dirt and mask, the pool's report and trim, a
+separable blur and an outline written 2026-10-24, run on Metal only**
+(below). What was decided:
 
 - **No module of its own.** In Hazel bloom is a step of `SceneRenderer`
   (`BloomSettings` beside `DOFSettings`, its textures members of the scene
@@ -2321,10 +2556,36 @@ Left:
 - [x] **Run on D3D12 and Vulkan.** `../apricottests`' `test_bloom` passed
       on both, on an Intel Iris Xe and an NVIDIA RTX A2000, on
       2026-10-17, after Metal the day before.
-- [ ] **Exposure and a tone curve** belong with an HDR pipeline (item 24),
-      in the composite or after it.
-- [ ] **A lens dirt texture** (Hazel's) and a mask texture weighting the
-      glow are not there.
+- [x] **Exposure and a tone curve** belong with an HDR pipeline (item 24),
+      in the composite or after it. Met by item 24, not here:
+      `APREND_COMMAND_TONE_MAP` (exposure, then a clamp, ACES, Khronos PBR
+      Neutral or AgX, then the encoding) after the bloom, and
+      `APREND_COMMAND_AUTO_EXPOSURE` before it, as Hazel's
+      `SceneComposite.glsl` and Unreal's tonemapper both put exposure and
+      the curve after bloom. Nothing of it moves into the bloom.
+- [x] **A lens dirt texture** (Hazel's) and a mask texture weighting the
+      glow (done 2026-10-24; run on Metal only). `_bloom` gains `_mask`,
+      `_lens_dirt` and `_lens_dirt_intensity`, each NULL or 0 as before.
+      The mask's red weights each of the prefilter's 13 taps before they
+      are summed, so a masked texel adds nothing however bright, rather
+      than being blurred into its neighbours and then weighted. The dirt is
+      read at the target's place in [0, 1] and scales the composite's glow
+      by 1 + dirt * intensity, in color; alpha stays the glow's. Each is a
+      second set of the bloom layout on its pass (`aprend_bloom_prefilter`,
+      `_composite`), the source's or level 0's set rebound when absent, a
+      flag in the push block saying which. Compared: Hazel adds `bloom +
+      bloom * dirt * BloomDirtIntensity` in `SceneComposite.glsl`, the same
+      formula; Unreal's `BloomDirtMask` with an intensity and a tint (as I
+      know it, not checked against source) multiplies the bloom in its
+      tonemapper the same way. Neither has a mask: what glows is the
+      threshold's, or the emissive's. Aprend's mask is for a caller that
+      picks what glows without drawing a source of its own. The dirt's tint
+      is the caller's texture. `test_bloom_mask_and_dirt` reads a mask of
+      128 as exactly 128/255 of the glow (a threshold of 0 makes the glow
+      linear in its taps), a half mask as the glow of the other half, and
+      dirt of 128 at intensity 2 as 1 + 2 * 128/255 of it on the dirty side
+      and the glow alone on the other, each against the formula in C; it
+      fails with the mask and dirt switched off in the recording.
 - [ ] **Cost** is two passes a level and two more, every time the command
       is compiled in. Fewer levels is the caller's setting. Nothing is
       skipped for a source that has nothing in it.
@@ -2332,20 +2593,98 @@ Left:
       format another, and the first of a size a pooled texture, inside a
       compile.
 - [ ] **A view a bloom read keeps its set until it is destroyed.**
-- [ ] **The pool's memory**: a pooled texture for every size and level
+- [x] **The pool's memory**: a pooled texture for every size and level
       count taken in the last 120 frames, and one per bloom compiled in a
-      frame, times the frames in flight. Nothing reports it or lets a
-      caller trim it. The idle count is a constant.
-- [ ] **The pool is bloom's alone so far.** A blur or an outline that
-      needs a texture in between takes one the same way
-      (aprend_render_target_take).
+      frame, times the frames in flight. Reported and trimmed since
+      2026-10-24 (run on Metal only):
+      `aprend_instance_get_render_target_pool()` fills an
+      `aprend_render_target_pool_info` (`APRI_STRUCT_BASE_OUT`, the first
+      in Aprend: textures, how many are busy, and their texel bytes, every
+      mip, as the formats count them), and
+      `aprend_instance_trim_render_targets(instance, idle_frames)` destroys
+      every texture the GPU is done with that has gone untaken for
+      `idle_frames` (0: all of them), through the release queue, and says
+      how many. The idle count of 120 stays as the pool's own floor; the
+      trim is the caller's count on top of it, so no desc changes. Busy
+      means taken in a frame the GPU may still run, or by a compile of this
+      frame, whose list holds the take. Compared: Hazel has no pool (each
+      pass owns its framebuffers). Unreal's `FRenderTargetPool` keeps what
+      it made, frees elements unused for some frames once it is over a
+      budget (`r.RenderTargetPoolMin`, as I recall the name), and reports
+      its memory to a console command; its render graph's transient
+      allocator aliases memory within a frame, which SpudGPU's heaps would
+      allow later (item 35). Aprend reports and lets the caller trim, and
+      decides no budget. `test_render_target_pool`: emptied, a bloom's
+      chain of (32*32 + 16*16 + 8*8 + 4*4) * 8 bytes worked out in C, busy
+      in its frame (a trim keeps it), free once the frames turn, kept by a
+      trim of more idle frames than it has sat and destroyed by one of
+      exactly as many; two refusals. It fails against a trim that ignores
+      busy textures.
+- [x] **The pool is bloom's alone so far.** Since 2026-10-24 the blur and
+      the outline take from it too (below).
 
 Hazel: `SceneRenderer::BloomCompute`, `Resources/Shaders/PostProcessing/Bloom.glsl`,
 `SceneComposite.glsl`.
 
 After bloom, in the order a caller is likeliest to want them: a separable
 blur on its own (it falls out of the chain), an outline from a mask, a
-tone curve, then the lit pipeline's stages under item 24.
+tone curve, then the lit pipeline's stages under item 24. The tone curve
+is item 24's `TONE_MAP`. The blur and the outline, written 2026-10-24 and
+run on Metal only:
+
+- **`APREND_COMMAND_BLUR` (36)**: a Gaussian of a caller's sigma (above 0,
+  at most `APREND_BLUR_MAX_SIGMA`, 32), reaching ceil(3 sigma) texels each
+  way with the weights normalized, as two passes (`shaders/aprend_blur.frag`):
+  across from the source into a pooled R16G16B16A16_FLOAT texture of the
+  target's size, then down into the target. Taps are read in pairs through
+  the linear filter (Rákos, "Efficient Gaussian blur with linear sampling",
+  2010), r + 1 samples for a radius of r. The target is the source's size:
+  a paired tap reads two texels only on the target's own grid, and a first
+  version that read a source of another size at the target's spacing
+  aliased (a 32x32 blur of a 64x64 line read 24, 0, 25, 52 across its
+  middle), so a smaller blur is the source drawn down first
+  (`DRAW_TEXTURE`). Its set is the bloom layout's shape, so a view's bloom
+  set serves it. Compared: Hazel's only blurs are fixed 7-tap Gaussians in
+  compute for one purpose each (SSR's pre-convolution, GTAO's denoise); no
+  general one. Unreal's `AddGaussianBlurPass` (`PostProcessWeightedSampleSum`)
+  is separable, sized by a percentage of the view, its kernel in linear
+  pairs too, and blurs at its input's size. Aprend's is Unreal's shape at
+  Aprend's layer: sigma in texels (the caller knows its sizes), fragment
+  passes, no view. `test_blur`: a one-texel white line down and one
+  across, blurred at sigma 2, every texel 8 each side of the line at both
+  ends against the weights worked out in C (51 on the line against
+  50.92); six refusals. It fails with the pairs read at texel i, not at
+  their weighted place.
+- **`APREND_COMMAND_OUTLINE` (37)**: an outline round a mask (red above
+  0.5 is inside) of a caller's color and width, over the target, by a jump
+  flood (`shaders/aprend_outline.frag`, three modes): a pass seeding each
+  inside texel's centre, a pass for each halving jump from the first power
+  of two k with 2k - 1 reaching width + 1, one more of 1 (JFA+1), and the
+  pass that draws, ping-ponging between two pooled R32G32_FLOAT textures
+  read with `texelFetch`. Each texel outside the mask is covered by width
+  + 1 less the distance between its centre and the nearest inside centre,
+  held to [0, 1], so a whole width covers that many texels from a straight
+  edge with a soft outer side; inside texels are untouched; the color is
+  blended premultiplied over the target. The mask is the target's size.
+  Compared: Hazel's selection outline is a jump flood too
+  (`JumpFlood_Init`, `_Pass`, `_Composite`): a nearest-vector per texel,
+  both sides of the edge, a fixed orange and a fixed smoothstep width in
+  uv. Unreal's editor outline (`PostProcessSelectionOutline`, as I know
+  it) samples a selected object's custom depth and stencil over a small
+  neighbourhood, so its width is a few texels. Ben Golus's "The Quest for
+  Very Wide Outlines" (2020) measures the two and finds the jump flood the
+  one whose cost doesn't grow with the width. Aprend takes Hazel's jump
+  flood with the width and color the caller's, outside the mask only, in
+  texels. `test_outline`: a disc of radius 8, outlines of width 2.5, 1 at
+  half alpha and 20, every one of the 4096 texels against the coverage
+  worked out in C by brute force (every inside centre tried), none wrong;
+  six refusals. It fails with the long jumps left out (40 and 2224 texels
+  wrong).
+
+Left of item 36: the cost points above (two passes a level, pipelines
+made inside a compile, a view's set kept until it goes), all unchanged; an
+outline inside the mask, or centred on its edge, is not there (a caller
+draws one by outlining the mask's inverse).
 
 ### 40. Present scaling: a source of another size than the back buffer
 

@@ -18,9 +18,14 @@ extern "C" {
  * (middle grey, 0.18), within a range of luminance; APREND_COMMAND_TONE_MAP
  * with the exposure named in `_auto_exposure` multiplies by it. The value
  * stays on the GPU: there is nothing to read back and nothing to wait for.
- * Unreal measures with a histogram of luminance, which can leave the
- * darkest and brightest few percent out; a log average is Reinhard's, and
- * is what this is.
+ *
+ * What is measured is the picture's log-average luminance (Reinhard's), of
+ * every texel, or of those between the darkest and brightest shares the
+ * desc leaves out (aprend_exposure_desc::low_share and
+ * aprend_exposure_desc::high_share): a histogram of 64 bins over the range
+ * of luminance, as Unreal's eye adaptation measures between its low and
+ * high percent, so a bright window or a dark corner taking a few percent of
+ * the picture doesn't move the exposure.
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads").
@@ -46,6 +51,23 @@ typedef struct aprend_exposure_desc {
 	 * 3 and 1 are usual. 0 never moves; above 0. */
 	float up_rate;
 	float down_rate;
+	/**
+	 * The share of the picture's texels, the darkest first, left out of the
+	 * measure: 0 to 1, below #high_share. 0 leaves none out.
+	 */
+	float low_share;
+	/**
+	 * The share up to which the texels, the darkest first, are measured:
+	 * above #low_share, at most 1. 1 leaves none of the brightest out.
+	 * With #low_share 0 and this 1 every texel is measured, and the measure
+	 * is their exact log average; otherwise it is the log average of those
+	 * between the two shares, read from a histogram of 64 bins from min_log
+	 * to max_log (each bin standing for its middle, a bin split where a
+	 * share's edge falls in it, and luminance past the range in the bin at
+	 * its end), worked out with a compute dispatch. Unreal's defaults are
+	 * 0.1 and 0.9.
+	 */
+	float high_share;
 } aprend_exposure_desc;
 
 /**
@@ -53,7 +75,8 @@ typedef struct aprend_exposure_desc {
  * measures at once, with nothing to ease from.
  *
  * @return The exposure, or NULL if an argument is NULL, a value is out of
- *         its range, or a texture can't be created (printed).
+ *         its range (the shares too), or a texture, buffer or set can't be
+ *         created (printed).
  */
 aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_exposure_desc *desc);
 

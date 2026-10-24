@@ -1232,8 +1232,33 @@ typedef struct aprend_draw_list_t {
 	APRI_HOT_RECORD(batch, APRI_CACHE_LINE / 4);
 	std::vector<batch> batches{};
 	/* Scratch for the build's sort, kept so a build of a list of the same
-	 * size allocates nothing. */
+	 * size allocates nothing. order is the draws in batch order. */
 	std::vector<uint32_t> order{};
+	/* APREND_DRAW_LIST_ORDER_BATCHED's sort key of a draw. Each handle is
+	 * stood for by the index of the first draw that names it, so the order
+	 * follows the order draws were added in and never an address: equal
+	 * lists build into equal orders, run after run, whatever order their
+	 * objects were made in. draw breaks every tie, so the sort is a total
+	 * order and instances of one batch keep the order they were added in. */
+	struct sort_key {
+		uint32_t material;
+		uint32_t vertex_buffers;
+		uint32_t index_buffer;
+		uint32_t first;
+		uint32_t count;
+		int32_t base_vertex;
+		uint32_t draw;
+	};
+	/* The build sorts one a draw. */
+	APRI_PLAIN_DATA(sort_key);
+	APRI_HOT_RECORD(sort_key, APRI_CACHE_LINE / 2);
+	std::vector<sort_key> sort_keys{};
+	/* The first draw naming each material, set of vertex buffers and index
+	 * buffer, found by hashing the handles: the address finds the entry,
+	 * the entry's draw index is the key. */
+	apri_hash_index first_material{};
+	apri_hash_index first_vertex_buffers{};
+	apri_hash_index first_index_buffer{};
 	aprend_transient_span span{};
 	/* The list was built and nothing was added or reset since. */
 	bool built{false};

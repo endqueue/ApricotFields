@@ -174,8 +174,14 @@ float shadow_visibility(texture2DArray map, uint layer, mat4 view_projection, ve
     return mix(1.0, lit / count, params.w);
 }
 
+// The tenth of each cascade's stretch, at its far end, over which it is
+// blended into the next (the last into no shadow).
+const float CASCADE_BLEND = 0.1;
+
 // How much of the sun reaches [position]: the cascade its distance along
-// the view falls in, faded out over the last tenth of the last one.
+// the view falls in, blended into the next over the last tenth of the
+// cascade's stretch so no seam shows between them, the last faded out to
+// no shadow over its own.
 float sun_visibility(vec3 position, vec3 n) {
     uint count = min(u_lit_scene.sun_cascade_count, uint(APREND_LIT_MAX_CASCADES));
     if ((u_lit_scene.flags & APREND_LIT_SCENE_SUN_SHADOW) == 0u || count == 0u)
@@ -193,8 +199,17 @@ float sun_visibility(vec3 position, vec3 n) {
     bool reversed = (u_lit_scene.flags & APREND_LIT_SCENE_SUN_REVERSED) != 0u;
     float lit     = shadow_visibility(sun_shadow_map, cascade, u_lit_scene.sun_shadow_view_projection[cascade], u_lit_scene.sun_shadow_params, reversed,
                                       position, n);
-    float last    = u_lit_scene.sun_shadow_splits[count - 1u];
-    return mix(lit, 1.0, smoothstep(last * 0.9, last, along));
+    float begin   = cascade == 0u ? 0.0 : u_lit_scene.sun_shadow_splits[cascade - 1u];
+    float end     = u_lit_scene.sun_shadow_splits[cascade];
+    float blend   = smoothstep(end - CASCADE_BLEND * (end - begin), end, along);
+    if (blend > 0.0) {
+        float next = 1.0;
+        if (cascade + 1u < count)
+            next = shadow_visibility(sun_shadow_map, cascade + 1u, u_lit_scene.sun_shadow_view_projection[cascade + 1u], u_lit_scene.sun_shadow_params,
+                                     reversed, position, n);
+        lit = mix(lit, next, blend);
+    }
+    return lit;
 }
 
 vec3 point_or_spot(Surface s, AprendLitLight light) {
@@ -220,6 +235,20 @@ vec3 point_or_spot(Surface s, AprendLitLight light) {
             fall *= shadow_visibility(spot_shadow_map, uint(shadow), u_lit_scene.spot_shadow_view_projection[shadow], u_lit_scene.spot_shadow_params[shadow],
                                       reversed, in_position, s.geometric);
         }
+    } else {
+        // A point light's shadow: the cube face the light looks along to
+        // reach this fragment, by the largest of the offset's axes, then
+        // that face's layer as a spot's.
+        int shadow = int(light.outer_shadow.z);
+        if (fall > 0.0 && shadow >= 0 && shadow < APREND_LIT_MAX_POINT_SHADOWS) {
+            vec3 d    = in_position - light.position_range.xyz;
+            vec3 a    = abs(d);
+            uint face = a.x >= a.y && a.x >= a.z ? (d.x >= 0.0 ? 0u : 1u) : (a.y >= a.z ? (d.y >= 0.0 ? 2u : 3u) : (d.z >= 0.0 ? 4u : 5u));
+            uint layer    = uint(shadow) * 6u + face;
+            bool reversed = (u_lit_scene.flags & APREND_LIT_SCENE_POINT_REVERSED) != 0u;
+            fall *= shadow_visibility(point_shadow_map, layer, u_lit_scene.point_shadow_view_projection[layer], u_lit_scene.point_shadow_params[shadow],
+                                      reversed, in_position, s.geometric);
+        }
     }
     return fall > 0.0 ? shade(s, l, light.radiance_type.rgb * fall) : vec3(0.0);
 }
@@ -230,7 +259,7 @@ void main() {
 
     vec4 base = u_lit_material.base_color;
     if ((maps & MAP_BASE_COLOR) != 0u)
-        base *= texture(sampler2D(base_color_map, material_sampler), uv);
+        base *= texture(sampler2D(base_color_map, material_sampler), map_uv(uv, MAP_INDEX_BASE_COLOR));
     float opacity = clamp(base.a, 0.0, 1.0);
     if (u_lit_material.alpha_cutoff > 0.0) {
         if (opacity < u_lit_material.alpha_cutoff)
@@ -240,15 +269,19 @@ void main() {
 
     vec3 orm = vec3(1.0);
     if ((maps & MAP_ORM) != 0u)
-        orm = texture(sampler2D(orm_map, material_sampler), uv).rgb;
+        orm = texture(sampler2D(orm_map, material_sampler), map_uv(uv, MAP_INDEX_ORM)).rgb;
     float occlusion = mix(1.0, orm.r, clamp(u_lit_material.occlusion_strength, 0.0, 1.0));
+    // The view's bent normal, if the scene reads it: 0 for none.
+    vec3 bent_normal = vec3(0.0);
     if ((u_lit_scene.flags & APREND_LIT_SCENE_OCCLUSION) != 0u) {
-        float view_occlusion = textureLod(sampler2D(ambient_occlusion, environment_sampler), gl_FragCoord.xy * u_lit_scene.target_size.zw, 0.0).r;
-        occlusion *= mix(1.0, view_occlusion, clamp(u_lit_scene.occlusion_strength, 0.0, 1.0));
+        vec4 view_occlusion = textureLod(sampler2D(ambient_occlusion, environment_sampler), gl_FragCoord.xy * u_lit_scene.target_size.zw, 0.0);
+        occlusion *= mix(1.0, view_occlusion.r, clamp(u_lit_scene.occlusion_strength, 0.0, 1.0));
+        if ((u_lit_scene.flags & APREND_LIT_SCENE_BENT_NORMALS) != 0u)
+            bent_normal = view_occlusion.gba * 2.0 - 1.0;
     }
     vec3 emission = max(u_lit_material.emission.rgb, vec3(0.0));
     if ((maps & MAP_EMISSION) != 0u)
-        emission *= texture(sampler2D(emission_map, material_sampler), uv).rgb;
+        emission *= texture(sampler2D(emission_map, material_sampler), map_uv(uv, MAP_INDEX_EMISSION)).rgb;
 
     Surface s;
     // The geometric normal, turned to the eye: a face seen from behind is
@@ -265,7 +298,7 @@ void main() {
         if (dot(t, t) > 0.0) {
             t       = normalize(t);
             vec3 b  = cross(s.n, t) * (in_tangent.w < 0.0 ? -1.0 : 1.0);
-            vec3 tn = texture(sampler2D(normal_map, material_sampler), uv).xyz * 2.0 - 1.0;
+            vec3 tn = texture(sampler2D(normal_map, material_sampler), map_uv(uv, MAP_INDEX_NORMAL)).xyz * 2.0 - 1.0;
             tn.xy *= u_lit_material.normal_scale;
             s.n = safe_normalize(t * tn.x + b * tn.y + s.n * tn.z, s.n);
         }
@@ -299,14 +332,17 @@ void main() {
     }
 
     vec3 r                = reflect(-s.v, s.n);
-    vec3 ambient_diffuse  = hemisphere(s.n);
+    // Diffuse ambient light along the bent normal, where the surface is
+    // open, if there is one.
+    vec3 diffuse_normal   = safe_normalize(bent_normal, s.n);
+    vec3 ambient_diffuse  = hemisphere(diffuse_normal);
     vec3 ambient_specular = hemisphere(r);
     vec3 r_coat           = reflect(-s.v, s.geometric);
     vec3 ambient_coat     = hemisphere(r_coat);
     if ((u_lit_scene.flags & APREND_LIT_SCENE_ENVIRONMENT) != 0u) {
         float intensity = u_lit_scene.environment_intensity;
         float top       = max(u_lit_scene.environment_mips - 1.0, 0.0);
-        ambient_diffuse += intensity * textureLod(samplerCube(environment_irradiance, environment_sampler), to_environment(s.n), 0.0).rgb;
+        ambient_diffuse += intensity * textureLod(samplerCube(environment_irradiance, environment_sampler), to_environment(diffuse_normal), 0.0).rgb;
         ambient_specular += intensity * textureLod(samplerCube(environment_specular, environment_sampler), to_environment(r), s.roughness * top).rgb;
         ambient_coat += intensity * textureLod(samplerCube(environment_specular, environment_sampler), to_environment(r_coat), s.clearcoat_roughness * top).rgb;
     }

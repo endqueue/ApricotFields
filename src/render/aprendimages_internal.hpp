@@ -357,6 +357,11 @@ typedef struct aprend_texture_view_t
 	 * aprend_texture_view_environment_set): this view and a mipmapped
 	 * sampler, made the first time one reads it. */
 	aprend_binding_set environment_set{nullptr};
+	/* The same for light culling with depth bounds
+	 * (APREND_COMMAND_LIT_CULL_LIGHTS; aprend_texture_view_cull_depth_set):
+	 * this view and the environment sampler, in a layout a compute shader
+	 * sees. */
+	aprend_binding_set cull_depth_set{nullptr};
 	/* The same for Aprend's present shader (APREND_COMMAND_DRAW_TEXTURE,
 	 * PRESENT_TEXTURE's draw modes; aprend_texture_view_present_set): one for
 	 * each filter, [SPUDGPU_FILTER_NEAREST] and [SPUDGPU_FILTER_LINEAR]. */

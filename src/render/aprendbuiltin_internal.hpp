@@ -40,7 +40,8 @@ struct aprend_builtins {
 
 	/* Bloom's shaders (aprend_bloom_*.frag), one per stage, and the layout
 	 * of their set 0, which all four share: a texture at binding 0 and a
-	 * sampler at binding 1. */
+	 * sampler at binding 1. The prefilter's set 1 (the mask) and the
+	 * composite's (the lens dirt) are of the same layout. */
 	aprend_shader bloom_frags[4]{};
 	aprend_binding_layout bloom_layout{nullptr};
 	/* A pipeline for each stage and target format used. */
@@ -62,6 +63,28 @@ struct aprend_builtins {
 		aprend_graphics_pipeline pipeline;
 	};
 	std::vector<present_pipeline> present_pipelines{};
+
+	/* aprend_blur.frag: one direction of a separable Gaussian blur
+	 * (APREND_COMMAND_BLUR), whose set 0 is the bloom layout's shape, and a
+	 * pipeline for each target format it renders to. */
+	aprend_shader blur_frag{nullptr};
+	struct blur_pipeline {
+		SPUDGPU_FORMAT format;
+		aprend_graphics_pipeline pipeline;
+	};
+	std::vector<blur_pipeline> blur_pipelines{};
+
+	/* aprend_outline.frag: the seed, jump and composite passes of an outline
+	 * (APREND_COMMAND_OUTLINE), set 0 of the bloom layout's shape, and a
+	 * pipeline for each target format and whether it blends (the
+	 * composite) or not (the seed and jumps, into places). */
+	aprend_shader outline_frag{nullptr};
+	struct outline_pipeline {
+		SPUDGPU_FORMAT format;
+		bool blend;
+		aprend_graphics_pipeline pipeline;
+	};
+	std::vector<outline_pipeline> outline_pipelines{};
 
 	/* Lit surfaces' (aprendlit.h, aprendlit_internal.hpp). */
 	aprend_lit_builtins lit{};
@@ -87,6 +110,10 @@ struct aprend_bloom_params {
 	float radius;
 	float intensity;
 	float target_size[2];
+	/* 1 for the prefilter to read the mask at its set 1, 0 for none. */
+	float use_mask;
+	/* What the composite's lens dirt at its set 1 adds; 0 for none. */
+	float lens_dirt_intensity;
 };
 
 /* The full-target vertex shader, made if it doesn't exist. NULL, printed,
@@ -103,6 +130,46 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 bool aprend_builtin_bloom_prepare(aprend_instance instance);
 /* The bloom layout; made by aprend_builtin_bloom_prepare, NULL before it. */
 aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance);
+
+/* The push constants of Aprend's blur shader (BlurParams), 24 bytes: one
+ * texel of the target along the pass's direction in uv, the target's size,
+ * sigma and the radius in whole texels. */
+struct aprend_blur_params {
+	float step[2];
+	float target_size[2];
+	float sigma;
+	float radius;
+};
+
+/* The blur pipeline rendering to [format], made if it doesn't exist, with
+ * its shader and the bloom layout it reads through. NULL, printed, if it
+ * can't be made. */
+aprend_graphics_pipeline aprend_builtin_blur_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
+
+/* The passes of an outline, aprend_outline_params::mode. */
+enum {
+	APREND_OUTLINE_MODE_SEED      = 0,
+	APREND_OUTLINE_MODE_JUMP      = 1,
+	APREND_OUTLINE_MODE_COMPOSITE = 2
+};
+
+/* The push constants of Aprend's outline shader (OutlineParams), 48 bytes:
+ * the color (linear RGBA, alpha not premultiplied), the target's size, the
+ * width and the jump in texels, and the pass. */
+struct aprend_outline_params {
+	float color[4];
+	float target_size[2];
+	float width;
+	float jump;
+	uint32_t mode;
+	uint32_t unused[3];
+};
+
+/* The outline pipeline rendering to [format], blending premultiplied over
+ * the target if [blend] (the composite), made if it doesn't exist, with its
+ * shader and the bloom layout it reads through. NULL, printed, if it can't
+ * be made. */
+aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instance, SPUDGPU_FORMAT format, bool blend);
 
 /* The push constants of Aprend's present shader (PresentParams), 32 bytes:
  * the border color (linear RGBA), the target's size in texels, and how the

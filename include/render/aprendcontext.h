@@ -41,7 +41,11 @@
  *   read by aprend_command_list_submit();
  * - a binding layout's descriptor pools: aprend_binding_set_create(), and
  *   the release of a destroyed set, which happens inside whichever later
- *   call drains the release queue.
+ *   call drains the release queue;
+ * - the render target pool ("Textures a command uses in between"):
+ *   aprend_command_list_compile() and _submit(), aprend_instance_next_frame(),
+ *   aprend_instance_get_render_target_pool() and
+ *   aprend_instance_trim_render_targets().
  *
  * What several threads may do at once:
  *
@@ -147,7 +151,12 @@
  * it took. A texture nobody has taken for 120 frames is destroyed, so sizes
  * no longer used don't stay; until then the pool holds a texture for every
  * size taken lately, for each command compiled in a frame and each frame
- * in flight. *
+ * in flight. aprend_instance_get_render_target_pool() reports what it
+ * holds, and aprend_instance_trim_render_targets() destroys what the GPU
+ * is done with sooner, all of it or what has sat untaken for a number of
+ * frames the caller chooses: after a window is resized, or when memory is
+ * wanted elsewhere.
+ *
  * @par Struct bases
  * This too is the rule for every Aprend header. A desc, and each of the lit
  * scene's settings, starts with an APRI_STRUCT_BASE named `base`
@@ -357,6 +366,79 @@ bool aprend_instance_wait_idle(aprend_instance instance);
 bool aprend_instance_get_desc(
     aprend_instance instance,
     aprend_instance_desc *out_desc);
+
+/**
+ * @brief What an instance's render target pool holds
+ * (aprend_instance_get_render_target_pool()).
+ *
+ * Sizes are the bytes of the textures' texels, every mip of each, as their
+ * formats count them: what the device allocates is that at least, and more
+ * by whatever alignment and padding it adds.
+ */
+typedef struct aprend_render_target_pool_info {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO, set by the caller (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE_OUT base;
+	/** How many textures the pool holds. */
+	uint32_t texture_count;
+	/**
+	 * How many of them were taken in a frame the GPU may still be running,
+	 * or by a compile of this frame: what a trim can't destroy yet.
+	 */
+	uint32_t busy_count;
+	/** The texel bytes of every texture the pool holds. */
+	uint64_t bytes;
+	/** The texel bytes of the busy ones. */
+	uint64_t busy_bytes;
+} aprend_render_target_pool_info;
+
+/**
+ * @brief Reports what an instance's render target pool holds ("Textures a
+ * command uses in between", at the top of this header).
+ *
+ * It reads the pool, which compiles and aprend_instance_next_frame()
+ * change, so it is one of the calls of the thread rule ("Threads").
+ *
+ * @param[in]  instance Instance to read.
+ * @param[out] out_info Receives the report; its `base.type` is set by the
+ *                      caller, as for every struct Aprend fills in.
+ *
+ * @return false, with nothing written, if @p instance or @p out_info is
+ *         NULL, or `out_info->base` is not its own (printed).
+ */
+bool aprend_instance_get_render_target_pool(
+    aprend_instance instance,
+    aprend_render_target_pool_info *out_info);
+
+/**
+ * @brief Destroys the textures of an instance's render target pool that the
+ * GPU is done with and nothing has taken for at least @p idle_frames frames.
+ *
+ * A texture taken in a frame the GPU may still be running, or by a compile
+ * of this frame, is kept whatever @p idle_frames is. With @p idle_frames 0,
+ * every other texture goes: the pool then holds only what is busy, and the
+ * next compile of a command that needs one makes it again. Without this
+ * call the pool destroys a texture after 120 frames untaken
+ * (aprend_instance_next_frame()); this does it sooner, by the caller's
+ * count, as after a window is resized through many sizes, or when memory
+ * is wanted for something else.
+ *
+ * Destroyed as every Aprend object is ("Destroying", at the top of this
+ * header): released once the GPU has finished what it was submitted with.
+ * A list compiled in an earlier frame that took one is refused at submit,
+ * as it would be anyway: the frame has moved on since its compile.
+ *
+ * It changes the pool, under the thread rule ("Threads").
+ *
+ * @param[in] instance    Instance whose pool is trimmed.
+ * @param[in] idle_frames The frames a texture must have gone untaken to be
+ *                        destroyed; 0 for every texture the GPU is done
+ *                        with.
+ *
+ * @return How many textures were destroyed; 0 if @p instance is NULL.
+ */
+uint32_t aprend_instance_trim_render_targets(
+    aprend_instance instance,
+    uint32_t idle_frames);
 
 /**
  * @brief Destroys an instance.
