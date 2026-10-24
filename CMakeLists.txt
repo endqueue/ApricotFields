@@ -169,6 +169,7 @@ set(APRICOTFIELDS_SHADER_INC_DIR ${CMAKE_CURRENT_BINARY_DIR}/aprend_shaders)
 set(APRICOTFIELDS_SHADERS
         aprend_fullscreen.vert
         aprend_downsample.frag
+        aprend_present.frag
         aprend_bloom_prefilter.frag
         aprend_bloom_downsample.frag
         aprend_bloom_upsample.frag

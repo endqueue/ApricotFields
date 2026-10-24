@@ -157,9 +157,12 @@ static void aprend_mip_chains_release(aprend_texture2d texture, bool retire) {
 
 // A texture that failed to create may have no image, and a 3D one no view.
 aprend_texture2d_t::~aprend_texture2d_t() {
-	// Its mip chains' views go before its image, as SpudGPU requires. The
-	// GPU has finished with them: the texture is released only once it has.
+	// Its mip chains' views, and the view a present draws it through, go
+	// before its image, as SpudGPU requires. The GPU has finished with them:
+	// the texture is released only once it has.
 	aprend_mip_chains_release(this, false);
+	if (this->present_view)
+		aprend_release_handle<aprend_texture_view_t>(this->present_view);
 	if (this->image)
 		spudgpu_destroy_image(this->image);
 	free(this->tracking.layouts);
@@ -245,6 +248,9 @@ aprend_texture_view_t::~aprend_texture_view_t() {
 		aprend_release_handle<aprend_binding_set_t>(this->bloom_set);
 	if (this->environment_set)
 		aprend_release_handle<aprend_binding_set_t>(this->environment_set);
+	for (aprend_binding_set set : this->present_sets)
+		if (set)
+			aprend_release_handle<aprend_binding_set_t>(set);
 	// A view that failed to create has nothing to destroy.
 	if (this->image_view)
 		spudgpu_destroy_image_view(this->image_view);
@@ -742,7 +748,7 @@ bool aprend_texture2d_resize(
 	// A view left alive would be released after the old image it was made
 	// of. Its mip chains' views are the texture's own, released below.
 	{
-		uint32_t own_views = 0;
+		uint32_t own_views = texture->present_view ? 1u : 0u;
 		for (const aprend_mip_chain &chain : texture->mip_chains)
 			for (const aprend_mip_step &step : chain.steps)
 				own_views += (step.source ? 1u : 0u) + (step.target ? 1u : 0u);
@@ -789,6 +795,8 @@ bool aprend_texture2d_resize(
 	// be using it, so it is released when that has finished. Its mip chains
 	// are views of it, retired first so they go before it.
 	aprend_mip_chains_release(texture, true);
+	aprend_destroy_texture_view(texture->present_view);
+	texture->present_view = nullptr;
 	aprend_instance_retire(texture->instance, texture->image, &aprend_release_spudgpu_image);
 	texture->image           = new_image;
 	texture->desc.width      = new_width;

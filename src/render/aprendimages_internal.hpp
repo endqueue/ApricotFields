@@ -300,6 +300,11 @@ typedef struct aprend_texture2d_t
     uint32_t requested_mip_levels{0};
     // The mip generations made so far; see aprend_mip_chain.
     std::vector<aprend_mip_chain> mip_chains{};
+    // A SHADER_RESOURCE 2D view of mip 0 of layer 0, made by the first
+    // PRESENT_TEXTURE that draws the texture (its STRETCH and ASPECT_FIT),
+    // which reads it through it; NULL until then. The texture's own, as its
+    // mip chains' views are: released with it, retired at a resize.
+    aprend_texture_view present_view{nullptr};
 #if _DEBUG
     // Views made of it and not yet destroyed, its mip chains' included, so
     // a resize can refuse while one is left (aprend_texture2d_resize).
@@ -352,6 +357,10 @@ typedef struct aprend_texture_view_t
 	 * aprend_texture_view_environment_set): this view and a mipmapped
 	 * sampler, made the first time one reads it. */
 	aprend_binding_set environment_set{nullptr};
+	/* The same for Aprend's present shader (APREND_COMMAND_DRAW_TEXTURE,
+	 * PRESENT_TEXTURE's draw modes; aprend_texture_view_present_set): one for
+	 * each filter, [SPUDGPU_FILTER_NEAREST] and [SPUDGPU_FILTER_LINEAR]. */
+	aprend_binding_set present_sets[2]{};
 } aprend_texture_view_t;
 
 /* The mips and layers [view] covers, with the image and where that

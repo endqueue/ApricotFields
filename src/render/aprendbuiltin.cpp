@@ -14,6 +14,9 @@ static const uint32_t s_fullscreen_vert_spv[] =
 static const uint32_t s_downsample_frag_spv[] =
 #include "aprend_downsample.frag.spv.inc"
     ;
+static const uint32_t s_present_frag_spv[] =
+#include "aprend_present.frag.spv.inc"
+    ;
 static const uint32_t s_bloom_prefilter_frag_spv[] =
 #include "aprend_bloom_prefilter.frag.spv.inc"
     ;
@@ -227,6 +230,87 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 
 aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance) { return instance->builtins.bloom_layout; }
 
+aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instance, SPUDGPU_FORMAT format) {
+	aprend_builtins &builtins = instance->builtins;
+	for (const aprend_builtins::present_pipeline &entry : builtins.present_pipelines)
+		if (entry.format == format)
+			return entry.pipeline;
+	if (!aprend_builtin_fullscreen_vert(instance))
+		return nullptr;
+	if (!builtins.present_frag) {
+		builtins.present_frag = aprend_shader_create_spirv(instance, s_present_frag_spv, sizeof(s_present_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
+		if (!builtins.present_frag) {
+			printf("apricot: Aprend's present shader can't be created\n");
+			return nullptr;
+		}
+	}
+	if (!builtins.present_layout) {
+		builtins.present_layout = aprend_binding_layout_create_from_shaders(instance, &builtins.present_frag, 1, 0);
+		if (!builtins.present_layout) {
+			printf("apricot: the binding layout of Aprend's present shader can't be created\n");
+			return nullptr;
+		}
+	}
+
+	aprend_graphics_pipeline_desc desc{};
+	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
+	desc._debug_name = "aprend present";
+	desc._vertex_binding_count               = 0;
+	desc._topology                           = SPUDGPU_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	desc._cull_mode                          = SPUDGPU_CULL_MODE_NONE;
+	desc._front_face_ccw                     = true;
+	desc._depth_test                         = false;
+	desc._depth_write                        = false;
+	desc._depth_compare_op                   = SPUDGPU_COMPARE_OP_NEVER;
+	desc.vertex_shader                       = builtins.fullscreen_vert;
+	desc.fragment_shader                     = builtins.present_frag;
+	desc._vertex_entry_point                 = "main";
+	desc._fragment_entry_point               = "main";
+	desc.color_attachment_formats[0]         = format;
+	desc.color_attachment_count              = 1;
+	desc.depth_format                        = SPUDGPU_FORMAT_UNKNOWN;
+	desc._binding_layouts[0]                 = builtins.present_layout;
+	desc._binding_layout_count               = 1;
+	desc._push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_FRAGMENT;
+	desc._push_constant_ranges[0].offset      = 0;
+	desc._push_constant_ranges[0].size        = sizeof(aprend_present_params);
+	desc._push_constant_range_count           = 1;
+
+	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	if (!pipeline) {
+		printf("apricot: Aprend's present pipeline can't be created for format %d\n", (int)format);
+		return nullptr;
+	}
+	try {
+		builtins.present_pipelines.push_back({format, pipeline});
+	} catch (...) {
+		aprend_graphics_pipeline_destroy(pipeline);
+		printf("apricot: no memory to keep Aprend's present pipeline\n");
+		return nullptr;
+	}
+	return pipeline;
+}
+
+aprend_binding_set aprend_texture_view_present_set(aprend_texture_view view, SPUDGPU_FILTER filter) {
+	aprend_sampler sampler = aprend_builtin_downsample_sampler(view->instance, filter);
+	if (!sampler)
+		return nullptr;
+	aprend_binding_set &set = view->present_sets[filter];
+	if (set)
+		return set;
+	aprend_binding_set_entry entries[2]{};
+	entries[0]._binding                  = 0;
+	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	entries[0]._resource._image._view    = view;
+	entries[1]._binding                  = 1;
+	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+	entries[1]._resource._image._sampler = sampler;
+	set                                  = aprend_binding_set_create(view->instance->builtins.present_layout, entries, 2);
+	if (!set)
+		printf("apricot: present: the binding set that reads a view can't be created\n");
+	return set;
+}
+
 aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDGPU_FILTER filter) {
 	if (filter != SPUDGPU_FILTER_NEAREST && filter != SPUDGPU_FILTER_LINEAR) {
 		printf("apricot: %d is not a SPUDGPU_FILTER\n", (int)filter);
@@ -338,6 +422,13 @@ void aprend_builtins_destroy(aprend_instance instance) {
 	for (const aprend_builtins::bloom_pipeline &entry : builtins.bloom_pipelines)
 		aprend_graphics_pipeline_destroy(entry.pipeline);
 	builtins.bloom_pipelines.clear();
+	for (const aprend_builtins::present_pipeline &entry : builtins.present_pipelines)
+		aprend_graphics_pipeline_destroy(entry.pipeline);
+	builtins.present_pipelines.clear();
+	aprend_binding_layout_destroy(builtins.present_layout);
+	builtins.present_layout = nullptr;
+	aprend_shader_destroy(builtins.present_frag);
+	builtins.present_frag = nullptr;
 	aprend_binding_layout_destroy(builtins.bloom_layout);
 	builtins.bloom_layout = nullptr;
 	for (aprend_shader &shader : builtins.bloom_frags) {

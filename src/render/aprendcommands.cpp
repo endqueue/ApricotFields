@@ -38,6 +38,35 @@ static void aprend_cmd_use_handle(aprend_command_list cmd_list, const void *hand
 	cmd_list->used_handles.add(key, 0);
 }
 
+/* The fit of a draw-mode PRESENT_TEXTURE or a DRAW_TEXTURE, checked where
+ * the command is sent: [scaling] is an APREND_TEXTURE_SCALING, [filter] is
+ * LINEAR or NEAREST, and [border] is finite where it is read
+ * ([border_read]). False, printed with [who] (the command's name), if not. */
+static bool aprend_texture_scaling_valid(
+    const char *who,
+    APREND_TEXTURE_SCALING scaling,
+    SPUDGPU_FILTER filter,
+    const float border[4],
+    bool border_read) {
+	if (scaling > APREND_TEXTURE_SCALING_ASPECT_FIT) {
+		printf("aprend: %s with a _scaling of %u, which is not an APREND_TEXTURE_SCALING\n", who, (unsigned)scaling);
+		return false;
+	}
+	if (filter != SPUDGPU_FILTER_LINEAR && filter != SPUDGPU_FILTER_NEAREST) {
+		printf("aprend: %s with a _filter of %u, which is not SPUDGPU_FILTER_LINEAR or _NEAREST\n", who, (unsigned)filter);
+		return false;
+	}
+	if (!border_read)
+		return true;
+	for (int i = 0; i < 4; ++i) {
+		if (!std::isfinite(border[i])) {
+			printf("aprend: %s with a _border_color that is not finite\n", who);
+			return false;
+		}
+	}
+	return true;
+}
+
 /* The most levels a bloom of [source] spreads through: its level 0 is half
  * the size of the source's first mip, and each level halves again down to
  * 1 texel. */
@@ -709,6 +738,86 @@ static void aprend_send_command_recorded(
 		}
 	}
 
+	if (cmd._type == APREND_COMMAND_PRESENT_TEXTURE) {
+		const auto &p = cmd._params._present_texture;
+		// What the draw modes read; NONE, the copy, reads neither.
+		if (p._scaling != APREND_TEXTURE_SCALING_NONE &&
+		    !aprend_texture_scaling_valid("PRESENT_TEXTURE", p._scaling, p._filter, p._border_color,
+		                                  p._scaling == APREND_TEXTURE_SCALING_ASPECT_FIT)) {
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+	if (cmd._type == APREND_COMMAND_DRAW_TEXTURE) {
+		const auto &p = cmd._params._draw_texture;
+		if (!p._source) {
+			printf("aprend: DRAW_TEXTURE with a NULL source\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->instance != cmd_list->instance) {
+			printf("aprend: DRAW_TEXTURE with a source of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE) {
+			printf("aprend: DRAW_TEXTURE with a source that is not a SHADER_RESOURCE view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D) {
+			printf("aprend: DRAW_TEXTURE with a source that is not a 2D view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR) {
+			printf("aprend: DRAW_TEXTURE with a source that is not a view of color\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._source->desc.mip_count != 1) {
+			printf("aprend: DRAW_TEXTURE with a source of %u mips; it reads one\n", p._source->desc.mip_count);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!p._target) {
+			printf("aprend: DRAW_TEXTURE with a NULL target\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._target->instance != cmd_list->instance) {
+			printf("aprend: DRAW_TEXTURE with a target of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET) {
+			printf("aprend: DRAW_TEXTURE with a target that is not a RENDER_TAGET view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D) {
+			printf("aprend: DRAW_TEXTURE with a target that is not a 2D view\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		// A 2D render target view is of a 2D texture. The shader writes
+		// floats, which an integer target doesn't hold.
+		const SPUDGPU_FORMAT target_format = p._target->texture._t2d->desc.format;
+		if (aprend_format_scalar_type(target_format) != APREND_SHADER_SCALAR_TYPE_FLOAT) {
+			printf("aprend: DRAW_TEXTURE with a target of format %u, which doesn't hold floats\n", (unsigned)target_format);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (aprend_texture_ranges_overlap(aprend_texture_view_range(p._source), aprend_texture_view_range(p._target))) {
+			printf("aprend: DRAW_TEXTURE with a source and a target that share a mip of a layer\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!aprend_texture_scaling_valid("DRAW_TEXTURE", p._scaling, p._filter, p._border_color, p._scaling != APREND_TEXTURE_SCALING_STRETCH)) {
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
 	if (cmd._type == APREND_COMMAND_TONE_MAP) {
 		const auto &p = cmd._params._tone_map;
 		const char *fault = nullptr;
@@ -960,6 +1069,81 @@ static void aprend_cmd_transition_view(
  * the back buffer to PRESENT_SRC. The back buffer's previous contents are
  * discarded (UNDEFINED old layout) since the copy overwrites the region that
  * gets shown. */
+static bool aprend_cmd_range_written(aprend_command_list cmd_list, const aprend_texture_range &range);
+
+/* A full-target draw of [source] (a SHADER_RESOURCE 2D view of one mip of
+ * color) into [target], a view [width] by [height] of [format], fitted as
+ * [scaling] says: what DRAW_TEXTURE records, and PRESENT_TEXTURE's draw
+ * modes onto a back buffer. Moves the source to SHADER_READ_ONLY; the target
+ * is the caller's to have in COLOR_ATTACHMENT_OPTIMAL, and to move after.
+ * False, printed with [who], if the pipeline or the set can't be made.
+ * Recorded outside any pass. Throws std::bad_alloc. */
+static bool aprend_cmd_draw_fitted(
+    aprend_command_list cmd_list,
+    const char *who,
+    aprend_texture_view source,
+    spudgpu_image_view target,
+    SPUDGPU_FORMAT format,
+    uint32_t width,
+    uint32_t height,
+    APREND_TEXTURE_SCALING scaling,
+    SPUDGPU_FILTER filter,
+    const float border[4]) {
+	const aprend_texture_range range = aprend_texture_view_range(source);
+	if (!aprend_cmd_range_written(cmd_list, range)) {
+		printf("aprend: %s: the source has nothing in it, from before the list or earlier in it\n", who);
+		return false;
+	}
+	aprend_graphics_pipeline pipeline = aprend_builtin_present_pipeline(cmd_list->instance, format);
+	if (!pipeline)
+		return false;
+	aprend_binding_set set = aprend_texture_view_present_set(source, filter);
+	if (!set)
+		return false;
+	aprend_present_params params{};
+	memcpy(params.border, border, sizeof(params.border));
+	params.target_size[0] = (float)width;
+	params.target_size[1] = (float)height;
+	params.mode           = (uint32_t)scaling;
+	aprend_cmd_transition_range(cmd_list, range, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	// Every texel is written: what the target held is not loaded.
+	aprend_record_fullscreen_pass(cmd_list->cmd_list, pipeline, target, width, height, SPUDGPU_LOAD_OP_DONT_CARE, set, &params, sizeof(params));
+	return true;
+}
+
+/* DRAW_TEXTURE, outside a pass: the source drawn into the target, left in
+ * COLOR_ATTACHMENT_OPTIMAL. */
+static bool aprend_cmd_draw_texture(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p          = command._params._draw_texture;
+	const aprend_texture2d target = p._target->texture._t2d;
+	const uint32_t width   = aprend_mip_size(target->desc.width, p._target->desc.base_mip);
+	const uint32_t height  = aprend_mip_size(target->desc.height, p._target->desc.base_mip);
+	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	return aprend_cmd_draw_fitted(cmd_list, "DRAW_TEXTURE", p._source, p._target->image_view, target->desc.format, width, height, p._scaling,
+	                              p._filter, p._border_color);
+}
+
+/* The view a draw-mode PRESENT_TEXTURE reads [texture] through: mip 0 of
+ * layer 0, made the first time and kept by the texture
+ * (aprend_texture2d_t::present_view). NULL, printed, if it can't be. */
+static aprend_texture_view aprend_texture2d_present_view(aprend_texture2d texture) {
+	if (texture->present_view)
+		return texture->present_view;
+	aprend_texture_view_desc desc{};
+	desc.base        = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
+	desc.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
+	desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
+	desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
+	desc.base_mip    = 0;
+	desc.mip_count   = 1;
+	desc.base_layer  = 0;
+	desc.layer_count = 1;
+	texture->present_view = aprend_texture_view_create_2d(texture, &desc);
+	if (!texture->present_view)
+		printf("aprend: PRESENT_TEXTURE: the view the source is drawn through can't be created\n");
+	return texture->present_view;
+}
+
 static bool aprend_cmd_present_texture(
     aprend_command_list cmd_list,
     const APREND_COMMAND &command) {
@@ -993,6 +1177,28 @@ static bool aprend_cmd_present_texture(
 	if (SPUDFAIL(spudgpu_get_swap_chain_desc(sc->swap_chain, &actual)) || !actual.width || !actual.height) {
 		printf("aprend: PRESENT_TEXTURE couldn't get the back buffer size\n");
 		return false;
+	}
+
+	// The draw modes: the source fitted into the back buffer, any size and
+	// format of it taken, the back buffers' written.
+	if (p._scaling != APREND_TEXTURE_SCALING_NONE) {
+		if (!(src->desc.usage & APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE)) {
+			printf("aprend: PRESENT_TEXTURE with a _scaling that draws, and a source without APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE\n");
+			return false;
+		}
+		aprend_texture_view view = aprend_texture2d_present_view(src);
+		if (!view)
+			return false;
+		aprend_cmd_use_handle(cmd_list, view);
+		spudgpu_cmd_image_barrier_view(cmd_list->cmd_list, back_view, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		if (!aprend_cmd_draw_fitted(cmd_list, "PRESENT_TEXTURE", view, back_view, actual.format, actual.width, actual.height, p._scaling, p._filter,
+		                            p._border_color))
+			return false;
+		spudgpu_cmd_image_barrier_view(cmd_list->cmd_list, back_view, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_PRESENT_SRC);
+		cmd_list->present_swap_chain  = sc;
+		cmd_list->present_image_index = sc->acquired_image;
+		cmd_list->present_generation  = sc->generation;
+		return true;
 	}
 
 	// The copy converts nothing on D3D12 and Metal, so a source of another
@@ -2299,6 +2505,10 @@ static void aprend_cmd_use_command_views(aprend_command_list cmd_list, const APR
 	case APREND_COMMAND_AUTO_EXPOSURE:
 		aprend_cmd_use_handle(cmd_list, command._params._auto_exposure._source);
 		break;
+	case APREND_COMMAND_DRAW_TEXTURE:
+		aprend_cmd_use_handle(cmd_list, command._params._draw_texture._source);
+		aprend_cmd_use_handle(cmd_list, command._params._draw_texture._target);
+		break;
 	default:
 		break;
 	}
@@ -2821,6 +3031,18 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 					ok = aprend_cmd_auto_exposure(cmd_list, command);
 				else
 					ok = aprend_cmd_lit_ambient_occlusion(cmd_list, command);
+				bound_compute_pipeline = nullptr;
+				break;
+			}
+			case APREND_COMMAND_DRAW_TEXTURE: {
+				if (in_pass) {
+					printf("aprend: DRAW_TEXTURE inside a rendering pass\n");
+					ok = false;
+					break;
+				}
+				ok = aprend_cmd_draw_texture(cmd_list, command);
+				// Its pass binds a pipeline of its own: a compute pipeline is
+				// set again before the next dispatch, as after a pass.
 				bound_compute_pipeline = nullptr;
 				break;
 			}

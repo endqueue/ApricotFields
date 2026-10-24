@@ -55,6 +55,37 @@ typedef struct aprend_lit_scene_t *aprend_lit_scene;
 typedef struct aprend_exposure_t *aprend_exposure;
 
 /**
+ * @brief How APREND_COMMAND_PRESENT_TEXTURE and APREND_COMMAND_DRAW_TEXTURE
+ * fit a source into a target of another size.
+ *
+ * Every mode but PRESENT_TEXTURE's NONE is a full-target draw: the target is
+ * rendered whole, each texel from the source through a linear or nearest
+ * sampler (the command's `_filter`) or the command's `_border_color` where
+ * no source covers it. The draw writes the target's own format, so a source
+ * of another (a float picture onto an 8-bit target, sRGB encoded or not)
+ * is taken.
+ */
+typedef uint32_t APREND_TEXTURE_SCALING;
+enum {
+	/**
+	 * No scaling. PRESENT_TEXTURE: a copy, not a draw: the source in the back
+	 * buffers' format and at least their size, a larger one cropped to its
+	 * top-left region. DRAW_TEXTURE: drawn texel for texel from the target's
+	 * top-left corner, the border color past the source, a larger source
+	 * cropped.
+	 */
+	APREND_TEXTURE_SCALING_NONE       = 0,
+	/** The source filtered to fill the target, its aspect not kept. */
+	APREND_TEXTURE_SCALING_STRETCH    = 1,
+	/**
+	 * The source filtered to the largest size that fits inside the target
+	 * with its aspect kept, centred; the border color on the two sides it
+	 * doesn't reach.
+	 */
+	APREND_TEXTURE_SCALING_ASPECT_FIT = 2,
+};
+
+/**
  * @brief How color is written out, by APREND_COMMAND_TONE_MAP and by lit
  * surfaces (aprendlit.h).
  */
@@ -209,14 +240,29 @@ enum {
 	 */
 	APREND_COMMAND_SET_BINDING_SET        = 12,
 	/**
-	 * Copies `_source` into `_swap_chain`'s acquired back buffer
-	 * (aprendswapchain.h) and leaves it ready to present. Outside any pass;
-	 * at most one per list. The back buffer must have been acquired before
-	 * compiling. `_source` is in the back buffers' format (the copy converts
-	 * nothing on D3D12 and Metal) and at least their size
-	 * (aprend_swap_chain_get_back_buffer_size()): every texel shown is one
-	 * of the source's, and a larger source is cropped to its top-left
-	 * region. The compile fails otherwise.
+	 * Puts `_source`, mip 0 of layer 0, into `_swap_chain`'s acquired back
+	 * buffer (aprendswapchain.h) and leaves it ready to present. Outside any
+	 * pass; at most one per list. The back buffer must have been acquired
+	 * before compiling. `_scaling` (APREND_TEXTURE_SCALING) says how:
+	 *
+	 * - APREND_TEXTURE_SCALING_NONE (0): a copy. `_source` is in the back
+	 *   buffers' format (the copy converts nothing on D3D12 and Metal) and
+	 *   at least their size (aprend_swap_chain_get_back_buffer_size()):
+	 *   every texel shown is one of the source's, and a larger source is
+	 *   cropped to its top-left region. The compile fails otherwise.
+	 *   `_filter` and `_border_color` are not read.
+	 * - STRETCH and ASPECT_FIT: a full-target draw of the source into the
+	 *   back buffer, as APREND_COMMAND_DRAW_TEXTURE draws: of any size and
+	 *   any format the source has, the back buffers' written. `_source` has
+	 *   APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE; it is sampled through a
+	 *   view the texture keeps (made at the first such present, released
+	 *   with it or at its resize), and moved to SHADER_READ_ONLY. `_filter`
+	 *   is SPUDGPU_FILTER_LINEAR or _NEAREST; ASPECT_FIT's `_border_color`
+	 *   is finite. The first such present onto a back buffer format makes
+	 *   its pipeline.
+	 *
+	 * Aprend's swap chains are made with SpudGPU's one-to-one scaling, so
+	 * what reaches the back buffer is what is shown.
 	 */
 	APREND_COMMAND_PRESENT_TEXTURE        = 13,
 	/**
@@ -519,6 +565,30 @@ enum {
 	 * then reads the exposure. `_delta_time` is not negative.
 	 */
 	APREND_COMMAND_AUTO_EXPOSURE               = 34,
+	/**
+	 * Draws `_source` into `_target`, fitted as `_scaling` says
+	 * (APREND_TEXTURE_SCALING): a full-target draw that writes every texel of
+	 * the target, from the source through `_filter`'s sampler or, where the
+	 * source doesn't reach, `_border_color` (linear RGBA, written as the
+	 * target's format writes it). Outside a pass.
+	 *
+	 * `_source` is a SHADER_RESOURCE 2D view of color of one mip, moved to
+	 * SHADER_READ_ONLY. `_target` is a RENDER_TAGET 2D view of a format
+	 * that holds floats (float, normalized or sRGB), left in
+	 * COLOR_ATTACHMENT_OPTIMAL; it may be of another size and format than
+	 * the source. The two share no mip of a layer. `_filter` is
+	 * SPUDGPU_FILTER_LINEAR or _NEAREST. `_border_color` is finite, and not
+	 * read for STRETCH.
+	 *
+	 * It is what PRESENT_TEXTURE's STRETCH and ASPECT_FIT do onto a back
+	 * buffer, onto a texture: a picture scaled to a thumbnail or a window, a
+	 * lower render size brought up to the target's. It binds a pipeline and
+	 * a set of its own, so a compute pipeline is set again after it before a
+	 * dispatch; the binding set slots are not touched. The first draw onto a
+	 * target format makes its pipeline, and the first that reads a view
+	 * with a filter the set that reads it, which the view keeps.
+	 */
+	APREND_COMMAND_DRAW_TEXTURE                = 35,
 };
 
 /**
@@ -618,6 +688,12 @@ typedef struct APREND_COMMAND {
 		struct {
 			aprend_texture2d _source;
 			aprend_swap_chain _swap_chain;
+			/** NONE (0) a copy; STRETCH and ASPECT_FIT a draw. */
+			APREND_TEXTURE_SCALING _scaling;
+			/** STRETCH and ASPECT_FIT: SPUDGPU_FILTER_LINEAR or _NEAREST. */
+			SPUDGPU_FILTER _filter;
+			/** ASPECT_FIT's bars, linear RGBA. */
+			float _border_color[4];
 		} _present_texture;
 		/** APREND_COMMAND_PUSH_CONSTANTS. */
 		struct {
@@ -733,6 +809,16 @@ typedef struct APREND_COMMAND {
 			aprend_lit_environment _environment;
 			aprend_texture_view _source;
 		} _lit_environment;
+		/** APREND_COMMAND_DRAW_TEXTURE. */
+		struct {
+			aprend_texture_view _source;
+			aprend_texture_view _target;
+			APREND_TEXTURE_SCALING _scaling;
+			/** SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST. */
+			SPUDGPU_FILTER _filter;
+			/** Where the source doesn't reach, linear RGBA. Not read for STRETCH. */
+			float _border_color[4];
+		} _draw_texture;
 		/** APREND_COMMAND_GENERATE_MIPS. */
 		struct {
 			/** The texture, of the list's instance. */

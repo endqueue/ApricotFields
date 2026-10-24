@@ -51,6 +51,18 @@ struct aprend_builtins {
 	};
 	std::vector<bloom_pipeline> bloom_pipelines{};
 
+	/* aprend_present.frag: a source fitted into a whole target
+	 * (APREND_COMMAND_DRAW_TEXTURE, PRESENT_TEXTURE's draw modes), and the
+	 * layout of its set 0: a texture at binding 0, a sampler at binding 1. */
+	aprend_shader present_frag{nullptr};
+	aprend_binding_layout present_layout{nullptr};
+	/* A pipeline for each target format drawn onto. */
+	struct present_pipeline {
+		SPUDGPU_FORMAT format;
+		aprend_graphics_pipeline pipeline;
+	};
+	std::vector<present_pipeline> present_pipelines{};
+
 	/* Lit surfaces' (aprendlit.h, aprendlit_internal.hpp). */
 	aprend_lit_builtins lit{};
 };
@@ -91,6 +103,28 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 bool aprend_builtin_bloom_prepare(aprend_instance instance);
 /* The bloom layout; made by aprend_builtin_bloom_prepare, NULL before it. */
 aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance);
+
+/* The push constants of Aprend's present shader (PresentParams), 32 bytes:
+ * the border color (linear RGBA), the target's size in texels, and how the
+ * source fits: 0 its own size from the top left, 1 stretched over the
+ * target, 2 fitted with its aspect kept, centred (APREND_TEXTURE_SCALING's
+ * values, NONE drawn rather than copied). */
+struct aprend_present_params {
+	float border[4];
+	float target_size[2];
+	uint32_t mode;
+	uint32_t unused;
+};
+
+/* The present pipeline rendering to [format], made if it doesn't exist, with
+ * its shaders and layout. NULL, printed, if it can't be made. */
+aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
+/* The set of the present layout that reads [view] through the downsample
+ * sampler of [filter] (clamped to the edge), kept by the view
+ * (aprend_texture_view_t::present_sets) from the first call and released
+ * with it. aprend_builtin_present_pipeline has made the layout. NULL,
+ * printed, if the set can't be made. */
+aprend_binding_set aprend_texture_view_present_set(aprend_texture_view view, SPUDGPU_FILTER filter);
 
 /* The push constants of Aprend's downsample shader: [mode][0] is 1 for an
  * exact box filter (SPUDGPU_FILTER_LINEAR), 0 for a nearest one. 16 bytes,

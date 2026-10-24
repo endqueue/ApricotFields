@@ -1270,7 +1270,8 @@ unfinished in it.
   Aprend message, and a caller's host ran on both (item 38).
   Each point is closed in its item below:
   - **Stale lists, for everything a recording names** (item 32): a command
-    list records, in a hash set (`used_handles`), every pipeline and
+    list records, in a hash set (`used_handles`; an open-addressing table
+    since 2026-10-23, see the next bullet of this section), every pipeline and
     binding set it binds and what each set holds (views, samplers, uniform
     buffers and a buffer set's copies), every pass target view, the views
     of the built-in effects' commands, and each texture's layout tracking.
@@ -1320,7 +1321,7 @@ unfinished in it.
     any of the runs above, nor on Windows on 2026-10-23, in a caller's
     host that renders off its UI thread (D3D12 and Vulkan).
   - **Layouts** (item 17): a list finds a subresource's entry through a
-    hash map, and a range in more than one layout is moved a run of mips
+    hash map (an open-addressing table since 2026-10-23), and a range in more than one layout is moved a run of mips
     of a layer at a time.
   - **Odd mip sizes** (item 31): a linear generation is an exact box over
     each target texel's footprint, so an odd side's every texel weighs the
@@ -1346,6 +1347,44 @@ unfinished in it.
     Iris Xe having no mesh shading on either API; the stencil read on every
     device. `test_feature_checks` refused a mesh *shader*, not a pipeline,
     from 2026-10-23 (item 39).
+- **A command list's lookups and copies, data-oriented, 2026-10-23; run
+  on Metal only** (ApricotFields `2e21b05`, with the workspace's
+  conventions and plain-data checks). Nothing in the API changed.
+  - `used_handles` and `layout_index` are `apri_hash_index`es
+    (`src/aprihashindex.hpp`, new): a 64-bit hash to a 32-bit value, one
+    array of slots probed in order from where the hash lands (Fibonacci
+    hashing, so aligned pointers spread), no node and no erase. `find()`
+    takes a test of the key, so two keys of one hash are told apart.
+    `clear()` keeps the slots, so a list compiled every frame stops
+    allocating once its tables have grown. `used_handles` hashes by address
+    (the address is the key); `layout_index` by
+    `aprend_subresource_hash()` (image, mip, layer), each match checked
+    against the `layout_use` it names. They were a `std::unordered_set` and
+    a `std::unordered_map` (2026-10-22), which allocated a node per entry
+    every compile. `tests/aprihashindex_tests.cpp` checks the table against
+    a `std::map` with keys crowded onto 64 hashes.
+  - What a recorded command points at (each BEGIN_LABEL's text, and the
+    arrays of BEGIN_RENDERING, SET_VERTEX_BUFFERS, SET_VIEWPORTS,
+    SET_SCISSOR_RECTS and PUSH_CONSTANTS) is copied into one byte arena,
+    `side_bytes`, each copy at an offset aligned to
+    `alignof(std::max_align_t)`; `side_refs` keeps (command, offset), and a
+    compile points each such command at its copy before it reads any,
+    since growing the arena moves it. Before, a `std::deque<std::string>`
+    and five vectors of vectors, an allocation per command. A reset clears
+    both and frees nothing. Recorded commands still never point at caller
+    memory.
+  - The element types of the list's per-command arrays have
+    `APRI_PLAIN_DATA` asserts (trivially copyable, standard layout;
+    `src/apriplaindata.hpp`, new), and `APREND_COMMAND` a size budget of
+    two cache lines (`APRI_HOT_RECORD`), as do a draw list's draw and
+    batch and the pools' range tables. `aprend_pool_block` is the one that
+    fails (its range list holds a `std::vector`), in the workspace's
+    `check.baseline`.
+  - Run on Metal (Apple M5 Pro, Debug): ApricotFields' 17 tests, plain and
+    under `-asan`; `../apricottests` under Metal API and shader validation
+    with warnings fatal; two callers' tests over it. **Not built on Windows
+    or Linux**: the command list's recording path is every backend's, so it
+    wants a D3D12 and a Vulkan run.
 
 ## Wrong things
 
@@ -1869,7 +1908,9 @@ one mip can be sampled while another is rendered to or written by a compute
 shader. Left over:
 
 - **A list keeps an entry for every mip of every layer it touches**, found
-  through a hash map since 2026-10-22 (before, a linear search).
+  through a hash map since 2026-10-22 (before, a linear search): a
+  `std::unordered_map` until 2026-10-23, an open-addressing table
+  (`apri_hash_index`) since, which allocates nothing once grown.
 - **A range whose subresources differ is moved a run at a time**
   (2026-10-22): each run of mips of a layer that share a layout is one
   barrier. Runs across layers aren't merged. On Metal the barriers do
@@ -2308,9 +2349,55 @@ tone curve, then the lit pipeline's stages under item 24.
 
 ### 40. Present scaling: a source of another size than the back buffer
 
-Numbered out of order, as item 31. **Decided 2026-10-23; Aprend's half not
-started, SpudGPU's half done (2026-10-23, run on Metal, D3D12 and Vulkan;
-see "Swap chain scaling" below).**
+Numbered out of order, as item 31. **Decided 2026-10-23. Aprend's half
+written 2026-10-24 and run on Metal only; SpudGPU's half done (2026-10-23,
+run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).**
+
+**What was written, 2026-10-24** (the design below, with two changes, both
+in `claude_made_decisions.md`):
+- The enum is `APREND_TEXTURE_SCALING` (NONE, STRETCH, ASPECT_FIT), not
+  `APREND_PRESENT_SCALING` with EXACT, since a second command takes it.
+  `PRESENT_TEXTURE`'s NONE (0) is the copy of item 38, unchanged.
+- A second command, `APREND_COMMAND_DRAW_TEXTURE` (35): a SHADER_RESOURCE
+  2D view of one mip drawn into a RENDER_TAGET 2D view of a float-holding
+  format, in each fit (its NONE is drawn texel for texel from the top left,
+  the border past the source). It is the same draw
+  (`aprend_cmd_draw_fitted`, `aprendcommands.cpp`) that `PRESENT_TEXTURE`'s
+  STRETCH and ASPECT_FIT make onto the back buffer, and is what the tests
+  read pixels through, having no window. Unreal's `AddDrawTexturePass` is
+  the same tool.
+- `shaders/aprend_present.frag`, a pipeline per target format
+  (`aprend_builtin_present_pipeline`), a set per view and filter kept by
+  the view (`aprend_texture_view_t::present_sets`, through the downsample
+  samplers), and for `PRESENT_TEXTURE` a view of the source's mip 0 kept by
+  the texture (`aprend_texture2d_t::present_view`, released with it,
+  retired at a resize, not counted against the resize's view check).
+- The back buffer is moved from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL,
+  drawn whole, and moved to PRESENT_SRC; the swap chain needed nothing new.
+- The scaling, filter and border are checked when the command is sent
+  (one check for both commands), the rest at the compile.
+- `../apricottests`: `test_draw_texture` (STRETCH of a 2x2 source by
+  quadrant, nearest, the right way up; linear at the middle; ASPECT_FIT of
+  32x16 into 64x64 with bars; NONE from the top left; a half-float source
+  onto RGBA8; eight refusals; STRETCH taking a NaN border it doesn't read)
+  and `test_present_scaling` (Metal only: an Aprend swap chain on a
+  windowless `CAMetalLayer`, a 2x2 RGBA8 source presented into BGRA8 back
+  buffers by STRETCH and by ASPECT_FIT, each frame acquired, submitted and
+  presented; the copy's format refusal). The swap chain test can't read the
+  back buffer: the pixels are `test_draw_texture`'s. The test devices now
+  ask for `SPUDGPU_FEATURE_PRESENT` where the adapter has it.
+- Run on Metal (Apple M5 Pro): `../apricottests` Debug under Metal API and
+  shader validation with warnings fatal, both devices (the bare one skips
+  the swap chain), and Release under `leaks` (none); ApricotFields' 17
+  headless tests; two callers' tests (18 and 34) over the header, whose
+  presents are zeroed and so copies. **Not built on Windows or Linux.**
+- Both callers chose ASPECT_FIT the same day (never STRETCH: neither
+  wants a picture out of shape, even for a frame). One letterboxes in its
+  background color, the other in black; each renders at the back buffers'
+  size, so the fit is one to one but while a resize lags. One caller's
+  player ran 300 frames in a real window on Metal under validation with
+  warnings fatal, exit 0, the picture right. Left: a window resized by
+  hand, to see the bars, and a run on D3D12 and Vulkan.
 `PRESENT_TEXTURE` is a copy, and since 2026-10-22 it refuses a source of
 another format than the back buffers or smaller than them (item 38). That
 stays the default; scaling is a mode the caller names, never chosen for it.
