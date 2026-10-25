@@ -857,9 +857,7 @@ typedef struct aprend_binding_set_entry {
 	uint32_t _array_element;
 	/** Must be the `_type` the layout declares at #_binding. */
 	SPUDGPU_DESCRIPTOR_TYPE _type;
-	/** The resource. Only the member #_type names is read. */
 	union {
-		/** For SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER. */
 		struct {
 			/** A single buffer. Exactly one of this and `_set` is given. */
 			aprend_uniform_buffer _buffer;
@@ -881,8 +879,7 @@ typedef struct aprend_binding_set_entry {
 			 * in. `_offset` and `_range` apply to every copy.
 			 */
 			aprend_uniform_buffer_set _set;
-		} _uniform;
-		/** For SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER. */
+		} _uniform; /**< For SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER. */
 		struct {
 			/** A single buffer. Exactly one of this and `_set` is given. */
 			aprend_storage_buffer _buffer;
@@ -900,8 +897,7 @@ typedef struct aprend_binding_set_entry {
 			uint64_t _range;
 			/** A buffer set in place of `_buffer`, as `_uniform._set`. */
 			aprend_storage_buffer_set _set;
-		} _storage;
-		/** For the image and sampler types. */
+		} _storage; /**< For SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER. */
 		struct {
 			/**
 			 * The texture view. Of type
@@ -913,8 +909,8 @@ typedef struct aprend_binding_set_entry {
 			aprend_texture_view _view;
 			/** The sampler. */
 			aprend_sampler _sampler;
-		} _image;
-	} _resource;
+		} _image; /**< For the image and sampler types. */
+	} _resource; /**< The resource. Only the member #_type names is read. */
 } aprend_binding_set_entry;
 
 /**

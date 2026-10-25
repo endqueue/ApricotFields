@@ -784,88 +784,111 @@ enum {
 typedef struct APREND_COMMAND {
 	/** Which command this is: the member of #_params that is read. */
 	APREND_COMMAND_TYPE _type;
-	/** The command's parameters, one member for each APREND_COMMAND_TYPE. */
 	union {
-		/** APREND_COMMAND_SET_VERTEX_BUFFERS. */
 		struct {
+			/** The buffers, `_vertex_buffer_count` of them; copied at the send. */
 			aprend_vertex_buffer *_vertex_buffers;
+			/** How many buffers `_vertex_buffers` holds. */
 			uint32_t _vertex_buffer_count;
+			/** The slot the first buffer goes in; the rest follow it. */
 			uint32_t _start_slot;
-		} _set_vertex_buffers;
-		/** APREND_COMMAND_SET_INDEX_BUFFER. */
+		} _set_vertex_buffers; /**< APREND_COMMAND_SET_VERTEX_BUFFERS. */
 		struct {
+			/** The index buffer. */
 			aprend_index_buffer _index_buffer;
-		} _set_index_buffer;
-		/** APREND_COMMAND_SET_SHADER_PIPELINE. */
+		} _set_index_buffer; /**< APREND_COMMAND_SET_INDEX_BUFFER. */
 		struct {
+			/** The graphics pipeline. */
 			aprend_graphics_pipeline _pipeline;
-		} _set_shader_pipeline;
-		/** APREND_COMMAND_DRAW. */
+		} _set_shader_pipeline; /**< APREND_COMMAND_SET_SHADER_PIPELINE. */
 		struct {
+			/** How many vertices are drawn. */
 			uint32_t _vertex_count;
+			/** The first vertex. */
 			uint32_t _start_vertex_location;
-		} _draw;
-		/** APREND_COMMAND_DRAW_INDEXED. */
+		} _draw; /**< APREND_COMMAND_DRAW. */
 		struct {
+			/** How many indices are drawn. */
 			uint32_t _index_count;
+			/** The first index. */
 			uint32_t _start_index_location;
+			/** Added to each index before it picks a vertex. */
 			int32_t _base_vertex_location;
-		} _draw_indexed;
-		/** APREND_COMMAND_DRAW_INSTANCED. */
+		} _draw_indexed; /**< APREND_COMMAND_DRAW_INDEXED. */
 		struct {
+			/** How many vertices each instance draws. */
 			uint32_t _vertex_count_per_instance;
+			/** How many instances are drawn. */
 			uint32_t _instance_count;
+			/** The first vertex. */
 			uint32_t _start_vertex_location;
+			/** The first instance. */
 			uint32_t _start_instance_location;
-		} _draw_instanced;
-		/** APREND_COMMAND_DRAW_INSTANCED_INDEXED. */
+		} _draw_instanced; /**< APREND_COMMAND_DRAW_INSTANCED. */
 		struct {
+			/** How many indices each instance draws. */
 			uint32_t _index_count_per_instance;
+			/** How many instances are drawn. */
 			uint32_t _instance_count;
+			/** The first index. */
 			uint32_t _start_index_location;
+			/** Added to each index before it picks a vertex. */
 			int32_t _base_vertex_location;
+			/** The first instance. */
 			uint32_t _start_instance_location;
-		} _draw_indexed_instanced;
-		/** APREND_COMMAND_SET_VIEWPORTS. */
+		} _draw_indexed_instanced; /**< APREND_COMMAND_DRAW_INSTANCED_INDEXED. */
 		struct {
+			/** The viewports, `_viewport_count` of them; copied at the send. */
 			const SPUDGPU_VIEWPORT *_viewports;
+			/** The index of the first viewport set. */
 			uint32_t _first_viewport;
+			/** How many viewports `_viewports` holds. */
 			uint32_t _viewport_count;
-		} _set_viewports;
-		/** APREND_COMMAND_SET_SCISSOR_RECTS. */
+		} _set_viewports; /**< APREND_COMMAND_SET_VIEWPORTS. */
 		struct {
+			/** The rectangles, `_scissor_rect_count` of them; copied at the send. */
 			const SPUDGPU_SCISSOR_RECT *_scissor_rects;
+			/** The index of the first rectangle set. */
 			uint32_t _first_scissor_rect;
+			/** How many rectangles `_scissor_rects` holds. */
 			uint32_t _scissor_rect_count;
-		} _set_scissor_rects;
-		/** APREND_COMMAND_BEGIN_RENDERING. END_RENDERING reads nothing. */
+		} _set_scissor_rects; /**< APREND_COMMAND_SET_SCISSOR_RECTS. */
 		struct {
+			/** The color targets, `_color_target_count` of them; copied at the send. */
 			const aprend_color_target *_color_targets;
+			/** How many color targets `_color_targets` holds, at most APREND_MAX_COLOR_TARGETS. */
 			uint32_t _color_target_count;
+			/** The depth target. */
 			aprend_depth_target _depth_target;
+			/** The render area's left edge. */
+			int32_t _x;
+			/** The render area's top edge. */
+			int32_t _y;
 			/**
-			 * Render area. A `_width` or `_height` of 0 means the full
-			 * size of the first color target (or the depth target if
-			 * there's none).
+			 * The render area's width. 0 means the full width of the first
+			 * color target (or the depth target if there's none).
 			 */
-			int32_t _x, _y;
-			uint32_t _width, _height;
+			uint32_t _width;
+			/** The render area's height. 0 means the full height, as `_width`. */
+			uint32_t _height;
 			/**
 			 * A GPU timer (aprendtimer.h) the pass is timed into, at slot
-			 * `_timer_slot`; NULL to time nothing. Of the list's instance,
-			 * with `_timer_slot` below its slot count.
+			 * `_timer_slot`; NULL to time nothing. Of the list's instance.
 			 */
 			aprend_gpu_timer _timer;
+			/** The slot of `_timer` the pass is timed into, below its slot count. */
 			uint32_t _timer_slot;
-		} _begin_rendering;
-		/** APREND_COMMAND_SET_BINDING_SET. */
+		} _begin_rendering; /**< APREND_COMMAND_BEGIN_RENDERING. END_RENDERING reads nothing. */
 		struct {
+			/** The set slot. */
 			uint32_t _slot;
+			/** The binding set. */
 			aprend_binding_set _set;
-		} _set_binding_set;
-		/** APREND_COMMAND_PRESENT_TEXTURE. */
+		} _set_binding_set; /**< APREND_COMMAND_SET_BINDING_SET. */
 		struct {
+			/** The texture presented, mip 0 of layer 0. */
 			aprend_texture2d _source;
+			/** The swap chain whose acquired back buffer it goes into. */
 			aprend_swap_chain _swap_chain;
 			/** NONE (0) a copy; STRETCH and ASPECT_FIT a draw. */
 			APREND_TEXTURE_SCALING _scaling;
@@ -873,80 +896,95 @@ typedef struct APREND_COMMAND {
 			SPUDGPU_FILTER _filter;
 			/** ASPECT_FIT's bars, linear RGBA. */
 			float _border_color[4];
-		} _present_texture;
-		/** APREND_COMMAND_PUSH_CONSTANTS. */
+		} _present_texture; /**< APREND_COMMAND_PRESENT_TEXTURE. */
 		struct {
+			/** The bytes, `_size` of them; copied at the send. */
 			const void *_data;
+			/** Where in the block the bytes go, a multiple of 4. */
 			uint32_t _offset;
+			/** How many bytes, a multiple of 4 and not 0. */
 			uint32_t _size;
-		} _push_constants;
-		/** APREND_COMMAND_SET_COMPUTE_PIPELINE. */
+		} _push_constants; /**< APREND_COMMAND_PUSH_CONSTANTS. */
 		struct {
+			/** The compute pipeline. */
 			aprend_compute_pipeline _pipeline;
-		} _set_compute_pipeline;
-		/** APREND_COMMAND_DISPATCH. */
+		} _set_compute_pipeline; /**< APREND_COMMAND_SET_COMPUTE_PIPELINE. */
 		struct {
+			/** Workgroups along x, not 0. */
 			uint32_t _group_count_x;
+			/** Workgroups along y, not 0. */
 			uint32_t _group_count_y;
+			/** Workgroups along z, not 0. */
 			uint32_t _group_count_z;
-		} _dispatch;
-		/** APREND_COMMAND_DRAW_INDIRECT and APREND_COMMAND_DRAW_INDEXED_INDIRECT. */
+		} _dispatch; /**< APREND_COMMAND_DISPATCH. */
 		struct {
+			/** The argument buffer, or NULL with `_set`. */
 			aprend_storage_buffer _buffer;
+			/** The byte the first entry starts at, a multiple of 4. */
 			uint64_t _offset;
+			/** How many draws, not 0. */
 			uint32_t _draw_count;
+			/** Bytes from one entry to the next, a multiple of 4, at least an entry. */
 			uint32_t _stride;
 			/** A storage buffer set in place of `_buffer`. */
 			aprend_storage_buffer_set _set;
-		} _draw_indirect;
-		/** APREND_COMMAND_DISPATCH_MESH. */
+		} _draw_indirect; /**< APREND_COMMAND_DRAW_INDIRECT and APREND_COMMAND_DRAW_INDEXED_INDIRECT. */
 		struct {
+			/** Workgroups along x, not 0. */
 			uint32_t _group_count_x;
+			/** Workgroups along y, not 0. */
 			uint32_t _group_count_y;
+			/** Workgroups along z, not 0. */
 			uint32_t _group_count_z;
-		} _dispatch_mesh;
-		/** APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER. */
+		} _dispatch_mesh; /**< APREND_COMMAND_DISPATCH_MESH. */
 		struct {
+			/** The span, taken in the frame the list is compiled in. */
 			aprend_transient_span _span;
+			/** The vertex buffer slot. */
 			uint32_t _slot;
-		} _set_transient_vertex_buffer;
-		/** APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER. */
+		} _set_transient_vertex_buffer; /**< APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER. */
 		struct {
+			/** The span, taken in the frame the list is compiled in. */
 			aprend_transient_span _span;
+			/** The size of one index: 2 or 4. */
 			uint32_t _index_size;
-		} _set_transient_index_buffer;
-		/** APREND_COMMAND_SET_MATERIAL. */
+		} _set_transient_index_buffer; /**< APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER. */
 		struct {
+			/** The set slot. */
 			uint32_t _slot;
+			/** The material. */
 			aprend_material _material;
-		} _set_material;
-		/** APREND_COMMAND_BEGIN_RENDER_PASS. */
+		} _set_material; /**< APREND_COMMAND_SET_MATERIAL. */
 		struct {
+			/** The render pass. */
 			aprend_render_pass _pass;
-		} _begin_render_pass;
-		/** APREND_COMMAND_SET_COMPUTE_PASS. */
+		} _begin_render_pass; /**< APREND_COMMAND_BEGIN_RENDER_PASS. */
 		struct {
+			/** The compute pass. */
 			aprend_compute_pass _pass;
-		} _set_compute_pass;
-		/** APREND_COMMAND_DRAW_LIST. */
+		} _set_compute_pass; /**< APREND_COMMAND_SET_COMPUTE_PASS. */
 		struct {
+			/** The draw list, built in the frame the list is compiled in. */
 			aprend_draw_list _list;
+			/** The set slot materials go in; APREND_DRAW_LIST_NO_MATERIAL for none. */
 			uint32_t _material_slot;
-		} _draw_list;
-		/** APREND_COMMAND_BEGIN_LABEL. END_LABEL reads nothing. */
+		} _draw_list; /**< APREND_COMMAND_DRAW_LIST. */
 		struct {
 			/** Null-terminated text. NULL is an empty label. */
 			const char *_label;
-		} _begin_label;
-		/** APREND_COMMAND_BLOOM. */
+		} _begin_label; /**< APREND_COMMAND_BEGIN_LABEL. END_LABEL reads nothing. */
 		struct {
 			/** What glows. */
 			aprend_texture_view _source;
 			/** What the glow is added onto. */
 			aprend_texture_view _target;
+			/** The brightness a source texel needs before it glows; 0 for every texel. */
 			float _threshold;
+			/** How far below `_threshold` the glow fades in. */
 			float _knee;
+			/** How far apart the taps reading a level back up are, in texels; above 0. */
 			float _radius;
+			/** Scales what is added to the target. */
 			float _intensity;
 			/** How many levels the glow is spread through. */
 			uint32_t _levels;
@@ -964,57 +1002,73 @@ typedef struct APREND_COMMAND {
 			aprend_texture_view _lens_dirt;
 			/** How much `_lens_dirt` adds to the glow. Not read without `_lens_dirt`. */
 			float _lens_dirt_intensity;
-		} _bloom;
-		/** APREND_COMMAND_TONE_MAP. */
+		} _bloom; /**< APREND_COMMAND_BLOOM. */
 		struct {
+			/** What is tone mapped. */
 			aprend_texture_view _source;
+			/** What the result replaces. */
 			aprend_texture_view _target;
+			/** What each texel is multiplied by first; with `_auto_exposure`, a compensation. */
 			float _exposure;
+			/** The curve. */
 			APREND_TONE_CURVE _curve;
+			/** How the result is written. */
 			APREND_COLOR_ENCODING _encoding;
 			/** NULL for `_exposure` alone. */
 			aprend_exposure _auto_exposure;
-		} _tone_map;
-		/** APREND_COMMAND_LIT_SKY. */
+		} _tone_map; /**< APREND_COMMAND_TONE_MAP. */
 		struct {
+			/** The environment filled. */
 			aprend_lit_environment _environment;
+			/** Towards the sun, in the environment's space (+Y up). */
 			float _sun_direction[3];
+			/** How hazy: 2 clear to 10 hazy. */
 			float _turbidity;
+			/** The zenith's luminance. */
 			float _intensity;
+			/** What the ground below the horizon reflects, linear RGB. */
 			float _ground_albedo[3];
 			/** Which sky: APREND_LIT_SKY_MODEL_PREETHAM (0) or _HOSEK_WILKIE. */
 			APREND_LIT_SKY_MODEL _model;
-		} _lit_sky;
-		/** APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
+		} _lit_sky; /**< APREND_COMMAND_LIT_SKY. */
 		struct {
+			/** The scene whose view the depth was rendered through. */
 			aprend_lit_scene _scene;
+			/** The depth pre-pass. */
 			aprend_texture_view _depth;
+			/** The occlusion in red, the bent normal in green, blue and alpha. */
 			aprend_texture_view _target;
+			/** How far out occlusion is looked for, in the scene's units. */
 			float _radius;
+			/** The power the occlusion is raised to; 1 as measured. */
 			float _intensity;
-		} _lit_ambient_occlusion;
-		/** APREND_COMMAND_AUTO_EXPOSURE. */
+		} _lit_ambient_occlusion; /**< APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
 		struct {
+			/** The exposure adapted. */
 			aprend_exposure _exposure;
+			/** What it adapts to. */
 			aprend_texture_view _source;
+			/** Seconds since the last adaptation, not negative. */
 			float _delta_time;
-		} _auto_exposure;
-		/** APREND_COMMAND_LIT_ENVIRONMENT. */
+		} _auto_exposure; /**< APREND_COMMAND_AUTO_EXPOSURE. */
 		struct {
+			/** The environment filled. */
 			aprend_lit_environment _environment;
+			/** A cube or equirectangular picture, read and not kept. */
 			aprend_texture_view _source;
-		} _lit_environment;
-		/** APREND_COMMAND_DRAW_TEXTURE. */
+		} _lit_environment; /**< APREND_COMMAND_LIT_ENVIRONMENT. */
 		struct {
+			/** What is drawn. */
 			aprend_texture_view _source;
+			/** What it is drawn into, every texel written. */
 			aprend_texture_view _target;
+			/** How the source is fitted to the target. */
 			APREND_TEXTURE_SCALING _scaling;
 			/** SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST. */
 			SPUDGPU_FILTER _filter;
 			/** Where the source doesn't reach, linear RGBA. Not read for STRETCH. */
 			float _border_color[4];
-		} _draw_texture;
-		/** APREND_COMMAND_BLUR. */
+		} _draw_texture; /**< APREND_COMMAND_DRAW_TEXTURE. */
 		struct {
 			/** What is blurred. */
 			aprend_texture_view _source;
@@ -1022,8 +1076,7 @@ typedef struct APREND_COMMAND {
 			aprend_texture_view _target;
 			/** The Gaussian's sigma, in texels of the target. */
 			float _sigma;
-		} _blur;
-		/** APREND_COMMAND_OUTLINE. */
+		} _blur; /**< APREND_COMMAND_BLUR. */
 		struct {
 			/** What the outline goes round: red above 0.5 is inside. */
 			aprend_texture_view _mask;
@@ -1033,15 +1086,13 @@ typedef struct APREND_COMMAND {
 			float _color[4];
 			/** How far out from the mask the outline reaches, in texels. */
 			float _width;
-		} _outline;
-		/** APREND_COMMAND_LIT_CULL_LIGHTS. */
+		} _outline; /**< APREND_COMMAND_OUTLINE. */
 		struct {
 			/** The scene whose lights are culled. */
 			aprend_lit_scene _scene;
 			/** The view's depth, the tiles' bounds. */
 			aprend_texture_view _depth;
-		} _lit_cull_lights;
-		/** APREND_COMMAND_GENERATE_MIPS. */
+		} _lit_cull_lights; /**< APREND_COMMAND_LIT_CULL_LIGHTS. */
 		struct {
 			/** The texture, of the list's instance. */
 			aprend_texture2d _texture;
@@ -1049,14 +1100,14 @@ typedef struct APREND_COMMAND {
 			uint32_t _base_mip;
 			/** SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST. */
 			SPUDGPU_FILTER _filter;
-		} _generate_mips;
+		} _generate_mips; /**< APREND_COMMAND_GENERATE_MIPS. */
 		/**
-		 * Never read. Fixes #_params at 120 bytes, so the command's size
+		 * Never read. Fixes `_params` at 120 bytes, so the command's size
 		 * stays 128 as commands are added: a new command's parameters fit
 		 * in it or come through a pointer.
 		 */
 		uint8_t _padding[120];
-	} _params;
+	} _params; /**< The command's parameters, one member for each APREND_COMMAND_TYPE. */
 } APREND_COMMAND;
 
 /**
