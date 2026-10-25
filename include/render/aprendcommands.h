@@ -33,24 +33,36 @@
 extern "C" {
 #endif // __cplusplus
 
+/** Opaque handle to a vertex buffer (aprendbuffers.h). */
 typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
+/** Opaque handle to an index buffer (aprendbuffers.h). */
 typedef struct aprend_index_buffer_t *aprend_index_buffer;
+/** Opaque handle to a storage buffer (aprendbuffers.h). */
 typedef struct aprend_storage_buffer_t *aprend_storage_buffer;
+/** Opaque handle to a set of storage buffers (aprendbuffers.h). */
 typedef struct aprend_storage_buffer_set_t *aprend_storage_buffer_set;
+/** Opaque handle to a graphics pipeline (aprendpipeline.h). */
 typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
+/** Opaque handle to a compute pipeline (aprendpipeline.h). */
 typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
+/** Opaque handle to a binding set (aprendpipeline.h). */
 typedef struct aprend_binding_set_t *aprend_binding_set;
+/** Opaque handle to a swap chain (aprendswapchain.h). */
 typedef struct aprend_swap_chain_t *aprend_swap_chain;
+/** Opaque handle to a material (aprendmaterial.h). */
 typedef struct aprend_material_t *aprend_material;
+/** Opaque handle to a render pass (aprendpass.h). */
 typedef struct aprend_render_pass_t *aprend_render_pass;
+/** Opaque handle to a compute pass (aprendpass.h). */
 typedef struct aprend_compute_pass_t *aprend_compute_pass;
+/** Opaque handle to a draw list (aprenddrawlist.h). */
 typedef struct aprend_draw_list_t *aprend_draw_list;
-/* An environment for lit surfaces (aprendlit.h), filled by
+/** An environment for lit surfaces (aprendlit.h), filled by
  * APREND_COMMAND_LIT_ENVIRONMENT. */
 typedef struct aprend_lit_environment_t *aprend_lit_environment;
-/* A lit scene (aprendlit.h), read by APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
+/** A lit scene (aprendlit.h), read by APREND_COMMAND_LIT_AMBIENT_OCCLUSION. */
 typedef struct aprend_lit_scene_t *aprend_lit_scene;
-/* An adapting exposure (aprendpost.h), for APREND_COMMAND_AUTO_EXPOSURE and
+/** An adapting exposure (aprendpost.h), for APREND_COMMAND_AUTO_EXPOSURE and
  * APREND_COMMAND_TONE_MAP. */
 typedef struct aprend_exposure_t *aprend_exposure;
 

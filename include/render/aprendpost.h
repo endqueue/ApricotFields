@@ -44,12 +44,15 @@ typedef struct aprend_exposure_desc {
 	 * (stops): darker than min_log is exposed as min_log, brighter than
 	 * max_log as max_log. min_log below max_log. */
 	float min_log;
+	/** The top of that range: brighter than it is exposed as it. Above
+	 * #min_log. */
 	float max_log;
 	/** How fast the exposure moves, in stops a second (or rather: the share
 	 * of the way it closes in a second is 1 - e^-rate): brightening a dark
 	 * picture, and darkening a bright one. Eyes adapt to the dark slower:
 	 * 3 and 1 are usual. 0 never moves; above 0. */
 	float up_rate;
+	/** As #up_rate, for darkening a bright picture. 1 is usual; above 0. */
 	float down_rate;
 	/**
 	 * The share of the picture's texels, the darkest first, left out of the
@@ -73,6 +76,10 @@ typedef struct aprend_exposure_desc {
 /**
  * @brief Creates an exposure. Its first AUTO_EXPOSURE takes the exposure it
  * measures at once, with nothing to ease from.
+ *
+ * @param[in] instance Instance the exposure is of.
+ * @param[in] desc     The exposure's configuration. Only read during the
+ *                     call.
  *
  * @return The exposure, or NULL if an argument is NULL, a value is out of
  *         its range (the shares too), or a texture, buffer or set can't be

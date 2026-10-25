@@ -976,9 +976,9 @@ typedef struct aprend_depth_target {
 	/** The view rendered to, a view of a 2D texture. NULL for no depth. */
 	aprend_texture_view view;
 	/** What the pass starts with, for depth and for stencil. */
-	SPUDGPU_LOAD_OP depth_load_op, stencil_load_op;
+	SPUDGPU_LOAD_OP depth_load_op, /** What the pass starts with, for stencil. */ stencil_load_op;
 	/** Whether what the pass writes is kept, for depth and for stencil. */
-	SPUDGPU_STORE_OP depth_store_op, stencil_store_op;
+	SPUDGPU_STORE_OP depth_store_op, /** Whether the stencil the pass writes is kept. */ stencil_store_op;
 	/** Depth the target is cleared to when #depth_load_op clears. */
 	float clear_depth;
 	/** Stencil the target is cleared to when #stencil_load_op clears. */

@@ -198,6 +198,8 @@ aprend_shader aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER 
  *
  * The instance's, as aprend_lit_get_shader()'s are: don't destroy it.
  *
+ * @param[in] instance Instance the layout is of.
+ *
  * @return The layout, or NULL if @p instance is NULL or it can't be made
  *         (printed).
  */
@@ -211,6 +213,8 @@ aprend_binding_layout aprend_lit_get_scene_layout(aprend_instance instance);
  * aprend_lit_scene_get_spot_shadow_material()). The instance's: don't
  * destroy it.
  *
+ * @param[in] instance Instance the layout is of.
+ *
  * @return The layout, or NULL if @p instance is NULL or it can't be made
  *         (printed).
  */
@@ -220,6 +224,8 @@ aprend_binding_layout aprend_lit_get_shadow_layout(aprend_instance instance);
  * @brief The layout of set APREND_LIT_MATERIAL_SET, for slot 1 of a lit
  * pipeline (and of a cut-out shadow pass): what a lit material fills. The
  * instance's: don't destroy it.
+ *
+ * @param[in] instance Instance the layout is of.
  *
  * @return The layout, or NULL if @p instance is NULL or it can't be made
  *         (printed).
@@ -232,7 +238,9 @@ aprend_binding_layout aprend_lit_get_material_layout(aprend_instance instance);
  */
 /* Frozen: a vertex in GPU memory, laid out as the lit shaders read it. It never changes; a new need gets a new type. */
 typedef struct aprend_lit_vertex {
+	/** The position, in the mesh's own space. */
 	float position[3];
+	/** The normal, in the mesh's own space. */
 	float normal[3];
 	/** The texture coordinate, v down the image (its first row at 0). */
 	float uv[2];
@@ -259,12 +267,16 @@ typedef struct aprend_lit_instance {
  * @brief The vertex layout of aprend_lit_vertex, for vertex binding 0 of a
  * pipeline with Aprend's lit vertex shaders. Its elements are Aprend's own,
  * static, so the layout may be kept as long as anything likes.
+ *
+ * @return The layout: four elements, a stride of 48.
  */
 aprend_vertex_layout aprend_lit_vertex_layout(void);
 
 /**
  * @brief The vertex layout of aprend_lit_instance (four VEC4 columns), for
- * vertex binding 1, per instance.
+ * vertex binding 1, per instance. Static, as aprend_lit_vertex_layout()'s.
+ *
+ * @return The layout: four elements, a stride of 64.
  */
 aprend_vertex_layout aprend_lit_instance_layout(void);
 
@@ -354,6 +366,8 @@ enum {
  * by their names in the block (`base_color`, `roughness`, ...) with
  * aprend_material_set_uniform().
  *
+ * @param[in] instance Instance the material is of.
+ *
  * @return The material, or NULL if @p instance is NULL or it can't be made
  *         (printed).
  */
@@ -361,6 +375,9 @@ aprend_material aprend_lit_material_create(aprend_instance instance);
 
 /**
  * @brief Sets every value of a lit material at once.
+ *
+ * @param[in] material Material to change.
+ * @param[in] values   The values. Only read during the call.
  *
  * @return false, with nothing changed, if an argument is NULL, @p material
  *         is not of aprend_lit_get_material_layout(), or a value is not
@@ -370,6 +387,9 @@ bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_m
 
 /**
  * @brief Reads a lit material's values back.
+ *
+ * @param[in]  material   Material to read.
+ * @param[out] out_values Receives the values.
  *
  * @return false, with nothing written, if an argument is NULL or @p material
  *         is not of aprend_lit_get_material_layout().
@@ -435,6 +455,11 @@ bool aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_L
  * @brief Puts the sampler every map of a lit material is read through, or
  * puts back Aprend's (linear, mipmapped, repeating).
  *
+ * @param[in] material Material to change.
+ * @param[in] sampler  The sampler, or NULL for Aprend's. It must outlive
+ *                     the material, or be replaced before the next compile
+ *                     after it goes.
+ *
  * @return false, with nothing changed, if @p material is NULL or not of
  *         aprend_lit_get_material_layout(), or @p sampler is of another
  *         instance.
@@ -477,6 +502,9 @@ typedef struct aprend_lit_environment_desc {
 /**
  * @brief Creates an environment, black until it is filled.
  *
+ * @param[in] instance Instance the environment is of.
+ * @param[in] desc     The environment's sizes. Only read during the call.
+ *
  * @return The environment, or NULL if an argument is NULL, a size is not a
  *         power of 2 in its range, or a texture can't be created (printed).
  */
@@ -494,6 +522,8 @@ void aprend_lit_environment_destroy(aprend_lit_environment environment);
 /**
  * @brief How many mips an environment's specular chain has: the roughness of
  * mip m is m / (count - 1).
+ *
+ * @param[in] environment Environment to read.
  *
  * @return The count, or 0 if @p environment is NULL.
  */
@@ -521,6 +551,8 @@ typedef struct aprend_lit_scene_t *aprend_lit_scene;
  * everything else 0: no view, no sun, no lights, no ambient light, no
  * shadows, so a surface drawn with it is black but for its emission.
  *
+ * @param[in] instance Instance the scene is of.
+ *
  * @return The scene, or NULL if @p instance is NULL or it can't be made
  *         (printed).
  */
@@ -540,6 +572,8 @@ void aprend_lit_scene_destroy(aprend_lit_scene scene);
  * at slot APREND_LIT_SCENE_SET. The scene's: set it through the scene's
  * calls, not the material's, and don't destroy it.
  *
+ * @param[in] scene Scene to read.
+ *
  * @return The material, or NULL if @p scene is NULL.
  */
 aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene);
@@ -550,6 +584,9 @@ aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene);
  * cascade's matrix from aprend_lit_scene_set_sun_shadow(). The scene's:
  * don't destroy it.
  *
+ * @param[in] scene   Scene to read.
+ * @param[in] cascade Which cascade.
+ *
  * @return The material, or NULL if @p scene is NULL or @p cascade is not
  *         below APREND_LIT_MAX_CASCADES.
  */
@@ -558,6 +595,10 @@ aprend_material aprend_lit_scene_get_sun_shadow_material(aprend_lit_scene scene,
 /**
  * @brief The material a pass that renders spot shadow @p index binds at set
  * 0, as aprend_lit_scene_get_sun_shadow_material() is for a cascade.
+ *
+ * @param[in] scene Scene to read.
+ * @param[in] index Which spot shadow: its place in the shadows
+ *                  aprend_lit_scene_set_spot_shadows() was given.
  *
  * @return The material, or NULL if @p scene is NULL or @p index is not below
  *         APREND_LIT_MAX_SPOT_SHADOWS.
@@ -591,6 +632,7 @@ typedef struct aprend_lit_view {
 	 * the ambient occlusion are read by it.
 	 */
 	uint32_t target_width;
+	/** The target's height, in texels, as #target_width. */
 	uint32_t target_height;
 	/** What the color is multiplied by before it is written out. 1 leaves it. */
 	float exposure;
@@ -600,6 +642,9 @@ typedef struct aprend_lit_view {
 
 /**
  * @brief Sets where a scene is seen from.
+ *
+ * @param[in] scene Scene to change.
+ * @param[in] view  Where from. Only read during the call.
  *
  * @return false, with nothing changed, if an argument is NULL, a value is not
  *         finite, the exposure is negative, only one of the target's sides
@@ -631,6 +676,9 @@ typedef struct aprend_lit_sun {
 
 /**
  * @brief Sets a scene's sun.
+ *
+ * @param[in] scene Scene to change.
+ * @param[in] sun   The sun. Only read during the call.
  *
  * @return false, with nothing changed, if an argument is NULL, a value is not
  *         finite or a radiance negative, the direction is 0 while the
@@ -729,6 +777,7 @@ typedef struct aprend_lit_cascade_fit {
 	/** The stretch of the view's depth the cascades cover: near_depth above 0
 	 * for a perspective view, far_depth beyond it. */
 	float near_depth;
+	/** The far end of that stretch: beyond #near_depth. */
 	float far_depth;
 	/** 1 to APREND_LIT_MAX_CASCADES. */
 	uint32_t cascade_count;
@@ -765,6 +814,10 @@ typedef struct aprend_lit_cascade_fit {
  * Valient's "Stable Rendering of Cascaded Shadow Maps", as Unreal and Hazel
  * have them. Depth runs 0 at the sun's end to 1 (or reversed).
  *
+ * @param[in]  fit        The view and how its cascades are framed. Only read
+ *                        during the call.
+ * @param[out] out_shadow Receives the cascades, as above.
+ *
  * @return false, with nothing written, if an argument is NULL, a value is not
  *         finite, a direction is 0, up runs along the view, the depths or the
  *         field of view are out of their ranges, the cascade count is 0 or
@@ -788,7 +841,9 @@ enum {
  */
 /* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
 typedef struct aprend_lit_light {
+	/** A point light or a spot. */
 	APREND_LIT_LIGHT_TYPE type;
+	/** Where the light is, in the scene's space. */
 	float position[3];
 	/** A spot's axis, from the light outwards; any length but 0. Not read
 	 * for a point light. */
@@ -835,8 +890,11 @@ typedef struct aprend_lit_spot_shadow {
 	float view_projection[16];
 	/** As aprend_lit_sun_shadow's. */
 	float depth_bias;
+	/** As aprend_lit_sun_shadow's. */
 	float normal_offset;
+	/** As aprend_lit_sun_shadow's. */
 	float softness;
+	/** As aprend_lit_sun_shadow's. */
 	float strength;
 } aprend_lit_spot_shadow;
 
@@ -883,8 +941,11 @@ typedef struct aprend_lit_point_shadow {
 	float view_projection[6][16];
 	/** As aprend_lit_sun_shadow's. */
 	float depth_bias;
+	/** As aprend_lit_sun_shadow's. */
 	float normal_offset;
+	/** As aprend_lit_sun_shadow's. */
 	float softness;
+	/** As aprend_lit_sun_shadow's. */
 	float strength;
 } aprend_lit_point_shadow;
 
@@ -917,6 +978,12 @@ bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_v
  * @p index binds at set 0, as aprend_lit_scene_get_spot_shadow_material() is
  * for a spot.
  *
+ * @param[in] scene Scene to read.
+ * @param[in] index Which point shadow: its place in the shadows
+ *                  aprend_lit_scene_set_point_shadows() was given.
+ * @param[in] face  Which face, 0 to 5, in the order of
+ *                  aprend_lit_point_shadow::view_projection.
+ *
  * @return The material, or NULL if @p scene is NULL, @p index is not below
  *         APREND_LIT_MAX_POINT_SHADOWS or @p face is not below 6.
  */
@@ -928,6 +995,13 @@ aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scen
  * -Y, +Z, -Z for faces 0 to 5), from @p near_depth out to the light's range,
  * a little wider than 90 degrees (the tangent of its half angle is 1.05),
  * so a soft shadow's taps near a face's edge stay inside the face's map.
+ *
+ * @param[in]  light               The point light.
+ * @param[in]  face                Which face, 0 to 5.
+ * @param[in]  near_depth          The near plane's distance from the light.
+ * @param[in]  reversed_depth      Whether the map is rendered with depth
+ *                                 reversed: near at 1, far at 0.
+ * @param[out] out_view_projection Receives the matrix, column after column.
  *
  * @return false, with nothing written, if an argument is NULL, the light is
  *         not a valid point light (as aprend_lit_scene_set_lights() checks),
@@ -941,6 +1015,12 @@ bool aprend_lit_point_shadow_view_projection(const aprend_lit_light *light, uint
  * @brief The matrix a spot light's shadow is rendered through: a perspective
  * from the light along its axis, wide enough for its cone, from
  * @p near_depth out to its range.
+ *
+ * @param[in]  light               The spot.
+ * @param[in]  near_depth          The near plane's distance from the light.
+ * @param[in]  reversed_depth      Whether the map is rendered with depth
+ *                                 reversed: near at 1, far at 0.
+ * @param[out] out_view_projection Receives the matrix, column after column.
  *
  * @return false, with nothing written, if an argument is NULL, the light is
  *         not a valid spot (as aprend_lit_scene_set_lights() checks), or
@@ -979,6 +1059,9 @@ typedef struct aprend_lit_ambient {
 
 /**
  * @brief Sets a scene's ambient light.
+ *
+ * @param[in] scene   Scene to change.
+ * @param[in] ambient The ambient light. Only read during the call.
  *
  * @return false, with nothing changed, if an argument is NULL, a value is not
  *         finite, a color or the intensity is negative, up is 0 while a

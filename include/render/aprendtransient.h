@@ -109,8 +109,11 @@ bool aprend_transient_allocate(
  * @brief Bytes of transient memory taken in the current frame so far,
  * padding for alignment included.
  *
- * For sizing aprend_instance_desc::transient_chunk_size. 0 if @p instance is
- * NULL.
+ * For sizing aprend_instance_desc::transient_chunk_size.
+ *
+ * @param[in] instance Instance to read.
+ *
+ * @return The bytes taken, or 0 if @p instance is NULL.
  */
 uint64_t aprend_transient_get_frame_usage(aprend_instance instance);
 

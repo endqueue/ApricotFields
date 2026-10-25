@@ -209,16 +209,16 @@ block near the top. A new header gets the same block.
   structs, enums and constants (`APSYNC_SESSION_DESC`, `APSYNC_CHANNEL_ORDERED`).
 - Header comments are the contract: what the call does, its preconditions, its
   failures. Implementation notes are `//` comments in the `.cpp`.
-- Aprend's headers (`include/render/`, and `apricotfields.h`) are Javadoc-style
-  Doxygen: a `@file` block with the header's `@par Threads`, then `/** */` on
-  every declaration, struct member and enumerator, with `@brief`,
-  `@param[in]`/`[out]`, `@return`, `@warning` and `@see`. A parameter is `@p
-  name` in prose, a function `name()`, a member of the same struct `#member`,
-  and a field or command member in backticks. `aprendimages.h` is the model.
-  The `Doxyfile` at the repo root builds them; it reports no warnings,
-  checked by `./check.sh doxygen`.
-- The other modules' headers are `/* */` comments that name parameters in
-  `[brackets]`. Don't mix the two styles in one header.
+- Every public header is Javadoc-style Doxygen (since 2026-10-25; ApArchive,
+  ApAudio, ApSync, ApMath and `apricore.h` were `/* */` with `[brackets]`
+  before): a `@file` block with the header's `@par Threads` where it has a
+  threading rule, then `/** */` on every declaration, struct member and
+  enumerator, with `@brief`, `@param[in]`/`[out]`, `@return`, `@warning` and
+  `@see`. A parameter is `@p name` in prose, a function `name()`, a member
+  of the same struct `#member`, and a field or command member in backticks.
+  `aprendimages.h` is the model. `/* Frozen: ... */` lines and section
+  banners stay plain comments. The `Doxyfile` at the repo root builds them;
+  it reports no warnings, checked by `./check.sh doxygen`.
 - Math types crossing the API are the `Apri*` structs from `aprimath.h`. They are
   laid out identically to their GLM counterparts so `to_glm()` can reinterpret them
   in place; changing a member's order or type breaks that silently.
