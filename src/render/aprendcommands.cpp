@@ -73,6 +73,34 @@ static void aprend_view_size(aprend_texture_view view, uint32_t *out_width, uint
 	*out_height = aprend_mip_size(view->texture._t2d->desc.height, view->desc.base_mip);
 }
 
+/* Whether DRAW_TEXTURE's [rect] (its [what]) is zeroed or inside [view]'s
+ * mip, its width and height both 0 or both above 0. Prints what is wrong. */
+static bool aprend_texel_rect_valid(const char *what, const APREND_TEXEL_RECT &rect, aprend_texture_view view) {
+	if ((rect.width == 0) != (rect.height == 0)) {
+		printf("aprend: DRAW_TEXTURE with a %s of %ux%u: its width and height are both 0 or both above 0\n", what, (unsigned)rect.width,
+		       (unsigned)rect.height);
+		return false;
+	}
+	if (rect.width == 0) {
+		if (rect.x != 0 || rect.y != 0) {
+			printf("aprend: DRAW_TEXTURE with a %s of no size at (%u, %u): a whole one is zeroed\n", what, (unsigned)rect.x, (unsigned)rect.y);
+			return false;
+		}
+		return true;
+	}
+	uint32_t width = 0, height = 0;
+	aprend_view_size(view, &width, &height);
+	if (rect.x >= width || rect.width > width - rect.x) {
+		printf("aprend: DRAW_TEXTURE with a %s reaching past its view's width of %u\n", what, (unsigned)width);
+		return false;
+	}
+	if (rect.y >= height || rect.height > height - rect.y) {
+		printf("aprend: DRAW_TEXTURE with a %s reaching past its view's height of %u\n", what, (unsigned)height);
+		return false;
+	}
+	return true;
+}
+
 /* Whether 2D views [a] and [b] are of mips of one size. */
 static bool aprend_views_one_size(aprend_texture_view a, aprend_texture_view b) {
 	uint32_t aw = 0, ah = 0, bw = 0, bh = 0;
@@ -709,8 +737,8 @@ static void aprend_send_command_recorded(
 			cmd_list->recording_error = true;
 			return;
 		}
-		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET) {
-			printf("aprend: BLOOM with a target that is not a RENDER_TAGET view\n");
+		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET) {
+			printf("aprend: BLOOM with a target that is not a RENDER_TARGET view\n");
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -850,8 +878,8 @@ static void aprend_send_command_recorded(
 			cmd_list->recording_error = true;
 			return;
 		}
-		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET) {
-			printf("aprend: DRAW_TEXTURE with a target that is not a RENDER_TAGET view\n");
+		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET) {
+			printf("aprend: DRAW_TEXTURE with a target that is not a RENDER_TARGET view\n");
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -874,6 +902,14 @@ static void aprend_send_command_recorded(
 			return;
 		}
 		if (!aprend_texture_scaling_valid("DRAW_TEXTURE", p._scaling, p._filter, p._border_color, p._scaling != APREND_TEXTURE_SCALING_STRETCH)) {
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!aprend_texel_rect_valid("_source_rect", p._source_rect, p._source)) {
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (!aprend_texel_rect_valid("_target_rect", p._target_rect, p._target)) {
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -920,8 +956,8 @@ static void aprend_send_command_recorded(
 			cmd_list->recording_error = true;
 			return;
 		}
-		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET) {
-			printf("aprend: BLUR with a target that is not a RENDER_TAGET view\n");
+		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET) {
+			printf("aprend: BLUR with a target that is not a RENDER_TARGET view\n");
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -1013,8 +1049,8 @@ static void aprend_send_command_recorded(
 			cmd_list->recording_error = true;
 			return;
 		}
-		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET) {
-			printf("aprend: OUTLINE with a target that is not a RENDER_TAGET view\n");
+		if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET) {
+			printf("aprend: OUTLINE with a target that is not a RENDER_TARGET view\n");
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -1118,8 +1154,8 @@ static void aprend_send_command_recorded(
 			fault = "a source that is not a SHADER_RESOURCE 2D view of color";
 		else if (p._source->desc.mip_count != 1)
 			fault = "a source of more than one mip";
-		else if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
-			fault = "a target that is not a RENDER_TAGET 2D view";
+		else if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET || p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
+			fault = "a target that is not a RENDER_TARGET 2D view";
 		else if (!aprend_builtin_downsample_format(p._target->texture._t2d->desc.format))
 			fault = "a target in a format it doesn't render onto";
 		else if (aprend_texture_ranges_overlap(aprend_texture_view_range(p._source), aprend_texture_view_range(p._target)))
@@ -1194,9 +1230,9 @@ static void aprend_send_command_recorded(
 		else if (p._depth->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || p._depth->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
 		         p._depth->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_DEPTH)
 			fault = "a depth that is not a SHADER_RESOURCE 2D view of depth";
-		else if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
+		else if (p._target->view_type != APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET || p._target->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
 		         !aprend_builtin_downsample_format(p._target->texture._t2d->desc.format))
-			fault = "a target that is not a RENDER_TAGET 2D view of a format it renders onto";
+			fault = "a target that is not a RENDER_TARGET 2D view of a format it renders onto";
 		else if (aprend_mip_size(p._depth->texture._t2d->desc.width, p._depth->desc.base_mip) !=
 		             aprend_mip_size(p._target->texture._t2d->desc.width, p._target->desc.base_mip) ||
 		         aprend_mip_size(p._depth->texture._t2d->desc.height, p._depth->desc.base_mip) !=
@@ -1366,21 +1402,35 @@ static void aprend_cmd_transition_view(
  * gets shown. */
 static bool aprend_cmd_range_written(aprend_command_list cmd_list, const aprend_texture_range &range);
 
-/* A full-target draw of [source] (a SHADER_RESOURCE 2D view of one mip of
- * color) into [target], a view [width] by [height] of [format], fitted as
- * [scaling] says: what DRAW_TEXTURE records, and PRESENT_TEXTURE's draw
- * modes onto a back buffer. Moves the source to SHADER_READ_ONLY; the target
- * is the caller's to have in COLOR_ATTACHMENT_OPTIMAL, and to move after.
- * False, printed with [who], if the pipeline or the set can't be made.
- * Recorded outside any pass. Throws std::bad_alloc. */
+/* [rect] made whole: a zeroed one is all of a mip [width] by [height]. */
+static APREND_TEXEL_RECT aprend_texel_rect_resolved(const APREND_TEXEL_RECT *rect, uint32_t width, uint32_t height) {
+	if (rect && rect->width != 0)
+		return *rect;
+	APREND_TEXEL_RECT whole{};
+	whole.width  = width;
+	whole.height = height;
+	return whole;
+}
+
+/* A draw of [source_rect] of [source] (a SHADER_RESOURCE 2D view of one mip
+ * of color) into [target_rect] of [target], a view [width] by [height] of
+ * [format], fitted as [scaling] says: what DRAW_TEXTURE records, and
+ * PRESENT_TEXTURE's draw modes onto a back buffer. A NULL or zeroed
+ * rectangle is the whole mip; the target outside its rectangle keeps what
+ * it held. Moves the source to SHADER_READ_ONLY; the target is the
+ * caller's to have in COLOR_ATTACHMENT_OPTIMAL, and to move after. False,
+ * printed with [who], if the pipeline or the set can't be made. Recorded
+ * outside any pass. Throws std::bad_alloc. */
 static bool aprend_cmd_draw_fitted(
     aprend_command_list cmd_list,
     const char *who,
     aprend_texture_view source,
+    const APREND_TEXEL_RECT *source_rect,
     spudgpu_image_view target,
     SPUDGPU_FORMAT format,
     uint32_t width,
     uint32_t height,
+    const APREND_TEXEL_RECT *target_rect,
     APREND_TEXTURE_SCALING scaling,
     SPUDGPU_FILTER filter,
     const float border[4]) {
@@ -1395,14 +1445,29 @@ static bool aprend_cmd_draw_fitted(
 	aprend_binding_set set = aprend_texture_view_present_set(source, filter);
 	if (!set)
 		return false;
+	uint32_t source_width = 0, source_height = 0;
+	aprend_view_size(source, &source_width, &source_height);
+	const APREND_TEXEL_RECT from = aprend_texel_rect_resolved(source_rect, source_width, source_height);
+	const APREND_TEXEL_RECT to   = aprend_texel_rect_resolved(target_rect, width, height);
 	aprend_present_params params{};
 	memcpy(params.border, border, sizeof(params.border));
-	params.target_size[0] = (float)width;
-	params.target_size[1] = (float)height;
-	params.mode           = (uint32_t)scaling;
+	params.target_offset[0] = (float)to.x;
+	params.target_offset[1] = (float)to.y;
+	params.target_size[0]   = (float)to.width;
+	params.target_size[1]   = (float)to.height;
+	params.source_offset[0] = (float)from.x;
+	params.source_offset[1] = (float)from.y;
+	params.source_size[0]   = (float)from.width;
+	params.source_size[1]   = (float)from.height;
+	params.mode             = (uint32_t)scaling;
 	aprend_cmd_transition_range(cmd_list, range, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
-	// Every texel is written: what the target held is not loaded.
-	aprend_record_fullscreen_pass(cmd_list->cmd_list, pipeline, target, width, height, SPUDGPU_LOAD_OP_DONT_CARE, set, &params, sizeof(params));
+	// Every texel of the target rectangle is written: what the target held
+	// is loaded only where the rectangle leaves some of it.
+	const bool whole                 = to.x == 0 && to.y == 0 && to.width == width && to.height == height;
+	const uint32_t region[4]         = {to.x, to.y, to.width, to.height};
+	const aprend_binding_set sets[1] = {set};
+	aprend_record_fullscreen_pass_region(cmd_list->cmd_list, pipeline, target, width, height, region,
+	                                     whole ? SPUDGPU_LOAD_OP_DONT_CARE : SPUDGPU_LOAD_OP_LOAD, sets, 1, 0, &params, sizeof(params));
 	return true;
 }
 
@@ -1414,8 +1479,8 @@ static bool aprend_cmd_draw_texture(aprend_command_list cmd_list, const APREND_C
 	const uint32_t width   = aprend_mip_size(target->desc.width, p._target->desc.base_mip);
 	const uint32_t height  = aprend_mip_size(target->desc.height, p._target->desc.base_mip);
 	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	return aprend_cmd_draw_fitted(cmd_list, "DRAW_TEXTURE", p._source, p._target->image_view, target->desc.format, width, height, p._scaling,
-	                              p._filter, p._border_color);
+	return aprend_cmd_draw_fitted(cmd_list, "DRAW_TEXTURE", p._source, &p._source_rect, p._target->image_view, target->desc.format, width,
+	                              height, &p._target_rect, p._scaling, p._filter, p._border_color);
 }
 
 /* The view a draw-mode PRESENT_TEXTURE reads [texture] through: mip 0 of
@@ -1486,8 +1551,8 @@ static bool aprend_cmd_present_texture(
 			return false;
 		aprend_cmd_use_handle(cmd_list, view);
 		spudgpu_cmd_image_barrier_view(cmd_list->cmd_list, back_view, SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-		if (!aprend_cmd_draw_fitted(cmd_list, "PRESENT_TEXTURE", view, back_view, actual.format, actual.width, actual.height, p._scaling, p._filter,
-		                            p._border_color))
+		if (!aprend_cmd_draw_fitted(cmd_list, "PRESENT_TEXTURE", view, NULL, back_view, actual.format, actual.width, actual.height, NULL,
+		                            p._scaling, p._filter, p._border_color))
 			return false;
 		spudgpu_cmd_image_barrier_view(cmd_list->cmd_list, back_view, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_PRESENT_SRC);
 		cmd_list->present_swap_chain  = sc;

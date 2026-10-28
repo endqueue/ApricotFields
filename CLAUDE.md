@@ -44,6 +44,8 @@ when you finish or add an item.
 
 Aprend is older and written differently from the four newer modules. Don't carry
 one style into the other, and don't convert Aprend to the newer shape unless asked.
+The whole conversion is decided (2026-10-28, `APREND_TODO.md`, "The contract
+conversion"), to be done before the first release; until it is, this holds.
 
 | | Aprend (`src/render/`) | ApArchive, ApAudio, ApSync, ApMath |
 |---|---|---|
@@ -99,6 +101,14 @@ block near the top. A new header gets the same block.
   delivers events by polling for that reason.
 - **Platform gaps come from SpudLib's `SPUD*_EXT_*` macros**, never from a
   platform's name, and surface as `APRESULT_UNSUPPORTED`.
+
+## Containers: eqstd (decided 2026-10-28)
+
+New containers and strings in `src/` come from `eqstd` (the workspace's
+`EQSTD_TODO.md`; not built): `eq::array` for plain data, `eq::vector` and
+`eq::string` for the rest, never in a public header. Old code converts as
+it is changed. Whether every desc takes a caller's allocator is paused
+(card X12); until then they use the system heap.
 
 ## Code conventions
 

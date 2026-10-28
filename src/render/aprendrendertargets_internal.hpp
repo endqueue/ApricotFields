@@ -22,11 +22,6 @@
 
 struct aprend_command_list_t;
 
-/* How many frames an entry nobody has taken is kept before it is retired:
- * long enough that a size used every few frames stays, short enough that
- * the sizes of a window being dragged go. */
-#define APREND_RENDER_TARGET_IDLE_FRAMES 120u
-
 /* One texture of the pool, with a 2D view to render and one to read each of
  * its levels. Made by the first take that finds none free of its key. */
 struct aprend_pooled_target {
@@ -34,6 +29,8 @@ struct aprend_pooled_target {
 	uint32_t height{0};
 	SPUDGPU_FORMAT format{SPUDGPU_FORMAT_UNKNOWN};
 	uint32_t levels{0};
+	/* Its texels' bytes, every level, as its format counts them. */
+	uint64_t bytes{0};
 	aprend_texture2d texture{nullptr};
 	std::vector<aprend_texture_view> level_targets{};
 	std::vector<aprend_texture_view> level_sources{};
@@ -41,8 +38,8 @@ struct aprend_pooled_target {
 	 * last was. */
 	bool taken{false};
 	uint64_t taken_frame{0};
-	/* The frame it was made or last taken in, given back or not: what
-	 * APREND_RENDER_TARGET_IDLE_FRAMES counts from. */
+	/* The frame it was made or last taken in, given back or not: what the
+	 * pool's retire_idle_frames counts from. */
 	uint64_t used_frame{0};
 };
 
@@ -52,6 +49,13 @@ struct aprend_render_target_pool {
 	 * aprend_instance_next_frame has waited: an entry taken in one of them
 	 * is free. */
 	uint64_t free_below{0};
+	/* The bytes of every entry in [targets], kept as they come and go. */
+	uint64_t bytes{0};
+	/* The caller's retirement (aprend_instance_set_render_target_retirement):
+	 * frames untaken before an entry may go, 0 while it is unset (nothing
+	 * goes by itself), and the bytes at or under which nothing goes. */
+	uint32_t retire_idle_frames{0};
+	uint64_t retire_keep_bytes{0};
 };
 
 /* What a compile took from the pool, kept by the list until it is submitted:
@@ -84,8 +88,8 @@ aprend_pooled_target *aprend_render_target_take(
 void aprend_render_target_give_back(aprend_command_list_t *cmd_list);
 
 /* From aprend_instance_next_frame, once its wait has succeeded: every frame
- * before the one now [frames_in_flight] back has finished, and an entry free
- * and untaken for APREND_RENDER_TARGET_IDLE_FRAMES is retired. */
+ * before the one now [frames_in_flight] back has finished, and entries are
+ * retired as the caller's retirement says, if it has set one. */
 void aprend_render_target_pool_begin_frame(aprend_instance instance);
 
 /* From the instance's destructor, before its release queue is emptied:

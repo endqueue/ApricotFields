@@ -8,6 +8,32 @@ is the older generation of code in this repo (see `CLAUDE.md`, "Two generations
 of code") and is mid-overhaul. This file holds what is known to be wrong or
 unfinished in it.
 
+## The contract conversion (cards A2, A10, A14; decided 2026-10-28)
+
+**Decided with the user 2026-10-28; not started.** All of Aprend moves to
+the newer modules' contract before ApricotFields' first release (a
+condition of 1.0 under card X2), header by header, creation calls first,
+each caller in the workspace converted in
+the same change:
+
+- Every call that can fail returns `APRESULT`; a creation gives its handle
+  through an `out_` parameter (null on failure). Today: 75 calls return
+  `bool`, 32 creations return the handle or NULL, none returns `APRESULT`.
+- **No `printf` as the error channel** (about 850 today). The reason goes
+  into a per-call `APREND_ERROR` the caller passes in (NULL to skip), as
+  `APARCHIVE_ERROR` is: developer English, safe under the threading rule
+  (root `CLAUDE.md`, "Threading"). For a compile that fails, it also names
+  the failing command's index ("command 412: BLUR source has nothing in
+  it").
+- **A10:** `aprend_instance_next_frame()` returns a result, gives the frame
+  index through `out_`, takes a timeout, and reports a lost device.
+- **A14:** `aprendbuffers.h` is rewritten as one `aprend_buffer` with a
+  usage mask and the existing `APREND_BUFFER_WRITES` hint; the pools stay.
+  Not mesh types: those are a caller's.
+- Card A1's three renames were made on their own, first (2026-10-28).
+
+The workspace's error policy is in the root `CLAUDE.md`, "Errors".
+
 ## State of the code
 
 - **Compiled on macOS on 2026-10-10; run there in part.** Everything in this section
@@ -280,7 +306,7 @@ unfinished in it.
   - None of it has run. A view of part of a texture has never been created.
 - **Layered passes, written 2026-10-10 and compiled on all three
   backends** (item 16):
-  - A view of type RENDER_TAGET or DEPTH_STENCIL may be a 2D array of one
+  - A view of type RENDER_TARGET or DEPTH_STENCIL may be a 2D array of one
     mip, on a device created with `SPUDGPU_FEATURE_LAYERED_RENDERING`
     (before 2026-10-21, a device property read once into the instance);
     on any other, creating one fails.
@@ -1517,13 +1543,14 @@ today:
   (`create_offscreen_color_target`, in `aprendframes.cpp` and
   `aprendimages_internal.hpp`), which `CLAUDE.md` rules out. They mean "the
   caller's array may be a local". Both say that now (2026-10-22).
-- **`aprend_framebuffer_texture_spec::use_for_gui`** does exactly what
-  `shader_resource` does and names what a caller does with the texture.
-  Removing it changes the header and every caller that sets it.
-- **`APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET`** is misspelt in the public
-  enum. Renaming it changes every caller.
-- **`aprend_destroy_texture_view`** is the one destroy call with the verb
-  first; the rest are `aprend_<object>_destroy`.
+- **Done 2026-10-28 (card A1, with the user): three breaking renames,**
+  in one change with every caller in the workspace.
+  `aprend_framebuffer_texture_spec::use_for_gui`, which did exactly what
+  `shader_resource` does and named what a caller does with the texture, is
+  gone; the misspelt `APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET` is
+  `..._RENDER_TARGET`; and `aprend_destroy_texture_view`, the one destroy
+  call with the verb first, is `aprend_texture_view_destroy`. Run on macOS
+  (Metal).
 
 ### 37. The instance's command allocator is never reset
 
@@ -2536,7 +2563,8 @@ separable blur and an outline written 2026-10-24, run on Metal only**
   0 half the source's first mip: taken at compile, free again once the
   frame it was taken in has finished (aprend_instance_next_frame's wait),
   never shared by two takes of a frame, given back by a compile that is
-  not submitted, retired after 120 frames untaken. Prefilter (13 taps and the soft threshold),
+  not submitted, retired as the caller's retirement says (none until it
+  is set; 2026-10-27). Prefilter (13 taps and the soft threshold),
   downsample (13 taps, Jimenez), upsample (a tent `_radius` texels wide,
   added into the level above), composite (the same tent, times
   `_intensity`, added onto the target). Places from `gl_FragCoord` with
@@ -2594,7 +2622,7 @@ Left:
       compile.
 - [ ] **A view a bloom read keeps its set until it is destroyed.**
 - [x] **The pool's memory**: a pooled texture for every size and level
-      count taken in the last 120 frames, and one per bloom compiled in a
+      count taken and not yet retired, and one per bloom compiled in a
       frame, times the frames in flight. Reported and trimmed since
       2026-10-24 (run on Metal only):
       `aprend_instance_get_render_target_pool()` fills an
@@ -2604,8 +2632,15 @@ Left:
       `aprend_instance_trim_render_targets(instance, idle_frames)` destroys
       every texture the GPU is done with that has gone untaken for
       `idle_frames` (0: all of them), through the release queue, and says
-      how many. The idle count of 120 stays as the pool's own floor; the
-      trim is the caller's count on top of it, so no desc changes. Busy
+      how many. **Decided 2026-10-27 with you (card X1b, line 9):** the
+      pool's own 120-frame retirement is gone, as both Unreal's and
+      CRYENGINE's leave the standing policy to their caller (a floor in MB;
+      a budget in MB). `aprend_instance_set_render_target_retirement(instance,
+      idle_frames, keep_bytes)` sets it: at each next frame, while the pool
+      holds more than `keep_bytes`, what has gone `idle_frames` untaken
+      goes. Unset, the pool destroys nothing by itself; the workspace's
+      callers set 120 frames and no floor, as before. Written 2026-10-27, run on
+      Metal only (apricottests' `test_render_target_pool`). Busy
       means taken in a frame the GPU may still run, or by a compile of this
       frame, whose list holds the take. Compared: Hazel has no pool (each
       pass owns its framebuffers). Unreal's `FRenderTargetPool` keeps what
@@ -2692,13 +2727,24 @@ Numbered out of order, as item 31. **Decided 2026-10-23. Aprend's half
 written 2026-10-24 and run on Metal only; SpudGPU's half done (2026-10-23,
 run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).**
 
+**Decided 2026-10-27 with you (card X1b, line 7): rectangles.**
+`DRAW_TEXTURE` takes `_source_rect` and `_target_rect`
+(`APREND_TEXEL_RECT`, appended, a zeroed one the whole mip), as Unreal's
+`AddDrawTexturePass` and CRYENGINE's `CStretchRegionPass` take theirs: the
+source rectangle fitted into the target rectangle by `_scaling`, the
+target outside it kept (the pass loads and scissors only then). A linear
+filter at a source rectangle's edge mixes in the texel beyond it, as any
+sampled edge does. `PRESENT_TEXTURE` is unchanged (both whole). Written
+2026-10-27, run on Metal only (apricottests' `test_draw_texture`: three
+drawings and three refusals); D3D12 and Vulkan not run.
+
 **What was written, 2026-10-24** (the design below, with two changes, both
 in `claude_made_decisions.md`):
 - The enum is `APREND_TEXTURE_SCALING` (NONE, STRETCH, ASPECT_FIT), not
   `APREND_PRESENT_SCALING` with EXACT, since a second command takes it.
   `PRESENT_TEXTURE`'s NONE (0) is the copy of item 38, unchanged.
 - A second command, `APREND_COMMAND_DRAW_TEXTURE` (35): a SHADER_RESOURCE
-  2D view of one mip drawn into a RENDER_TAGET 2D view of a float-holding
+  2D view of one mip drawn into a RENDER_TARGET 2D view of a float-holding
   format, in each fit (its NONE is drawn texel for texel from the top left,
   the border past the source). It is the same draw
   (`aprend_cmd_draw_fitted`, `aprendcommands.cpp`) that `PRESENT_TEXTURE`'s

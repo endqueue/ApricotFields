@@ -391,7 +391,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 		lit.brdf_lut_view = aprend_texture_view_create_2d(lit.brdf_lut, &vd);
 	}
 	if (!lit.brdf_lut_target) {
-		vd.type             = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
+		vd.type             = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
 		lit.brdf_lut_target = aprend_texture_view_create_2d(lit.brdf_lut, &vd);
 	}
 	if (!lit.brdf_lut_view || !lit.brdf_lut_target)
@@ -793,7 +793,7 @@ void aprend_lit_builtins_destroy(aprend_instance instance) {
 	aprend_texture_view *views[] = {&lit.brdf_lut_target, &lit.brdf_lut_view, &lit.placeholder_depth_view, &lit.placeholder_cube_view,
 	                                &lit.placeholder_2d_view};
 	for (aprend_texture_view *view : views) {
-		aprend_destroy_texture_view(*view);
+		aprend_texture_view_destroy(*view);
 		*view = nullptr;
 	}
 	aprend_texture2d *textures[] = {&lit.brdf_lut, &lit.placeholder_depth, &lit.placeholder_cube, &lit.placeholder_2d};
@@ -1170,17 +1170,17 @@ bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sa
 aprend_lit_environment_t::~aprend_lit_environment_t() {
 	// Each goes through the release queue on its own.
 	aprend_material_destroy(this->sky_material);
-	aprend_destroy_texture_view(this->irradiance_cube);
+	aprend_texture_view_destroy(this->irradiance_cube);
 	for (aprend_texture_view view : this->irradiance_faces)
-		aprend_destroy_texture_view(view);
+		aprend_texture_view_destroy(view);
 	aprend_texture2d_destroy(this->irradiance);
-	aprend_destroy_texture_view(this->specular_cube);
+	aprend_texture_view_destroy(this->specular_cube);
 	for (aprend_texture_view view : this->specular_faces)
-		aprend_destroy_texture_view(view);
+		aprend_texture_view_destroy(view);
 	aprend_texture2d_destroy(this->specular);
-	aprend_destroy_texture_view(this->radiance_cube);
+	aprend_texture_view_destroy(this->radiance_cube);
 	for (aprend_texture_view view : this->radiance_faces)
-		aprend_destroy_texture_view(view);
+		aprend_texture_view_destroy(view);
 	aprend_texture2d_destroy(this->radiance);
 }
 
@@ -1203,7 +1203,7 @@ static aprend_texture2d aprend_lit_work_texture(aprend_instance instance, uint32
 static aprend_texture_view aprend_lit_target_view(aprend_texture2d texture, uint32_t mip, uint32_t layer) {
 	aprend_texture_view_desc vd{};
 	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
-	vd.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
+	vd.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
 	vd.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 	vd.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
 	vd.base_mip    = mip;
@@ -2237,12 +2237,12 @@ aprend_exposure_t::~aprend_exposure_t() {
 	aprend_binding_set_destroy(this->histogram_set);
 	aprend_storage_buffer_set_destroy(this->histogram);
 	for (int i = 0; i < 2; ++i) {
-		aprend_destroy_texture_view(this->value_views[i]);
-		aprend_destroy_texture_view(this->value_targets[i]);
+		aprend_texture_view_destroy(this->value_views[i]);
+		aprend_texture_view_destroy(this->value_targets[i]);
 		aprend_texture2d_destroy(this->values[i]);
 	}
-	aprend_destroy_texture_view(this->luminance_view);
-	aprend_destroy_texture_view(this->luminance_target);
+	aprend_texture_view_destroy(this->luminance_view);
+	aprend_texture_view_destroy(this->luminance_target);
 	aprend_texture2d_destroy(this->luminance);
 }
 

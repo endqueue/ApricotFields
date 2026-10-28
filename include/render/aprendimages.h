@@ -563,7 +563,7 @@ enum {
 	 */
 	APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS = 1,
 	/** A color target of a pass. Needs APREND_TEXTURE_USAGE_BIT_RENDER_TARGET. */
-	APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET     = 2,
+	APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET     = 2,
 	/** The depth target of a pass. Needs APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL. */
 	APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL    = 3,
 	/**
@@ -657,7 +657,7 @@ enum {
  *
  * | `type`                                     | Shape              | Mips | Layers        |
  * |--------------------------------------------|--------------------|------|---------------|
- * | APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET      | 2D or 2D array     | 1    | as the shape  |
+ * | APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET      | 2D or 2D array     | 1    | as the shape  |
  * | APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL     | 2D or 2D array     | 1    | as the shape  |
  * | APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS  | any for its texture| 1    | as the shape  |
  * | APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE   | any for its texture| any  | as the shape  |
@@ -675,7 +675,7 @@ enum {
  *
  * A layered pass needs SPUDGPU_FEATURE_LAYERED_RENDERING on the device the
  * instance was created with: on a device created without it, creating a 2D
- * array view of type RENDER_TAGET or DEPTH_STENCIL fails.
+ * array view of type RENDER_TARGET or DEPTH_STENCIL fails.
  *
  * A storage image slot reads and writes one mip. That is what a storage
  * image is in every graphics API (an image store takes no mip level), not a
@@ -757,7 +757,7 @@ typedef struct aprend_texture_view_t *aprend_texture_view;
  *         array view of one without SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS, or
  *         the view can't be created.
  *
- * @see aprend_destroy_texture_view()
+ * @see aprend_texture_view_destroy()
  */
 aprend_texture_view aprend_texture_view_create_2d(
 	aprend_texture2d texture,
@@ -779,7 +779,7 @@ aprend_texture_view aprend_texture_view_create_2d(
  *         one mip, the layer range is not layer 0 alone, or the view can't be
  *         created.
  *
- * @see aprend_destroy_texture_view()
+ * @see aprend_texture_view_destroy()
  */
 aprend_texture_view aprend_texture_view_create_3d(
 	aprend_texture3d texture,
@@ -795,7 +795,7 @@ aprend_texture_view aprend_texture_view_create_3d(
  *
  * @param[in] view View to destroy. NULL is accepted and does nothing.
  */
-void aprend_destroy_texture_view(aprend_texture_view view);
+void aprend_texture_view_destroy(aprend_texture_view view);
 
 /**
  * @brief Gets the type a view was created with.

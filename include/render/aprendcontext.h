@@ -44,8 +44,9 @@
  *   call drains the release queue;
  * - the render target pool ("Textures a command uses in between"):
  *   aprend_command_list_compile() and _submit(), aprend_instance_next_frame(),
- *   aprend_instance_get_render_target_pool() and
- *   aprend_instance_trim_render_targets().
+ *   aprend_instance_get_render_target_pool(),
+ *   aprend_instance_trim_render_targets() and
+ *   aprend_instance_set_render_target_retirement().
  *
  * What several threads may do at once:
  *
@@ -148,14 +149,16 @@
  * aprend_instance_next_frame() waits for, and two commands compiled in one
  * frame never share one. A compile that is not submitted (compiled again,
  * failed, reset, or its list destroyed, in the same frame) gives back what
- * it took. A texture nobody has taken for 120 frames is destroyed, so sizes
- * no longer used don't stay; until then the pool holds a texture for every
- * size taken lately, for each command compiled in a frame and each frame
- * in flight. aprend_instance_get_render_target_pool() reports what it
- * holds, and aprend_instance_trim_render_targets() destroys what the GPU
- * is done with sooner, all of it or what has sat untaken for a number of
- * frames the caller chooses: after a window is resized, or when memory is
- * wanted elsewhere.
+ * it took. The pool holds a texture for every size taken, for each command
+ * compiled in a frame and each frame in flight, until the caller says
+ * otherwise: aprend_instance_set_render_target_retirement() has
+ * aprend_instance_next_frame() destroy what has gone a number of frames
+ * untaken while the pool is over a size, so sizes no longer used don't
+ * stay, and aprend_instance_trim_render_targets() destroys what the GPU is
+ * done with at once, all of it or what has sat untaken for a number of
+ * frames: after a window is resized, or when memory is wanted elsewhere.
+ * Without either, the pool destroys nothing until the instance goes.
+ * aprend_instance_get_render_target_pool() reports what it holds.
  *
  * @par Struct bases
  * This too is the rule for every Aprend header. A desc, and each of the lit
@@ -417,10 +420,11 @@ bool aprend_instance_get_render_target_pool(
  * of this frame, is kept whatever @p idle_frames is. With @p idle_frames 0,
  * every other texture goes: the pool then holds only what is busy, and the
  * next compile of a command that needs one makes it again. Without this
- * call the pool destroys a texture after 120 frames untaken
- * (aprend_instance_next_frame()); this does it sooner, by the caller's
- * count, as after a window is resized through many sizes, or when memory
- * is wanted for something else.
+ * call the pool destroys a texture only as
+ * aprend_instance_set_render_target_retirement() says, at
+ * aprend_instance_next_frame(); this does it now, by the caller's count, as
+ * after a window is resized through many sizes, or when memory is wanted
+ * for something else.
  *
  * Destroyed as every Aprend object is ("Destroying", at the top of this
  * header): released once the GPU has finished what it was submitted with.
@@ -439,6 +443,34 @@ bool aprend_instance_get_render_target_pool(
 uint32_t aprend_instance_trim_render_targets(
     aprend_instance instance,
     uint32_t idle_frames);
+
+/**
+ * @brief Sets how an instance's render target pool destroys textures by
+ * itself: at each aprend_instance_next_frame(), while the texel bytes it
+ * holds are above @p keep_bytes, each texture the GPU is done with that has
+ * gone @p idle_frames frames untaken is destroyed, in the pool's order,
+ * until it is at or under them.
+ *
+ * Until this is called the pool destroys nothing by itself (only
+ * aprend_instance_trim_render_targets() does). Called again, it replaces
+ * what it set. A busy texture is kept whatever it says, as for a trim, and
+ * destroyed as every Aprend object is ("Destroying", at the top of this
+ * header). It changes the pool, under the thread rule ("Threads").
+ *
+ * @param[in] instance    Instance whose pool it is.
+ * @param[in] idle_frames The frames a texture must have gone untaken before
+ *                        it may be destroyed; above 0.
+ * @param[in] keep_bytes  The pool's size in texel bytes, as
+ *                        aprend_render_target_pool_info counts them, at or
+ *                        under which nothing is destroyed; 0 for none kept.
+ *
+ * @return false, with nothing changed, if @p instance is NULL or
+ *         @p idle_frames is 0 (printed).
+ */
+bool aprend_instance_set_render_target_retirement(
+    aprend_instance instance,
+    uint32_t idle_frames,
+    uint64_t keep_bytes);
 
 /**
  * @brief Destroys an instance.

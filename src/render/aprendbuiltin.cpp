@@ -496,6 +496,23 @@ void aprend_record_fullscreen_pass_sets(
     uint32_t frame,
     const void *push,
     uint32_t push_size) {
+	const uint32_t whole[4] = {0, 0, width, height};
+	aprend_record_fullscreen_pass_region(cmd, pipeline, target, width, height, whole, load_op, sets, set_count, frame, push, push_size);
+}
+
+void aprend_record_fullscreen_pass_region(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    spudgpu_image_view target,
+    uint32_t width,
+    uint32_t height,
+    const uint32_t region[4],
+    SPUDGPU_LOAD_OP load_op,
+    const aprend_binding_set *sets,
+    uint32_t set_count,
+    uint32_t frame,
+    const void *push,
+    uint32_t push_size) {
 	spudgpu_rendering_begin_desc pass{};
 	pass.base.type = SPUD_STRUCT_TYPE_GPU_RENDERING_BEGIN_DESC;
 	pass.color_attachments[0].image_view = target;
@@ -511,8 +528,10 @@ void aprend_record_fullscreen_pass_sets(
 	viewport.maxDepth = 1.0f;
 	spudgpu_cmd_set_viewports(cmd, 0, 1, &viewport);
 	SPUDGPU_SCISSOR_RECT scissor{};
-	scissor.width  = (float)width;
-	scissor.height = (float)height;
+	scissor.x      = (float)region[0];
+	scissor.y      = (float)region[1];
+	scissor.width  = (float)region[2];
+	scissor.height = (float)region[3];
 	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
 	spudgpu_cmd_bind_pipeline(cmd, pipeline->pipeline);
 	for (uint32_t i = 0; i < set_count; ++i)

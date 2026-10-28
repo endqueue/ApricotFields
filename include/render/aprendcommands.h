@@ -98,6 +98,23 @@ enum {
 };
 
 /**
+ * @brief A rectangle of a view's mip, in texels from its top-left corner:
+ * the part of a texture APREND_COMMAND_DRAW_TEXTURE reads or writes. A
+ * width and height both 0 are the whole mip.
+ */
+/* Frozen: a value, in a command's params. It never changes; a new need gets a new type. */
+typedef struct APREND_TEXEL_RECT {
+	/** The left edge. */
+	uint32_t x;
+	/** The top edge. */
+	uint32_t y;
+	/** The width; 0, with #height 0, for the whole mip. */
+	uint32_t width;
+	/** The height; 0, with #width 0, for the whole mip. */
+	uint32_t height;
+} APREND_TEXEL_RECT;
+
+/**
  * @brief How color is written out, by APREND_COMMAND_TONE_MAP and by lit
  * surfaces (aprendlit.h).
  */
@@ -535,7 +552,7 @@ enum {
 	 * `_source` is a SHADER_RESOURCE view, 2D, of color, written by
 	 * anything submitted before or earlier in the list; its first mip is
 	 * read, and moved into SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target`
-	 * is a RENDER_TAGET view, 2D, in a format a bloom renders onto (the
+	 * is a RENDER_TARGET view, 2D, in a format a bloom renders onto (the
 	 * formats aprend_texture2d_generate_mips() takes), of any size; it is
 	 * left in SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, as a pass's
 	 * target is. The two share no mip of a layer.
@@ -565,7 +582,7 @@ enum {
 	 * replacing what the target held, alpha kept as it is. The source is a
 	 * SHADER_RESOURCE view of one mip of a 2D color texture (a float target
 	 * that lit surfaces were drawn into, with a bloom over it, say); the
-	 * target a RENDER_TAGET view of a 2D texture of a color format, of any
+	 * target a RENDER_TARGET view of a 2D texture of a color format, of any
 	 * size: it is read at the same place in [0, 1], filtered. `_exposure` is
 	 * not negative and is a number.
 	 *
@@ -625,7 +642,7 @@ enum {
 	 * target that has them (aprend_lit_scene_set_bent_normals() reads it).
 	 * `_depth` is a SHADER_RESOURCE view, DEPTH aspect, 2D, of a depth buffer
 	 * rendered through `_scene`'s view_projection (a depth pre-pass), at the
-	 * view's target size; `_target` a RENDER_TAGET 2D view of a color format
+	 * view's target size; `_target` a RENDER_TARGET 2D view of a color format
 	 * at that size, which aprend_lit_scene_set_ambient_occlusion() then
 	 * names. Positions come back through the view's view_projection, so it
 	 * must be invertible. Ground-truth ambient occlusion (Jimenez et al.,
@@ -645,14 +662,22 @@ enum {
 	 */
 	APREND_COMMAND_AUTO_EXPOSURE               = 34,
 	/**
-	 * Draws `_source` into `_target`, fitted as `_scaling` says
-	 * (APREND_TEXTURE_SCALING): a full-target draw that writes every texel of
-	 * the target, from the source through `_filter`'s sampler or, where the
-	 * source doesn't reach, `_border_color` (linear RGBA, written as the
-	 * target's format writes it). Outside a pass.
+	 * Draws `_source_rect` of `_source` into `_target_rect` of `_target`,
+	 * fitted as `_scaling` says (APREND_TEXTURE_SCALING, with the two
+	 * rectangles as the source and the target): every texel of the target
+	 * rectangle is written, from the source rectangle through `_filter`'s
+	 * sampler or, where it doesn't reach, `_border_color` (linear RGBA,
+	 * written as the target's format writes it), and the target outside it
+	 * keeps what it held. A zeroed rectangle is the whole mip, so with both
+	 * zeroed the whole source fills the whole target. Outside a pass.
+	 *
+	 * A source rectangle reads only its own texels: a linear filter at its
+	 * edge takes the texel outside it into the mix, as any sampled edge
+	 * inside a texture does. A rectangle is inside its view's mip, its width
+	 * and height both 0 or both above 0.
 	 *
 	 * `_source` is a SHADER_RESOURCE 2D view of color of one mip, moved to
-	 * SHADER_READ_ONLY. `_target` is a RENDER_TAGET 2D view of a format
+	 * SHADER_READ_ONLY. `_target` is a RENDER_TARGET 2D view of a format
 	 * that holds floats (float, normalized or sRGB), left in
 	 * COLOR_ATTACHMENT_OPTIMAL; it may be of another size and format than
 	 * the source. The two share no mip of a layer. `_filter` is
@@ -685,7 +710,7 @@ enum {
 	 * `_source` is a SHADER_RESOURCE view, 2D, of color, of one mip,
 	 * written by anything submitted before or earlier in the list, and
 	 * moved into SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target` is a
-	 * RENDER_TAGET view, 2D, in a format a blur renders onto (the formats
+	 * RENDER_TARGET view, 2D, in a format a blur renders onto (the formats
 	 * aprend_texture2d_generate_mips() takes), of the size of the source's
 	 * mip: a paired tap reads two texels only where the texture it reads
 	 * has the target's texels. A blur at a smaller size is the source drawn
@@ -727,7 +752,7 @@ enum {
 	 * `_mask` is a SHADER_RESOURCE view, 2D, of color, of one mip, in a
 	 * format a shader reads as floats, written by anything submitted before
 	 * or earlier in the list, and moved into
-	 * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target` is a RENDER_TAGET
+	 * SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY. `_target` is a RENDER_TARGET
 	 * view, 2D, of the size of the mask's mip, in a format an outline
 	 * renders onto (the formats aprend_texture2d_generate_mips() takes),
 	 * left in SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. The two share
@@ -1068,6 +1093,10 @@ typedef struct APREND_COMMAND {
 			SPUDGPU_FILTER _filter;
 			/** Where the source doesn't reach, linear RGBA. Not read for STRETCH. */
 			float _border_color[4];
+			/** The part of the source drawn; zeroed for all of it. */
+			APREND_TEXEL_RECT _source_rect;
+			/** The part of the target drawn into; zeroed for all of it. */
+			APREND_TEXEL_RECT _target_rect;
 		} _draw_texture; /**< APREND_COMMAND_DRAW_TEXTURE. */
 		struct {
 			/** What is blurred. */
@@ -1210,21 +1239,29 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   albedo above 1 for HOSEK_WILKIE, or a value that is not a number;
  * - a LIT_AMBIENT_OCCLUSION with a NULL scene, depth or target, one of
  *   another instance, a depth that is not a SHADER_RESOURCE 2D view of
- *   depth, a target that is not a RENDER_TAGET 2D view of a format it
+ *   depth, a target that is not a RENDER_TARGET 2D view of a format it
  *   renders onto, the two of different sizes, or a radius that is not above
  *   0 or an intensity below 0;
  * - an AUTO_EXPOSURE with a NULL exposure or source, one of another
  *   instance, a source that is not a SHADER_RESOURCE 2D view of color of one
  *   mip, or a `_delta_time` that is negative or not a number;
+ * - a DRAW_TEXTURE with a NULL source or target, one of another instance,
+ *   a source that is not a SHADER_RESOURCE 2D view of color of one mip, a
+ *   target that is not a RENDER_TARGET 2D view of a format that holds
+ *   floats, the two sharing a mip of a layer, a `_scaling` that is not an
+ *   APREND_TEXTURE_SCALING, a `_filter` that is not LINEAR or NEAREST, a
+ *   `_border_color` it reads that is not finite, or a rectangle with one of
+ *   its width and height 0 and not the other, with no size and a corner
+ *   other than (0, 0), or not inside its view's mip;
  * - a BLUR with a NULL source or target, one of another instance, a source
  *   that is not a SHADER_RESOURCE 2D view of color of one mip, a target
- *   that is not a RENDER_TAGET 2D view in a format a blur renders onto, a
+ *   that is not a RENDER_TARGET 2D view in a format a blur renders onto, a
  *   target of another size than the source, a source and target that
  *   share a mip of a layer, or a `_sigma` that is
  *   not above 0, not a number or above APREND_BLUR_MAX_SIGMA;
  * - an OUTLINE with a NULL mask or target, one of another instance, a mask
  *   that is not a SHADER_RESOURCE 2D view of color of one mip in a format a
- *   shader reads as floats, a target that is not a RENDER_TAGET 2D view in
+ *   shader reads as floats, a target that is not a RENDER_TARGET 2D view in
  *   a format an outline renders onto, a target of another size than the
  *   mask, a mask and target that share a mip of a layer, a `_color` with a
  *   value that is not finite, a negative red, green or blue or an alpha

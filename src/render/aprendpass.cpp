@@ -269,7 +269,7 @@ aprend_render_pass aprend_render_pass_create(
 				printf("apricot: %s: _color_targets[%u] has no view\n", who, i);
 				return nullptr;
 			}
-			if (!aprend_pass_target_valid(who, "a color target", instance, desc->_color_targets[i].view, APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET,
+			if (!aprend_pass_target_valid(who, "a color target", instance, desc->_color_targets[i].view, APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET,
 			                              color_formats[i]))
 				return nullptr;
 		}

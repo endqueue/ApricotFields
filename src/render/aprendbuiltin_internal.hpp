@@ -178,9 +178,14 @@ aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instanc
  * values, NONE drawn rather than copied). */
 struct aprend_present_params {
 	float border[4];
+	/* The target rectangle: its top-left corner and size, in target texels. */
+	float target_offset[2];
 	float target_size[2];
+	/* The source rectangle, in source texels. */
+	float source_offset[2];
+	float source_size[2];
 	uint32_t mode;
-	uint32_t unused;
+	uint32_t unused[3];
 };
 
 /* The present pipeline rendering to [format], made if it doesn't exist, with
@@ -243,6 +248,23 @@ void aprend_record_fullscreen_pass_sets(
     spudgpu_image_view target,
     uint32_t width,
     uint32_t height,
+    SPUDGPU_LOAD_OP load_op,
+    const aprend_binding_set *sets,
+    uint32_t set_count,
+    uint32_t frame,
+    const void *push,
+    uint32_t push_size);
+
+/* As aprend_record_fullscreen_pass_sets, drawn only inside [region] (x, y,
+ * width, height in texels, inside the target), by the pass's scissor: with
+ * SPUDGPU_LOAD_OP_LOAD, the target outside it keeps what it held. */
+void aprend_record_fullscreen_pass_region(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    spudgpu_image_view target,
+    uint32_t width,
+    uint32_t height,
+    const uint32_t region[4],
     SPUDGPU_LOAD_OP load_op,
     const aprend_binding_set *sets,
     uint32_t set_count,

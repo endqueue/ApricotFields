@@ -93,7 +93,7 @@ typedef struct aprend_render_pass_desc {
 	/**
 	 * The color targets, as BEGIN_RENDERING takes them (aprendimages.h): the
 	 * first #_color_target_count are read. Each `view` is of type
-	 * APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET, of a 2D texture whose format is
+	 * APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET, of a 2D texture whose format is
 	 * the pipeline's `color_attachment_formats` at the same index, and
 	 * `resolve_view` is NULL.
 	 */

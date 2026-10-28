@@ -35,11 +35,6 @@ typedef struct aprend_framebuffer_texture_spec {
 	SPUDGPU_FORMAT format;
 	/** Whether a shader samples the texture the framebuffer creates. */
 	bool shader_resource;
-	/**
-	 * Whether the texture the framebuffer creates is shown in a GUI, which
-	 * samples it: the same effect as #shader_resource.
-	 */
-	bool use_for_gui;
 } aprend_framebuffer_texture_spec;
 
 /**

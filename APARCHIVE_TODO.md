@@ -128,7 +128,8 @@ directory actually sits.
 ## Smaller additions
 
 - **Custom memory allocator.** Game engines expect to supply their own; today it's
-  always the global allocator.
+  always the global allocator. Paused 2026-10-28 for every library (card
+  X12); `eqstd`'s containers take an allocator when one is decided.
 - **Progress and cancellation callbacks** for long compressions and reads.
 - **Verifying an entry's CRC without returning its data,** for callers that
   memory-map stored entries and still want them checked.

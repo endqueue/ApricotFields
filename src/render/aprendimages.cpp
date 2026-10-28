@@ -134,8 +134,8 @@ static void aprend_mip_steps_release(std::vector<aprend_mip_step> &steps, bool r
 	for (aprend_mip_step &step : steps) {
 		if (retire) {
 			aprend_binding_set_destroy(step.set);
-			aprend_destroy_texture_view(step.source);
-			aprend_destroy_texture_view(step.target);
+			aprend_texture_view_destroy(step.source);
+			aprend_texture_view_destroy(step.target);
 			continue;
 		}
 		if (step.set)
@@ -230,7 +230,7 @@ static APREND_TEXTURE_USAGE_BITS aprend_texture_view_type_usage(APREND_TEXTURE_V
 	switch (type) {
 	case APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS:
 		return APREND_TEXTURE_USAGE_BIT_STORAGE;
-	case APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET:
+	case APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET:
 		return APREND_TEXTURE_USAGE_BIT_RENDER_TARGET;
 	case APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL:
 		return APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL;
@@ -606,7 +606,7 @@ bool aprend_texture2d_mip_chain(
 			view_desc.base_mip    = base_mip + i;
 			step.source           = aprend_texture_view_create_2d(texture, &view_desc);
 			view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
-			view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
+			view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
 			view_desc.base_mip    = base_mip + i + 1;
 			step.target           = aprend_texture_view_create_2d(texture, &view_desc);
 			if (!step.source || !step.target) {
@@ -797,7 +797,7 @@ bool aprend_texture2d_resize(
 	// be using it, so it is released when that has finished. Its mip chains
 	// are views of it, retired first so they go before it.
 	aprend_mip_chains_release(texture, true);
-	aprend_destroy_texture_view(texture->present_view);
+	aprend_texture_view_destroy(texture->present_view);
 	texture->present_view = nullptr;
 	aprend_instance_retire(texture->instance, texture->image, &aprend_release_spudgpu_image);
 	texture->image           = new_image;
@@ -1287,7 +1287,7 @@ aprend_texture_view aprend_texture_view_create_2d(
 	// A pass renders to one layer through a 2D view, or to every layer of a
 	// 2D array view at once (a layered pass). A cube is rendered to as the 2D
 	// array its layers are: no graphics API has a cube render target.
-	const bool is_target = desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL;
+	const bool is_target = desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL;
 	if (is_target && desc->shape != APREND_TEXTURE_VIEW_SHAPE_2D && desc->shape != APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY) {
 		printf("apricot: %s: a view rendered to is APREND_TEXTURE_VIEW_SHAPE_2D or _2D_ARRAY, and shape is %u\n", who, (unsigned)desc->shape);
 		return nullptr;
@@ -1347,7 +1347,7 @@ aprend_texture_view aprend_texture_view_create_3d(
 	resolved.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	if (!aprend_texture_view_desc_valid(who, desc, texture->desc.usage, texture->desc.format, texture->desc.mip_levels, &resolved))
 		return nullptr;
-	if (desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL) {
+	if (desc->type == APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET || desc->type == APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL) {
 		printf("apricot: %s: a 3D texture can't be rendered to through a view\n", who);
 		return nullptr;
 	}
@@ -1402,7 +1402,7 @@ failedattempt:
 	free(result);
 	return nullptr;
 }
-void aprend_destroy_texture_view(aprend_texture_view view) {
+void aprend_texture_view_destroy(aprend_texture_view view) {
 	if (!view)
 		return;
 #if _DEBUG

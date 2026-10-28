@@ -31,7 +31,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 			tex_desc.height = desc.height;
 			tex_desc.format = spec.format;
 			tex_desc.usage  = APREND_TEXTURE_USAGE_BIT_RENDER_TARGET;
-			if (spec.shader_resource || spec.use_for_gui)
+			if (spec.shader_resource)
 				tex_desc.usage |= APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE;
 			tex_desc.mip_levels   = 1; // attachments are single-mip; nothing generates a chain for them
 			tex_desc.array_layers = 1;
@@ -46,7 +46,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 		// An attachment is mip 0 of layer 0, whatever else the texture has.
 		aprend_texture_view_desc view_desc{};
 		view_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
-		view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET;
+		view_desc.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
 		view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 		view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
 		view_desc.base_mip    = 0;
@@ -101,7 +101,7 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 
 static void aprend_framebuffer_destroy_attachments(aprend_framebuffer_t *framebuffer) {
 	for (size_t i = 0; i < framebuffer->color_attachments.size(); ++i) {
-		aprend_destroy_texture_view(framebuffer->color_attachments[i]);
+		aprend_texture_view_destroy(framebuffer->color_attachments[i]);
 		if (framebuffer->owned_color_textures[i])
 			aprend_texture2d_destroy(framebuffer->owned_color_textures[i]);
 	}
@@ -110,7 +110,7 @@ static void aprend_framebuffer_destroy_attachments(aprend_framebuffer_t *framebu
 
 	if (framebuffer->has_depth_attachment) {
 		aprend_texture2d depth_texture = framebuffer->depth_attachment->texture._t2d;
-		aprend_destroy_texture_view(framebuffer->depth_attachment);
+		aprend_texture_view_destroy(framebuffer->depth_attachment);
 		aprend_texture2d_destroy(depth_texture);
 		framebuffer->depth_attachment     = nullptr;
 		framebuffer->has_depth_attachment = false;
