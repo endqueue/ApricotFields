@@ -28,6 +28,7 @@ Vulkan / D3D12 / Metal
 | ApArchive | `archive/aparchive.h` | `aparchive_` | ZIP reading and writing through caller callbacks, with no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` | Sessions, channels and snapshots over SpudNet |
+| ApText | `text/aptext.h` | `aptext_` | Fonts from the caller's bytes, fallback chains, shaping (HarfBuzz), bidirectional text and line breaking, and an MTSDF glyph atlas; single-stroke (Hershey) faces as line segments. Run on macOS only so far |
 | Core | `apricore.h` | `apri_` / `APRESULT` | The shared result codes, struct bases and debug names |
 
 Every call that can fail returns an `APRESULT`. Headers state which calls are

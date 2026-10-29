@@ -1911,7 +1911,7 @@ static void test_layout_wrapping(void)
     CHECK(out.lines[1].box_bottom == 2.0f);
     CHECK(out.glyphs[5].glyph == A_SPACE);
     CHECK(out.glyphs[5].line == 0);
-    CHECK(out.glyphs[5].x == 2.0f);
+    CHECK(out.glyphs[5].x == 2.25f); // the hanging space, after "aa aa"
     CHECK(out.glyphs[6].line == 1);
     CHECK(out.glyphs[6].x == 0.0f);
     CHECK(out.glyphs[6].y == 1.75f);

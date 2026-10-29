@@ -6,11 +6,13 @@ layout, and MTSDF glyph generation. It is CPU only and unrelated to Aprend,
 the way ApMath is; Aprend draws what it hands back (`APREND_TODO.md`, item
 23, "Text: the design").
 
-**Contract only, not implemented** (the contract pass, 2026-10-29; see
-"The contract" below). `include/text/aptext.h` is the whole public API,
-`src/text/aptext.cpp` checks every call's arguments and returns
-`APRESULT_NOT_IMPLEMENTED`, and `tests/aptext_tests.c` holds the black-box
-tests the implementation must pass. Builds and runs on macOS (Debug,
+**Implemented 2026-10-29** (the implementation pass; see "The
+implementation" below), over the contract of the same day: every call is
+built, and `tests/aptext_tests.c`'s 41 tests pass, none pending.
+`tests/aptext_bits_tests.c` checks one layout's and one saved atlas's bytes
+against values recorded on macOS, and `tests/fuzz/aptext_fuzz.cpp` fuzzes
+the readers of outside bytes. Builds and runs on macOS (Debug and Release,
+AddressSanitizer with UndefinedBehaviorSanitizer, ThreadSanitizer,
 2026-10-29); Windows and Linux never built.
 
 Header `include/text/aptext.h`, prefix `aptext_` / `APTEXT_`, newer
@@ -37,13 +39,13 @@ generation (see `CLAUDE.md`, "Writing a new module"): `APRESULT` returns,
 
 ## Dependencies (decided 2026-10-15)
 
-- [ ] **HarfBuzz** (MIT): shaping, and glyph outlines through
+- [x] **HarfBuzz** (MIT): shaping, and glyph outlines through
       `hb_font_draw_glyph`, so FreeType isn't needed at all.
-- [ ] **msdfgen** core (MIT): MTSDF generation from an outline built from
+- [x] **msdfgen** core (MIT): MTSDF generation from an outline built from
       HarfBuzz's draw callbacks. Not msdfgen's `ext` (that is FreeType and
       file loading) and not msdf-atlas-gen (its packer assumes a fixed
       glyph set; ours is on demand).
-- [ ] **Bidirectional text and line breaking:** SheenBidi plus libunibreak
+- [x] **Bidirectional text and line breaking:** SheenBidi plus libunibreak
       (small), or ICU (complete, large). Undecided; neither is needed for
       the first version, but the layout API must have room for both.
       **Decided 2026-10-28 with the user (card A19):** SheenBidi (Apache
@@ -54,12 +56,21 @@ generation (see `CLAUDE.md`, "Writing a new module"): `APRESULT` returns,
       wired in from the start and tested when a right-to-left locale is
       planned. Thai, Lao and Khmer need a dictionary for word breaks,
       which libunibreak covers only in part: a known gap.
-- [ ] Vendored under `../.deps/` like the repo's other third-party code
+- [x] Vendored under `../.deps/` like the repo's other third-party code
       (`CLAUDE.md`, "Build"), pinned, linked `PRIVATE` (no HarfBuzz or
       msdfgen type in `include/`), and built under this repo's flags on all
       three platforms. HarfBuzz's shaping must give the same output
       everywhere for layout to be deterministic (item 2), so pin it and
       check it the way ApMath's polygons are checked.
+      **Done 2026-10-29:** HarfBuzz 14.6.0 (its amalgamation, no optional
+      dependency), msdfgen 1.13 (core), SheenBidi 2.9.0, libunibreak 8.0,
+      each a static library of its own built from its sources
+      (`aptext_harfbuzz`, `aptext_msdfgen`, `aptext_sheenbidi`,
+      `aptext_unibreak`), linked PRIVATE, pinned by tag in
+      `CMakeLists.txt` and fetched there when `../.deps/` has no copy (none
+      is vendored by hand yet), with floating-point contraction off. SheenBidi
+      2.9, not 3.0: 3.0 adds a process-wide allocator a caller can replace,
+      writable global state. `tests/aptext_bits_tests.c` is the check.
 
 ## The contract (2026-10-29)
 
@@ -173,24 +184,91 @@ edit `tests/aptext_tests.c`.**
   implementation that lays out left to right only would fail this test, not
   pend it.
 
-## Implementation pass: what it needs
+## The implementation (2026-10-29)
 
-- [ ] Vendor HarfBuzz, msdfgen core, SheenBidi and libunibreak (see
-      "Dependencies"), then fill in `src/text/aptext.cpp` call by call
-      until `aptext_tests` has nothing pending.
-- [ ] The two checks the stub leaves: duplicate codepoints in a stroke
-      face, faces of more than one kind in a chain.
-- [ ] A fuzz target (`CLAUDE.md`, "Fuzzing": a module that reads outside
-      bytes gets one): `aptext_face_create`, `aptext_face_create_hershey`
-      and `aptext_atlas_load` over arbitrary bytes.
-- [ ] Run on Windows and Linux, and compare a layout's bytes across the
-      three (item 5).
+`src/text/aptext.cpp` (faces and chains), `aptext_layout.cpp` (layouts) and
+`aptext_atlas.cpp` (glyph generation and atlases), behind the contract's
+argument checks, unchanged. Containers are eqstd's (`eq::array`,
+`eq::vector`), which ApricotFields links from here on.
 
-## Not built
+- [x] Every call, until `aptext_tests` has nothing pending: 41 of 41 pass.
+- [x] The two checks the stub left: duplicate codepoints in a stroke face,
+      faces of more than one kind in a chain.
+- [x] A fuzz target, `aptext_fuzz`: font bytes (laid out, generated into an
+      atlas, saved and loaded back), Hershey text (laid out, its strokes
+      taken) and saved atlases, chosen by the input's first byte. Fifteen
+      minutes on macOS, 2026-10-29: one bug, fixed (below).
+- [ ] Run on Windows and Linux: `aptext_bits_tests` there is the
+      comparison of a layout's and an atlas's bytes with macOS's (item 5).
+      Floating-point contraction is off for MSVC by default; msdfgen's cubic
+      solver calls the C library's `acos`, `cos` and `pow`, which can differ
+      in the last bit between platforms, and would show here first.
+
+How a build lays text out is described at the top of
+`src/text/aptext_layout.cpp`. The calls made where the contract left room
+(each also in `../claude_made_decisions.md`, 2026-10-29):
+
+1. **The test's one wrong value.** `test_layout_wrapping` expected the
+   hanging space after "aa aa" at x 2.0; it is at 2.25 (two "a"s of 0.5,
+   a space of 0.25, two more), as the same test's line box (right edge
+   2.25) says. That one value was corrected; nothing else in
+   `tests/aptext_tests.c` changed.
+2. **One pixel more than half the range around each glyph image.** The
+   contract asks for at least range / 2. Off a convex corner an MTSDF's
+   colour channels hold the distance to each edge's line, not to the
+   corner, so a texel half the range from both lines reads as near the
+   outline; with one pixel more the edge texels read as outside, and
+   bilinear sampling at an image's edge in an atlas doesn't blend the glyph
+   into its neighbour (`test_distance_field` checks the corner texel).
+3. **Lines are measured, then shaped again.** A paragraph is shaped once in
+   pieces of one face, script and level to measure its clusters; once its
+   lines are chosen, each line's runs (in visual order, from SheenBidi's
+   line, which applies L1 and L2) are split where the face or script
+   changes and shaped again, so shaping at a line's ends sees only the
+   line's text. Twice the shaping, never a stale glyph at a break.
+4. **Which face a codepoint is drawn from:** the first in the chain with a
+   glyph for it; a mark, or a default-ignorable codepoint, stays with the
+   face before it where that face has it (an ignorable one always, since it
+   gives no glyph), so a base and its marks shape together.
+5. **Clusters** are HarfBuzz's at its default level (monotone graphemes):
+   a line breaks between them when a word is wider than the line, and
+   letter spacing goes after each of them but the line's visually last.
+6. **The spaces that hang** at a line's end are Unicode's breaking space
+   separators and the tab (not the no-break spaces); the line's box leaves
+   out the trailing ones, wherever the paragraph's direction puts them.
+7. **U+001C-U+001E** are paragraph separators to the bidirectional
+   algorithm but not mandatory breaks here; they reach SheenBidi as U+001F,
+   a segment separator, so a paragraph's levels always cover all of it.
+8. **A glyph id past the face's last** - a damaged font's substitution,
+   which HarfBuzz passes on - is laid out as `.notdef`. Found by the fuzzer
+   (an atlas saved from such a layout wouldn't load); the input is kept in
+   `tests/fuzz/regressions/aptext_fuzz`.
+9. **No glyph image over 16384 pixels a side**: a `pixels_per_em` that
+   would make one is refused (`APRESULT_INVALID_ARGUMENT`), and an atlas
+   refuses a glyph larger than its page before generating it, not after.
+10. **Generation:** the outline from HarfBuzz's draw callbacks, in em; a
+    contour set wound the wrong way (CFF against TrueType) is reversed by the
+    sign of the distance from a point outside, as msdf-atlas-gen does; edge
+    colouring with a fixed seed; msdfgen's MTSDF with overlap support and
+    its default error correction; each channel round(255 * clamp(v)), rows
+    from the top. The generator's version (`APTEXT_GENERATOR_VERSION`, 1)
+    goes up whenever any of this changes what is written.
+11. **The atlas** packs bottom-left on a skyline per page (lowest, then
+    leftmost); glyphs are found through an open-addressing table by face and
+    glyph. Its saved form is little-endian, floats as their bits, with the
+    pages' skylines, so a loaded atlas packs on where the saved one would
+    have; the CRC-32 is libdeflate's.
+12. **What isn't ApricotFields' own** but runs inside it: HarfBuzz keeps
+    lazily made, immutable shared data (its Unicode functions, its language
+    list), and libunibreak a table it only reads, each in its own static
+    library, outside `check.sh mutable-globals`' reading of
+    `libApricotFields.a`. SheenBidi allocates per paragraph with `malloc`.
+
+## Items (checked: built 2026-10-29)
 
 ### 1. Faces and fallback
 
-- [ ] A face from font bytes (TTF/OTF; a collection index for TTC). The
+- [x] A face from font bytes (TTF/OTF; a collection index for TTC). The
       caller keeps the bytes alive for the face's lifetime, or ApText
       copies them: decide, and say so in the header.
       **Decided 2026-10-28 with the user (card A17):** borrowed by
@@ -199,8 +277,8 @@ edit `tests/aptext_tests.c`.**
       embedded font (CJK fonts reach 10-20 MB) isn't held twice; a copy
       flag on the face's desc has ApText copy them instead, for bytes from
       a network or a temporary buffer.
-- [ ] Metrics: units per em, ascender, descender, line gap, underline.
-- [ ] A fallback chain: an ordered list of faces, the first with a glyph
+- [x] Metrics: units per em, ascender, descender, line gap, underline.
+- [x] A fallback chain: an ordered list of faces, the first with a glyph
       for a codepoint wins. Shaping runs per face run, since HarfBuzz shapes
       one face at a time. A codepoint no face has becomes the first face's
       `.notdef`, never a skipped glyph.
@@ -208,36 +286,36 @@ edit `tests/aptext_tests.c`.**
 
 ### 2. Shaping and layout
 
-- [ ] UTF-8 in (validated; an invalid sequence is U+FFFD, not a failure).
-- [ ] Shaping with HarfBuzz: script, language and direction per run,
+- [x] UTF-8 in (validated; an invalid sequence is U+FFFD, not a failure).
+- [x] Shaping with HarfBuzz: script, language and direction per run,
       features (kerning and ligatures on; the caller can switch them).
-- [ ] Line layout: max width, wrapping at break opportunities, explicit
+- [x] Line layout: max width, wrapping at break opportunities, explicit
       newlines, alignment, line spacing, letter spacing. Output in em
       units or at a caller-given size, as positioned glyph ids with the
       source byte range each came from (for selection and hit testing),
       plus a box per glyph and per line.
-- [ ] Bidirectional reordering and Unicode line breaking (see
+- [x] Bidirectional reordering and Unicode line breaking (see
       Dependencies). The first version may handle left-to-right text only
       and say so, as long as the output already carries runs and
       directions.
-- [ ] Layout is deterministic: the same input gives the same output on
+- [x] Layout is deterministic: the same input gives the same output on
       every platform, so a layout can be cached or compared by its caller.
 
 ### 3. The atlas
 
-- [ ] MTSDF per glyph at a caller-chosen size in pixels per em and
+- [x] MTSDF per glyph at a caller-chosen size in pixels per em and
       distance range (pxRange, default none: both are required fields).
       A range of 4 to 8 pixels leaves room for outlines and halos; Hazel's 2
       doesn't.
-- [ ] On demand: a glyph is generated the first time a layout uses it, and
+- [x] On demand: a glyph is generated the first time a layout uses it, and
       packed with a skyline or shelf packer into pages of a caller-given
       size. A full page starts a new layer; nothing is evicted in the first
       version.
-- [ ] Dirty rectangles per page since the last call, so the caller uploads
+- [x] Dirty rectangles per page since the last call, so the caller uploads
       only what changed, in RGBA8.
-- [ ] Per glyph: page, atlas rectangle, plane bounds in em units. The
+- [x] Per glyph: page, atlas rectangle, plane bounds in em units. The
       atlas's distance range is reported with it, for the shader.
-- [ ] Generation is the expensive part (Hazel measured about 96% of its
+- [x] Generation is the expensive part (Hazel measured about 96% of its
       load time there). Threads are the caller's: either a call that
       generates one glyph so the caller can spread them over its own
       threads, or a pre-warm call over a list of glyph ids. No thread of
@@ -251,12 +329,13 @@ edit `tests/aptext_tests.c`.**
       object. Pre-warming is the caller's: generation as jobs on its own
       scheduler, then inserts in turn. As Skia's and Chrome's glyph
       rasterising on worker threads.
-- [ ] Saving and loading an atlas as bytes, so the caller can cache it
+- [x] Saving and loading an atlas as bytes, so the caller can cache it
       wherever it keeps files.
 
 ### 4. Single-stroke fonts
 
-- [ ] Plotter-style single-stroke fonts are open polylines, not filled
+- [ ] Plotter-style single-stroke fonts (1 and 2 built 2026-10-29; LFF
+      and SHX not) are open polylines, not filled
       outlines, and have no distance field. Their glyphs come out as
       polylines in em units, laid out by the same layout code, for the
       caller to draw as lines. Which formats to read is undecided.
@@ -277,8 +356,9 @@ edit `tests/aptext_tests.c`.**
 
 ### 5. Tests
 
-- [ ] Shaping and layout without a GPU: known strings against known
+- [x] Shaping and layout without a GPU: known strings against known
       glyph ids and advances, fallback, `.notdef`, wrapping, a ligature.
-- [ ] Atlas: a glyph's distance field sampled at known points, packing
+- [x] Atlas: a glyph's distance field sampled at known points, packing
       without overlap, dirty rectangles.
-- [ ] The same layout bits on all three platforms.
+- [ ] The same layout bits on all three platforms: `aptext_bits_tests`,
+      passing on macOS; Windows and Linux not run.

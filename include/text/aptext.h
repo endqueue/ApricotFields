@@ -91,8 +91,8 @@ extern "C" {
  *   - APRESULT_CORRUPT_DATA: saved atlas bytes that fail their checksum.
  *   - APRESULT_UNSUPPORTED: saved atlas bytes in a format version this
  *     build doesn't read.
- *   - APRESULT_NOT_IMPLEMENTED: the call isn't built yet. Every call
- *     returns it today, after checking its arguments (APTEXT_TODO.md).
+ *   - APRESULT_OUT_OF_MEMORY: an allocation failed; nothing the call
+ *     made is left behind.
  *
  * @par Error messages
  * Every call that can fail for a reason worth a sentence takes an
@@ -1005,8 +1005,9 @@ typedef struct APTEXT_GLYPH_IMAGE {
  *
  * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a NULL @p desc or
  *         @p out_image, a NULL `face`, a stroke face, a value a field
- *         refuses, a NULL @p pixels with a @p pixels_size above 0, or a
- *         @p pixels_size above 0 but too small; a struct-base code for a
+ *         refuses, a `pixels_per_em` that would make the image over 16384
+ *         pixels a side, a NULL @p pixels with a @p pixels_size above 0,
+ *         or a @p pixels_size above 0 but too small; a struct-base code for a
  *         wrong `base`; APRESULT_NOT_FOUND if `glyph` is past the face's
  *         last glyph; or APRESULT_OUT_OF_MEMORY.
  */

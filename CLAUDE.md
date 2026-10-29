@@ -32,7 +32,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 | ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
-| ApText | `text/aptext.h` | `aptext_` / `APTEXT_` | Faces, fallback chains, shaping and line layout, MTSDF atlas, single-stroke faces; no file I/O, no GPU. **Contract only, not implemented**: every call checks its arguments and returns `APRESULT_NOT_IMPLEMENTED` (`APTEXT_TODO.md`) |
+| ApText | `text/aptext.h` | `aptext_` / `APTEXT_` | Faces, fallback chains, shaping and line layout, MTSDF atlas, single-stroke faces; no file I/O, no GPU. Over HarfBuzz, msdfgen, SheenBidi and libunibreak; built 2026-10-29, run on macOS only (`APTEXT_TODO.md`) |
 
 `apricotfields.h` is not a full umbrella: it includes every Aprend header (fifteen) and
 nothing of the other modules. Callers include the module header they need.
@@ -113,10 +113,11 @@ block near the top. A new header gets the same block.
 ## Containers: eqstd (decided 2026-10-28)
 
 New containers and strings in `src/` come from `eqstd` (`../eqstd`, its
-`TODO.md`; built 2026-10-28, not yet used here): `eq::array` for plain data, `eq::vector` and
-`eq::string` for the rest, never in a public header. Old code converts as
-it is changed. Whether every desc takes a caller's allocator is paused
-(card X15); until then they use the system heap.
+`TODO.md`; linked PRIVATE since 2026-10-29, used by ApText): `eq::array`
+for plain data, `eq::vector` and `eq::string` for the rest, never in a
+public header. Old code converts as it is changed. Whether every desc takes
+a caller's allocator is paused (card X15); until then they use the system
+heap.
 
 ## Code conventions
 
@@ -351,7 +352,8 @@ there is no separate `-debug` configure preset any more.)
 **Fuzzing.** `tests/fuzz/` holds a libFuzzer target per reader of bytes the
 caller can't vouch for; today `aparchive_fuzz` (ApArchive's reader over an
 archive in memory, which also writes back what it read and reads that
-again). `tests/fuzz/aprifuzz.hpp` says how they are built.
+again) and `aptext_fuzz` (font files, Hershey fonts and saved atlases).
+`tests/fuzz/aprifuzz.hpp` says how they are built.
 
 - Every normal build runs each as a ctest, `<target>_regressions`, replaying
   `tests/fuzz/corpus/<target>/` and `tests/fuzz/regressions/<target>/`. An
@@ -374,8 +376,13 @@ again). `tests/fuzz/aprifuzz.hpp` says how they are built.
 - A new source or header file is added to the `add_library` list in
   `CMakeLists.txt` by hand; there is no glob.
 - Third-party code is vendored under `../.deps/` (glm, libdeflate, glaze,
-  SPIRV-Cross, Clipper2, earcut.hpp) and linked `PRIVATE` unless a public
-  header needs it. Clipper2 and earcut.hpp are used as sources only, through
+  SPIRV-Cross, Clipper2, earcut.hpp; ApText's HarfBuzz, msdfgen, SheenBidi
+  and libunibreak) and linked `PRIVATE` unless a public header needs it.
+  ApText's four are built here from their sources as static libraries of
+  their own (`aptext_*`), pinned by tag and fetched when `../.deps/` has no
+  copy, with floating-point contraction off for the reason ApMath's polygons
+  have it (`APTEXT_TODO.md`, "Dependencies"). Clipper2 and earcut.hpp are
+  used as sources only, through
   `declare_vendored_or_fetch_sources`: Clipper2's library sources are built
   here as `apmath_clipper2`, and earcut.hpp is a header. Both are pinned, and
   both and `src/math/apmathpoly.cpp` are built with floating-point

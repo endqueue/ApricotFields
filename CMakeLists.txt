@@ -63,6 +63,8 @@ add_library(ApricotFields STATIC
         src/sync/apsyncnet.cpp
         src/text/aptext_internal.hpp
         src/text/aptext.cpp
+        src/text/aptext_layout.cpp
+        src/text/aptext_atlas.cpp
         include/apricore.h
         include/render/aprendcontext.h
         include/render/aprendbuffers.h
@@ -304,6 +306,98 @@ declare_vendored_or_fetch_sources(earcut earcut.hpp
 FetchContent_MakeAvailable(earcut)
 target_include_directories(ApricotFields PRIVATE ${earcut_SOURCE_DIR}/include)
 
+# eqstd - the containers ApText's sources grow their arrays with (eq::array,
+# eq::vector; CLAUDE.md, "Containers: eqstd"). Header-only, PRIVATE: no
+# public header includes it. SpudLib, built before this, has usually added
+# the target already from the same workspace checkout.
+if (NOT TARGET eqstd)
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../eqstd/CMakeLists.txt")
+        message(STATUS "eqstd: using the workspace's ${CMAKE_CURRENT_SOURCE_DIR}/../eqstd")
+        add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../eqstd" "${CMAKE_CURRENT_BINARY_DIR}/eqstd")
+    else ()
+        message(STATUS "eqstd: no ../eqstd beside ApricotFields, fetching endqueue/eqstd")
+        FetchContent_Declare(eqstd GIT_REPOSITORY https://github.com/endqueue/eqstd.git
+                GIT_TAG b302f96b6aa644ab59a8b9cd23d88aaa4aa5b2dd) # eqstd 0.1.0
+        FetchContent_MakeAvailable(eqstd)
+    endif ()
+endif ()
+target_link_libraries(ApricotFields PRIVATE eqstd)
+
+# ApText's four dependencies (APTEXT_TODO.md, "Dependencies"), each built
+# here from its sources as a static library of its own, linked PRIVATE: no
+# HarfBuzz, msdfgen, SheenBidi or libunibreak type is in include/. Pinned,
+# because what each computes is part of ApText's output: a layout and an
+# atlas's pixels must be the same bits on every build. Upgrading one is a
+# decision, with the tests' expected values checked again. Each is built
+# with floating-point contraction off, as ApMath's polygons are.
+#
+# HarfBuzz 14.6.0 (MIT): shaping, and glyph outlines through its draw
+# callbacks, so FreeType isn't needed. Its one-file amalgamation, with no
+# optional dependency (no FreeType, GLib, ICU or CoreText): its own Unicode
+# data, the same on every platform.
+declare_vendored_or_fetch_sources(harfbuzz harfbuzz
+        https://github.com/harfbuzz/harfbuzz.git 14.6.0
+        src/harfbuzz.cc)
+FetchContent_MakeAvailable(harfbuzz)
+add_library(aptext_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
+target_include_directories(aptext_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
+set_target_properties(aptext_harfbuzz PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17)
+target_link_libraries(ApricotFields PRIVATE aptext_harfbuzz)
+
+# msdfgen 1.13 (MIT): the MTSDF generator, its core only - not its ext
+# (FreeType and file loading) and not msdf-atlas-gen (whose packer assumes a
+# fixed glyph set).
+declare_vendored_or_fetch_sources(msdfgen msdfgen
+        https://github.com/Chlumsky/msdfgen.git v1.13
+        core/msdfgen.cpp)
+FetchContent_MakeAvailable(msdfgen)
+set(APTEXT_MSDFGEN_SOURCES Contour DistanceMapping EdgeHolder MSDFErrorCorrection Projection Scanline Shape
+        contour-combiners convergent-curve-ordering edge-coloring edge-segments edge-selectors equation-solver
+        msdf-error-correction msdfgen rasterization sdf-error-estimation)
+list(TRANSFORM APTEXT_MSDFGEN_SOURCES PREPEND ${msdfgen_SOURCE_DIR}/core/)
+list(TRANSFORM APTEXT_MSDFGEN_SOURCES APPEND .cpp)
+add_library(aptext_msdfgen STATIC ${APTEXT_MSDFGEN_SOURCES})
+target_include_directories(aptext_msdfgen PUBLIC ${msdfgen_SOURCE_DIR})
+# Defined empty, in place of the msdfgen-config.h its own CMakeLists.txt
+# writes: a static library exports nothing.
+target_compile_definitions(aptext_msdfgen PUBLIC "MSDFGEN_PUBLIC=")
+set_target_properties(aptext_msdfgen PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_STANDARD 17)
+target_link_libraries(ApricotFields PRIVATE aptext_msdfgen)
+
+# SheenBidi 2.9.0 (Apache 2.0): Unicode's bidirectional algorithm and
+# script runs. 2.9, not 3.0: 3.0 adds a process-wide default allocator a
+# caller can replace, writable global state ApricotFields may not have.
+declare_vendored_or_fetch_sources(sheenbidi SheenBidi
+        https://github.com/Tehreer/SheenBidi.git v2.9.0
+        Source/SheenBidi.c)
+FetchContent_MakeAvailable(sheenbidi)
+add_library(aptext_sheenbidi STATIC ${sheenbidi_SOURCE_DIR}/Source/SheenBidi.c)
+target_compile_definitions(aptext_sheenbidi PRIVATE SB_CONFIG_UNITY)
+target_include_directories(aptext_sheenbidi PUBLIC ${sheenbidi_SOURCE_DIR}/Headers
+        PRIVATE ${sheenbidi_SOURCE_DIR}/Source)
+set_target_properties(aptext_sheenbidi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ApricotFields PRIVATE aptext_sheenbidi)
+
+# libunibreak 8.0 (zlib): Unicode's line breaking algorithm.
+declare_vendored_or_fetch_sources(libunibreak libunibreak
+        https://github.com/adah1972/libunibreak.git libunibreak_8_0
+        src/linebreak.c)
+FetchContent_MakeAvailable(libunibreak)
+add_library(aptext_unibreak STATIC
+        ${libunibreak_SOURCE_DIR}/src/linebreak.c
+        ${libunibreak_SOURCE_DIR}/src/linebreakdata.c
+        ${libunibreak_SOURCE_DIR}/src/linebreakdef.c
+        ${libunibreak_SOURCE_DIR}/src/linebreakauxdata.c
+        ${libunibreak_SOURCE_DIR}/src/eastasianwidthdata.c
+        ${libunibreak_SOURCE_DIR}/src/eastasianwidthdef.c
+        ${libunibreak_SOURCE_DIR}/src/emojidata.c
+        ${libunibreak_SOURCE_DIR}/src/emojidef.c
+        ${libunibreak_SOURCE_DIR}/src/unibreakbase.c
+        ${libunibreak_SOURCE_DIR}/src/unibreakdef.c)
+target_include_directories(aptext_unibreak PUBLIC ${libunibreak_SOURCE_DIR}/src)
+set_target_properties(aptext_unibreak PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ApricotFields PRIVATE aptext_unibreak)
+
 # Hosek and Wilkie's sky model, version 1.4a (APREND_COMMAND_LIT_SKY's
 # HOSEK_WILKIE): its RGB coefficients alone, which aprendlit.cpp cooks for a
 # sun and an air. 3-clause BSD licence, in the data file itself and in its
@@ -342,6 +436,13 @@ set(APRICOTFIELDS_HOSEK_RGB_INC ${APRICOTFIELDS_SHADER_INC_DIR}/aprend_hosek_rgb
 if (NOT MSVC)
     target_compile_options(apmath_clipper2 PRIVATE -ffp-contract=off)
     set_source_files_properties(src/math/apmathpoly.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+    # The same for ApText: a layout's positions and a glyph's distance field
+    # are the same bits on every platform (aptext.h).
+    foreach (target aptext_harfbuzz aptext_msdfgen aptext_sheenbidi aptext_unibreak)
+        target_compile_options(${target} PRIVATE -ffp-contract=off -w)
+    endforeach ()
+    set_source_files_properties(src/text/aptext.cpp src/text/aptext_layout.cpp src/text/aptext_atlas.cpp
+            PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 endif ()
 
 # Headless tests - no GPU, no window. Run with ctest, or the executable.
@@ -364,11 +465,16 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apsync_tests tests/apsync_tests.c)
     target_link_libraries(apsync_tests PRIVATE ApricotFields)
     add_test(NAME apsync_tests COMMAND apsync_tests)
-    # ApText's contract (APTEXT_TODO.md): argument checks pass, and the
-    # behavioural tests report pending while the calls aren't built.
+    # ApText's contract (APTEXT_TODO.md): written before the implementation,
+    # a behavioural test reports pending while its call isn't built.
     add_executable(aptext_tests tests/aptext_tests.c)
     target_link_libraries(aptext_tests PRIVATE ApricotFields)
     add_test(NAME aptext_tests COMMAND aptext_tests)
+    # The same layout and atlas bits on every platform, against values
+    # recorded on macOS.
+    add_executable(aptext_bits_tests tests/aptext_bits_tests.c)
+    target_link_libraries(aptext_bits_tests PRIVATE ApricotFields)
+    add_test(NAME aptext_bits_tests COMMAND aptext_bits_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
@@ -405,7 +511,7 @@ endif ()
 # on macOS, since Apple's Clang has no libFuzzer). The presets build every
 # target with -fsanitize=fuzzer-no-link,address,undefined; only the fuzz
 # executables link libFuzzer itself.
-set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz)
+set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz aptext_fuzz)
 if (APRICOTFIELDS_BUILD_TESTS)
     foreach (target IN LISTS APRICOTFIELDS_FUZZ_TARGETS)
         add_executable(${target}_replay tests/fuzz/aprifuzz_replay.cpp tests/fuzz/${target}.cpp)
