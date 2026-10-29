@@ -66,6 +66,14 @@ Open, and SpudNet's to answer:
 - **If `spudnet_error` moves to SpudCore** (SpudFiles has the same gap), `describe`
   is the one function that reads it.
 
+## Its place (decided 2026-10-28 with the user)
+
+ApSync stays in ApricotFields as a general-purpose session engine for local
+networks, open source with the rest of the repository, for any caller. A
+caller with its own online service may use it as that service's local
+mode. Its transport and trust (items 1 and 5, card A23) wait until that
+caller's design is settled.
+
 ## Not built
 
 The rule for adding any of it is ApArchive's: a new function, or a new field at
@@ -132,6 +140,14 @@ one over, so the host holds two copies for a moment and the joiner one.
   fetches by SpudNet's HTTP transfer, and ApSync carries only the reference and
   the sequence. Works today, in the caller.
 - **Compression** is the caller's, with ApArchive's codecs if it likes.
+
+**Decided 2026-10-28 with the user (card A22):** both halves. Sending:
+`begin` / `write` / `end` calls on the host, so a snapshot streams from
+disk or is encoded piece by piece. Receiving: pieces as events, for a
+joiner that asks in its join desc; the whole-block event stays the default.
+The reference route (a document fetched by HTTP, ApSync carrying the
+reference and the sequence) stays the caller's to use. Media of any size
+would still move outside ApSync. Not started.
 
 ### 5. Smaller things
 

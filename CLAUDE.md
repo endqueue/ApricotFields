@@ -108,7 +108,7 @@ New containers and strings in `src/` come from `eqstd` (the workspace's
 `EQSTD_TODO.md`; not built): `eq::array` for plain data, `eq::vector` and
 `eq::string` for the rest, never in a public header. Old code converts as
 it is changed. Whether every desc takes a caller's allocator is paused
-(card X12); until then they use the system heap.
+(card X15); until then they use the system heap.
 
 ## Code conventions
 

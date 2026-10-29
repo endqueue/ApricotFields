@@ -8,6 +8,47 @@ is the older generation of code in this repo (see `CLAUDE.md`, "Two generations
 of code") and is mid-overhaul. This file holds what is known to be wrong or
 unfinished in it.
 
+## The umbrella header becomes `aprend.h` (card A27, decided 2026-10-28)
+
+`include/apricotfields.h` includes every Aprend header and nothing else,
+so its name says more than it holds. It becomes `include/aprend.h`,
+Aprend's umbrella in name and fact; ApMath, ApSync, ApArchive and ApAudio
+keep their own headers, with no header including all of ApricotFields (as
+SpudLib has none). `check.sh umbrella` checks `aprend.h` reaches every
+header in `include/render/`. Every caller renamed in the same change, as
+card A1's were. Not started.
+
+## Deferred items and the 1.0 room check (card A15, decided 2026-10-28)
+
+**Deferred** means not built now, with no date: the item stays here and is
+built when a caller needs it. Items 6, 12, 13, 21, 29, 36 and 40 are
+deferred; item 30 is dropped; items 33 (bindless on Metal) and 34
+(indirect dispatch) are taken.
+
+**The room check, before ApricotFields 1.0** (root `CLAUDE.md`, "Versions
+and releases": released structs freeze, enums only grow). For every
+deferred item, one line saying how it would be added after 1.0 - a new
+call, command, handle or chained struct - and a check that every struct it
+touches has a struct base to chain from. **Revisit them all then: any that
+can be added before 1.0 cheaply, or whose shape needs a field, is taken
+before the freeze.**
+
+| Item | How it would arrive | Room after 1.0 |
+|---|---|---|
+| 13, merging staged copies | internal | free |
+| 29, pipeline statistics | a query handle, as the timers | free |
+| 6, async readback | a command and a readback handle polled | free if no struct assumes a blocking readback |
+| 40, compositor scaling | a chained struct on the swap chain desc | free if the desc has a struct base |
+| 12, a second queue and per-thread command memory | submit names a queue; ownership moves between queues | **at risk**: layout tracking and submit assume one queue |
+| 21, storage-buffer instances, a pipeline per draw | new per-draw data in the draw list | **at risk** if the per-draw record freezes without room |
+| 36, a temporal history handle | a history handle, a jittered projection, motion vectors | **at risk**: camera and projection data may need fields |
+
+**For the three at risk, their shapes are designed before 1.0, not built:**
+submit takes a queue (one exists), the draw list's per-draw record can be
+extended, and the camera data carries a jitter offset that is zero today.
+Video export needs 6 and 12 (card A28): nothing frozen may assume one
+queue or a blocking readback.
+
 ## The contract conversion (cards A2, A10, A14; decided 2026-10-28)
 
 **Decided with the user 2026-10-28; not started.** All of Aprend moves to
@@ -1481,6 +1522,8 @@ run on all three backends). A 3D texture still can't: such a texture wants
 
 ### 6. Immediate operations: what is left
 
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
+
 Texture updates and readbacks and framebuffer clears are recorded into one
 batch for the frame, carried by the next submission, and an update is
 staged in the frame's transient memory (see "State of the code",
@@ -1691,6 +1734,8 @@ or per instance (see "State of the code"). Left over:
 
 ### 12. Frames in flight: what is left
 
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
+
 Buffer sets give each frame in flight its own copy of a uniform or storage
 buffer (see "State of the code"), so the frame being written doesn't share a
 buffer with one the GPU is reading. Left over:
@@ -1784,6 +1829,8 @@ Hazel: `UniformBufferSet`, `StorageBufferSet`, `Renderer::SubmitResourceFree`,
 `RendererConfig::FramesInFlight`.
 
 ### 13. Uploads: what is left
+
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
 Vertex, index and storage buffers follow the device's memory (see "State of
 the code"). Left over:
@@ -1998,6 +2045,13 @@ the sets its draws read (see "State of the code").
   it is the pass's depth target, with depth writes off, needs a read-only
   depth layout, which `SPUDGPU_IMAGE_LAYOUT` doesn't have, and a rule for when
   it is used.
+  **Decided 2026-10-28 with the user (card A11):** SpudGPU gains the
+  read-only depth layouts (`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later"),
+  and Aprend uses one by itself when a pass's pipelines all have depth
+  writes off and a draw samples the mip the pass tests against; callers
+  never see layouts. For soft particles, decals, fog and glass reading the
+  depth behind them. Tests: a pass testing against and sampling one depth
+  texture, read back, on every backend. Not started.
 - **Storage barriers follow what the shaders write** (written 2026-10-18,
   see "State of the code"). A storage image or buffer no pipeline has
   written since its last barrier in the list, used by one that only reads
@@ -2116,10 +2170,20 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
   checked against the targets' formats, as BEGIN_RENDERING never was.
 - **The swap chain is not a target.** Presenting is still
   `PRESENT_TEXTURE`'s copy from a texture the pass rendered to.
+  **Decided 2026-10-28 with the user (card A12): it stays so.**
+  `PRESENT_TEXTURE` is the one path: the frame is rendered offscreen (HDR,
+  post-processing, resize, screenshots and exports from the same texture,
+  the fit by rectangles) and copied into the swap chain by one full-screen
+  pass, as Unreal and Hazel finish theirs. Revisit only if a measurement
+  on a phone or tablet shows the copy matters; then the last
+  post-processing step (tone mapping) writes into the swap chain image,
+  not every pass.
 - **A compute pass only sets state**: there is no begin and end, and
   nothing groups its dispatches.
 
 ### 21. Draw list: what is left
+
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
 `aprend_draw_list` is written (see "State of the code"). Hazel:
 `SceneRenderer` (`MeshKey`, `DrawCommand`, `m_SBSInstanceTransforms`),
@@ -2198,6 +2262,37 @@ all it needs. Written 2026-10-16 and run on all three backends by `../apricottes
   pays for a pipeline. A call to make them ahead of time is for when that
   shows.
 
+**Decided 2026-10-28 with the user (card A9):**
+
+1. ~~**Aprend stays SPIR-V in.**~~ **Revised the same day with the user:**
+   Aprend takes a **shader package**, the same shader in each API's own
+   format (SPIR-V, DXIL, `.metallib`), and gives SpudGPU the one its
+   device takes (SpudGPU compiles nothing any more:
+   `../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later"). Still no compiler in the
+   renderer. Aprend's built-in shaders are compiled to all three at build
+   time (DXC on Windows, Apple's compiler on Apple platforms, each
+   platform building its own), so a shipped application carries neither
+   DXC nor SPIRV-Cross. Every caller changes in one change, before 1.0.
+2. **Runtime compilation is a separate, optional ApricotFields module**
+   (working name ApShaderc): source in, a shader package out (SPIR-V, and
+   DXIL and Metal through SPIRV-Cross and the platform compilers; the same
+   pipeline as the build step). The language is card A29. No file
+   I/O: the caller hands it source and an include callback. A cache keyed
+   by a hash of source and options, in memory the caller may save and load.
+   For hot reload, an editor's material or shader graph, debug builds; a
+   shipped application needn't link it. Compared: Hazel builds shaderc into
+   its renderer, Godot uses runtime glslang with a disk cache, Unreal
+   separate worker processes and a shared cache, bgfx an offline tool. Its
+   own TODO when started. Not started.
+3. **Specialization constants in SpudGPU** for variants without
+   recompiling source (`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later"); Aprend
+   passes them on a pipeline desc. Used by item 27's sample counts, item
+   31's 3D and integer paths, and items 24 and 18. Not started.
+
+Later, noted: **pipeline caches** in SpudGPU (Vulkan's `VkPipelineCache`,
+D3D12's pipeline library, Metal's binary archives), the bytes handed to
+the caller to keep, so a second launch compiles nothing.
+
 ### 23. No 2D, line, text or debug drawing
 
 Hazel: `Renderer2D` (batched quads, lines, circles, MSDF text), `DebugRenderer`.
@@ -2216,6 +2311,47 @@ constants, or uniform data from transient memory, which isn't built), what
 space a batch is in and how its camera reaches it, and what the kinds are,
 are design session item A3 (`../DESIGN_SESSION_AGENDA.md`), whose
 recommendation is a one-page design approved before it is built.
+**Order confirmed 2026-10-28 with the user (card A16):** section B ran
+items 40, 21, 36 and 24 (written 2026-10-24), and this item comes last,
+after card A3 decides its design.
+
+#### The batcher: the design (decided 2026-10-28 with the user, card A3)
+
+The one-page design the card asked for, approved as written here.
+Compared with Hazel's `Renderer2D` (four vertices per quad, 20,000 per
+batch, separate line and circle batches), Unreal's canvas and batched
+elements, and bgfx's and Sokol's transient buffers.
+
+- **One record per shape**, expanded into a quad by the vertex shader:
+  position, size, rotation, color, texture rectangle, and the kind's own
+  values. Records are written into transient spans (`aprendtransient.h`)
+  and read as a per-instance vertex binding, as the draw list's instances
+  are. A quarter of Hazel's vertex traffic.
+- **Per-batch data in push constants**, within 128 bytes: the batch's
+  view-projection matrix, the viewport's size in pixels, the batch's mode
+  and the paper scale for millimetre widths.
+- **A batch is in screen space or world space,** chosen per batch: screen
+  space in pixels (interface, HUDs, labels), world space in the scene's
+  coordinates (annotation in 3D, debug drawing), there depth-tested
+  against the scene or drawn over it, the caller's choice.
+- **The kinds:**
+  - quads, solid or sampling a texture;
+  - lines: width in pixels or in paper millimetres (a pen at a scale),
+    butt, square or round caps, mitre, bevel or round joins on a
+    polyline, and **dash patterns** (a pattern of dash and gap lengths,
+    measured along the line from its start, so dashes stay even at every
+    zoom and continue across a polyline's corners);
+  - circles, rings and arcs, antialiased by their distance in the
+    fragment shader, exact at any size;
+  - glyphs, as designed under "Text" below, when ApText exists.
+- **A debug layer** over it: calls that draw a line, box, sphere, arrow or
+  axes for this frame only, collected into the same batches.
+- **Built in the autonomous phase**, glyphs excepted; each kind tested
+  against its formula worked out in C, read back, as section B's tests.
+- **Uniform data from transient memory** is SpudGPU's dynamic uniform
+  offsets (a buffer bound from a byte offset per draw), its own spudlib
+  change (`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later"); the batcher
+  doesn't need it, materials do.
 
 #### Text: the design (decided 2026-10-15, not started)
 
@@ -2338,6 +2474,30 @@ Left:
       second target (a variant of the surface shader, and a pipeline of
       two targets, item 25), then a ray march over depth and a resolve.
       Hazel does it deferred-style over its own G-buffer outputs.
+      **Decided 2026-10-28 with the user (card A6):** (1) the surface
+      shader gets a variant that also writes a normal-and-roughness
+      target (RGBA16F), paid for only by a caller using SSR; (2) SSR is an
+      opt-in command, as BLOOM, its targets from the render target pool;
+      (3) a half-resolution march over a Hi-Z depth pyramid; (4) a blur by
+      roughness, standing in for the temporal filter item 36 defers; (5)
+      where a ray leaves the screen or misses, the sky and environment
+      lighting Aprend already has (reflection probes later, their own
+      item); (6) no G-buffer mode: Aprend stays forward. Godot 4's
+      forward renderer is the closest match. Tests: a mirror plane's
+      reflection of a known quad read back against its place worked out in
+      C, on every backend. Not started.
+      **Hardware ray tracing (card S12, decided 2026-10-28):** once
+      SpudGPU's ray queries exist, Aprend builds and refits acceleration
+      structures from what it draws (memory through item 35's allocator),
+      adds ray-traced reflections as an opt-in command over SSR's normal
+      and roughness target, tracing where SSR misses or roughness is low,
+      then ray-traced sun shadows. Inline queries only; a path tracer for
+      finished renderings is a caller's, on the same queries, in compute.
+      If ray tracing pipelines come (two sibling SpudGPU EXTs, one on
+      Vulkan and D3D12, one translating Metal's function tables; spudlib's
+      `SPUDGPU_DEVICE_TODO.md`), Aprend writes that work once per EXT, and
+      its Metal path's shaders are Metal: an ordinary shader package entry
+      since item 22's revision.
 - [x] **Shadows from point lights** (a cube map each, six passes). Done
       2026-10-24, run on Metal only: `aprend_lit_scene_set_point_shadows()`
       with `aprend_lit_point_shadow` (frozen: a light and six face
@@ -2391,6 +2551,17 @@ Left:
       two refusals.
 - [ ] **Transmission** (glTF's KHR_materials_transmission): refraction of
       what is behind, needing a copy of the opaque picture.
+      **Decided 2026-10-28 with the user (card A7):** a scene color copy
+      command, copying the current color target into a mipped texture
+      from the render target pool, recorded by the caller between its
+      opaque and transparent draws; the lit surface samples it for a
+      material with transmission, offset for refraction and at a mip by
+      roughness (frosted), tinted by thickness and attenuation as glTF's
+      `KHR_materials_volume`. As Unreal's scene color, Godot's
+      `SCREEN_TEXTURE`, three.js. Limits: glass behind glass and what is
+      off screen don't show through (ray tracing, card S12, later).
+      Tests: a refracted known quad read back against its place worked out
+      in C, on every backend. Not started.
 - [x] **A sun disc** in the sky shader (left out of the environment on
       purpose, where it would only blur), and Hosek-Wilkie's sky for a
       better horizon than Preetham's. Done 2026-10-24, run on Metal only.
@@ -2520,6 +2691,8 @@ Left:
       constants (item 22), when a measurement shows them.
 
 ### 36. Post-processing, and bloom first
+
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
 **Bloom written 2026-10-16, run on Metal the same day** (see "State of
 the code"). **Its lens dirt and mask, the pool's report and trim, a
@@ -2723,6 +2896,8 @@ draws one by outlining the mask's inverse).
 
 ### 40. Present scaling: a source of another size than the back buffer
 
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
+
 Numbered out of order, as item 31. **Decided 2026-10-23. Aprend's half
 written 2026-10-24 and run on Metal only; SpudGPU's half done (2026-10-23,
 run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).**
@@ -2914,17 +3089,85 @@ SpudGPU on all three backends; a clamp needs a device created with
 
 ### 27. MSAA and resolve
 
-No sample count on images or pipelines and no resolve attachment.
+(Card A4 below.) No sample count on images or pipelines and no resolve attachment.
 `aprend_texture2d_create` refuses `sample_count > 1` and `BEGIN_RENDERING`
 refuses a `resolve_view` for this reason. Hazel doesn't use MSAA either, so this
 is not part of the bar.
+
+**Decided 2026-10-28 with the user (card A4): add it.** A line or edge
+under a pixel wide crawls as the camera moves, and post-process AA (FXAA,
+TAA) can't recover it and smears in motion; MSAA samples the geometry.
+Revit and Rhino use MSAA in their viewports; Unreal offers it in its
+forward renderer. Not started; SpudGPU's half comes first
+(`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later").
+
+Aprend's API already has the room: the two refusals go.
+
+```c
+/* The caller asks what the device takes, then chooses. */
+uint32_t mask = 0;
+aprend_get_format_sample_counts(instance, SPUDGPU_FORMAT_RGBA16_FLOAT, &mask);
+uint32_t samples = (mask & 4) ? 4 : 1;   /* the caller's choice */
+
+aprend_texture2d_desc msaa_desc = {
+    .width = w, .height = h,
+    .format = SPUDGPU_FORMAT_RGBA16_FLOAT,
+    .usage = APREND_TEXTURE_USAGE_COLOR_TARGET | APREND_TEXTURE_USAGE_TRANSIENT,
+    .mip_levels = 1, .array_layers = 1,
+    .sample_count = samples,              /* refused above 1 today */
+};
+aprend_texture2d msaa_color;
+aprend_texture2d_create(instance, &msaa_desc, &msaa_color);
+/* ...plus the single-sample texture it resolves into, and a multisampled
+ *    depth target with the same sample_count... */
+
+aprend_color_target target = {
+    .view = msaa_color_view,
+    .resolve_view = scene_color_view,     /* must be NULL today */
+    .load_op = SPUDGPU_LOAD_OP_CLEAR,
+    .store_op = SPUDGPU_STORE_OP_DONT_CARE, /* samples discarded after resolve */
+};
+
+aprend_graphics_pipeline_desc pipe = { /* ... */ .sample_count = samples };
+```
+
+- `aprend_get_format_sample_counts()` passes SpudGPU's query through
+  (`spudgpu_get_format_properties()`, card A13).
+- `sample_count` on `aprend_texture2d_desc` and a new one on
+  `aprend_graphics_pipeline_desc`, which must match the pass's targets;
+  `BEGIN_RENDERING` refuses a mismatch.
+- `resolve_view` on `aprend_color_target` takes the resolve, and the depth
+  target gains its own resolve view and mode (one sample, nearest, or
+  farthest), for what reads depth after the pass (GTAO, OUTLINE).
+- `APREND_TEXTURE_USAGE_TRANSIENT`: a target that lives within one pass
+  and is never stored, so on tile-based GPUs (Apple's) the samples stay in
+  tile memory and MSAA costs little memory or bandwidth.
+- Everything after the pass reads the resolved texture and never knows.
+  Forward rendering is where it fits; deferred shading with MSAA is not
+  planned.
+- Tests: an edge's resolved coverage read back against the fraction
+  worked out in C, at each supported count, on every backend.
 
 ### 28. Stencil state
 
 Stencil load and store ops exist on the depth target, but there is no stencil
 test or op state on the pipeline. Hazel leaves stencil off as well.
 
+**Decided 2026-10-28 with the user (card A5): add it.** Not started;
+SpudGPU's half first (`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later").
+`aprend_graphics_pipeline_desc` takes stencil state as SpudGPU's (compare,
+pass, fail and depth-fail ops for front and back faces, read and write
+masks), and a command sets the reference value between draws. What it is
+for: filling cut faces where a clipping plane or section box slices a
+closed mesh (a front- and back-face count marks the cut), outlines from
+an exact mask (item 36's OUTLINE; Unreal's custom stencil), decal regions
+and irregular clipping. Tests: a capped cut read back against the area
+worked out in C, on every backend. The format is the caller's, from what
+the device reports (no D24S8 on Apple GPUs).
+
 ### 29. GPU timing and debug markers
+
+(Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
 Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Debug labels are
 `APREND_COMMAND_BEGIN_LABEL` and `END_LABEL`; GPU time is an
@@ -2946,6 +3189,9 @@ Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottest
 - Hazel: `RenderCommandBuffer` (`RT_BeginTimerQuery`, `RT_BeginMarker`).
 
 ### 30. Hardware without dynamic rendering
+
+**Dropped 2026-10-28 with the user (card A15)**, unless a device that
+needs it is named. Kept for the record:
 
 `CLAUDE.md`, "Aprend": SpudGPU's plan is a caller-owned `spudgpu_framebuffer`,
 designed and not built. When it exists, `aprend_framebuffer` holds and caches
@@ -2974,6 +3220,16 @@ frame makes nothing new. Left:
   and snorm formats depend on the device, and SpudGPU has no query for
   what a format supports; integer formats can't be filtered, and would
   need a shader that reads texels and averages them itself.
+- **Decided 2026-10-28 with the user (card A13):** 3D textures and
+  integer formats are generated by a compute shader: each texel of the
+  level below is the average of its box in the level above (2x2x2, wider
+  at odd sizes, as the 2D path's exact box), read texel by texel, so
+  neither filtering nor rendering is needed. Which path a format takes
+  (render or compute, or neither) comes from SpudGPU's new
+  `spudgpu_get_format_properties()` in place of the list of eleven;
+  `aprend_get_format_sample_counts()` (card A4) becomes a pass-through of
+  the same query. Tests: each path against the average worked out in C,
+  on every backend. Not started.
 - **Done: odd sizes** (2026-10-22). A linear generation is an exact box
   over each target texel's footprint (two and a bit source texels on an
   odd side), read with `texelFetch`, so every source texel weighs the
@@ -2990,6 +3246,10 @@ frame makes nothing new. Left:
 Hazel: `Texture2D::GenerateMips`.
 
 ### 33. Bundles and bindless: not on every backend
+
+**Decided 2026-10-28 with the user (card A15): bindless on Metal is taken,** through
+argument buffers tier 2 (Apple Silicon), in SpudGPU's Metal backend first;
+then Aprend offers bindless on every backend. Bundles stay not planned.
 
 Numbered out of order, as item 31. SpudGPU has both on Vulkan and D3D12 and
 compiles both out on Metal (`SPUDGPU_EXT_BUNDLES`,
@@ -3015,6 +3275,10 @@ the same thing everywhere, and offers neither.
   what would use it.
 
 ### 34. Indirect dispatch, a draw count from the GPU, task shaders
+
+**Decided 2026-10-28 with the user (card A15): indirect dispatch is taken,** in SpudGPU
+first (`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later"), then as an Aprend
+command. A draw count from the GPU and task shaders stay deferred.
 
 Numbered out of order, as item 31. Each is a call or a path SpudGPU doesn't
 have on every backend:
@@ -3068,6 +3332,258 @@ Metal would need one of its own.
 - The pools and the arena stay: they place many ranges in one buffer,
   which is what one view, one barrier per buffer and a material table
   (item 21, item 33) need, and which a device allocator doesn't do.
+
+**Decided 2026-10-28 with the user (card A8): `VmaVirtualBlock`,** vendored
+in `.deps` and linked privately (never in a header of Aprend's), for the
+bookkeeping only; Aprend keeps the policy. It replaces `aprend_range_list`
+under the pools and the arena too (item 19), so one allocator is tested.
+First, needing no decision: run SpudGPU's heaps on Metal, then D3D12 and
+Vulkan. Not started.
+
+- **VMA keeps books, it allocates nothing.** A virtual block is a number
+  line `[0, size)` with alignment; it touches no GPU object and has never
+  heard of a heap. VMA's full allocator (`VmaAllocator`), which does
+  allocate Vulkan memory, is not used. What ties a virtual block to a
+  `spudgpu_heap` is Aprend's own `aprend_device_block`, holding one of
+  each: an offset VMA hands out is an offset into that heap because Aprend
+  passes it to `spudgpu_create_placed_*` with that heap.
+- **VMA's header includes Vulkan's** (for `VkResult` and the like) even for
+  virtual blocks. Metal and D3D12 builds vendor Vulkan-Headers (header
+  only, seen by the adapter's one file) and compile VMA with `VMA_STATIC_VULKAN_FUNCTIONS 0` and
+  `VMA_DYNAMIC_VULKAN_FUNCTIONS 0`, so nothing calls Vulkan. The
+  alternative, a TLSF of our own (about 400 lines), is kept in reserve.
+- **Blocks need stable storage.** Placements hold a block's address, so
+  a container that moves its elements on growth (`std::vector`) is wrong:
+  `std::deque` (whose `push_back` keeps references), indices, or a chunked
+  list (eqstd's, when it exists).
+- **VMA stays behind one file** (asked by the user, 2026-10-28). An
+  internal adapter, `aprend_suballocator` - create over a size, allocate a
+  size and alignment to an offset and a handle, free a handle, ask whether
+  it is empty - is the only thing that includes `vk_mem_alloc.h`, in its one
+  `.cpp`. The rest of Aprend sees Aprend types only, never `VkResult` or a
+  VMA handle, and a TLSF of our own would replace one file.
+- **A block owns its heap and its books together.** Creating a block makes
+  both, destroying it destroys both, and nothing outside it touches either
+  alone, so a heap without its books, or the reverse, can't happen. The
+  pairing is VMA's own design: its `VmaDeviceMemoryBlock` is a
+  `VkDeviceMemory` with the same metadata a virtual block exposes, and
+  D3D12MA pairs an `ID3D12Heap` the same way; Aprend's block has a
+  `spudgpu_heap` in that place. It lives in Aprend because placement is
+  policy, which SpudLib never holds (2026-10-11).
+
+The sketch, illustrative (Aprend's names and `APRESULT` codes invented;
+SpudGPU's and VMA's calls real):
+
+```cpp
+// src/render/aprendsuballocator_internal.hpp (sketch)
+//
+// Which bytes of a run [0, size) are taken, with alignment. Knows nothing of
+// GPUs or heaps. VMA's virtual block underneath, included only by
+// aprendsuballocator.cpp.
+
+struct aprend_suballocation {
+    uint64_t offset = 0;
+    uint64_t handle = 0;          // VMA's allocation, opaque here; 0 is none
+};
+
+class aprend_suballocator {
+public:
+    aprend_suballocator() = default;
+    ~aprend_suballocator();                                    // frees the books
+    aprend_suballocator(const aprend_suballocator &) = delete;
+    aprend_suballocator &operator=(const aprend_suballocator &) = delete;
+
+    APRESULT create(uint64_t size);
+    bool     allocate(uint64_t size, uint64_t alignment, aprend_suballocation *out);
+    void     free(aprend_suballocation range);
+    bool     is_empty() const;
+
+private:
+    void *books_ = nullptr;       // VmaVirtualBlock, opaque outside the .cpp
+};
+```
+
+```cpp
+// src/render/aprendsuballocator.cpp (sketch): the one file that sees VMA
+
+#define VMA_STATIC_VULKAN_FUNCTIONS 0     // nothing here calls Vulkan
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 0
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"                 // .deps, with Vulkan-Headers on every backend
+#include "aprendsuballocator_internal.hpp"
+
+APRESULT aprend_suballocator::create(uint64_t size) {
+    VmaVirtualBlockCreateInfo info{};
+    info.size = size;                     // TLSF over [0, size)
+    VmaVirtualBlock block = VK_NULL_HANDLE;
+    if (vmaCreateVirtualBlock(&info, &block) != VK_SUCCESS)
+        return APRESULT_OUT_OF_MEMORY;
+    books_ = block;
+    return APRESULT_SUCCESS;
+}
+
+bool aprend_suballocator::allocate(uint64_t size, uint64_t alignment,
+                                   aprend_suballocation *out) {
+    VmaVirtualAllocationCreateInfo info{};
+    info.size = size;
+    info.alignment = alignment;
+    VmaVirtualAllocation range = VK_NULL_HANDLE;
+    if (vmaVirtualAllocate((VmaVirtualBlock)books_, &info, &range, &out->offset) != VK_SUCCESS)
+        return false;
+    out->handle = (uint64_t)(uintptr_t)range;
+    return true;
+}
+
+void aprend_suballocator::free(aprend_suballocation r) {
+    vmaVirtualFree((VmaVirtualBlock)books_, (VmaVirtualAllocation)(uintptr_t)r.handle);
+}
+
+bool aprend_suballocator::is_empty() const {
+    return vmaIsVirtualBlockEmpty((VmaVirtualBlock)books_) == VK_TRUE;
+}
+
+aprend_suballocator::~aprend_suballocator() {
+    if (books_)
+        vmaDestroyVirtualBlock((VmaVirtualBlock)books_);
+}
+```
+
+```cpp
+// src/render/aprenddeviceallocator_internal.hpp (sketch)
+//
+// Where every buffer and texture lives: blocks of device memory, each a
+// SpudGPU heap with a suballocator keeping its books. The policy (block
+// size, which block, when a block goes) is here, in Aprend.
+
+#include <spudgpu.h>
+#include <deque>
+#include "aprendsuballocator_internal.hpp"
+
+// A block owns its heap and its books: made together, gone together.
+class aprend_device_block {
+public:
+    static APRESULT create(spudgpu_device device, SPUDGPU_MEMORY_KIND kind,
+                           SPUDGPU_HEAP_RESOURCE_CLASS resource_class,
+                           uint64_t size, aprend_device_block *out) {
+        spudgpu_heap_desc hd{};
+        hd.base.type      = SPUD_STRUCT_TYPE_GPU_HEAP_DESC;
+        hd.memory_kind    = kind;
+        hd.resource_class = resource_class;
+        hd.size           = size;
+        hd.debug_name     = "aprend device block";
+        if (spudgpu_create_heap(device, &hd, &out->heap_) != SPUDRESULT_SUCCESS)
+            return APRESULT_OUT_OF_DEVICE_MEMORY;
+        APRESULT r = out->books_.create(size);
+        if (r != APRESULT_SUCCESS) {
+            spudgpu_destroy_heap(out->heap_);
+            out->heap_ = nullptr;
+        }
+        return r;
+    }
+    ~aprend_device_block() { if (heap_) spudgpu_destroy_heap(heap_); }   // books go with it
+
+    spudgpu_heap heap() const { return heap_; }
+    bool take(const spudgpu_placement_requirements &req, aprend_suballocation *out) {
+        return books_.allocate(req.size, req.alignment, out);   // alignment from SpudGPU
+    }
+    void give_back(aprend_suballocation r) { books_.free(r); }
+    bool is_empty() const { return books_.is_empty(); }
+
+private:
+    spudgpu_heap        heap_ = nullptr;
+    aprend_suballocator books_;
+};
+
+struct aprend_device_placement {
+    aprend_device_block  *block = nullptr;
+    aprend_suballocation  range{};
+};
+
+// One list of blocks per (memory kind, resource class), as SpudGPU's heaps
+// require: buffers, images, and attachment images apart.
+struct aprend_device_pool {
+    SPUDGPU_MEMORY_KIND              memory_kind;
+    SPUDGPU_HEAP_RESOURCE_CLASS      resource_class;
+    std::deque<aprend_device_block>  blocks;   // push_back keeps every block's address
+};
+
+static constexpr uint64_t APREND_BLOCK_BYTES = 64ull << 20;   // to be measured
+
+static uint64_t block_size_for(uint64_t need) {
+    // Big resources get a block of their own; the rest share 64 MiB blocks.
+    uint64_t size = need > APREND_BLOCK_BYTES / 2 ? need : APREND_BLOCK_BYTES;
+    uint64_t g = SPUDGPU_HEAP_SIZE_GRANULARITY;
+    return (size + g - 1) / g * g;
+}
+
+// The first block with room, else a new block.
+static APRESULT place(spudgpu_device device, aprend_device_pool &pool,
+                      const spudgpu_placement_requirements &req,
+                      aprend_device_placement *out) {
+    for (aprend_device_block &b : pool.blocks)
+        if (b.take(req, &out->range)) {
+            out->block = &b;
+            return APRESULT_SUCCESS;
+        }
+
+    aprend_device_block &fresh = pool.blocks.emplace_back();
+    APRESULT r = aprend_device_block::create(device, pool.memory_kind, pool.resource_class,
+                                             block_size_for(req.size), &fresh);
+    if (r != APRESULT_SUCCESS) {
+        pool.blocks.pop_back();
+        return r;
+    }
+    if (!fresh.take(req, &out->range))
+        return APRESULT_OUT_OF_DEVICE_MEMORY;   // alignment beyond a block
+    out->block = &fresh;
+    return APRESULT_SUCCESS;
+}
+
+APRESULT aprend_device_create_image(aprend_device_allocator *a,
+                                    const spudgpu_image_desc *desc,
+                                    spudgpu_image *out_image,
+                                    aprend_device_placement *out_placement) {
+    bool attachment = (desc->usage & (SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT |
+                                      SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT)) != 0;
+    aprend_device_pool &pool = attachment ? a->attachment_images : a->images;
+
+    // Requirements are asked of a heap of the class, so a pool keeps one
+    // block to ask (made on first use).
+    aprend_device_block *probe = nullptr;
+    APRESULT r = a->first_block(pool, &probe);
+    if (r != APRESULT_SUCCESS) return r;
+
+    spudgpu_placement_requirements req{};
+    if (spudgpu_get_image_placement_requirements(probe->heap(), desc, &req) != SPUDRESULT_SUCCESS)
+        return APRESULT_INVALID_ARGUMENT;
+
+    r = place(a->device, pool, req, out_placement);
+    if (r != APRESULT_SUCCESS) return r;
+
+    if (spudgpu_create_placed_image(out_placement->block->heap(), out_placement->range.offset,
+                                    desc, out_image) != SPUDRESULT_SUCCESS) {
+        out_placement->block->give_back(out_placement->range);
+        return APRESULT_DEVICE_FAILURE;
+    }
+    return APRESULT_SUCCESS;
+}
+// A buffer: the same, with spudgpu_get_buffer_placement_requirements() and
+// spudgpu_create_placed_buffer(), in the pool of its memory kind.
+
+// The GPU may still read it in a frame in flight: the release waits on the
+// release queue (item 13) for that frame's fence.
+void aprend_device_release_image(aprend_device_allocator *a, spudgpu_image image,
+                                 aprend_device_placement p) {
+    a->release_queue.push(a->current_frame_fence, [=] {
+        spudgpu_destroy_image(image);
+        p.block->give_back(p.range);
+        // An empty block is kept one more cycle, then it goes (heap and books
+        // together), except the pool's last, kept to answer requirement queries.
+        if (p.block->is_empty())
+            a->mark_block_idle(p.block);
+    });
+}
+```
 
 ### 39. A device has only the features its caller asked for
 

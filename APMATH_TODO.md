@@ -88,6 +88,11 @@ before relying on them:
       then a collapse of the empty edge that leaves.
 - [ ] Two edges that come to follow each other on one line mid-way with
       different weights: the faster leads, which is a guess, not a rule.
+      **Decided 2026-10-28 with the user (card A21): the rule.** The
+      larger weight (the faster edge) wins the shared line; on equal
+      weights, the edge earlier in the input. Written in the header and
+      tested with a footprint that reaches it, so every platform builds
+      the same skeleton.
 - [ ] A face walk through a node with more than two traces meeting in one
       face: the first unused trace is taken.
 

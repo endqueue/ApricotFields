@@ -39,6 +39,14 @@ in a block of its own), its own numbered block of
 - [ ] **Bidirectional text and line breaking:** SheenBidi plus libunibreak
       (small), or ICU (complete, large). Undecided; neither is needed for
       the first version, but the layout API must have room for both.
+      **Decided 2026-10-28 with the user (card A19):** SheenBidi (Apache
+      2.0) and libunibreak (zlib), vendored, not ICU (about 30 MB with its
+      data) and not the operating system's text engines: text must wrap
+      the same on every platform, or a sheet's notes differ between
+      collaborators and between prints. Left to right first, with bidi
+      wired in from the start and tested when a right-to-left locale is
+      planned. Thai, Lao and Khmer need a dictionary for word breaks,
+      which libunibreak covers only in part: a known gap.
 - [ ] Vendored under `../.deps/` like the repo's other third-party code
       (`CLAUDE.md`, "Build"), pinned, linked `PRIVATE` (no HarfBuzz or
       msdfgen type in `include/`), and built under this repo's flags on all
@@ -53,6 +61,12 @@ in a block of its own), its own numbered block of
 - [ ] A face from font bytes (TTF/OTF; a collection index for TTC). The
       caller keeps the bytes alive for the face's lifetime, or ApText
       copies them: decide, and say so in the header.
+      **Decided 2026-10-28 with the user (card A17):** borrowed by
+      default - the header says the bytes must outlive the face, as
+      HarfBuzz's and FreeType's memory faces borrow - so a memory-mapped or
+      embedded font (CJK fonts reach 10-20 MB) isn't held twice; a copy
+      flag on the face's desc has ApText copy them instead, for bytes from
+      a network or a temporary buffer.
 - [ ] Metrics: units per em, ascender, descender, line gap, underline.
 - [ ] A fallback chain: an ordered list of faces, the first with a glyph
       for a codepoint wins. Shaping runs per face run, since HarfBuzz shapes
@@ -96,6 +110,15 @@ in a block of its own), its own numbered block of
       generates one glyph so the caller can spread them over its own
       threads, or a pre-warm call over a list of glyph ids. No thread of
       ApText's own.
+      **Decided 2026-10-28 with the user (card A18):** two steps.
+      `aptext_generate_glyph()` renders one glyph's MTSDF into memory the
+      caller gives; it only reads the face, which never changes, so it may
+      run on many threads at once (a `Thread:` line, the root
+      `CLAUDE.md`'s "Threading" exception). `aptext_atlas_insert()` packs a
+      generated glyph into the atlas, one caller at a time as every
+      object. Pre-warming is the caller's: generation as jobs on its own
+      scheduler, then inserts in turn. As Skia's and Chrome's glyph
+      rasterising on worker threads.
 - [ ] Saving and loading an atlas as bytes, so the caller can cache it
       wherever it keeps files.
 
@@ -105,6 +128,20 @@ in a block of its own), its own numbered block of
       outlines, and have no distance field. Their glyphs come out as
       polylines in em units, laid out by the same layout code, for the
       caller to draw as lines. Which formats to read is undecided.
+      **Decided 2026-10-28 with the user (card A20):**
+      1. An API taking the caller's polylines per codepoint (with an
+         advance), laid out by the same layout code as outline faces,
+         out as line segments; where the strokes came from is the
+         caller's.
+      2. A Hershey reader built in: the Hershey fonts (1967) are public
+         domain and may ship with any caller.
+      3. LFF (LibreCAD's format) next: the reader is ours; LibreCAD's
+         fonts are GPL and can't ship with a closed caller, so it reads
+         fonts the user has.
+      4. SHX (AutoCAD's compiled shape fonts) only when asked: the format
+         is reverse-engineered and its well-known fonts are Autodesk's,
+         so it reads the user's own files.
+      Drawn as lines, e.g. by Aprend's batcher with pen widths (item 23).
 
 ### 5. Tests
 

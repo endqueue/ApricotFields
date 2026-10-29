@@ -60,6 +60,16 @@ used freed memory.
   a thread releasing the last reference while another starts a play still frees
   memory under it.
 
+## The mixer runs at the device's rate (decided 2026-10-28 with the user, card S4)
+
+A mixer runs at the sample rate and channel count of the stream it feeds,
+and the caller opens that stream in the device's own format with no OS
+conversion, so nothing converts between the mixer and the device: each voice
+is resampled as it plays (item 3), and latency and timing are the device's
+own. As FMOD and Wwise mix at the device's rate. SpudAudio's OS conversion
+stays for callers that want it, reported and chosen in full (spudlib's
+`docs/spudaudio.md`).
+
 ### 3. Resampling at load time - fixed
 
 `apaudio_sound_create` converted each sound to the mixer's sample rate once, "never
@@ -170,6 +180,10 @@ clicks can easily sum past 1.0.
 
 - **Fix:** dither (TPDF) when converting to 16-bit, and an optional master limiter
   or soft clip.
+- **Decided 2026-10-28 with the user (card A26):** TPDF dither always on in conversion to 16-bit (float
+  output needs none); a lookahead limiter as an explicit field of the mixer's
+  desc with no default, on or off by the caller's choice, since it changes the
+  sound. As FMOD and Wwise.
 
 ### 8. Folding rear sounds to the front is misleading on stereo
 
@@ -178,11 +192,16 @@ sounds like one in front. For an accessibility use, that's actively wrong.
 
 - **Fix:** a "behind" cue, such as a gentle low-pass filter (needs item 12), or at
   least a flag saying the direction was folded.
+- **Decided 2026-10-28 with the user (card A26):** the flag now, on the voice, saying its direction was
+  folded from behind; the low-pass cue once item 12's per-voice filter exists.
 
 ### 9. Smaller problems
 
 - **Freed sound memory is reclaimed "by a later control call",** so an idle app can
   hold it indefinitely. An explicit `apaudio_mixer_collect()` is clearer.
+  **Decided 2026-10-28 with the user (card A26):** the explicit `apaudio_mixer_collect()`, called by the
+  owner from its update (the root `CLAUDE.md`'s "Threading": nothing behind the
+  caller's back).
 - **A play that ends before sounding is invisible to the caller.** A play dropped
   by its group's `REJECT_NEW` or `retrigger_us`, or killed for lack of a real slot,
   still got a voice ID from `apaudio_play`, and the caller can't find out. Item 13's
@@ -224,7 +243,16 @@ No peak levels, active voice count, audio-thread CPU time or glitch counts.
 Sounds are whole, in memory, and WAV only. Fine for clicks, not for anything longer.
 Needs streamed voices and FLAC, Opus and Vorbis decoders.
 
+**Decided 2026-10-28 with the user (card A26):** dr_flac (FLAC), libopus with opusfile (Opus), stb_vorbis
+(Ogg Vorbis), all small and permissively licensed, vendored in `../.deps/`
+and linked privately. No MP3: Opus does more at the sizes that matter.
+
 ### 16. Spatial audio beyond angles at play time
+
+**Wanted by a second caller (2026-10-28):** a game engine's listener and
+emitter components feed world places here each step, so world-space sources,
+distance attenuation, cones and doppler, with streamed voices (item 15), are
+the next work; binaural later.
 
 - **World-space sources and a listener:** frameworks place sources and a listener in
   3D, with distance attenuation curves, directional cones and doppler. Angles are

@@ -46,6 +46,16 @@ written, and an entry can't be read in pieces.
 
 This is the biggest gap for asset packs and CGI caches.
 
+**Decided 2026-10-28 with the user (card A24): zlib-ng in native mode**
+(zlib licence; Fedora's system zlib since Fedora 40), pinned in
+`../.deps/`, linked privately, for streamed DEFLATE only. libdeflate stays
+for whole entries. Nothing existing changes: an entry written whole is
+written by libdeflate as today, so a document saved whole has the same
+bytes as before; every entry, whichever library wrote it, is standard
+DEFLATE that either library reads; a streamed entry's bytes differ from
+libdeflate's for the same data, but are the same from one save to the next
+with zlib-ng's version and level pinned. Not started.
+
 ### 2. Raw (pre-compressed) entries
 
 Adding data that's already compressed: `aparchive_writer_add_raw_entry`, taking the
@@ -129,7 +139,7 @@ directory actually sits.
 
 - **Custom memory allocator.** Game engines expect to supply their own; today it's
   always the global allocator. Paused 2026-10-28 for every library (card
-  X12); `eqstd`'s containers take an allocator when one is decided.
+  X15); `eqstd`'s containers take an allocator when one is decided.
 - **Progress and cancellation callbacks** for long compressions and reads.
 - **Verifying an entry's CRC without returning its data,** for callers that
   memory-map stored entries and still want them checked.
