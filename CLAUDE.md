@@ -32,7 +32,7 @@ so in its opening comment, along with what the module deliberately does *not* do
 | ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
-| ApText | `text/aptext.h` | `aptext_` / `APTEXT_` | Faces, fallback chains, shaping and line layout, MTSDF atlas, single-stroke faces; no file I/O, no GPU. Over HarfBuzz, msdfgen, SheenBidi and libunibreak; built 2026-10-29, run on macOS only (`APTEXT_TODO.md`) |
+| ApText | `text/aptext.h` | `aptext_` / `APTEXT_` | Faces, fallback chains, shaping and line layout, MTSDF atlas, single-stroke faces; no file I/O, no GPU. Over HarfBuzz, msdfgen, SheenBidi and libunibreak; built 2026-10-29 on macOS and Windows (MSVC: tests, the cross-platform bits test with macOS's CRCs, ASan, 10 minutes' fuzzing); Linux never built (`APTEXT_TODO.md`) |
 
 `apricotfields.h` is not a full umbrella: it includes every Aprend header (fifteen) and
 nothing of the other modules. Callers include the module header they need.
@@ -368,7 +368,10 @@ again) and `aptext_fuzz` (font files, Hershey fonts and saved atlases).
   `<target> -merge=1 tests/fuzz/corpus/<target> <folder>`.
 - On Windows: `apricotfields-windows-d3d12-fuzz` (LLVM's clang through its
   GNU-style driver, RelWithDebInfo; `../claude_made_decisions.md`,
-  2026-10-29), run there 10 minutes on 2026-10-29.
+  2026-10-29), run there 10 minutes on 2026-10-29 each, `aparchive_fuzz`
+  and `aptext_fuzz`. Build and run it from a Visual Studio developer
+  prompt with `C:\Program Files\LLVM\bin` on `PATH`, and LLVM's
+  `lib\clang\<version>\lib\windows` too to run a target.
 - A new module that reads outside bytes gets a target.
 
 ## Build

@@ -203,6 +203,51 @@ argument checks, unchanged. Containers are eqstd's (`eq::array`,
       Floating-point contraction is off for MSVC by default; msdfgen's cubic
       solver calls the C library's `acos`, `cos` and `pow`, which can differ
       in the last bit between platforms, and would show here first.
+      **Windows: done 2026-10-29** (below). **Linux: not run.**
+
+### On Windows (2026-10-29)
+
+The ThinkPad P1 Gen 5, Windows 11 Pro (26300): Visual Studio 18.11.2
+(MSVC 19.51.36260, x64), Windows SDK 10.0.26100.0, CMake 4.4.4; LLVM
+clang 23.1.4 for the fuzzer. The four dependencies fetched at their pinned
+tags (no `../.deps/` copy).
+
+- **Built**, `apricotfields-windows-d3d12`, Debug and Release, with no
+  warning. What MSVC needed was in `CMakeLists.txt`, not `src/text/`:
+  `/bigobj` for HarfBuzz's `harfbuzz.cc`; `/W0` on the four `aptext_*`
+  targets (MSVC's counterpart of the `-w` Clang and GCC have); and
+  libunibreak's source list, which compiled `linebreakauxdata.c`,
+  `eastasianwidthdata.c` and `emojidata.c` on their own although
+  `linebreak.c`, `eastasianwidthdef.c` and `emojidef.c` include them, so
+  `ub_is_op_east_asian` was defined twice (`lib` warned LNK4006 and kept
+  one; Apple's linker never pulled the second member in). It is now the
+  list libunibreak's own `Makefile.am` builds, less grapheme and word
+  breaking. `src/text/`'s three files also compile clean at `/W4`, done
+  once by hand (the project builds at MSBuild's default `/W1`).
+- **Every ctest, Debug and Release: 26 of 26.** `aptext_tests` 41 of 41,
+  0 pending; `aptext_fuzz_regressions` passes.
+- **`aptext_bits_tests` passes in both, macOS's bits exactly:** the layout
+  (29 glyphs, 7 lines, 12 runs) CRC-32 `8F07D913`, the saved atlas (66192
+  bytes) `2144DF1C`. MSVC's C library gives msdfgen's solver the same
+  results as Apple's on this test's glyphs.
+- **AddressSanitizer** (`apricotfields-windows-d3d12-asan`, MSVC's, from
+  vcvars64): every ctest, 26 of 26, no report.
+- **libFuzzer** (`apricotfields-windows-d3d12-fuzz`): `aptext_fuzz` 10
+  minutes from a scratch folder over the corpus and regressions:
+  1,013,928 runs in 601 seconds (1,687 a second), 7,294 edges covered,
+  4,196 new units (1,948 kept), peak 556 MB; nothing found. Fewer per
+  minute than on macOS: the Windows preset leaves out SanitizerCoverage's
+  indirect-call and comparison tracing (`../claude_made_decisions.md`,
+  2026-10-29). The new inputs weren't merged into the corpus.
+- **`check.sh`:** `conventions`, `plain-data`, `struct-bases`, `threads`
+  and `abi` pass (`abi` with LLVM's clang and Python 3.13 on `PATH`).
+  `doxygen` skipped: not installed here. `mutable-globals` skipped: it
+  reads Mach-O and ELF archives only, never an MSVC `.lib`. Read by hand
+  with `llvm-nm` instead, ApText's three objects in the Debug
+  `ApricotFields.lib` hold no writable data of their own, only what MSVC's
+  headers put in every object (`std::exception`'s and `std::bad_alloc`'s
+  RTTI descriptors, `__local_stdio_printf_options`' storage, the STL's
+  `_Avx2WmemEnabledWeakValue`).
 
 How a build lays text out is described at the top of
 `src/text/aptext_layout.cpp`. The calls made where the contract left room
@@ -361,4 +406,5 @@ How a build lays text out is described at the top of
 - [x] Atlas: a glyph's distance field sampled at known points, packing
       without overlap, dirty rectangles.
 - [ ] The same layout bits on all three platforms: `aptext_bits_tests`,
-      passing on macOS; Windows and Linux not run.
+      passing on macOS and on Windows (2026-10-29, MSVC, Debug and
+      Release: the same CRCs); Linux not run.

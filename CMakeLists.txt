@@ -378,7 +378,11 @@ target_include_directories(aptext_sheenbidi PUBLIC ${sheenbidi_SOURCE_DIR}/Heade
 set_target_properties(aptext_sheenbidi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ApricotFields PRIVATE aptext_sheenbidi)
 
-# libunibreak 8.0 (zlib): Unicode's line breaking algorithm.
+# libunibreak 8.0 (zlib): Unicode's line breaking algorithm. The sources
+# its own Makefile.am compiles, less grapheme and word breaking: its
+# linebreakauxdata.c, eastasianwidthdata.c and emojidata.c are included by
+# linebreak.c, eastasianwidthdef.c and emojidef.c, and compiled on their
+# own they define ub_is_op_east_asian twice.
 declare_vendored_or_fetch_sources(libunibreak libunibreak
         https://github.com/adah1972/libunibreak.git libunibreak_8_0
         src/linebreak.c)
@@ -387,10 +391,7 @@ add_library(aptext_unibreak STATIC
         ${libunibreak_SOURCE_DIR}/src/linebreak.c
         ${libunibreak_SOURCE_DIR}/src/linebreakdata.c
         ${libunibreak_SOURCE_DIR}/src/linebreakdef.c
-        ${libunibreak_SOURCE_DIR}/src/linebreakauxdata.c
-        ${libunibreak_SOURCE_DIR}/src/eastasianwidthdata.c
         ${libunibreak_SOURCE_DIR}/src/eastasianwidthdef.c
-        ${libunibreak_SOURCE_DIR}/src/emojidata.c
         ${libunibreak_SOURCE_DIR}/src/emojidef.c
         ${libunibreak_SOURCE_DIR}/src/unibreakbase.c
         ${libunibreak_SOURCE_DIR}/src/unibreakdef.c)
@@ -443,6 +444,15 @@ if (NOT MSVC)
     endforeach ()
     set_source_files_properties(src/text/aptext.cpp src/text/aptext_layout.cpp src/text/aptext_atlas.cpp
             PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+else ()
+    # ApText's dependencies are third-party code: their warnings are theirs.
+    # HarfBuzz's one-file amalgamation has more sections than an object file
+    # holds by default. /W0, not /w: Visual Studio's generator makes /W0 the
+    # project's warning level, where /w would sit beside its default /W1.
+    foreach (target aptext_harfbuzz aptext_msdfgen aptext_sheenbidi aptext_unibreak)
+        target_compile_options(${target} PRIVATE /W0)
+    endforeach ()
+    target_compile_options(aptext_harfbuzz PRIVATE /bigobj)
 endif ()
 
 # Headless tests - no GPU, no window. Run with ctest, or the executable.
