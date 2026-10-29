@@ -138,6 +138,60 @@
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "apricotfields-windows-sanitize-asan",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug",
+        "CMAKE_C_FLAGS_DEBUG": "/Ob0 /Od /fsanitize=address",
+        "CMAKE_CXX_FLAGS_DEBUG": "/Ob0 /Od /fsanitize=address",
+        "CMAKE_EXE_LINKER_FLAGS_DEBUG": "/debug /INCREMENTAL:NO",
+        "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "/debug /INCREMENTAL:NO",
+        "CMAKE_MODULE_LINKER_FLAGS_DEBUG": "/debug /INCREMENTAL:NO"
+      }
+    },
+    {
+      "name": "apricotfields-windows-d3d12-asan",
+      "displayName": "ApricotFields Windows D3D12 ASan",
+      "inherits": [
+        "apricotfields-windows-sanitize-asan",
+        "apricotfields-windows-d3d12"
+      ],
+      "binaryDir": "${sourceDir}/build-windows-d3d12-asan"
+    },
+    {
+      "name": "apricotfields-windows-vulkan-asan",
+      "displayName": "ApricotFields Windows Vulkan ASan",
+      "inherits": [
+        "apricotfields-windows-sanitize-asan",
+        "apricotfields-windows-vulkan"
+      ],
+      "binaryDir": "${sourceDir}/build-windows-vulkan-asan"
+    },
+    {
+      "name": "apricotfields-windows-d3d12-fuzz",
+      "displayName": "ApricotFields Windows libFuzzer (clang)",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build-windows-fuzz",
+      "cacheVariables": {
+        "APRICOTFIELDS_BUILD_TESTS": "OFF",
+        "APRICOTFIELDS_BUILD_FUZZERS": "ON",
+        "SPUDLIB_BUILD_TESTS": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fno-sanitize-coverage=indirect-calls,trace-cmp",
+        "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fno-sanitize-coverage=indirect-calls,trace-cmp -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "GRAPHICS_BACKEND": "D3D12",
+        "LANGUAGE_BINDING": "NONE",
+        "CMAKE_CONFIGURATION_TYPES": "RelWithDebInfo",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O1 -g",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -248,6 +302,24 @@
       "displayName": "ApricotFields Linux libFuzzer (Debug)",
       "configurePreset": "apricotfields-linux-vulkan-fuzz",
       "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-windows-d3d12-asan-debug",
+      "displayName": "ApricotFields Windows D3D12 ASan (Debug)",
+      "configurePreset": "apricotfields-windows-d3d12-asan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-windows-vulkan-asan-debug",
+      "displayName": "ApricotFields Windows Vulkan ASan (Debug)",
+      "configurePreset": "apricotfields-windows-vulkan-asan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-windows-d3d12-fuzz-relwithdebinfo",
+      "displayName": "ApricotFields Windows libFuzzer (RelWithDebInfo)",
+      "configurePreset": "apricotfields-windows-d3d12-fuzz",
+      "configuration": "RelWithDebInfo"
     }
   ],
   "testPresets": [
@@ -295,6 +367,30 @@
       },
       "environment": {
         "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      }
+    },
+    {
+      "name": "apricotfields-windows-d3d12-asan",
+      "configurePreset": "apricotfields-windows-d3d12-asan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "halt_on_error=1:check_initialization_order=1:strict_init_order=1",
+        "PATH": "$penv{VCToolsInstallDir}bin/Hostx64/x64;$penv{PATH}"
+      }
+    },
+    {
+      "name": "apricotfields-windows-vulkan-asan",
+      "configurePreset": "apricotfields-windows-vulkan-asan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "ASAN_OPTIONS": "halt_on_error=1:check_initialization_order=1:strict_init_order=1",
+        "PATH": "$penv{VCToolsInstallDir}bin/Hostx64/x64;$penv{PATH}"
       }
     }
   ]

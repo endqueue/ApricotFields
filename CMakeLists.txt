@@ -177,7 +177,7 @@ target_link_libraries(ApricotFields PRIVATE Threads::Threads)
 # platform, Apple included, since SpudGPU's Metal and D3D12 backends take
 # SPIR-V and cross-compile it.
 find_program(APRICOTFIELDS_GLSLC glslc
-        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" "C:/VulkanSDK/1.4.341.1/Bin"
+        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
         REQUIRED)
 set(APRICOTFIELDS_SHADER_INC_DIR ${CMAKE_CURRENT_BINARY_DIR}/aprend_shaders)
 set(APRICOTFIELDS_SHADERS

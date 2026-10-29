@@ -1452,8 +1452,9 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     with warnings fatal; two callers' tests over it. **Not built on Windows
     or Linux**: the command list's recording path is every backend's, so it
     wants a D3D12 and a Vulkan run.
-- **Section B of the autonomous work plan, from 2026-10-24; run on Metal
-  only** (Apple M5 Pro: `../apricottests` Debug under Metal API and shader
+- **Section B of the autonomous work plan, from 2026-10-24; run on Metal,
+  and on Windows over D3D12 and Vulkan on 2026-10-29** (items 24, 36 and 40
+  say how) (Apple M5 Pro: `../apricottests` Debug under Metal API and shader
   validation with warnings fatal, both devices, and Release under `leaks`;
   ApricotFields' headless tests; two callers' tests over it; the
   workspace's `./check.sh`). Item 40 is recorded in its item. Each point is
@@ -2199,8 +2200,9 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
 - **No culling and no GPU-driven path.** The list draws what it is given;
   culling is the caller's, and an indirect path built by a compute shader
   waits on item 34.
-- **Batched order is the same on every run (done 2026-10-24; run on Metal
-  only).** It sorted by handle value: draws of one material were together
+- **Batched order is the same on every run (done 2026-10-24; run on Metal,
+  and on Windows over D3D12 and Vulkan on 2026-10-29, `test_draw_list_order`
+  on every adapter, validation silent).** It sorted by handle value: draws of one material were together
   and each material bound once, but which came first followed addresses,
   which change from run to run. Now each handle a draw names (material,
   set of vertex buffers, index buffer) is keyed by the index of the first
@@ -2431,8 +2433,8 @@ shows it isn't enough.
 
 Written 2026-10-17 and run on Metal (see "State of the code"). **Every
 box but screen-space reflections, transmission and variants done
-2026-10-24, run on Metal only** (below); those three wait on bigger designs
-or measurements, as the plan has them. Against the
+2026-10-24, run on Metal** (below); those three wait on bigger designs
+or measurements, as the plan has them. Run on Windows 2026-10-29 (`../apricottests`' `aprend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of the seven pieces (`test_lit_cascades`' blending, `test_lit_sky`'s disc and Hosek-Wilkie sky, `test_auto_exposure`'s histogram, `test_lit_surface`'s per-map uv transforms, `test_lit_ambient_occlusion`'s GTAO, `test_lit_point_shadows`, `test_lit_tile_depth_bounds`) passed, with no validation message from them; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. GTAO's half resolution is still unmeasured. Against the
 chain Hazel's `SceneRenderer::FlushDrawList` runs - directional and spot
 shadow maps, pre-depth, tiled light culling, skybox, PBR geometry, GTAO,
 SSR, bloom, composite - Aprend has every stage but screen-space
@@ -2696,8 +2698,8 @@ Left:
 
 **Bloom written 2026-10-16, run on Metal the same day** (see "State of
 the code"). **Its lens dirt and mask, the pool's report and trim, a
-separable blur and an outline written 2026-10-24, run on Metal only**
-(below). What was decided:
+separable blur and an outline written 2026-10-24, run on Metal**
+(below). Run on Windows 2026-10-29 (`../apricottests`' `aprend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of them (`test_bloom_mask_and_dirt`, `test_render_target_pool` with the caller-set retirement, `test_blur`, `test_outline`) passed, with no validation message from them; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. What was decided:
 
 - **No module of its own.** In Hazel bloom is a step of `SceneRenderer`
   (`BloomSettings` beside `DOFSettings`, its textures members of the scene
@@ -2899,8 +2901,8 @@ draws one by outlining the mask's inverse).
 (Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
 Numbered out of order, as item 31. **Decided 2026-10-23. Aprend's half
-written 2026-10-24 and run on Metal only; SpudGPU's half done (2026-10-23,
-run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).**
+written 2026-10-24 and run on Metal; SpudGPU's half done (2026-10-23,
+run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).** Run on Windows 2026-10-29 (`../apricottests`' `aprend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of `test_draw_texture` (its rectangles included) passed, with no validation message from it; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. `test_present_scaling` is Metal's alone (it skips off Apple).
 
 **Decided 2026-10-27 with you (card X1b, line 7): rectangles.**
 `DRAW_TEXTURE` takes `_source_rect` and `_target_rect`

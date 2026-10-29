@@ -364,6 +364,9 @@ again). `tests/fuzz/aprifuzz.hpp` says how they are built.
   scratch folder `build-macos-fuzz/Debug/<target> <scratch corpus>
   tests/fuzz/corpus/<target> -max_total_time=900`. New seeds go in with
   `<target> -merge=1 tests/fuzz/corpus/<target> <folder>`.
+- On Windows: `apricotfields-windows-d3d12-fuzz` (LLVM's clang through its
+  GNU-style driver, RelWithDebInfo; `../claude_made_decisions.md`,
+  2026-10-29), run there 10 minutes on 2026-10-29.
 - A new module that reads outside bytes gets a target.
 
 ## Build
