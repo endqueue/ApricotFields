@@ -90,6 +90,10 @@ aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_ex
 /**
  * @brief Destroys an exposure. The GPU doesn't have to be finished with it.
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p exposure itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] exposure Exposure to destroy. NULL is accepted and does nothing.
  */
 void aprend_exposure_destroy(aprend_exposure exposure);

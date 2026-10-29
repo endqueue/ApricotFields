@@ -644,10 +644,13 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
     if (result != APRESULT_OK)
         return result;
 
-    // Each entry takes at least its fixed header, so the names together
-    // take at most the rest, plus a NUL each. Reserved once: entries point
-    // into it.
-    reader->names.reserve((size_t)(directory_size - entry_count * CENTRAL_HEADER_SIZE + entry_count));
+    // Reserved once, never to grow: entries, and the name index's keys,
+    // point into it. Each name is copied once it is known to fit in what is
+    // left of the directory, before the entries after it are checked, so the
+    // bound is the directory's size, plus a NUL each - not the directory
+    // less every entry's fixed header, which holds only for an archive whose
+    // every entry fits.
+    reader->names.reserve((size_t)(directory_size + entry_count));
     reader->entries.reserve((size_t)entry_count);
     reader->name_index.reserve((size_t)entry_count);
 

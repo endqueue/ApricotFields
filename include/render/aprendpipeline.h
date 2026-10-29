@@ -16,14 +16,14 @@
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). Shaders, pipelines, binding
- * layouts and binding sets are each used by one thread at a time with
+ * layouts and binding sets are each used by one caller at a time with
  * everything else of their instance. A binding layout's sets share the
  * layout's descriptor pools, and a destroyed set is given back to them
  * inside a later call on the instance, so sets of different layouts are not
- * independent of each other across threads. The blend presets,
+ * independent of each other either. The blend presets,
  * aprend_vertex_element_type_get_size() and
- * aprend_vertex_layout_get_element_index() take no handle and are safe from
- * any thread.
+ * aprend_vertex_layout_get_element_index() take no handle, so they may run
+ * at once with anything.
  */
 
 #include "aprendbuffers.h"
@@ -281,6 +281,10 @@ bool aprend_binding_layout_get_uniform_layout(
  *
  * @warning Every pipeline declaring @p layout and every aprend_binding_set
  * created from it must be destroyed first.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p layout itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] layout Layout to destroy. NULL is accepted and does nothing.
  */
@@ -698,6 +702,10 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instanc
  * submission already made that uses it is safe: the GPU's side of it is
  * released when that work has finished (aprendcontext.h, "Destroying").
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p p itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] p Pipeline to destroy. NULL is accepted and does nothing.
  */
 void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p);
@@ -803,6 +811,10 @@ aprend_compute_pipeline aprend_compute_pipeline_create(aprend_instance instance,
  * @warning No later submission may dispatch with @p p. A
  * submission already made that uses it is safe: the GPU's side of it is
  * released when that work has finished (aprendcontext.h, "Destroying").
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p p itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] p Pipeline to destroy. NULL is accepted and does nothing.
  */
@@ -928,7 +940,7 @@ typedef struct aprend_binding_set_entry {
  * the next (aprend_command_list_submit() refuses it otherwise). A set of
  * single buffers, textures and samplers alone has no such limit.
  *
- * @note Not safe from two threads at once, for sets of one layout or of
+ * @note Two of these calls may not overlap, for sets of one layout or of
  * different ones: see "Threads" at the top of this header.
  *
  * @param[in] layout      Layout whose slots the set fills.
@@ -973,7 +985,7 @@ aprend_binding_set aprend_binding_set_create(
  * Every resource the set holds must still be alive, the ones not named here
  * as well: they are all written again.
  *
- * @note Not safe from two threads at once, for sets of one layout or of
+ * @note Two of these calls may not overlap, for sets of one layout or of
  * different ones: see "Threads" at the top of this header.
  *
  * @param[in] set         Set to change.
@@ -1001,6 +1013,10 @@ bool aprend_binding_set_update(
  * @warning No later submission may bind @p set. A
  * submission already made that uses it is safe: the GPU's side of it is
  * released when that work has finished (aprendcontext.h, "Destroying").
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p set itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] set Set to destroy. NULL is accepted and does nothing.
  */

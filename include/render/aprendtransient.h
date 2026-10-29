@@ -53,9 +53,9 @@ extern "C" {
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). aprend_transient_allocate()
- * takes the instance, so it is one of the calls only one thread makes at a
- * time. Writing into a span's `data` is not a call into Aprend: several
- * threads may fill different spans at once.
+ * takes the instance, so it is one of the calls made by one caller at a
+ * time across the instance. Writing into a span's `data` is not a call into
+ * Aprend: different spans may be filled at once, from any threads.
  */
 
 /**

@@ -37,8 +37,8 @@ extern "C" {
  * pass's start and end, including waiting on other work it overlapped.
  *
  * @par Threads
- * The rule is in aprendcontext.h ("Threads"): a timer is used by one thread
- * at a time with everything else of its instance.
+ * The rule is in aprendcontext.h ("Threads"): a timer is used by one
+ * caller at a time with everything else of its instance.
  */
 
 /**
@@ -86,6 +86,10 @@ aprend_gpu_timer aprend_gpu_timer_create(
  * The GPU doesn't have to be finished with it (aprendcontext.h,
  * "Destroying"). A command list compiled with a pass that names it must not
  * be submitted afterwards.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p timer itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] timer Timer to destroy. NULL is accepted and does nothing.
  */

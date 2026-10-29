@@ -25,8 +25,11 @@
  * that aren't closed, and floating-point coordinates.
  *
  * @par Threads
- * Every call is safe from any number of threads at once; a result may be
- * read from any thread, and destroyed once nothing reads it.
+ * apricore.h's rule ("Threads"), with one exception: a result never
+ * changes once made, so reads of one result may overlap, from any number of
+ * threads (apmath_poly_get_set() and the calls given its polygons), and it
+ * is destroyed once nothing reads it. Every other call reads only its
+ * arguments, so any of them may run at once.
  *
  * @par Results
  * Calls return APRESULT (apricore.h). The general codes mean, here:
@@ -303,6 +306,9 @@ void apmath_poly_destroy(apmath_poly poly);
 
 /**
  * @brief Reads a result's polygons.
+ *
+ * Thread: may overlap any other read of @p poly, from any thread; not its
+ * destroy.
  *
  * @param[in] poly The result.
  *

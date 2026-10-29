@@ -20,9 +20,10 @@
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A swap chain is used by one
- * thread at a time with everything else of its instance: acquire, the
- * submission and present are steps of one thread's frame. Its resize and
- * destroy block that thread until the swap chain's queue is idle.
+ * caller at a time with everything else of its instance, its destroy
+ * included: acquire, the submission and present are steps of one frame,
+ * made one after another. Its resize and destroy block their caller until
+ * the swap chain's queue is idle.
  */
 
 #if __cplusplus

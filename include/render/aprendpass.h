@@ -39,14 +39,13 @@
  * pass's, one for each of the framebuffer's attachments.
  *
  * @par Threads
- * The rule is in aprendcontext.h ("Threads"). A pass is used by one thread
+ * The rule is in aprendcontext.h ("Threads"). A pass is used by one caller
  * at a time with everything else of its instance, except that sending a
  * command that names it only reads it, and the framebuffer it renders to:
- * lists may be recorded from several threads at once with one pass, as long
- * as no thread changes or destroys the pass, its framebuffer, or what they
- * hold meanwhile. aprend_render_pass_destroy() and
- * aprend_compute_pass_destroy() may be called from any thread, as any
- * destroy call.
+ * several command lists may be recorded at once with one pass, as long as
+ * no call changes or destroys the pass, its framebuffer, or what they hold
+ * meanwhile. aprend_render_pass_destroy() and aprend_compute_pass_destroy()
+ * may overlap other calls on the instance, as most destroy calls may.
  */
 
 #include "aprendframes.h"
@@ -158,6 +157,10 @@ aprend_render_pass aprend_render_pass_create(
  * Commands already sent that name it have been expanded and don't read it
  * again, so this may follow the last send at once.
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p pass itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] pass Pass to destroy. NULL is accepted and does nothing.
  */
 void aprend_render_pass_destroy(aprend_render_pass pass);
@@ -252,6 +255,10 @@ aprend_compute_pass aprend_compute_pass_create(
 /**
  * @brief Destroys a compute pass, as aprend_render_pass_destroy() does a
  * render pass.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p pass itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] pass Pass to destroy. NULL is accepted and does nothing.
  */

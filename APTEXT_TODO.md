@@ -1,16 +1,23 @@
 # ApText TODO
 
-ApText doesn't exist yet. It is the planned module that turns text into
-positioned glyphs and keeps their distance-field atlas: font faces from the
-caller's bytes, shaping, line layout, and MTSDF glyph generation. It is CPU
-only and unrelated to Aprend, the way ApMath is; Aprend draws what it hands
-back (`APREND_TODO.md`, item 23, "Text: the design").
+ApText is the module that turns text into positioned glyphs and keeps their
+distance-field atlas: font faces from the caller's bytes, shaping, line
+layout, and MTSDF glyph generation. It is CPU only and unrelated to Aprend,
+the way ApMath is; Aprend draws what it hands back (`APREND_TODO.md`, item
+23, "Text: the design").
 
-Planned header `include/text/aptext.h`, prefix `aptext_` / `APTEXT_`, newer
+**Contract only, not implemented** (the contract pass, 2026-10-29; see
+"The contract" below). `include/text/aptext.h` is the whole public API,
+`src/text/aptext.cpp` checks every call's arguments and returns
+`APRESULT_NOT_IMPLEMENTED`, and `tests/aptext_tests.c` holds the black-box
+tests the implementation must pass. Builds and runs on macOS (Debug,
+2026-10-29); Windows and Linux never built.
+
+Header `include/text/aptext.h`, prefix `aptext_` / `APTEXT_`, newer
 generation (see `CLAUDE.md`, "Writing a new module"): `APRESULT` returns,
-`APTEXT_ERROR` per call, descs with a struct base (`APRI_STRUCT_TYPE_APTEXT_*`
-in a block of its own), its own numbered block of
-`APRESULT_APTEXT_*` codes in `apricore.h` if it needs any.
+`APTEXT_ERROR` per call, descs with a struct base (`APRI_STRUCT_TYPE_APTEXT_*`,
+6000+, in a block of its own), and its own numbered block of
+`APRESULT_APTEXT_*` codes in `apricore.h` (6001+).
 
 ## What it deliberately does not do
 
@@ -53,6 +60,131 @@ in a block of its own), its own numbered block of
       three platforms. HarfBuzz's shaping must give the same output
       everywhere for layout to be deterministic (item 2), so pin it and
       check it the way ApMath's polygons are checked.
+
+## The contract (2026-10-29)
+
+Written before the implementation, as `../ROADMAP.md` section 1 asks: the
+header, its docs and the black-box tests first. **The implementation pass
+fills in `src/text/aptext.cpp` behind the same argument checks and doesn't
+edit `tests/aptext_tests.c`.**
+
+- **The API.** Faces (`aptext_face`: `aptext_face_create` from font bytes,
+  `aptext_face_create_stroke` from the caller's polylines,
+  `aptext_face_create_hershey`; metrics, cmap lookup, a stroke glyph's
+  polylines). Fallback chains (`aptext_chain`). Layouts (`aptext_layout`:
+  made empty, `aptext_layout_build` fills it; glyphs, lines and runs as
+  arrays, stroke layouts as segments). `aptext_generate_glyph` (card A18's
+  first step). Atlases (`aptext_atlas`: `aptext_atlas_insert`, card A18's
+  second step; `aptext_atlas_add_layout`, find, pages, dirty rectangles,
+  save and load).
+- **The stub.** Every entry point makes its argument and struct-base checks,
+  line by line, then returns `APRESULT_NOT_IMPLEMENTED` with a message
+  saying so. Two checks the header promises are left to the implementation,
+  each marked where it belongs: a stroke face's duplicate codepoints, and a
+  chain whose faces are of more than one kind (it needs the faces).
+- **The tests** (41 on 2026-10-29: 9 pass, the argument checks; 32 pending).
+  A behavioural test that meets `APRESULT_NOT_IMPLEMENTED` reports itself
+  pending and stops; everything else it asserts. The implementation turns
+  them on call by call, and a call left unbuilt stays pending rather than
+  failing. The fonts are built byte by byte in the test (`build_font()`: two
+  TrueType fonts at 1024 units per em and a collection of both, with a
+  kerning pair, a `liga` ligature, Han and Hebrew glyphs), so every expected
+  position is an exact binary fraction compared with `==`, which is also the
+  "same bits on every platform" check. `aptext_tests --write-fonts <dir>`
+  writes them out. On 2026-10-29 they were read with fontTools 4.60.2
+  (checksums verified) and shaped with HarfBuzz through uharfbuzz 0.51.7:
+  metrics, character maps, the ligature, the removed zero-width joiner,
+  `.notdef`, the scripts and the right-to-left order are what the tests
+  expect. HarfBuzz splits a legacy kern table's value between the pair's
+  advance and offset, so the kerning test checks only where V lands and the
+  line's width.
+- **The calls the contract made**, where this file or its cards left it
+  open (each also in the header's comments):
+  1. A stroke face is an `aptext_face` of kind `APTEXT_FACE_KIND_STROKE`,
+     so one layout code serves both kinds (card A20); a chain's faces are of
+     one kind. The caller's polylines are copied (they are small and built
+     by the caller), unlike font bytes (card A17).
+  2. Hershey: the common ".jhf" files. The format has no scale or baseline,
+     so the desc takes `units_per_em`, `baseline` and the metrics, and a
+     codepoint per glyph or a first codepoint.
+  3. Metrics are in em units as floats, not font units, so outline and
+     stroke faces answer alike.
+  4. Two coordinate spaces: font space (em, y up) for what describes a face
+     and for stroke input; layout space (x right, y down, origin top-left,
+     em units times `em_size`) for everything ApText produces, atlas plane
+     bounds included (em, y down from the glyph's origin).
+  5. A layout is a reusable object (created empty, rebuilt in place), so
+     text that changes every frame doesn't allocate every frame. It keeps
+     its chain, which must outlive it or its next build.
+  6. Every line has the same advance, from the chain's first face:
+     (ascender - descender + line gap) times `em_size` times
+     `line_spacing`, with the extra shared equally above and below (the
+     formula is in `APTEXT_LAYOUT_DESC`'s comment). Not the tallest face on
+     each line (CSS's way): lines that move when a fallback glyph appears
+     are worse for drawings and for comparing layouts.
+  7. A word wider than `max_width` wraps between grapheme clusters, never
+     overflowing; trailing spaces hang (glyphs on the line, outside its box
+     and alignment); letter spacing goes after every cluster but a line's
+     last; mandatory breaks give no glyph, default-ignorable codepoints are
+     removed, U+0009 is a space until tab stops exist.
+  8. Glyphs and runs are in visual order; each glyph carries its cluster's
+     byte range and an advance box over its line's box; each run its script
+     (ISO 15924 tag), bidi level and direction.
+  9. Features: kerning, ligatures (`liga` + `clig`) and contextual
+     alternates are bits the caller sets (no defaults, so the caller says
+     "kerning and ligatures on"); any other feature is an `APTEXT_FEATURE`;
+     a script's required features are always on.
+  10. Scripts are detected (Unicode's Script property); a caller-set script
+      is later, as a chained struct. Language is an optional BCP 47 tag.
+  11. An ill-formed UTF-8 sequence is one U+FFFD per maximal subpart.
+  12. The atlas keys glyphs by face and glyph id, any number of outline
+      faces in one atlas; pages are the layers of one 2D array texture;
+      skyline packing; `max_pages` is required (UINT32_MAX for none).
+  13. `aptext_generate_glyph` takes the scale in its desc and measures
+      when given no memory (no separate measure call); `aptext_atlas_insert`
+      takes the same desc, refuses other settings than the atlas's, and is
+      idempotent (two jobs may generate the same glyph).
+  14. The image format is fixed in the header: RGBA8, alpha
+      round(255 * clamp(0.5 + d / range)) with d positive inside, a margin
+      of at least range / 2 pixels, plane bounds at the pixel corners.
+  15. Dirty rectangles: at most one per page, the union of what changed,
+      taken up to a capacity with the rest left for the next call.
+  16. `aptext_atlas_add_layout`: the serial "on demand" path, beside
+      generate-then-insert for callers with a scheduler.
+  17. Save and load are to and from memory; the bytes carry the settings, a
+      fingerprint per face (from the font's head table: revision, checksum
+      adjustment, glyph count), the generator's version and a checksum.
+      Load takes the settings the caller wants and fails with
+      `APRESULT_APTEXT_ATLAS_MISMATCH` on any difference; damage is
+      `APRESULT_CORRUPT_DATA`, an unknown format version
+      `APRESULT_UNSUPPORTED`. A loaded atlas's pages are dirty in full.
+  18. Two `APRESULT_APTEXT_*` codes: `NOT_A_FONT` (a caller loading a user's
+      font tells the user) and `ATLAS_MISMATCH` (a cache to rebuild,
+      expected after a font update, unlike damage).
+  19. A collection index past the last font is `APRESULT_NOT_FOUND`, a
+      plain font's included: HarfBuzz ignores the index for a plain font,
+      so the implementation checks `hb_face_count`.
+  20. A capacity too small for everything is `APRESULT_LIMIT` with nothing
+      written (`aptext_layout_get_strokes`, `aptext_atlas_save`); dirty
+      rectangles are the exception, taken in part.
+- **Bidi is tested live, not left pending.** `test_layout_scripts_and_bidi`
+  checks a Hebrew run's reversal, a right-to-left paragraph and
+  `APTEXT_DIRECTION_AUTO`. Card A19 wires SheenBidi in from the start; an
+  implementation that lays out left to right only would fail this test, not
+  pend it.
+
+## Implementation pass: what it needs
+
+- [ ] Vendor HarfBuzz, msdfgen core, SheenBidi and libunibreak (see
+      "Dependencies"), then fill in `src/text/aptext.cpp` call by call
+      until `aptext_tests` has nothing pending.
+- [ ] The two checks the stub leaves: duplicate codepoints in a stroke
+      face, faces of more than one kind in a chain.
+- [ ] A fuzz target (`CLAUDE.md`, "Fuzzing": a module that reads outside
+      bytes gets one): `aptext_face_create`, `aptext_face_create_hershey`
+      and `aptext_atlas_load` over arbitrary bytes.
+- [ ] Run on Windows and Linux, and compare a layout's bytes across the
+      three (item 5).
 
 ## Not built
 

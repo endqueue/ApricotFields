@@ -29,10 +29,13 @@
  * anything GPU - this is CPU geometry, unrelated to Aprend.
  *
  * @par Threads
- * Creating and destroying are safe from any thread. Casts are safe from any
- * number of threads at once, on the same BVH, and never block or allocate.
- * Destroying a BVH while a cast on it is running isn't safe. A filter
- * callback runs on the thread that called the cast.
+ * apricore.h's rule ("Threads"), with one exception: a BVH never changes
+ * once created, so the casts and get_ calls on one BVH may overlap each
+ * other, from any number of threads, and never block or allocate; the
+ * casts are marked. Destroying a BVH may overlap none of them, nor the
+ * creation of an instance BVH over it, which only reads it. A create call
+ * takes no other object, so creates may run at once. A filter callback runs
+ * inside the cast, on the thread that made it.
  *
  * @par Results
  * Calls return APRESULT (apricore.h). The general codes mean, here:
@@ -219,6 +222,9 @@ typedef struct APMATH_MESH_HIT {
  * Finds the hit with the smallest t. Of triangles hit at the same t, the
  * one earliest in the desc's order - so a cast is repeatable.
  *
+ * Thread: may overlap any other cast or get_ call on @p bvh, from any
+ * thread; not its destroy.
+ *
  * @param[in]  bvh     The mesh.
  * @param[in]  ray     The ray, in the mesh's coordinates.
  * @param[out] out_hit The hit. May be NULL, to ask only whether the ray
@@ -377,6 +383,10 @@ typedef struct APMATH_INSTANCE_HIT {
  * through. Of instances hit at the same t, the one earliest in the desc's
  * order; of triangles, likewise - so a cast is repeatable.
  *
+ * Thread: may overlap any other cast or get_ call on @p bvh or on the mesh
+ * BVHs it holds, from any thread; not a destroy of either. @p desc's filter
+ * runs on this call's thread.
+ *
  * @param[in]  bvh     The instances.
  * @param[in]  ray     The ray, in the instance BVH's coordinates.
  * @param[in]  desc    Which instances to consider. NULL considers them all.
@@ -392,6 +402,8 @@ bool apmath_instance_bvh_cast(apmath_instance_bvh bvh, const APMATH_RAY *ray, co
  *
  * One hit each - the instance's own nearest - ordered as
  * apmath_instance_bvh_cast() would choose between them.
+ *
+ * Thread: as apmath_instance_bvh_cast().
  *
  * @param[in]  bvh          The instances.
  * @param[in]  ray          The ray, in the instance BVH's coordinates.

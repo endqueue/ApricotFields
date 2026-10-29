@@ -42,9 +42,11 @@
  * (APREND_TODO.md, item 22).
  *
  * @par Threads
- * The rule is in aprendcontext.h ("Threads"). A shader's reflection never
- * changes after creation, so it may be read from any number of threads at
- * once while no thread destroys the shader.
+ * The rule is in aprendcontext.h ("Threads"): a shader is used by one
+ * caller at a time with everything else of its instance. A shader's
+ * reflection never changes after creation, so its get_ calls may overlap
+ * each other, from any number of threads, while no call destroys the
+ * shader.
  */
 
 #include "aprendbuffers.h"
@@ -132,6 +134,10 @@ aprend_shader aprend_shader_create_spirv(
  *
  * A pipeline or binding layout made from it doesn't need it afterwards: what
  * they took from its reflection is theirs.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p shader itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] shader Shader to destroy. NULL is accepted and does nothing.
  */

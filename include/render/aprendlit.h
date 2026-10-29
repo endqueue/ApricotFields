@@ -102,9 +102,10 @@ extern "C" {
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A scene, an environment and a
- * material are each used by one thread at a time with everything else of
+ * material are each used by one caller at a time with everything else of
  * their instance; every set call writes the object and nothing else. The
- * fitting functions read their arguments and write their results only.
+ * fitting functions read their arguments and write their results only, so
+ * they take no object and may run at once.
  */
 
 /** @brief The set slot of a lit pipeline's scene. */
@@ -514,6 +515,10 @@ aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, c
  * @brief Destroys an environment. The GPU doesn't have to be finished with
  * it (aprendcontext.h, "Destroying"); no scene may name it afterwards.
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p environment itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] environment Environment to destroy. NULL is accepted and does
  *                        nothing.
  */
@@ -562,6 +567,10 @@ aprend_lit_scene aprend_lit_scene_create(aprend_instance instance);
  * @brief Destroys a scene and its materials. What it names (shadow maps, an
  * environment, an occlusion texture) is the caller's. The GPU doesn't have
  * to be finished with it.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p scene itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] scene Scene to destroy. NULL is accepted and does nothing.
  */

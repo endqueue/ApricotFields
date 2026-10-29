@@ -11,12 +11,12 @@
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A texture, a view and a sampler
- * are each used by one thread at a time with everything else of their
+ * are each used by one caller at a time with everything else of their
  * instance. A texture's update, readback and resize calls record work and
  * write the image layout Aprend tracks for it, which
  * aprend_command_list_compile() reads and aprend_command_list_submit()
- * writes, so none of them runs while another thread compiles or submits a
- * list that uses the texture. A readback blocks its thread.
+ * writes, so none of them overlaps a compile or submission of a list that
+ * uses the texture. A readback blocks its caller.
  */
 
 #if __cplusplus
@@ -119,6 +119,10 @@ aprend_texture2d aprend_texture2d_create(
  * first, and no later submission may use it. A submission
  * already made that uses it is safe: the GPU's side of it is released when
  * that work has finished (aprendcontext.h, "Destroying").
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p texture itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] texture Texture to destroy. NULL is accepted and does nothing.
  */
@@ -398,6 +402,10 @@ aprend_texture3d aprend_texture3d_create(
  * first, and no later submission may use it. A submission
  * already made that uses it is safe: the GPU's side of it is released when
  * that work has finished (aprendcontext.h, "Destroying").
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p texture itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] texture Texture to destroy. NULL is accepted and does nothing.
  */
@@ -793,6 +801,10 @@ aprend_texture_view aprend_texture_view_create_3d(
  * already made that uses it is safe: the GPU's side of it is released when
  * that work has finished (aprendcontext.h, "Destroying").
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p view itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] view View to destroy. NULL is accepted and does nothing.
  */
 void aprend_texture_view_destroy(aprend_texture_view view);
@@ -924,6 +936,10 @@ aprend_sampler aprend_sampler_create(
  *
  * @warning Every aprend_binding_set holding @p sampler must be destroyed
  * first.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p sampler itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] sampler Sampler to destroy. NULL is accepted and does nothing.
  */

@@ -17,16 +17,19 @@
  * command list:
  *
  * - aprend_send_command() and aprend_command_list_reset() write the list and
- *   nothing else, so different lists may be recorded from different threads
- *   at once, one thread to a list. What the commands name must not be
- *   destroyed by another thread meanwhile.
+ *   nothing else, so different lists may be recorded at once, one caller to
+ *   a list, overlapping other calls on the instance (both are marked). What
+ *   the commands name must not be destroyed meanwhile.
  * - aprend_command_list_create(), aprend_command_list_compile(),
  *   aprend_command_list_submit() and aprend_command_list_destroy() are not
  *   part of that. Every list of an instance compiles into the instance's
  *   command memory for the frame (aprendcontext.h); compiling reads the
  *   layouts a submission writes; and a submission takes the next place in
- *   the instance's order and carries the instance's batch of updates. They are made by one thread at a time across
- *   the whole instance, not only one list.
+ *   the instance's order and carries the instance's batch of updates. They
+ *   are made by one caller at a time across the whole instance, not only
+ *   one list. aprend_command_list_destroy() is among them, unlike most
+ *   destroy calls: it gives back to the instance's render target pool what
+ *   an unsubmitted compile took.
  */
 
 #if __cplusplus
@@ -1172,6 +1175,13 @@ void aprend_command_list_destroy(aprend_command_list cmd_list);
  * @brief Empties a command list: every recorded command, a recording error,
  * and the last compile are gone.
  *
+ * Thread: one caller to the list; it may overlap calls on other handles of
+ * the instance, other lists' recording included, from any thread - except
+ * when the list holds a compile not yet submitted. Then it gives back to
+ * the instance's render target pool what that compile took, and is one of
+ * the calls made by one caller at a time across the instance
+ * (aprendcontext.h, "Threads").
+ *
  * @param[in] cmd_list List to reset. NULL is accepted and does nothing.
  */
 void aprend_command_list_reset(aprend_command_list cmd_list);
@@ -1273,6 +1283,11 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  * the commands they stand for, read from the pass or list as it is now (see
  * each). What those commands are is checked as if they had been sent one by
  * one.
+ *
+ * Thread: one caller to the list; it may overlap calls on other handles of
+ * the instance, other lists' recording included, from any thread, as long
+ * as nothing the command names is changed or destroyed meanwhile
+ * (aprendcontext.h, "Threads").
  *
  * @param[in] cmd_list List to record into. NULL is accepted and does
  *                     nothing.
@@ -1400,7 +1415,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * values take effect").
  *
  * A list is refused if anything it was compiled against has been destroyed
- * since, from any thread - a texture or view, a buffer, a sampler, a
+ * since, by any call - a texture or view, a buffer, a sampler, a
  * pipeline, a binding set or anything one it binds holds, a material, a GPU
  * timer, a swap chain - or a texture it uses resized, a binding set it
  * binds updated (aprend_binding_set_update()), or the swap chain it

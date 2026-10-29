@@ -47,10 +47,15 @@ extern "C" {
  * self-extracting archives) aren't read.
  *
  * @par Threads
- * A reader's calls are safe from any number of threads at once, provided the
- * source's read callback is. Writers aren't thread-safe. A codec's callbacks
- * may be called from several threads at once. A codec table must not change
- * while a reader or writer uses it.
+ * apricore.h's rule ("Threads"): a writer, and a codec table while it is
+ * being changed, is used by one caller at a time. What is particular here:
+ * a reader never changes after aparchive_reader_open(), so its read calls
+ * may overlap each other, from any number of threads, provided the
+ * source's read callback can be called that way; the calls that may are
+ * marked. Readers and writers only read their codec table, so one table
+ * may be used by several of them at once, as long as nothing adds to it or
+ * destroys it meanwhile; and a codec's callbacks may then be called from
+ * several threads at once.
  *
  * @par Results
  * Calls return APRESULT (apricore.h): APRESULT_OK, a general code, or an
@@ -68,7 +73,8 @@ extern "C" {
  * Every call that can fail for a reason worth a sentence takes an
  * APARCHIVE_ERROR pointer (NULL to skip it): on failure it holds a
  * description naming the entry and what was wrong; on success its message
- * is empty. Being per call, it keeps readers thread-safe.
+ * is empty. Being per call, not on the reader, it lets a reader's calls
+ * overlap (see "Threads").
  *
  * @par Struct bases
  * Every struct that may grow starts with a `base` (apricore.h, "Struct
@@ -100,8 +106,11 @@ typedef struct APARCHIVE_ERROR {
 /**
  * @brief Random-access input for a reader.
  *
- * Offsets come in any order, and from several threads at once if the reader
- * is used that way.
+ * Offsets come in any order.
+ *
+ * Thread: `read` is called from inside the reader's calls, on the thread of
+ * each; when the caller overlaps a reader's calls (see "Threads", at the top
+ * of this header), it is called from several threads at once.
  */
 /* Frozen: held by value in APARCHIVE_READER_DESC. It never changes; a new need gets a new type. */
 typedef struct APARCHIVE_SOURCE {
@@ -152,8 +161,11 @@ typedef struct APARCHIVE_SINK {
  * read by most ZIP tools: an archive using them only opens in software that
  * registers them too.
  *
- * Callbacks may be called from several threads at once. A decode-only codec
- * leaves `compress` and `compress_bound` NULL.
+ * A decode-only codec leaves `compress` and `compress_bound` NULL.
+ *
+ * Thread: the callbacks are called from inside the reader's and writer's
+ * calls, on the thread of each; with readers or writers used at once, or a
+ * reader's calls overlapping, from several threads at once.
  *
  * @see aparchive_codecs_add()
  */
@@ -177,7 +189,13 @@ typedef struct APARCHIVE_CODEC {
 	bool (*decompress)(void *user, const void *in, uint64_t in_size, void *out, uint64_t out_size);
 } APARCHIVE_CODEC;
 
-/** @brief Opaque handle to a codec table. */
+/**
+ * @brief Opaque handle to a codec table.
+ *
+ * Thread: readers and writers only read it, so any number of them may use
+ * one table at once, from any threads, while no call adds to it or destroys
+ * it; aparchive_codecs_has() is such a read too.
+ */
 typedef struct aparchive_codecs_t *aparchive_codecs;
 
 /**
@@ -436,6 +454,10 @@ APRESULT aparchive_reader_open(const APARCHIVE_READER_DESC *desc, aparchive_read
 /**
  * @brief Counts a reader's entries.
  *
+ * Thread: may overlap the reader's other read calls (get_entry_count,
+ * get_entry, find, get_data_offset, read_entry), from any thread; not its
+ * destroy.
+ *
  * @param[in] reader The reader.
  *
  * @return The number of entries in the central directory, or 0 if
@@ -486,6 +508,10 @@ typedef struct APARCHIVE_ENTRY_INFO {
  * Fills @p out_info, whose base the caller sets, and leaves its base as it
  * was. Entries are in central directory order.
  *
+ * Thread: may overlap the reader's other read calls (get_entry_count,
+ * get_entry, find, get_data_offset, read_entry), from any thread; not its
+ * destroy.
+ *
  * @param[in]     reader   The reader.
  * @param[in]     index    The entry, from 0.
  * @param[in,out] out_info The entry's details.
@@ -498,6 +524,10 @@ APRESULT aparchive_reader_get_entry(aparchive_reader reader, uint32_t index, APA
 
 /**
  * @brief Finds an entry by name.
+ *
+ * Thread: may overlap the reader's other read calls (get_entry_count,
+ * get_entry, find, get_data_offset, read_entry), from any thread; not its
+ * destroy.
  *
  * @param[in]  reader    The reader.
  * @param[in]  name      The name, NUL-terminated: matched exactly, byte for
@@ -518,6 +548,10 @@ APRESULT aparchive_reader_find(aparchive_reader reader, const char *name, uint32
  * caller to map or range-read, or to decompress itself (on the GPU, say).
  * Nothing read this way is checked against the CRC-32.
  *
+ * Thread: may overlap the reader's other read calls (get_entry_count,
+ * get_entry, find, get_data_offset, read_entry), from any thread; not its
+ * destroy.
+ *
  * @param[in]  reader     The reader.
  * @param[in]  index      The entry, from 0.
  * @param[out] out_offset The offset of the entry's data in the source.
@@ -533,6 +567,10 @@ APRESULT aparchive_reader_get_data_offset(aparchive_reader reader, uint32_t inde
 
 /**
  * @brief Reads an entry whole, decompressing it, and checks its CRC-32.
+ *
+ * Thread: may overlap the reader's other read calls (get_entry_count,
+ * get_entry, find, get_data_offset, read_entry), from any thread; not its
+ * destroy.
  *
  * @param[in]  reader      The reader.
  * @param[in]  index       The entry, from 0.

@@ -27,8 +27,9 @@
  *     goes stale - a cursor, a selection, a drag under way, a camera.
  * - Snapshots. A peer that joins late gets the host application's state as
  *   one block, then exactly the ordered messages that came after it.
- * - The network itself: a thread of ApSync's own does all of it, so no call
- *   here except apsync_session_wait() waits on anything.
+ * - The network itself: a thread ApSync starts for each session does all
+ *   of it, so no call here except apsync_session_wait() waits on anything
+ *   (see "Threads").
  *
  * The shape is a star. Every joined peer talks to the host only, and the
  * host passes on what the others need. The host is the one copy that has to
@@ -96,11 +97,18 @@
  * unless its comment says what 0 means.
  *
  * @par Threads
- * One thread at a time in a session's calls. The exceptions are
- * apsync_session_wait(), which may be on a second thread while the first
- * makes the others, and apsync_session_wake(), which may come from any
- * thread; neither may race apsync_session_destroy(). ApSync never calls
- * back: nothing of the caller's runs on its thread.
+ * apricore.h's rule ("Threads"): a session is used by one caller at a time.
+ * The exceptions, marked on each: one apsync_session_wait() may overlap the
+ * session's other calls, and apsync_session_wake() may come from any
+ * thread at any time; neither may overlap apsync_session_destroy().
+ *
+ * ApSync runs threads of its own: apsync_session_host() and
+ * apsync_session_join() each start one that does the session's networking
+ * until apsync_session_destroy() joins it, and a joining session's network
+ * thread starts one more, detached, that only looks the host up and that
+ * nothing waits for.
+ * ApSync never calls back: nothing of the caller's runs on those threads,
+ * and what they produce reaches the caller as events it polls.
  */
 
 #if __cplusplus
@@ -363,6 +371,9 @@ typedef struct apsync_session_t *apsync_session;
  *         or APRESULT_IO as above; APRESULT_OUT_OF_MEMORY; or
  *         APRESULT_UNSUPPORTED where this platform has no transport.
  *
+ * Thread: starts the session's network thread (see "Threads", at the top
+ * of this header), which runs until apsync_session_destroy().
+ *
  * @see apsync_session_destroy()
  */
 APRESULT apsync_session_host(const APSYNC_SESSION_DESC *desc, const APSYNC_HOST_DESC *host_desc,
@@ -386,6 +397,10 @@ APRESULT apsync_session_host(const APSYNC_SESSION_DESC *desc, const APSYNC_HOST_
  *         can't be started; APRESULT_OUT_OF_MEMORY; or APRESULT_UNSUPPORTED
  *         where this platform has no transport.
  *
+ * Thread: starts the session's network thread (see "Threads", at the top
+ * of this header), which runs until apsync_session_destroy(), and which
+ * starts one more, detached, to look the host up.
+ *
  * @see apsync_session_destroy()
  */
 APRESULT apsync_session_join(const APSYNC_SESSION_DESC *desc, const APSYNC_JOIN_DESC *join_desc,
@@ -396,6 +411,11 @@ APRESULT apsync_session_join(const APSYNC_SESSION_DESC *desc, const APSYNC_JOIN_
  *
  * What was still waiting to be sent may not be. Doesn't wait on the
  * network; it can wait a moment for ApSync's thread to come back.
+ *
+ * Thread: aborts and joins the session's network thread. A host lookup's
+ * thread is not waited for: it ends on its own once the lookup returns.
+ * Overlaps no other call on @p session, apsync_session_wait() and
+ * apsync_session_wake() included.
  *
  * @param[in] session Session to destroy. NULL does nothing.
  */
@@ -595,6 +615,9 @@ APRESULT apsync_session_poll(apsync_session session, APSYNC_EVENT *out_event);
  * @brief Waits for there to be an event to poll, for a caller with no
  * frame loop to poll from.
  *
+ * Thread: one wait at a time may overlap the session's other calls, on
+ * another thread, except apsync_session_destroy().
+ *
  * @param[in] session    The session.
  * @param[in] timeout_ms How long to wait at most, in milliseconds.
  *                       APSYNC_WAIT_FOREVER sets no limit.
@@ -609,7 +632,10 @@ APRESULT apsync_session_wait(apsync_session session, uint32_t timeout_ms);
 
 /**
  * @brief Ends an apsync_session_wait() in progress, or the next one when
- * none is. From any thread.
+ * none is.
+ *
+ * Thread: may come from any thread, overlapping any call on @p session
+ * except apsync_session_destroy().
  *
  * @param[in] session The session. NULL does nothing.
  */

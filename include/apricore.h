@@ -6,8 +6,8 @@
 
 /**
  * @file apricore.h
- * @brief What every ApricotFields module shares: the APRESULT codes, the
- * enum base, struct bases and their types, and debug names.
+ * @brief What every ApricotFields module shares: the version, the APRESULT
+ * codes, the enum base, struct bases and their types, and debug names.
  */
 
 /**
@@ -30,6 +30,121 @@
 #if __cplusplus
 extern "C" {
 #endif
+
+/* ---- Version ---- */
+
+/**
+ * @defgroup apri_version Version
+ * @brief Which ApricotFields a caller was built against, and which it runs
+ * on.
+ *
+ * One version for the whole library: ApricotFields is built and linked as
+ * one library, so its modules can't be mixed from different versions.
+ *
+ * What a version promises, from 1.0.0 on:
+ *
+ * | Change in | May add | May change or remove |
+ * |-----------|---------|----------------------|
+ * | patch     | nothing | nothing: fixes only, no header change but comments |
+ * | minor     | functions, APRESULT values, APRI_STRUCT_TYPE values, chained structs, enumerators | nothing |
+ * | major     | anything | anything |
+ *
+ * "Released" means a commit tagged vMAJOR.MINOR.PATCH. Before 1.0.0, a
+ * minor may change anything, and every change to the public API is listed
+ * against the workspace's ABI snapshot (`abi.txt`).
+ *
+ * A struct that can be chained says in its comment which version first
+ * takes it ("Since 1.2.0"), so that a caller can ask apri_get_version()
+ * before chaining it. A caller that doesn't ask loses nothing but the
+ * question: an ApricotFields that doesn't take a struct refuses the chain
+ * with APRESULT_STRUCT_UNKNOWN_IN_CHAIN.
+ * @{
+ */
+
+/** @brief Packs a version into one number that compares with < and >:
+ * 10 bits of major, 10 of minor, 12 of patch (SpudLib's layout). */
+#define APRICOTFIELDS_MAKE_VERSION(major, minor, patch) \
+	((((uint32_t)(major)) << 22U) | (((uint32_t)(minor)) << 12U) | ((uint32_t)(patch)))
+/** @brief The major part of a packed version. */
+#define APRICOTFIELDS_VERSION_GET_MAJOR(version) ((uint32_t)(version) >> 22U)
+/** @brief The minor part of a packed version. */
+#define APRICOTFIELDS_VERSION_GET_MINOR(version) (((uint32_t)(version) >> 12U) & 0x3FFU)
+/** @brief The patch part of a packed version. */
+#define APRICOTFIELDS_VERSION_GET_PATCH(version) ((uint32_t)(version) & 0xFFFU)
+
+/* The one place the version is written. CMakeLists.txt reads these three
+ * lines, so each stays "#define NAME <number>" and nothing else. */
+/** @brief The major version of these headers. */
+#define APRICOTFIELDS_VERSION_MAJOR 0
+/** @brief The minor version of these headers. */
+#define APRICOTFIELDS_VERSION_MINOR 1
+/** @brief The patch version of these headers. */
+#define APRICOTFIELDS_VERSION_PATCH 0
+
+/** @brief The version of the headers the caller is compiled against. */
+#define APRICOTFIELDS_VERSION \
+	APRICOTFIELDS_MAKE_VERSION(APRICOTFIELDS_VERSION_MAJOR, APRICOTFIELDS_VERSION_MINOR, APRICOTFIELDS_VERSION_PATCH)
+
+/**
+ * @brief Returns the version of the ApricotFields the caller is running on:
+ * the APRICOTFIELDS_VERSION it was compiled with.
+ *
+ * It can differ from the caller's own APRICOTFIELDS_VERSION only when
+ * ApricotFields was built separately from the caller. Which one to accept
+ * is the caller's decision; ApricotFields refuses no caller for its
+ * version.
+ *
+ * @return The packed version (APRICOTFIELDS_MAKE_VERSION). Never 0.
+ */
+uint32_t apri_get_version(void);
+
+/** @} */
+
+/* ---- Threads ---- */
+
+/**
+ * @defgroup apri_threads Threads
+ * @brief Which calls may overlap: the rule every ApricotFields header rests
+ * on.
+ *
+ * Every object, in every module, is used by one caller at a time: no two
+ * calls that take the same object may overlap. Keeping it so is the
+ * caller's, as with Vulkan's "externally synchronized" objects;
+ * ApricotFields takes no lock to make it so.
+ *
+ * The rule is serialization, not thread identity. A caller may call from
+ * any thread, and from a different thread each time - a Swift actor, a C#
+ * continuation, a job system - as long as no two of its calls on one
+ * object overlap. Different objects are independent: two callers may each
+ * use their own at the same time. A module whose objects share state says
+ * so in its header, and names its unit: Aprend's is the instance with
+ * everything created from it (aprendcontext.h, "Threads").
+ *
+ * A function that takes no object, only its arguments, is safe from any
+ * number of callers at once.
+ *
+ * Exceptions are few, and each is marked on the call itself, with a line
+ * beginning "Thread:" that says exactly what may overlap what: a call that
+ * may come from any thread at any time, reads of an object that no longer
+ * changes, a value another thread reads, a cancel or wake, or code that
+ * runs on a thread other than the caller's. A module with more to say than
+ * one call's worth has a "Threads" paragraph at the top of its header, for
+ * what is particular to it alone.
+ *
+ * Two overlapping calls on one object are a data race, not a failure a
+ * call reports. Today only Aprend looks for it: a Debug build of Aprend
+ * prints the name of a call that finds a call from another thread still
+ * inside the same instance, and goes on (aprendcontext.h, "Threads"). It
+ * checks overlap, not which thread calls. The other modules check nothing,
+ * and no Release build checks anything.
+ *
+ * Where ApricotFields itself runs code on a thread of its own today, the
+ * header says so on the call: ApSync starts a network thread for each
+ * session, and a joining session one more, to look its host up
+ * (apsyncnet.h). ApAudio starts none; its render call runs on whatever
+ * thread the caller's audio stream calls it from (apaudio.h). Nothing else
+ * in ApricotFields starts a thread or calls back from one.
+ */
 
 /**
  * @brief The result of every Apricot call that can fail.
@@ -89,6 +204,15 @@ typedef enum APRESULT APRI_ENUM_BASE {
 	/** A joined session that has no snapshot yet, or whose connection to
 	 * the host has ended. */
 	APRESULT_APSYNC_NOT_CONNECTED = 2002,
+
+	/* ApText (text/aptext.h) */
+
+	/** Bytes that aren't a font in the format the call reads (OpenType or
+	 * TrueType, or a Hershey font), or one too broken to read. */
+	APRESULT_APTEXT_NOT_A_FONT = 6001,
+	/** Saved atlas bytes made with other settings, other faces or another
+	 * version of the glyph generator: well formed, but not this atlas. */
+	APRESULT_APTEXT_ATLAS_MISMATCH = 6002,
 } APRESULT;
 
 /**
@@ -130,7 +254,7 @@ typedef enum APRESULT APRI_ENUM_BASE {
  * behaviour.
  *
  * Numbered in blocks per module: 1000+ ApArchive, 2000+ ApSync, 3000+
- * ApAudio, 4000+ ApMath, 5000+ Aprend. A value is never renumbered or
+ * ApAudio, 4000+ ApMath, 5000+ Aprend, 6000+ ApText. A value is never renumbered or
  * reused, a retired struct's included. Each enumerator names its struct;
  * the ones marked APRI_STRUCT_BASE_OUT are structs ApricotFields fills in.
  */
@@ -196,6 +320,21 @@ typedef enum APRI_STRUCT_TYPE APRI_ENUM_BASE {
 	APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT = 5022, /**< aprend_lit_cascade_fit. */
 	APRI_STRUCT_TYPE_APREND_LIT_AMBIENT = 5023, /**< aprend_lit_ambient. */
 	APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO = 5024, /**< aprend_render_target_pool_info, an APRI_STRUCT_BASE_OUT. */
+
+	/* ApText (text/aptext.h) */
+	APRI_STRUCT_TYPE_APTEXT_FACE_DESC = 6000, /**< APTEXT_FACE_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_STROKE_FACE_DESC = 6001, /**< APTEXT_STROKE_FACE_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_HERSHEY_FACE_DESC = 6002, /**< APTEXT_HERSHEY_FACE_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_FACE_METRICS = 6003, /**< APTEXT_FACE_METRICS, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APTEXT_CHAIN_DESC = 6004, /**< APTEXT_CHAIN_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_LAYOUT_DESC = 6005, /**< APTEXT_LAYOUT_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_LAYOUT_INFO = 6006, /**< APTEXT_LAYOUT_INFO, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APTEXT_GLYPH_GENERATE_DESC = 6007, /**< APTEXT_GLYPH_GENERATE_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_GLYPH_IMAGE = 6008, /**< APTEXT_GLYPH_IMAGE, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APTEXT_ATLAS_DESC = 6009, /**< APTEXT_ATLAS_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_ATLAS_INFO = 6010, /**< APTEXT_ATLAS_INFO, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APTEXT_ATLAS_GLYPH = 6011, /**< APTEXT_ATLAS_GLYPH, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APTEXT_ATLAS_LOAD_DESC = 6012, /**< APTEXT_ATLAS_LOAD_DESC. */
 
 	/** Keeps the enum 32 bits wide on every compiler. Never a valid type. */
 	APRI_STRUCT_TYPE_MAX_ENUM = 0x7FFFFFFF

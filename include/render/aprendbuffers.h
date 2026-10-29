@@ -16,12 +16,13 @@
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A buffer is used by one
- * thread at a time with everything else of its instance. An update call and
- * a submission of a list that uses the buffer are never made from two
- * threads at once: the update writes what the submission reads. A buffer
- * set's update calls also read the instance's frame index. The size and
- * layout functions that take no buffer (aprend_uniform_type_get_size() and
- * aprend_uniform_layout_get_uniform_index()) are safe from any thread.
+ * caller at a time with everything else of its instance. An update call and
+ * a submission of a list that uses the buffer never overlap: the update
+ * writes what the submission reads. A buffer set's update calls also read
+ * the instance's frame index. The size and layout functions that take no
+ * buffer (aprend_uniform_type_get_size() and
+ * aprend_uniform_layout_get_uniform_index()) take no object, so they may
+ * run at once with anything.
  *
  * @par Where a buffer is kept
  * Where a vertex, index or storage buffer is kept follows the device's
@@ -265,6 +266,10 @@ aprend_uniform_buffer aprend_uniform_buffer_create(
  * submission may read it. A submission already made is safe
  * (aprendcontext.h, "Destroying").
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p buffer itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] buffer Buffer to destroy. NULL is accepted and does nothing.
  */
 void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer);
@@ -430,6 +435,10 @@ aprend_vertex_buffer aprend_vertex_buffer_create(
  * "Destroying"). A command list compiled with it and not yet submitted is
  * refused at submit (aprendcommands.h).
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p buffer itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] buffer Buffer to destroy. NULL is accepted and does nothing.
  */
 void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer);
@@ -500,6 +509,10 @@ aprend_index_buffer aprend_index_buffer_create(
  *
  * The GPU doesn't have to be finished with it (aprendcontext.h,
  * "Destroying"). No later submission may use it.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p buffer itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] buffer Buffer to destroy. NULL is accepted and does nothing.
  */
@@ -624,6 +637,10 @@ uint64_t aprend_storage_buffer_get_size(aprend_storage_buffer buffer);
  * submission may use it. A submission already made is safe
  * (aprendcontext.h, "Destroying").
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p buffer itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] buffer Buffer to destroy. NULL is accepted and does nothing.
  */
 void aprend_storage_buffer_destroy(aprend_storage_buffer buffer);
@@ -690,6 +707,10 @@ aprend_uniform_buffer_set aprend_uniform_buffer_set_create(
  * @warning Every binding set holding @p set goes first, and no later
  * submission may read it; one already made is safe (aprendcontext.h,
  * "Destroying").
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p set itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] set Set to destroy. NULL is accepted and does nothing.
  */
@@ -787,6 +808,10 @@ aprend_storage_buffer_set aprend_storage_buffer_set_create(
  * @brief Destroys a storage buffer set and its buffers, as
  * aprend_uniform_buffer_set_destroy() does a uniform buffer set.
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p set itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] set Set to destroy. NULL is accepted and does nothing.
  */
 void aprend_storage_buffer_set_destroy(aprend_storage_buffer_set set);
@@ -875,9 +900,11 @@ bool aprend_storage_buffer_set_update(
  * has run. `memory_limit` does not count that staging. The block buffers a
  * range names are written by the pool alone; their update calls refuse.
  *
- * Threads: a pool is used by one thread at a time with everything else of
+ * Thread: a pool is used by one caller at a time with everything else of
  * its instance (aprendcontext.h, "Threads"). That includes the free calls,
- * which are not destroy calls: they are not safe from another thread.
+ * which are not destroy calls: unlike a destroy call, a free may not
+ * overlap any other call on the instance. The pool's destroy call is a
+ * destroy call, and may.
  * @{
  */
 
@@ -960,6 +987,10 @@ aprend_vertex_pool aprend_vertex_pool_create(
  *
  * The GPU doesn't have to be finished with the blocks (aprendcontext.h,
  * "Destroying"), and no later submission may draw from one.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p pool itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] pool Pool to destroy. NULL is accepted and does nothing.
  */
@@ -1093,6 +1124,10 @@ aprend_index_pool aprend_index_pool_create(
 /**
  * @brief Destroys an index pool and its blocks, as
  * aprend_vertex_pool_destroy() does a vertex pool.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p pool itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] pool Pool to destroy. NULL is accepted and does nothing.
  */

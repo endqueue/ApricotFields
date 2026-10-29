@@ -26,12 +26,13 @@ so in its opening comment, along with what the module deliberately does *not* do
 
 | Module | Header | Prefix | Notes |
 |---|---|---|---|
-| Core | `apricore.h` | `APRESULT`, `APRI_`, `apri_` | The shared result enum, struct bases and debug names |
+| Core | `apricore.h` | `APRESULT`, `APRI_`, `apri_`, `APRICOTFIELDS_VERSION` | The version, the shared result enum, struct bases and debug names |
 | Aprend | `render/aprend*.h` | `aprend_` / `APREND_` | Renderer over SpudGPU. Older code, mid-overhaul |
 | ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision; exact plane polygons on an integer grid (booleans, checks, per-edge offsets, weighted straight skeletons, triangulation); unrelated to Aprend |
 | ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
+| ApText | `text/aptext.h` | `aptext_` / `APTEXT_` | Faces, fallback chains, shaping and line layout, MTSDF atlas, single-stroke faces; no file I/O, no GPU. **Contract only, not implemented**: every call checks its arguments and returns `APRESULT_NOT_IMPLEMENTED` (`APTEXT_TODO.md`) |
 
 `apricotfields.h` is not a full umbrella: it includes every Aprend header (fifteen) and
 nothing of the other modules. Callers include the module header they need.
@@ -68,10 +69,10 @@ block near the top. A new header gets the same block.
 - **Results.** Every call that can fail returns `APRESULT`. Use the general codes
   first; add an `APRESULT_<MODULE>_*` code to `apricore.h` only for a failure the
   caller would branch on, in the module's own numbered block (ApArchive 1001+,
-  ApSync 2001+). Never renumber an existing code.
+  ApSync 2001+, ApText 6001+). Never renumber an existing code.
 - **Error messages.** A call that can fail for a reason worth a sentence takes an
   `AP<MODULE>_ERROR *` (NULL to skip). It is per call, not stored on the object, so
-  concurrent readers stay thread-safe.
+  reads a header allows to overlap (an archive reader's) stay safe.
 - **Struct bases.** Every public struct that may grow starts with an
   `APRI_STRUCT_BASE base` (`APRI_STRUCT_BASE_OUT` for one ApricotFields fills in),
   with its own `APRI_STRUCT_TYPE_*` in `apricore.h`, in the module's block; every
@@ -96,16 +97,23 @@ block near the top. A new header gets the same block.
   `std::bad_alloc` (they say so in a comment); every `extern "C"` function that can
   reach one catches it and returns `APRESULT_OUT_OF_MEMORY`, freeing what it built.
 - **Destroy accepts null.** Value getters on a null handle return 0.
-- **Threads are part of the contract.** The header says which calls are safe from
-  which threads. Don't add a callback that runs on a module's own thread; ApSync
-  delivers events by polling for that reason.
+- **Threads are part of the contract.** Every object is used by one caller at a
+  time, from any thread, and different objects are independent: `apricore.h`,
+  "Threads", states it once for the library (the workspace's "Threading", card
+  X3). The rule is serialization, not thread identity: never write "the thread
+  that created it". A call that is an exception (callable from any thread at any
+  time, a read that may overlap others, a wake, code that runs on another
+  thread) says so on a line beginning `Thread:` in its own comment; a header's
+  `@par Threads` holds only what is particular to that module. Don't add a
+  callback that runs on a module's own thread; ApSync delivers events by polling
+  for that reason.
 - **Platform gaps come from SpudLib's `SPUD*_EXT_*` macros**, never from a
   platform's name, and surface as `APRESULT_UNSUPPORTED`.
 
 ## Containers: eqstd (decided 2026-10-28)
 
-New containers and strings in `src/` come from `eqstd` (the workspace's
-`EQSTD_TODO.md`; not built): `eq::array` for plain data, `eq::vector` and
+New containers and strings in `src/` come from `eqstd` (`../eqstd`, its
+`TODO.md`; built 2026-10-28, not yet used here): `eq::array` for plain data, `eq::vector` and
 `eq::string` for the rest, never in a public header. Old code converts as
 it is changed. Whether every desc takes a caller's allocator is paused
 (card X15); until then they use the system heap.
@@ -306,7 +314,7 @@ What a Hazel idiom becomes here:
 | `static Ref<X> Create(const XSpecification &)` | `<prefix>_x_create(...)` taking a desc pointer; how the handle comes back follows the generation of code you're in |
 | `XSpecification` holding `std::string`, `Ref<>` members and default member values | A plain C desc: `<stdint.h>` types, handles, `const char *`. A struct base first in the newer modules, and no defaults |
 | `static` state and getters on `Renderer` | State lives on the instance handle the caller passes in. No globals |
-| `Renderer::Submit` lambdas and `RT_` functions | No closure crosses the API. What is safe from which thread is written in the header |
+| `Renderer::Submit` lambdas and `RT_` functions | No closure crosses the API. Which calls may overlap is written in the header (`apricore.h`, "Threads") |
 | `HZ_CORE_ASSERT(false, ...)` on a bad input | Argument checks line by line, each returning its own result |
 | `Ref<X>::Create`, `new` | `malloc` and in-place construction, or `calloc`, per "Code conventions" |
 | `namespace Hazel`, `PascalCase` methods, `m_` members | The module prefix; lower-case handles and functions, upper-case value structs and enums |
@@ -327,6 +335,10 @@ registered with `add_test` behind `APRICOTFIELDS_BUILD_TESTS`.
   which is C++ (it uses `std::vector`).
 - No framework: a `CHECK(condition)` macro, a `failures` counter, `test_*`
   functions called from `main`, exit code 1 on any failure.
+- A contract written before its implementation (`../ROADMAP.md`, section 1)
+  ships its behavioural tests with it: a test whose call returns
+  `APRESULT_NOT_IMPLEMENTED` reports itself pending and stops, so the
+  implementation turns it on without editing it (`tests/aptext_tests.c`).
 - A new module ships with its tests file; a new call ships with a test in the
   existing one. Brute-force comparison against a slow obvious implementation is the
   preferred check for anything algorithmic (`test_mesh_against_brute_force`).
@@ -335,6 +347,24 @@ When asked to verify, on macOS: configure with the `apricotfields-macos-metal`
 preset, build with the `apricotfields-macos-metal-debug` build preset, then run
 `ctest --test-dir build-macos-metal -C Debug`. (The presets are multi-config;
 there is no separate `-debug` configure preset any more.)
+
+**Fuzzing.** `tests/fuzz/` holds a libFuzzer target per reader of bytes the
+caller can't vouch for; today `aparchive_fuzz` (ApArchive's reader over an
+archive in memory, which also writes back what it read and reads that
+again). `tests/fuzz/aprifuzz.hpp` says how they are built.
+
+- Every normal build runs each as a ctest, `<target>_regressions`, replaying
+  `tests/fuzz/corpus/<target>/` and `tests/fuzz/regressions/<target>/`. An
+  input the fuzzer crashes on is fixed, then kept in the regressions folder,
+  as small as it can be made.
+- To fuzz, on macOS: `cmake --preset apricotfields-macos-metal-fuzz` and
+  `cmake --build --preset apricotfields-macos-metal-fuzz-debug` (Homebrew's
+  LLVM; Apple's Clang has no libFuzzer; on Linux
+  `apricotfields-linux-vulkan-fuzz` with the system Clang), then from a
+  scratch folder `build-macos-fuzz/Debug/<target> <scratch corpus>
+  tests/fuzz/corpus/<target> -max_total_time=900`. New seeds go in with
+  `<target> -merge=1 tests/fuzz/corpus/<target> <folder>`.
+- A new module that reads outside bytes gets a target.
 
 ## Build
 

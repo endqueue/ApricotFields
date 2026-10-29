@@ -99,6 +99,45 @@
       "displayName": "ApricotFields Linux TSan",
       "inherits": ["apricotfields-sanitize-tsan", "apricotfields-linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-vulkan-tsan"
+    },
+    {
+      "name": "apricotfields-sanitize-fuzz",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug",
+        "APRICOTFIELDS_BUILD_TESTS": "OFF",
+        "APRICOTFIELDS_BUILD_FUZZERS": "ON",
+        "SPUDLIB_BUILD_TESTS": "OFF",
+        "CMAKE_C_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_OBJC_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_OBJCXX_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_MODULE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "apricotfields-macos-metal-fuzz",
+      "displayName": "ApricotFields macOS libFuzzer (Homebrew LLVM)",
+      "inherits": ["apricotfields-sanitize-fuzz", "apricotfields-macos-metal"],
+      "binaryDir": "${sourceDir}/build-macos-fuzz",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+        "CMAKE_CXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++",
+        "CMAKE_OBJC_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
+        "CMAKE_OBJCXX_COMPILER": "/opt/homebrew/opt/llvm/bin/clang++"
+      }
+    },
+    {
+      "name": "apricotfields-linux-vulkan-fuzz",
+      "displayName": "ApricotFields Linux libFuzzer (Clang)",
+      "inherits": ["apricotfields-sanitize-fuzz", "apricotfields-linux-vulkan"],
+      "binaryDir": "${sourceDir}/build-linux-fuzz",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -196,6 +235,18 @@
       "name": "apricotfields-linux-vulkan-tsan-debug",
       "displayName": "ApricotFields Linux TSan (Debug)",
       "configurePreset": "apricotfields-linux-vulkan-tsan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-macos-metal-fuzz-debug",
+      "displayName": "ApricotFields macOS libFuzzer (Debug)",
+      "configurePreset": "apricotfields-macos-metal-fuzz",
+      "configuration": "Debug"
+    },
+    {
+      "name": "apricotfields-linux-vulkan-fuzz-debug",
+      "displayName": "ApricotFields Linux libFuzzer (Debug)",
+      "configurePreset": "apricotfields-linux-vulkan-fuzz",
       "configuration": "Debug"
     }
   ],

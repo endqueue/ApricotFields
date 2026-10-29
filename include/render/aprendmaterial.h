@@ -96,10 +96,10 @@
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A material is used by one
- * thread at a time with everything else of its instance: its set calls,
+ * caller at a time with everything else of its instance: its set calls,
  * and the compile and submission of every list that binds it, which build
- * its binding set and copy its blocks. aprend_material_destroy() may be
- * called from any thread, as any destroy call.
+ * its binding set and copy its blocks. aprend_material_destroy() may
+ * overlap other calls on the instance, as most destroy calls may.
  */
 
 #include "aprendpipeline.h"
@@ -176,6 +176,10 @@ aprend_material aprend_material_create(
  *
  * @warning No command list that binds @p material may be compiled after
  * this.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p material itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] material Material to destroy. NULL is accepted and does nothing.
  */

@@ -48,11 +48,12 @@
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). aprend_draw_list_add() and
  * aprend_draw_list_reset() write the list and nothing else, so different
- * draw lists may be filled from different threads at once, one thread to a
- * list. aprend_draw_list_build() takes the instance's transient memory and is
- * made by one thread at a time across the instance. Sending a DRAW_LIST
- * reads the list: lists may be recorded from several threads at once with
- * one draw list, while no thread changes it.
+ * draw lists may be filled at once, one caller to a list, overlapping
+ * other calls on the instance (both are marked). aprend_draw_list_build()
+ * takes the instance's transient memory and is one of the calls made by one
+ * caller at a time across the instance. Sending a DRAW_LIST reads the list:
+ * several command lists may be recorded at once with one draw list, while
+ * no call changes it.
  */
 
 #include "aprendmaterial.h"
@@ -178,12 +179,19 @@ aprend_draw_list aprend_draw_list_create(
  * Commands already sent that name it have been expanded and don't read it
  * again.
  *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p list itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
+ *
  * @param[in] list List to destroy. NULL is accepted and does nothing.
  */
 void aprend_draw_list_destroy(aprend_draw_list list);
 
 /**
  * @brief Empties a draw list, for the next frame. Its memory is kept.
+ *
+ * Thread: one caller to the list; it may overlap calls on other handles of
+ * the instance, from any thread (aprendcontext.h, "Threads").
  *
  * @param[in] list List to empty. NULL is accepted and does nothing.
  */
@@ -196,6 +204,10 @@ void aprend_draw_list_reset(aprend_draw_list list);
  * Copied, mesh and bytes: what the arguments point at only has to live for
  * this call. What the mesh and material name must live until the
  * submissions that draw them.
+ *
+ * Thread: one caller to the list; it may overlap calls on other handles of
+ * the instance, from any thread, as long as the mesh's buffers and
+ * @p material are not destroyed meanwhile (aprendcontext.h, "Threads").
  *
  * @param[in] list           List to add to.
  * @param[in] mesh           The mesh.

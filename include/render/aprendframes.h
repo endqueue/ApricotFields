@@ -10,7 +10,7 @@
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). A framebuffer is used by one
- * thread at a time with everything else of its instance. Its clear and
+ * caller at a time with everything else of its instance. Its clear and
  * resize calls act on its attachments as the texture calls of
  * aprendimages.h do, and are bound by the same rule as those.
  */
@@ -93,6 +93,10 @@ aprend_framebuffer aprend_framebuffer_create(
  *
  * The GPU doesn't have to be finished with them (aprendcontext.h,
  * "Destroying"). No later submission may use one of its attachments.
+ *
+ * Thread: may overlap calls on other handles of its instance, from any
+ * thread; no call may be using @p framebuffer itself meanwhile (aprendcontext.h,
+ * "Threads" and "Destroying").
  *
  * @param[in] framebuffer Framebuffer to destroy. NULL is accepted and does
  *                        nothing.

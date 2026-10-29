@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.30)
-project(ApricotFields)
+
+# The version is written once, in include/apricore.h; read it from there.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/include/apricore.h" _apri_version_lines
+     REGEX "^#define APRICOTFIELDS_VERSION_(MAJOR|MINOR|PATCH) [0-9]+$")
+foreach(_part MAJOR MINOR PATCH)
+    string(REGEX REPLACE ".*APRICOTFIELDS_VERSION_${_part} ([0-9]+).*" "\\1"
+           APRICOTFIELDS_VERSION_${_part} "${_apri_version_lines}")
+    if(NOT APRICOTFIELDS_VERSION_${_part} MATCHES "^[0-9]+$")
+        message(FATAL_ERROR "ApricotFields: no APRICOTFIELDS_VERSION_${_part} line in include/apricore.h")
+    endif()
+endforeach()
+project(ApricotFields VERSION ${APRICOTFIELDS_VERSION_MAJOR}.${APRICOTFIELDS_VERSION_MINOR}.${APRICOTFIELDS_VERSION_PATCH})
 
 # CMake knows no C++26 flag for MSVC; its C++23 maps to /std:c++latest,
 # the newest dialect MSVC offers.
@@ -50,6 +61,8 @@ add_library(ApricotFields STATIC
         src/math/apmathpoly.cpp
         src/sync/apsync_internal.hpp
         src/sync/apsyncnet.cpp
+        src/text/aptext_internal.hpp
+        src/text/aptext.cpp
         include/apricore.h
         include/render/aprendcontext.h
         include/render/aprendbuffers.h
@@ -70,6 +83,7 @@ add_library(ApricotFields STATIC
         include/math/apmathbvh.h
         include/math/apmathpoly.h
         include/sync/apsyncnet.h
+        include/text/aptext.h
         )
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -334,6 +348,11 @@ endif ()
 option(APRICOTFIELDS_BUILD_TESTS "Build ApricotFields' headless tests" ON)
 if (APRICOTFIELDS_BUILD_TESTS)
     enable_testing()
+    add_executable(apricore_tests tests/apricore_tests.c)
+    target_link_libraries(apricore_tests PRIVATE ApricotFields)
+    target_compile_definitions(apricore_tests PRIVATE
+        APRICORE_TEST_CMAKE_VERSION="${PROJECT_VERSION}")
+    add_test(NAME apricore_tests COMMAND apricore_tests)
     add_executable(aparchive_tests tests/aparchive_tests.cpp)
     target_link_libraries(aparchive_tests PRIVATE ApricotFields)
     add_test(NAME aparchive_tests COMMAND aparchive_tests)
@@ -345,6 +364,11 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apsync_tests tests/apsync_tests.c)
     target_link_libraries(apsync_tests PRIVATE ApricotFields)
     add_test(NAME apsync_tests COMMAND apsync_tests)
+    # ApText's contract (APTEXT_TODO.md): argument checks pass, and the
+    # behavioural tests report pending while the calls aren't built.
+    add_executable(aptext_tests tests/aptext_tests.c)
+    target_link_libraries(aptext_tests PRIVATE ApricotFields)
+    add_test(NAME aptext_tests COMMAND aptext_tests)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
@@ -371,4 +395,31 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(aprendfeatures_tests tests/aprendfeatures_tests.c)
     target_link_libraries(aprendfeatures_tests PRIVATE ApricotFields)
     add_test(NAME aprendfeatures_tests COMMAND aprendfeatures_tests)
+endif ()
+
+# Fuzz targets (tests/fuzz/aprifuzz.hpp). Each is built two ways: as a
+# ctest that replays its seed corpus and every input the fuzzer once
+# crashed on, with whatever compiler builds the tests; and, under
+# APRICOTFIELDS_BUILD_FUZZERS, as a libFuzzer executable, which needs Clang
+# with -fsanitize=fuzzer (the apricotfields-*-fuzz presets: Homebrew's LLVM
+# on macOS, since Apple's Clang has no libFuzzer). The presets build every
+# target with -fsanitize=fuzzer-no-link,address,undefined; only the fuzz
+# executables link libFuzzer itself.
+set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz)
+if (APRICOTFIELDS_BUILD_TESTS)
+    foreach (target IN LISTS APRICOTFIELDS_FUZZ_TARGETS)
+        add_executable(${target}_replay tests/fuzz/aprifuzz_replay.cpp tests/fuzz/${target}.cpp)
+        target_link_libraries(${target}_replay PRIVATE ApricotFields)
+        add_test(NAME ${target}_regressions COMMAND ${target}_replay
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/corpus/${target}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/regressions/${target})
+    endforeach ()
+endif ()
+option(APRICOTFIELDS_BUILD_FUZZERS "Build ApricotFields' libFuzzer targets (Clang only)" OFF)
+if (APRICOTFIELDS_BUILD_FUZZERS)
+    foreach (target IN LISTS APRICOTFIELDS_FUZZ_TARGETS)
+        add_executable(${target} tests/fuzz/${target}.cpp)
+        target_link_libraries(${target} PRIVATE ApricotFields)
+        target_link_options(${target} PRIVATE -fsanitize=fuzzer)
+    endforeach ()
 endif ()

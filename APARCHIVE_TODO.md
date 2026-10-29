@@ -154,8 +154,15 @@ directory actually sits.
 
 ## Testing still owed
 
-- **Fuzz the reader** (libFuzzer over `aparchive_reader_open` and
-  `aparchive_reader_read_entry`): it parses untrusted files.
+- **Fuzz the reader** - done 2026-10-28 on macOS (`tests/fuzz/aparchive_fuzz.cpp`,
+  the `apricotfields-macos-metal-fuzz` preset; `CLAUDE.md`, "Tests"): open,
+  every entry's info, name lookup, data offset and read, and the writer
+  writing back what was read. About 14 minutes and 80 million inputs after
+  the fix, with ASan and UBSan. It found one bug, fixed: the names buffer was
+  reserved for an archive whose every entry fits, so a directory whose entry
+  count promised more than it held grew the buffer under the name index's
+  keys (a use-after-free, `tests/fuzz/regressions/aparchive_fuzz/`). Still
+  owed: running it on Linux, and longer runs on the CI machine.
 - **Other tools:** CI opens what the tests write with Python's `zipfile` and
   Info-ZIP `unzip -t`, and ApArchive opens archives those tools wrote.
 - **Real ZIP64 sizes:** the tests reach the ZIP64 records through an entry count

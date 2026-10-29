@@ -53,17 +53,25 @@ extern "C" {
  * later addition.
  *
  * @par Threads
- * Every call says which threads it may be called from:
- * - control: one thread at a time - the one that owns the mixer (e.g. the
- *   caller's UI thread, a game's main loop). Creating and destroying
- *   mixers, sounds, concurrency groups, buses and modifiers, re-parenting
- *   buses, and updating the mixer (apaudio_mixer_update()).
- * - any: any thread, concurrently - including input handlers and the audio
- *   thread itself. Never blocks, never allocates: playing, stopping and
- *   changing voices, changing buses' gain, rate, mute and pause, and
- *   activating modifiers.
- * - audio: the one thread rendering the mixer at a time (the stream's
- *   callback). Never blocks, never allocates, never frees.
+ * apricore.h's rule ("Threads"), with a mixer shared on purpose between
+ * three roles that may overlap each other. Every call names its role on its
+ * "Thread:" line:
+ * - control: one caller at a time across the mixer's control calls - the
+ *   mixer's owner (e.g. a UI loop, a game's main loop), from whichever
+ *   thread it calls, as long as no two control calls overlap. Creating and
+ *   destroying mixers, sounds, concurrency groups, buses and modifiers,
+ *   re-parenting buses, and updating the mixer (apaudio_mixer_update()).
+ * - any: any number of callers at once, from any thread, overlapping each
+ *   other and the control and audio calls - including input handlers and
+ *   the audio thread itself. Never blocks, never allocates: playing,
+ *   stopping and changing voices, changing buses' gain, rate, mute and
+ *   pause, and activating modifiers.
+ * - audio: one render of the mixer at a time (the stream's callback), on
+ *   whichever thread the stream calls it from - "the audio thread" below -
+ *   overlapping control and any calls. Never blocks, never allocates,
+ *   never frees.
+ *
+ * ApAudio starts no thread: the audio thread is the stream's.
  *
  * @par Results
  * Calls return APRESULT (apricore.h). The general codes mean, here:
@@ -118,7 +126,7 @@ extern "C" {
  * its place starts at once; with those all in use, the oldest fade is cut
  * short.
  * @par
- * Ranking runs in apaudio_mixer_update(), on the control thread. A new play
+ * Ranking runs in apaudio_mixer_update(), a control call. A new play
  * doesn't wait for it: the render starts it at once in a free real slot,
  * or in place of the lowest-ranked real voice (as of the last update) if it
  * outranks it; otherwise it starts virtual. The next update ranks it
@@ -829,6 +837,11 @@ void apaudio_concurrency_destroy(apaudio_mixer mixer, APAUDIO_CONCURRENCY group)
  * That's what lets apaudio_play() be safe from any thread while sounds come
  * and go.
  *
+ * Thread: an ID is a value, and may be handed to a call from any thread at
+ * any time; one that went stale meanwhile, even by a destroy that overlaps
+ * the call, is turned away. Which calls may overlap is each call's own
+ * "Thread:" line.
+ *
  * A slot is reused only once the audio thread has confirmed it's done with
  * the sound before, and a reused slot has a new count, so an old ID never
  * plays the new sound. IDs are only checked against the mixer they're
@@ -895,7 +908,7 @@ APRESULT apaudio_sound_create(
  * Thread: control. @p sound's ID is stale at once (see APAUDIO_SOUND), and
  * voices playing it stop at the next render. Its memory is freed, and its
  * slot reusable, once the audio thread has confirmed it's done with it -
- * by a later control-thread call on the mixer (the audio thread never
+ * by a later control call on the mixer (the audio thread never
  * frees), or with the mixer.
  *
  * @param[in] mixer Mixer it belongs to.
@@ -919,6 +932,10 @@ void apaudio_sound_destroy(apaudio_mixer mixer, APAUDIO_SOUND sound);
  * a looping voice always ends when told to. (The mixer's voice records are
  * allocated at creation, `max_voices` + `queue_capacity` of them, which is
  * how a play that's accepted always has one.)
+ *
+ * Thread: an ID is a value, and may be handed to the "any" calls from any
+ * thread, at the same time as the control calls and the audio thread's
+ * render.
  */
 typedef uint64_t APAUDIO_VOICE;
 

@@ -11,17 +11,20 @@
  * from, its frames, and the rules every Aprend header rests on.
  *
  * @par Threads
- * This is the rule for every Aprend header (render/aprend*.h). Each of the
- * others says only what is particular to it.
+ * apricore.h's rule ("Threads") holds for every Aprend header
+ * (render/aprend*.h), with one difference: for Aprend, the object of that
+ * rule is the instance together with everything created from it. Its
+ * handles meet in state the instance holds, so they are not independent of
+ * each other: an instance and all its handles are used by one caller at a
+ * time. Each of the other headers says only what is particular to it.
  *
- * Aprend takes no lock and starts no thread. An instance, and everything
- * created from it, is used by one thread at a time, and keeping it so is the
- * caller's. It may be any thread, and a different one from call to call, as
- * long as two are never inside Aprend for the same instance at once.
+ * Aprend takes no lock for this and starts no thread. The caller may call
+ * from any thread, and a different one from call to call, as long as no
+ * two calls are inside Aprend for the same instance at once.
  *
  * That is every call that takes the instance or a handle created from it,
- * the create calls included and the destroy calls excepted (below), because
- * they meet in state the instance holds:
+ * the create calls included and the destroy calls mostly excepted (below),
+ * because they meet in state the instance holds:
  *
  * - the count of submissions and the release of what was destroyed: every
  *   call that submits, aprend_instance_next_frame() and
@@ -43,55 +46,70 @@
  *   the release of a destroyed set, which happens inside whichever later
  *   call drains the release queue;
  * - the render target pool ("Textures a command uses in between"):
- *   aprend_command_list_compile() and _submit(), aprend_instance_next_frame(),
- *   aprend_instance_get_render_target_pool(),
+ *   aprend_command_list_compile() and _submit(), aprend_command_list_destroy()
+ *   (it gives back what an unsubmitted compile took),
+ *   aprend_instance_next_frame(), aprend_instance_get_render_target_pool(),
  *   aprend_instance_trim_render_targets() and
  *   aprend_instance_set_render_target_retirement().
  *
- * What several threads may do at once:
+ * What may overlap, by exception (the calls are marked "Thread:"):
  *
- * - Call the functions that take no handle: aprend_uniform_type_get_size(),
+ * - The functions that take no handle: aprend_uniform_type_get_size(),
  *   aprend_uniform_layout_get_uniform_index(),
  *   aprend_vertex_element_type_get_size(),
- *   aprend_vertex_layout_get_element_index() and the aprend_blend_ presets.
- * - Read a handle, with its get_ calls, while no thread is in a call that
- *   changes or destroys that handle. aprend_instance_get_frame_index() is
- *   not one of these while another thread may call
- *   aprend_instance_next_frame().
- * - Destroy. A destroy call may be made from any thread, at the same time
- *   as other threads use the instance, for every handle but the instance
- *   itself and a swap chain. It only queues the object: nothing is released
- *   on the thread that destroys (see "Destroying"). What it asks is that no
- *   other thread is using that same handle at that moment - inside a call
- *   that takes it, or recording a command that names it - and that the
- *   order the destroy calls ask for (a view before its texture, a set
- *   before its layout) is kept by whoever makes them.
- * - Record into different command lists, one thread to a list, with
- *   aprend_send_command() and aprend_command_list_reset(). They write the
- *   list and nothing else. No thread may destroy what the commands name
- *   meanwhile. Compiling is not included: every list compiles into the
- *   instance's command memory for the frame.
+ *   aprend_vertex_layout_get_element_index(), the aprend_blend_ presets and
+ *   aprend_get_optional_gpu_features(). They take no object, so the rule
+ *   doesn't reach them.
+ * - Reading a handle, with its get_ calls, while no call that changes or
+ *   destroys that handle runs. aprend_instance_get_frame_index() is not one
+ *   of these while aprend_instance_next_frame() may run.
+ * - Destroying. A destroy call may overlap other calls on the instance, for
+ *   every handle but the instance itself, a swap chain and a command list.
+ *   It only queues the object: nothing is released by the destroy call
+ *   itself (see "Destroying"). What it asks is that no other call is using
+ *   that same handle at that moment - a call that takes it, or the
+ *   recording of a command that names it - and that the order the destroy
+ *   calls ask for (a view before its texture, a set before its layout) is
+ *   kept by whoever makes them.
+ * - Recording into different command lists, one caller to a list, with
+ *   aprend_send_command() and aprend_command_list_reset(), and filling
+ *   different draw lists with aprend_draw_list_add() and
+ *   aprend_draw_list_reset() (aprenddrawlist.h). They write the list and
+ *   nothing else. Nothing may destroy what the commands name meanwhile.
+ *   Compiling is not included: every list compiles into the instance's
+ *   command memory for the frame.
  *
  * Two instances share nothing of Aprend's, which keeps no state outside an
- * instance. Whether they may then be used from two threads at once is
- * SpudGPU's to say, since two instances created on one device call into the
- * same device, and spudgpu.h promises nothing about that. Until it does,
- * treat every instance on one device as one instance for this rule.
+ * instance. Whether two callers may then use them at once is SpudGPU's to
+ * say, since two instances created on one device call into the same
+ * device, and spudgpu.h promises nothing about that. Until it does, treat
+ * every instance on one device as one instance for this rule.
  *
- * A call that blocks, blocks the thread that made it and holds the instance
- * for as long: aprend_instance_next_frame(), aprend_instance_wait_idle(),
+ * A call that blocks, blocks its caller and holds the instance for as long:
+ * aprend_instance_next_frame(), aprend_instance_wait_idle(),
  * aprend_instance_destroy(), a texture readback, and a swap chain's resize
  * and destroy.
  *
- * Aprend never calls back. No code of the caller's runs inside it, on any
- * thread, and what a destroy call leaves to be released later is released
- * inside a later call the caller makes, never behind its back.
+ * Aprend never calls back. No code of the caller's runs inside it, and what
+ * a destroy call leaves to be released later is released inside a later
+ * call the caller makes, never behind its back.
  *
- * A call from a second thread is a data race, not a failure the call
- * reports. A Debug build of Aprend checks the rule for the calls the list
- * above names: one that finds another thread inside the instance prints so,
- * with its own name, and goes on (as Vulkan's validation layer reports an
- * object used by two threads at once). A Release build checks nothing.
+ * Two overlapping calls are a data race, not a failure the call reports. A
+ * Debug build of Aprend checks the rule for most of the calls listed above:
+ * aprend_command_list_compile() and _submit(), aprend_instance_next_frame()
+ * and aprend_instance_wait_idle(), the vertex, index and storage buffer
+ * update calls (not a uniform buffer's or a buffer set's), the texture
+ * update, readback, resize and mipmap calls, the framebuffer clears,
+ * aprend_binding_set_create() and _update(), and the render target pool's
+ * get, trim and retirement calls. One that finds a call from another thread
+ * still inside the instance prints so, with its own name, and goes on (as
+ * Vulkan's validation layer reports an object used by two threads at once).
+ * It checks overlap, not which thread calls: a call from a different thread
+ * than the last is not reported once the last has returned, and a guarded
+ * call that makes another from inside itself is not counted. Only two of
+ * those calls overlapping is seen: an overlap with any other call - a
+ * create, a set or get_ call, a uniform buffer or buffer set update, a
+ * recording, a destroy - is not detected. A Release build checks nothing.
  *
  * @par Destroying
  * A destroy call of anything the GPU uses - a buffer, a texture or a view of
@@ -120,9 +138,9 @@
  *   sees.
  *
  * What is waiting is released as the instance goes: after each submission
- * and in aprend_instance_next_frame() and aprend_instance_wait_idle(), on
- * the thread that makes those calls. A destroy call releases nothing itself,
- * which is what lets it come from any thread; with no later submission,
+ * and in aprend_instance_next_frame() and aprend_instance_wait_idle(),
+ * inside those calls. A destroy call releases nothing itself, which is what
+ * lets it overlap other calls on the instance; with no later submission,
  * what was destroyed waits for aprend_instance_wait_idle() or
  * aprend_instance_destroy().
  *
@@ -251,7 +269,9 @@ typedef struct aprend_instance_t *aprend_instance;
  * makes the call.
  *
  * A function, not a macro, so the value is the linked library's, not the
- * header's the caller compiled against. Safe from any thread.
+ * header's the caller compiled against.
+ *
+ * Thread: takes no object, so it may overlap any call, from any thread.
  *
  * @return The features, SPUDGPU_FEATURE_* bits.
  */
@@ -315,8 +335,8 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc);
  * queue.
  *
  * It changes which copy every buffer set writes and every compile reads, so
- * under the rule at the top of this header ("Threads") no other thread is
- * in the instance while it runs.
+ * under the rule at the top of this header ("Threads") no other call is in
+ * the instance while it runs.
  *
  * @param[in] instance Instance to move on.
  *
@@ -399,7 +419,8 @@ typedef struct aprend_render_target_pool_info {
  * command uses in between", at the top of this header).
  *
  * It reads the pool, which compiles and aprend_instance_next_frame()
- * change, so it is one of the calls of the thread rule ("Threads").
+ * change, so it is one of the calls of the rule at the top of this header
+ * ("Threads").
  *
  * @param[in]  instance Instance to read.
  * @param[out] out_info Receives the report; its `base.type` is set by the
@@ -431,7 +452,8 @@ bool aprend_instance_get_render_target_pool(
  * A list compiled in an earlier frame that took one is refused at submit,
  * as it would be anyway: the frame has moved on since its compile.
  *
- * It changes the pool, under the thread rule ("Threads").
+ * It changes the pool, under the rule at the top of this header
+ * ("Threads").
  *
  * @param[in] instance    Instance whose pool is trimmed.
  * @param[in] idle_frames The frames a texture must have gone untaken to be
@@ -455,7 +477,8 @@ uint32_t aprend_instance_trim_render_targets(
  * aprend_instance_trim_render_targets() does). Called again, it replaces
  * what it set. A busy texture is kept whatever it says, as for a trim, and
  * destroyed as every Aprend object is ("Destroying", at the top of this
- * header). It changes the pool, under the thread rule ("Threads").
+ * header). It changes the pool, under the rule at the top of this header
+ * ("Threads").
  *
  * @param[in] instance    Instance whose pool it is.
  * @param[in] idle_frames The frames a texture must have gone untaken before

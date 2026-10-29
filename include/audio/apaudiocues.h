@@ -80,8 +80,11 @@
  * settings for a bus replace an earlier one's.
  *
  * @par Threads
- * apaudio.h's (Conventions). Each call below says which thread it runs on:
- * "control" or "any".
+ * apricore.h's rule ("Threads"), with apaudio.h's roles ("Threads"): a cue
+ * table's control calls are made by one caller at a time, together with
+ * its mixer's control calls (they create and destroy the mixer's sounds),
+ * and its "any" calls by any number at once, from any thread. Each call
+ * below names its role on its "Thread:" line: "control" or "any".
  */
 
 #ifndef APAUDIOCUES_H
@@ -232,7 +235,7 @@ void apaudio_cues_update(apaudio_cues cues);
  * @brief Where a bank's files come from, by the names its manifest uses
  * ("manifest.json" itself first).
  *
- * Called only during the load call, on its thread.
+ * Called only during the load call, on the thread making it.
  */
 /* Frozen: callbacks for one load call. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_BANK_SOURCE {
