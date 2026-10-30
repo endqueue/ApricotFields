@@ -56,7 +56,10 @@
 #endif
 
 #define ALLOC_TRACE_DEPTH 32
-#define ALLOC_TRACE_STACKS 1024
+// Distinct stacks kept while counting. A validation layer's allocations
+// come from thousands of stacks a frame (Metal's debug layer filled 1,024 in
+// one), and what no stack has room for is counted as ours, unattributed.
+#define ALLOC_TRACE_STACKS 16384
 #define ALLOC_TRACE_SKIPS 16
 
 typedef struct alloc_trace_internal_stack
@@ -317,14 +320,17 @@ static bool alloc_trace_internal_platform_available(void)
 {
     return true;
 }
+// Both stores through a volatile pointer: the compiler takes malloc to read
+// no global of the program's, so between them the first looked dead, and
+// Release builds dropped it (the logger was never set).
 static void alloc_trace_internal_platform_start(void)
 {
     alloc_trace_internal_thread = pthread_self();
-    malloc_logger = alloc_trace_internal_logged;
+    *(alloc_trace_internal_logger_t *volatile *)&malloc_logger = alloc_trace_internal_logged;
 }
 static void alloc_trace_internal_platform_stop(void)
 {
-    malloc_logger = NULL;
+    *(alloc_trace_internal_logger_t *volatile *)&malloc_logger = NULL;
 }
 
 #elif defined(__linux__) && defined(__GLIBC__)

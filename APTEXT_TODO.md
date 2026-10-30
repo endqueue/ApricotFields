@@ -197,7 +197,16 @@ argument checks, unchanged. Containers are eqstd's (`eq::array`,
 - [x] A fuzz target, `aptext_fuzz`: font bytes (laid out, generated into an
       atlas, saved and loaded back), Hershey text (laid out, its strokes
       taken) and saved atlases, chosen by the input's first byte. Fifteen
-      minutes on macOS, 2026-10-29: one bug, fixed (below).
+      minutes on macOS, 2026-10-29: one bug, fixed (below). Again on
+      2026-10-30 (the readers had changed with A20): an LFF font whose
+      `# WordSpacing:` was about 10^37 made a space advance finite as a
+      float but overflowing once a layout scaled it to its em size, so a
+      line's box came out NaN. An LFF advance (a glyph's, or the space's
+      from the word spacing) past 65,536 ems, TrueType's widest, is now
+      `APRESULT_APTEXT_NOT_A_FONT` (`aptext_cadfonts.cpp`); the space's
+      had no range check at all. Kept as
+      `regressions/aptext_fuzz/lff_word_spacing_past_float.bin`; 15
+      minutes more after the fix.
 - [ ] Run on Windows and Linux: `aptext_bits_tests` there is the
       comparison of a layout's and an atlas's bytes with macOS's (item 5).
       Floating-point contraction is off for MSVC by default; msdfgen's cubic

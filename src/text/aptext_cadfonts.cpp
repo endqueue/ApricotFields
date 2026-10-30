@@ -241,6 +241,11 @@ static bool header_value(const char *line, size_t size, const char *key, double 
     return true;
 }
 
+// The widest advance an LFF glyph may have, in ems: TrueType's widest (a
+// 16-bit advance at one unit per em). Past it a layout's positions overflow
+// a float at an ordinary em size, so a font that asks for more is refused.
+static const float APTEXT_LFF_MAX_ADVANCE_EMS = 65536.0f;
+
 APRESULT aptext_read_lff(const APTEXT_LFF_FACE_DESC &d, aptext_stroke_font &font, APTEXT_ERROR *error)
 {
     const char *text = (const char *)d.data;
@@ -265,7 +270,7 @@ APRESULT aptext_read_lff(const APTEXT_LFF_FACE_DESC &d, aptext_stroke_font &font
         if (advance < 0.0)
             advance = 0.0;
         glyph.advance = (float)(advance / (double)d.units_per_em);
-        if (!isfinite(glyph.advance))
+        if (!(glyph.advance <= APTEXT_LFF_MAX_ADVANCE_EMS))
             return aptext_fail(error, APRESULT_APTEXT_NOT_A_FONT, "line %u: a glyph's advance is out of range", line_number);
         if (font.glyphs.push(glyph) != EQ_SUCCESS || rights.push(any_point ? right : 0.0) != EQ_SUCCESS)
             return aptext_out_of_memory(error, "reading the LFF font");
@@ -448,6 +453,8 @@ APRESULT aptext_read_lff(const APTEXT_LFF_FACE_DESC &d, aptext_stroke_font &font
         space.codepoint = 0x20;
         space.first_polyline = (uint32_t)font.polylines.count;
         space.advance = (float)((word_spacing < 0.0 ? 0.0 : word_spacing) / (double)d.units_per_em);
+        if (!(space.advance <= APTEXT_LFF_MAX_ADVANCE_EMS))
+            return aptext_fail(error, APRESULT_APTEXT_NOT_A_FONT, "the word spacing is out of range");
         if (font.glyphs.push(space) != EQ_SUCCESS)
             return aptext_out_of_memory(error, "reading the LFF font");
     }
