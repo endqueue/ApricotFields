@@ -22,39 +22,41 @@ static void aprend_transient_chunk_destroy(aprend_transient_chunk *chunk) {
 	free(chunk);
 }
 
-// A new chunk of [size] bytes, mapped. NULL if the device refuses it.
-static aprend_transient_chunk *aprend_transient_chunk_create(
+// A new chunk of [size] bytes, mapped, through [out_chunk]. Fails, [error]
+// saying why, if the device refuses it.
+static APRESULT aprend_transient_chunk_create(
     aprend_instance instance,
-    uint64_t size) {
+    uint64_t size,
+    aprend_transient_chunk **out_chunk,
+    APREND_ERROR *error) {
 	aprend_transient_chunk *chunk = (aprend_transient_chunk *)malloc(sizeof(aprend_transient_chunk));
 	if (!chunk)
-		return nullptr;
+		return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory for a chunk of transient memory");
 	chunk       = new (chunk) aprend_transient_chunk();
 	chunk->size = size;
 
 	// What a span is bound as, and a copy source so the same memory can
 	// later stage writes to buffers in the device's memory.
 	spudgpu_buffer_desc bd{};
-	bd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
+	bd.base.type   = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
 	bd.memory_kind = SPUDGPU_MEMORY_KIND_UPLOAD;
 	bd.size        = size;
 	bd.usage       = SPUDGPU_BUFFER_USAGE_VERTEX | SPUDGPU_BUFFER_USAGE_INDEX | SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
 	SPUDRESULT sr  = spudgpu_create_buffer(instance->desc.device, &bd, &chunk->buffer);
 	if (SPUDFAIL(sr)) {
-		printf("apricot: aprend_transient_allocate: a chunk of %llu bytes can't be created: %s\n", (unsigned long long)size, spudresult_str(sr));
 		chunk->buffer = nullptr;
 		aprend_transient_chunk_destroy(chunk);
-		return nullptr;
+		return aprend_fail_spud(error, sr, "creating a chunk of %llu bytes failed", (unsigned long long)size);
 	}
 	void *mapped = nullptr;
 	sr           = spudgpu_map_buffer(chunk->buffer, 0, size, &mapped);
 	if (SPUDFAIL(sr)) {
-		printf("apricot: aprend_transient_allocate: a chunk of %llu bytes can't be mapped: %s\n", (unsigned long long)size, spudresult_str(sr));
 		aprend_transient_chunk_destroy(chunk);
-		return nullptr;
+		return aprend_fail_spud(error, sr, "mapping a chunk of %llu bytes failed", (unsigned long long)size);
 	}
 	chunk->mapped = (uint8_t *)mapped;
-	return chunk;
+	*out_chunk    = chunk;
+	return APRESULT_OK;
 }
 
 // [offset] rounded up to a multiple of [alignment], a power of two.
@@ -103,19 +105,19 @@ void aprend_transient_arena_destroy(aprend_instance instance) {
 
 bool aprend_transient_span_valid(
     aprend_instance instance,
-    const aprend_transient_span *span,
+    const APREND_TRANSIENT_SPAN *span,
     const char *who) {
 	if (!span->_chunk) {
-		printf("aprend: %s with a span that was never allocated\n", who);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%s with a span that was never allocated", who);
 		return false;
 	}
 	if (span->_frame != instance->frame_index) {
-		printf("aprend: %s with a span taken in frame %u, and the frame is now %u\n", who, span->_frame, instance->frame_index);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%s with a span taken in frame %u, and the frame is now %u", who, span->_frame, instance->frame_index);
 		return false;
 	}
 	const aprend_transient_frame &frame = instance->transient.frames[span->_frame];
 	if (span->_epoch != frame.epoch) {
-		printf("aprend: %s with a span of an earlier turn of frame %u, which aprend_instance_next_frame has taken back\n", who, span->_frame);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%s with a span of an earlier turn of frame %u, which aprend_instance_next_frame has taken back", who, span->_frame);
 		return false;
 	}
 	// The chunk is one of this frame's, and the span lies in what has been
@@ -125,15 +127,15 @@ bool aprend_transient_span_valid(
 		if (known == span->_chunk)
 			chunk = known;
 	if (!chunk) {
-		printf("aprend: %s with a span that names no chunk of frame %u\n", who, span->_frame);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%s with a span that names no chunk of frame %u", who, span->_frame);
 		return false;
 	}
 	if (span->_offset > chunk->write_offset) {
-		printf("aprend: %s with a span that starts past what its chunk has handed out\n", who);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%s with a span that starts past what its chunk has handed out", who);
 		return false;
 	}
 	if (span->size > chunk->write_offset - span->_offset) {
-		printf("aprend: %s with a span that runs past what its chunk has handed out\n", who);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%s with a span that runs past what its chunk has handed out", who);
 		return false;
 	}
 	return true;
@@ -141,7 +143,7 @@ bool aprend_transient_span_valid(
 
 SPUDRESULT aprend_transient_span_view(
     aprend_instance instance,
-    const aprend_transient_span *span,
+    const APREND_TRANSIENT_SPAN *span,
     uint64_t stride,
     spudgpu_buffer_view *out_view) {
 	(void)instance;
@@ -168,44 +170,30 @@ SPUDRESULT aprend_transient_span_view(
 	return SPUD_SUCCESS;
 }
 
-/* aprend_transient_allocate, and aprend_transient_allocate_staging with
- * [staging] set: then an instance with no transient memory, or a span that
- * would pass its limit, fails without a word, since the caller has another
- * way. */
-static bool aprend_transient_take(
+/* aprend_transient_allocate, and aprend_transient_allocate_staging, which
+ * passes no [error]: an instance with no transient memory, or a span that
+ * would pass its limit, is a failure it takes another way after. */
+static APRESULT aprend_transient_take(
     aprend_instance instance,
     uint64_t size,
     uint64_t alignment,
-    aprend_transient_span *out_span,
-    bool staging) {
-	static const char who[] = "aprend_transient_allocate";
-	if (!out_span) {
-		printf("apricot: %s: out_span is NULL\n", who);
-		return false;
-	}
-	*out_span = {};
-	if (!instance) {
-		printf("apricot: %s: instance is NULL\n", who);
-		return false;
-	}
-	if (size == 0) {
-		printf("apricot: %s: size is 0\n", who);
-		return false;
-	}
-	if (alignment == 0) {
-		printf("apricot: %s: alignment is 0\n", who);
-		return false;
-	}
-	if (alignment & (alignment - 1)) {
-		printf("apricot: %s: alignment %llu is not a power of two\n", who, (unsigned long long)alignment);
-		return false;
-	}
+    APREND_TRANSIENT_SPAN *out_span,
+    APREND_ERROR *error) {
+	if (out_span)
+		*out_span = {};
+	if (!instance)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (size == 0)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "size is 0");
+	if (alignment == 0)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "alignment is 0");
+	if (alignment & (alignment - 1))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "alignment %llu is not a power of two", (unsigned long long)alignment);
+	if (!out_span)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "out_span is NULL");
 	const uint64_t chunk_size = instance->desc.transient_chunk_size;
-	if (chunk_size == 0) {
-		if (!staging)
-			printf("apricot: %s: the instance was created with no transient memory (transient_chunk_size 0)\n", who);
-		return false;
-	}
+	if (chunk_size == 0)
+		return aprend_fail(error, APRESULT_LIMIT, "the instance was created with no transient memory (transient_chunk_size 0)");
 
 	aprend_transient_arena &arena = instance->transient;
 	aprend_transient_frame &frame = arena.frames[instance->frame_index];
@@ -233,22 +221,17 @@ static bool aprend_transient_take(
 		const uint64_t new_size   = dedicated ? size : chunk_size;
 		const uint64_t limit      = instance->desc.transient_memory_limit;
 		const bool over_limit     = limit != 0 && (arena.allocated > limit || new_size > limit - arena.allocated);
-		if (over_limit) {
-			if (staging)
-				return false;
-			printf("apricot: %s: %llu more bytes would pass transient_memory_limit (%llu of %llu in use)\n", who, (unsigned long long)new_size,
-			       (unsigned long long)arena.allocated, (unsigned long long)limit);
-			return false;
-		}
-		chunk = aprend_transient_chunk_create(instance, new_size);
-		if (!chunk)
-			return false;
+		if (over_limit)
+			return aprend_fail(error, APRESULT_LIMIT, "%llu more bytes would pass transient_memory_limit (%llu of %llu in use)", (unsigned long long)new_size,
+			                   (unsigned long long)arena.allocated, (unsigned long long)limit);
+		if (const APRESULT made = aprend_transient_chunk_create(instance, new_size, &chunk, error))
+			return made;
 		chunk->dedicated = dedicated;
 		try {
 			frame.chunks.push_back(chunk);
 		} catch (...) {
 			aprend_transient_chunk_destroy(chunk);
-			return false;
+			return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory to keep a chunk of transient memory");
 		}
 		arena.allocated += new_size;
 		frame.current    = frame.chunks.size() - 1;
@@ -263,25 +246,27 @@ static bool aprend_transient_take(
 	out_span->_offset = offset;
 	out_span->_epoch  = frame.epoch;
 	out_span->_frame  = instance->frame_index;
-	return true;
+	return APRESULT_OK;
 }
 
 bool aprend_transient_allocate_staging(
     aprend_instance instance,
     uint64_t size,
     uint64_t alignment,
-    aprend_transient_span *out_span) {
-	return aprend_transient_take(instance, size, alignment, out_span, true);
+    APREND_TRANSIENT_SPAN *out_span) {
+	return aprend_transient_take(instance, size, alignment, out_span, nullptr) == APRESULT_OK;
 }
 
 extern "C" {
 
-bool aprend_transient_allocate(
+APRESULT aprend_transient_allocate(
     aprend_instance instance,
     uint64_t size,
     uint64_t alignment,
-    aprend_transient_span *out_span) {
-	return aprend_transient_take(instance, size, alignment, out_span, false);
+    APREND_TRANSIENT_SPAN *out_span,
+    APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	return aprend_transient_take(instance, size, alignment, out_span, out_error);
 }
 
 uint64_t aprend_transient_get_frame_usage(aprend_instance instance) {

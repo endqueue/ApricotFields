@@ -3,8 +3,8 @@
  * @brief ApAudio's cues: named sounds over a mixer (apaudio.h), defined by
  * sound banks.
  *
- * Built in src/audio/apaudiocues.cpp. apricotfields.h doesn't include it
- * yet.
+ * Built in src/audio/apaudiocues.cpp. It is not part of
+ * aprend.h, which is Aprend's alone.
  *
  * This is the event model of FMOD Studio and Wwise - code states what
  * happened ("tool.wall.placed", "footstep.gravel"), data decides how it
@@ -287,8 +287,8 @@ APRESULT apaudio_cues_load_bank(
  * @param[in]  archive Random-access input over the archive (aparchive.h).
  * @param[out] error   Why it failed, when it did. May be NULL.
  *
- * @return As apaudio_cues_load_bank(); APRESULT_NOT_IMPLEMENTED until
- *         ApArchive's reader exists.
+ * @return As apaudio_cues_load_bank(); APRESULT_CORRUPT_DATA also for
+ *         bytes that aren't a ZIP archive.
  */
 APRESULT apaudio_cues_load_zip_bank(
     apaudio_cues cues,

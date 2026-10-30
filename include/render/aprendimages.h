@@ -49,7 +49,7 @@ enum {
  * gradient) is a 2D texture with `height` 1, declared `sampler2D` in the
  * shader and sampled at `vec2(u, 0.5)`.
  */
-typedef struct aprend_texture2d_desc {
+typedef struct APREND_TEXTURE2D_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Width of mip 0 in texels. Never 0. */
@@ -85,7 +85,7 @@ typedef struct aprend_texture2d_desc {
 
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
-} aprend_texture2d_desc;
+} APREND_TEXTURE2D_DESC;
 
 /**
  * @brief Opaque handle to a 2D texture or 2D texture array.
@@ -97,20 +97,27 @@ typedef struct aprend_texture2d_t *aprend_texture2d;
  * there is no initial data in the descriptor, so fill it with
  * aprend_texture2d_update().
  *
- * @param[in] instance Instance whose device the texture is created on.
- * @param[in] desc     Texture configuration. Only read during the call.
+ * @param[in]  instance    Instance whose device the texture is created on.
+ * @param[in]  desc        Texture configuration. Only read during the call.
+ * @param[out] out_texture Receives the texture; NULL on failure.
+ * @param[out] out_error   Why it failed, when it did. May be NULL.
  *
- * @return The texture, or NULL if @p instance or @p desc is NULL, `width`,
- *         `height` or `format` is 0, `sample_count` is above 1,
- *         `cube_capable` is set on a texture that isn't square or whose
- *         `array_layers` is not a multiple of six, or the image
- *         can't be created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc or
+ *         @p out_texture is NULL, `width` or `height` is 0, `format` is
+ *         SPUDGPU_FORMAT_UNKNOWN, or `cube_capable` is set on a texture
+ *         that isn't square or whose `array_layers` is not a multiple of
+ *         six; APRESULT_UNSUPPORTED if `sample_count` is above 1; the
+ *         struct codes for `desc->base`; APRESULT_OUT_OF_MEMORY; or the code
+ *         for SpudGPU's result if the image can't be created
+ *         (aprendcontext.h, "Results and errors").
  *
  * @see aprend_texture2d_destroy()
  */
-aprend_texture2d aprend_texture2d_create(
+APRESULT aprend_texture2d_create(
 	aprend_instance instance,
-	const aprend_texture2d_desc *desc);
+	const APREND_TEXTURE2D_DESC *desc,
+	aprend_texture2d *out_texture,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a 2D texture.
@@ -129,16 +136,21 @@ aprend_texture2d aprend_texture2d_create(
 void aprend_texture2d_destroy(aprend_texture2d texture);
 
 /**
- * @brief Reads a 2D texture's descriptor.
+ * @brief Reads a 2D texture's descriptor: the one it was created with,
+ * except that `mip_levels` and `array_layers` are the counts actually
+ * allocated, and `width` and `height` follow aprend_texture2d_resize().
  *
- * @param[in] texture Texture to read.
+ * The whole struct is written, `base` included.
  *
- * @return The descriptor it was created with, except that `mip_levels` and
- *         `array_layers` are the counts actually allocated, and `width` and
- *         `height` follow aprend_texture2d_resize(). Zeroed if @p texture is
- *         NULL.
+ * @param[in]  texture  Texture to read.
+ * @param[out] out_desc Receives the descriptor.
+ *
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p texture or @p out_desc is NULL.
  */
-aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture);
+APRESULT aprend_texture2d_get_desc(
+	aprend_texture2d texture,
+	APREND_TEXTURE2D_DESC *out_desc);
 
 /**
  * @brief Gets the SpudGPU image behind a 2D texture.
@@ -157,7 +169,7 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  * Recorded into the frame's batch of updates and clears, and not waited for
  * (aprendcontext.h, "Texture updates and clears"): the copy runs after
  * everything submitted before the call and ahead of everything submitted
- * after it. @p ppData is read during the call and may be released when it
+ * after it. @p data is read during the call and may be released when it
  * returns. The texels are staged in the frame's transient memory where the
  * instance has some to give, and in a buffer of the update's own where it
  * hasn't. @p queue is the instance's one queue (aprendcontext.h): the call
@@ -179,17 +191,23 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  * @param[in] y_offset Top edge of the region, in texels.
  * @param[in] width    Width of the region. Never 0.
  * @param[in] height   Height of the region. Never 0.
- * @param[in] ppData   Address of a pointer to the texels: @p height rows of
- *                     @p width texels, tightly packed, in the texture's
- *                     format.
+ * @param[in] data     The texels: @p height rows of @p width texels,
+ *                     tightly packed, in the texture's format. Never NULL.
+ * @param[in] data_size The bytes at @p data: exactly the region's,
+ *                     @p width x @p height x the format's bytes to a texel.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the region was written. false if an argument or `*ppData`
- *         is NULL or 0, the level or layer doesn't exist, the region runs
- *         outside the level, the texture's format has no whole number of
- *         bytes to a texel (a block-compressed format has no update path),
- *         or the copy couldn't be staged or recorded.
+ * @return APRESULT_OK if the copy was recorded; APRESULT_INVALID_ARGUMENT
+ *         if @p texture, @p queue or @p data is NULL, @p width or
+ *         @p height is 0, the level or layer doesn't exist, the region
+ *         runs outside the level, @p data_size is not the region's bytes,
+ *         or @p queue is not the instance's; APRESULT_UNSUPPORTED if the
+ *         texture's format has no whole number of bytes to a texel (a
+ *         block-compressed format has no update path);
+ *         APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's result if the
+ *         copy couldn't be staged or recorded.
  */
-bool aprend_texture2d_update(
+APRESULT aprend_texture2d_update(
 	aprend_texture2d texture,
 	spudgpu_command_queue queue,
 	uint32_t mip_level,
@@ -198,7 +216,9 @@ bool aprend_texture2d_update(
 	uint32_t y_offset,
 	uint32_t width,
 	uint32_t height,
-	void **ppData);
+	const void *data,
+	uint64_t data_size,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Reads back a region of one mip level of one array layer of a 2D
@@ -219,18 +239,20 @@ bool aprend_texture2d_update(
  * @param[in]  y_offset Top edge of the region, in texels.
  * @param[in]  width    Width of the region. Never 0.
  * @param[in]  height   Height of the region. Never 0.
- * @param[out] ppData   Address of a pointer to the caller's memory, which
- *                      receives @p height rows of @p width texels, tightly
- *                      packed, in the texture's format.
+ * @param[out] out_data The caller's memory, which receives @p height rows of
+ *                      @p width texels, tightly packed, in the texture's
+ *                      format. Never NULL.
+ * @param[in]  data_size The bytes at @p out_data: exactly the region's.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the region was read. false if an argument or `*ppData` is
- *         NULL or 0, the level or layer doesn't exist, the region runs
- *         outside the level, the texture's format has no whole number of
- *         bytes to a texel, or the copy couldn't be recorded, submitted or
- *         waited for. After a failed submission or wait the copy may still
- *         run with a later submission, and @p ppData is not written.
+ * @return APRESULT_OK if the region was read; the codes of
+ *         aprend_texture2d_update() for the same arguments; or the code
+ *         for SpudGPU's result if the copy couldn't be recorded, submitted
+ *         or waited for. After a failed submission or wait the copy may
+ *         still run with a later submission, and @p out_data is not
+ *         written.
  */
-bool aprend_texture2d_get_data(
+APRESULT aprend_texture2d_get_data(
 	aprend_texture2d texture,
 	spudgpu_command_queue queue,
 	uint32_t mip_level,
@@ -239,7 +261,9 @@ bool aprend_texture2d_get_data(
 	uint32_t y_offset,
 	uint32_t width,
 	uint32_t height,
-	void **ppData);
+	void *out_data,
+	uint64_t data_size,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Fills the mip levels of a 2D texture below one level from that
@@ -291,21 +315,25 @@ bool aprend_texture2d_get_data(
  *                     Below the texture's mip count; the last level has
  *                     none below it, and the call does nothing for it.
  * @param[in] filter   SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if every level below @p base_mip was recorded, or there is
- *         none. false, each printed, if @p texture or @p queue is NULL,
- *         @p base_mip doesn't exist, @p filter is not a SPUDGPU_FILTER, the
- *         texture lacks a usage bit or its format is not one of those
- *         above, @p base_mip has not been written in some layer, or the
- *         passes couldn't be prepared or recorded. Nothing is recorded
- *         when an argument is refused. A failure while recording leaves
- *         the levels already recorded, and the rest as they were.
+ * @return APRESULT_OK if every level below @p base_mip was recorded, or
+ *         there is none; APRESULT_INVALID_ARGUMENT if @p texture or
+ *         @p queue is NULL, @p base_mip doesn't exist, @p filter is not a
+ *         SPUDGPU_FILTER, the texture lacks a usage bit, or @p base_mip has
+ *         not been written in some layer; APRESULT_UNSUPPORTED if its
+ *         format is not one of those above; APRESULT_OUT_OF_MEMORY; or
+ *         another code if the passes couldn't be prepared or recorded.
+ *         Nothing is recorded when an argument is refused. A failure while
+ *         recording leaves the levels already recorded, and the rest as they
+ *         were.
  */
-bool aprend_texture2d_generate_mips(
+APRESULT aprend_texture2d_generate_mips(
 	aprend_texture2d texture,
 	spudgpu_command_queue queue,
 	uint32_t base_mip,
-	SPUDGPU_FILTER filter);
+	SPUDGPU_FILTER filter,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Replaces a 2D texture's image with a new one of the given size, the
@@ -328,22 +356,27 @@ bool aprend_texture2d_generate_mips(
  * @param[in] texture    Texture to resize.
  * @param[in] new_width  New width of mip 0. Never 0.
  * @param[in] new_height New height of mip 0. Never 0.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the texture has the new size, including when it already
- *         had it. false on failure, with the texture left exactly as it was,
- *         as it is by the Debug refusal of a view not destroyed.
+ * @return APRESULT_OK if the texture has the new size, including when it
+ *         already had it; APRESULT_INVALID_ARGUMENT if @p texture is NULL, a
+ *         size is 0, a cube-capable texture would not be square, the new
+ *         size can't hold an explicit mip count, or (Debug) a view is not
+ *         destroyed; APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's
+ *         result. On failure the texture is left exactly as it was.
  */
-bool aprend_texture2d_resize(
+APRESULT aprend_texture2d_resize(
 	aprend_texture2d texture,
 	uint32_t new_width,
-	uint32_t new_height);
+	uint32_t new_height,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Configuration descriptor for a 3D texture.
  *
  * A 3D texture has neither array layers nor MSAA.
  */
-typedef struct aprend_texture3d_desc {
+typedef struct APREND_TEXTURE3D_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Width of mip 0 in texels. Never 0. */
@@ -371,7 +404,7 @@ typedef struct aprend_texture3d_desc {
 
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
-} aprend_texture3d_desc;
+} APREND_TEXTURE3D_DESC;
 
 /**
  * @brief Opaque handle to a 3D texture.
@@ -382,18 +415,24 @@ typedef struct aprend_texture3d_t *aprend_texture3d;
  * @brief Creates a 3D texture, and a view of the whole of it that the texture
  * owns. Its contents are undefined until written.
  *
- * @param[in] instance Instance whose device the texture is created on.
- * @param[in] desc     Texture configuration. Only read during the call.
+ * @param[in]  instance    Instance whose device the texture is created on.
+ * @param[in]  desc        Texture configuration. Only read during the call.
+ * @param[out] out_texture Receives the texture; NULL on failure.
+ * @param[out] out_error   Why it failed, when it did. May be NULL.
  *
- * @return The texture, or NULL if @p instance or @p desc is NULL, `width`,
- *         `height`, `depth` or `format` is 0, or the image or its view can't
- *         be created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc or
+ *         @p out_texture is NULL, `width`, `height` or `depth` is 0, or
+ *         `format` is SPUDGPU_FORMAT_UNKNOWN; the struct codes for
+ *         `desc->base`; APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's
+ *         result if the image or its view can't be created.
  *
  * @see aprend_texture3d_destroy()
  */
-aprend_texture3d aprend_texture3d_create(
+APRESULT aprend_texture3d_create(
 	aprend_instance instance,
-	const aprend_texture3d_desc *desc);
+	const APREND_TEXTURE3D_DESC *desc,
+	aprend_texture3d *out_texture,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a 3D texture and the view it owns.
@@ -412,14 +451,20 @@ aprend_texture3d aprend_texture3d_create(
 void aprend_texture3d_destroy(aprend_texture3d texture);
 
 /**
- * @brief Reads a 3D texture's descriptor.
+ * @brief Reads a 3D texture's descriptor: the one it was created with, with
+ * its size and mip count following aprend_texture3d_resize().
  *
- * @param[in] texture Texture to read.
+ * The whole struct is written, `base` included.
  *
- * @return The descriptor it was created with, with its size and mip count
- *         following aprend_texture3d_resize(). Zeroed if @p texture is NULL.
+ * @param[in]  texture  Texture to read.
+ * @param[out] out_desc Receives the descriptor.
+ *
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p texture or @p out_desc is NULL.
  */
-aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture);
+APRESULT aprend_texture3d_get_desc(
+	aprend_texture3d texture,
+	APREND_TEXTURE3D_DESC *out_desc);
 
 /**
  * @brief Gets the SpudGPU view a 3D texture owns, covering the whole of it.
@@ -457,16 +502,15 @@ spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
  * @param[in] width    Width of the region. Never 0.
  * @param[in] height   Height of the region. Never 0.
  * @param[in] depth    Number of depth slices. Never 0.
- * @param[in] ppData   Address of a pointer to the texels: @p depth slices of
- *                     @p height rows of @p width texels, tightly packed, in
- *                     the texture's format.
+ * @param[in] data     The texels: @p depth slices of @p height rows of
+ *                     @p width texels, tightly packed, in the texture's
+ *                     format. Never NULL.
+ * @param[in] data_size The bytes at @p data: exactly the region's.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the region was written. false if an argument or `*ppData`
- *         is NULL or 0, the level or layer doesn't exist, the region runs
- *         outside the level, the texture's format has no whole number of
- *         bytes to a texel, or the copy couldn't be staged or recorded.
+ * @return As aprend_texture2d_update().
  */
-bool aprend_texture3d_update(
+APRESULT aprend_texture3d_update(
 	aprend_texture3d texture,
 	spudgpu_command_queue queue,
 	uint32_t mip_level,
@@ -476,7 +520,9 @@ bool aprend_texture3d_update(
 	uint32_t width,
 	uint32_t height,
 	uint32_t depth,
-	void **ppData);
+	const void *data,
+	uint64_t data_size,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Reads back a region of one mip level of a 3D texture.
@@ -494,13 +540,15 @@ bool aprend_texture3d_update(
  * @param[in]  width    Width of the region. Never 0.
  * @param[in]  height   Height of the region. Never 0.
  * @param[in]  depth    Number of depth slices. Never 0.
- * @param[out] ppData   Address of a pointer to the caller's memory, which
- *                      receives @p depth slices of @p height rows of @p width
- *                      texels, tightly packed, in the texture's format.
+ * @param[out] out_data The caller's memory, which receives @p depth slices
+ *                      of @p height rows of @p width texels, tightly packed,
+ *                      in the texture's format. Never NULL.
+ * @param[in]  data_size The bytes at @p out_data: exactly the region's.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the region was read, false otherwise.
+ * @return As aprend_texture2d_get_data().
  */
-bool aprend_texture3d_get_data(
+APRESULT aprend_texture3d_get_data(
 	aprend_texture3d texture,
 	spudgpu_command_queue queue,
 	uint32_t mip_level,
@@ -510,7 +558,9 @@ bool aprend_texture3d_get_data(
 	uint32_t width,
 	uint32_t height,
 	uint32_t depth,
-	void **ppData);
+	void *out_data,
+	uint64_t data_size,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Replaces a 3D texture's image with a new one of the given size, as
@@ -527,15 +577,17 @@ bool aprend_texture3d_get_data(
  * @param[in] new_width  New width of mip 0. Never 0.
  * @param[in] new_height New height of mip 0. Never 0.
  * @param[in] new_depth  New depth of mip 0. Never 0.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the texture has the new size, including when it already
- *         had it. false on failure, with the texture left exactly as it was.
+ * @return As aprend_texture2d_resize(). On failure the texture is left
+ *         exactly as it was.
  */
-bool aprend_texture3d_resize(
+APRESULT aprend_texture3d_resize(
 	aprend_texture3d texture,
 	uint32_t new_width,
 	uint32_t new_height,
-	uint32_t new_depth);
+	uint32_t new_depth,
+	APREND_ERROR *out_error);
 
 /**
  * @brief The shape of what a texture view looks at.
@@ -649,7 +701,7 @@ enum {
 };
 
 /**
- * @brief For aprend_texture_view_desc::mip_count and ::layer_count: every
+ * @brief For APREND_TEXTURE_VIEW_DESC::mip_count and ::layer_count: every
  * mip, or every layer, from the base one to the texture's last.
  */
 #define APREND_TEXTURE_VIEW_REMAINING UINT32_MAX
@@ -688,7 +740,7 @@ enum {
  * A storage image slot reads and writes one mip. That is what a storage
  * image is in every graphics API (an image store takes no mip level), not a
  * limit of Aprend's: a shader that writes several mips in one dispatch
- * declares an array of slots (`image2D mips[N]`, aprend_binding_desc::_count)
+ * declares an array of slots (`image2D mips[N]`, APREND_BINDING_DESC::_count)
  * and is given a one-mip view in each.
  *
  * What `aspect` has to be:
@@ -706,7 +758,7 @@ enum {
  * into: the stencil can't be sampled in a pass that has the same mip as its
  * depth target.
  */
-typedef struct aprend_texture_view_desc {
+typedef struct APREND_TEXTURE_VIEW_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** What the view is used as. Not APREND_TEXTURE_VIEW_TYPE_NONE. */
@@ -732,7 +784,7 @@ typedef struct aprend_texture_view_desc {
 	 * texture's last; APREND_TEXTURE_VIEW_REMAINING for all the rest.
 	 */
 	uint32_t layer_count;
-} aprend_texture_view_desc;
+} APREND_TEXTURE_VIEW_DESC;
 
 /**
  * @brief Opaque handle to a view of a texture: what a pass renders to and a
@@ -749,49 +801,62 @@ typedef struct aprend_texture_view_t *aprend_texture_view;
 /**
  * @brief Creates a view of some of a 2D texture's mips and layers.
  *
- * @param[in] texture Texture to view. It must outlive the view.
- * @param[in] desc    The view's use, shape and range. Only read during the
- *                    call.
+ * @param[in]  texture   Texture to view. It must outlive the view.
+ * @param[in]  desc      The view's use, shape and range. Only read during
+ *                       the call.
+ * @param[out] out_view  Receives the view; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The view, or NULL if @p texture or @p desc is NULL, `type` or
- *         `shape` is not a value of its enum, the texture was created without
- *         the usage bit `type` needs, `shape` is APREND_TEXTURE_VIEW_SHAPE_3D,
- *         a cube shape is asked of a texture that is not cube-capable, the
- *         range starts or runs past the texture's mips or layers or has a
- *         count of 0, the range is not one the shape and `type` allow (see
- *         aprend_texture_view_desc), `aspect` is not the one the texture's
- *         format and `type` take, a 2D array view to render to is asked
- *         of a device without SPUDGPU_FEATURE_LAYERED_RENDERING, a cube
- *         array view of one without SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS, or
- *         the view can't be created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p texture, @p desc or
+ *         @p out_view is NULL, `type` or `shape` is not a value of its
+ *         enum, the texture was created without the usage bit `type`
+ *         needs, `shape` is APREND_TEXTURE_VIEW_SHAPE_3D, a cube shape is
+ *         asked of a texture that is not cube-capable, the range starts or
+ *         runs past the texture's mips or layers or has a count of 0, the
+ *         range is not one the shape and `type` allow (see
+ *         APREND_TEXTURE_VIEW_DESC), or `aspect` is not the one the
+ *         texture's format and `type` take; APRESULT_UNSUPPORTED if a 2D
+ *         array view to render to is asked of a device without
+ *         SPUDGPU_FEATURE_LAYERED_RENDERING, or a cube array view of one
+ *         without SPUDGPU_FEATURE_CUBE_ARRAY_VIEWS; the struct codes for
+ *         `desc->base`; APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's
+ *         result if the view can't be created.
  *
  * @see aprend_texture_view_destroy()
  */
-aprend_texture_view aprend_texture_view_create_2d(
+APRESULT aprend_texture_view_create_2d(
 	aprend_texture2d texture,
-	const aprend_texture_view_desc *desc);
+	const APREND_TEXTURE_VIEW_DESC *desc,
+	aprend_texture_view *out_view,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Creates a view of some of a 3D texture's mips.
  *
- * @param[in] texture Texture to view. It must outlive the view.
- * @param[in] desc    The view's use, shape and range. `shape` is
- *                    APREND_TEXTURE_VIEW_SHAPE_3D, `base_layer` 0 and
- *                    `layer_count` 1. Only read during the call.
+ * @param[in]  texture   Texture to view. It must outlive the view.
+ * @param[in]  desc      The view's use, shape and range. `shape` is
+ *                       APREND_TEXTURE_VIEW_SHAPE_3D, `base_layer` 0 and
+ *                       `layer_count` 1. Only read during the call.
+ * @param[out] out_view  Receives the view; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The view, or NULL if @p texture or @p desc is NULL, `type` is not
- *         a value of its enum or is a render target or depth use, the texture
- *         was created without the usage bit `type` needs, `shape` is not
- *         APREND_TEXTURE_VIEW_SHAPE_3D, the mip range starts or runs past the
- *         texture's mips or has a count of 0, a storage view covers more than
- *         one mip, the layer range is not layer 0 alone, or the view can't be
- *         created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p texture, @p desc or
+ *         @p out_view is NULL, `type` is not a value of its enum or is a
+ *         render target or depth use, the texture was created without the
+ *         usage bit `type` needs, `shape` is not
+ *         APREND_TEXTURE_VIEW_SHAPE_3D, the mip range starts or runs past
+ *         the texture's mips or has a count of 0, a storage view covers more
+ *         than one mip, or the layer range is not layer 0 alone; the struct
+ *         codes for `desc->base`; APRESULT_OUT_OF_MEMORY; or the code for
+ *         SpudGPU's result if the view can't be created.
  *
  * @see aprend_texture_view_destroy()
  */
-aprend_texture_view aprend_texture_view_create_3d(
+APRESULT aprend_texture_view_create_3d(
 	aprend_texture3d texture,
-	const aprend_texture_view_desc *desc);
+	const APREND_TEXTURE_VIEW_DESC *desc,
+	aprend_texture_view *out_view,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a texture view. Its texture is not destroyed.
@@ -819,15 +884,21 @@ void aprend_texture_view_destroy(aprend_texture_view view);
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view);
 
 /**
- * @brief Reads the descriptor a view was created with.
+ * @brief Reads the descriptor a view was created with, with `mip_count` and
+ * `layer_count` as real counts where APREND_TEXTURE_VIEW_REMAINING was
+ * given.
  *
- * @param[in] view View to read.
+ * The whole struct is written, `base` included.
  *
- * @return The descriptor, with `mip_count` and `layer_count` as real counts
- *         where APREND_TEXTURE_VIEW_REMAINING was given; zeroed if @p view is
- *         NULL.
+ * @param[in]  view     View to read.
+ * @param[out] out_desc Receives the descriptor.
+ *
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p view or @p out_desc is NULL.
  */
-aprend_texture_view_desc aprend_texture_view_get_desc(aprend_texture_view view);
+APRESULT aprend_texture_view_get_desc(
+	aprend_texture_view view,
+	APREND_TEXTURE_VIEW_DESC *out_desc);
 
 /**
  * @brief Gets the shape of what a view looks at.
@@ -864,7 +935,7 @@ aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view);
  *
  * Every field is the caller's to set; none has a default.
  */
-typedef struct aprend_sampler_desc {
+typedef struct APREND_SAMPLER_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_SAMPLER_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Filter when a texel covers more than one pixel. */
@@ -906,7 +977,7 @@ typedef struct aprend_sampler_desc {
 
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
-} aprend_sampler_desc;
+} APREND_SAMPLER_DESC;
 
 /**
  * @brief Opaque handle to a sampler.
@@ -919,17 +990,23 @@ typedef struct aprend_sampler_t *aprend_sampler;
 /**
  * @brief Creates a sampler.
  *
- * @param[in] instance Instance whose device the sampler is created on.
- * @param[in] desc     Sampler configuration. Only read during the call.
+ * @param[in]  instance    Instance whose device the sampler is created on.
+ * @param[in]  desc        Sampler configuration. Only read during the call.
+ * @param[out] out_sampler Receives the sampler; NULL on failure.
+ * @param[out] out_error   Why it failed, when it did. May be NULL.
  *
- * @return The sampler, or NULL if @p instance or @p desc is NULL, or the
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc or
+ *         @p out_sampler is NULL; the struct codes for `desc->base`;
+ *         APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's result if the
  *         sampler can't be created.
  *
  * @see aprend_sampler_destroy()
  */
-aprend_sampler aprend_sampler_create(
+APRESULT aprend_sampler_create(
 	aprend_instance instance,
-	const aprend_sampler_desc *desc);
+	const APREND_SAMPLER_DESC *desc,
+	aprend_sampler *out_sampler,
+	APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a sampler.
@@ -948,11 +1025,17 @@ void aprend_sampler_destroy(aprend_sampler sampler);
 /**
  * @brief Reads the descriptor a sampler was created with.
  *
- * @param[in] sampler Sampler to read.
+ * The whole struct is written, `base` included.
  *
- * @return The descriptor, or a zeroed one if @p sampler is NULL.
+ * @param[in]  sampler  Sampler to read.
+ * @param[out] out_desc Receives the descriptor.
+ *
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p sampler or @p out_desc is NULL.
  */
-aprend_sampler_desc aprend_sampler_get_desc(aprend_sampler sampler);
+APRESULT aprend_sampler_get_desc(
+	aprend_sampler sampler,
+	APREND_SAMPLER_DESC *out_desc);
 
 /**
  * @brief Gets the SpudGPU sampler behind a sampler.
@@ -968,8 +1051,8 @@ spudgpu_sampler aprend_sampler_get_spudgpu_sampler(aprend_sampler sampler);
  *
  * Zeroed ops mean load and store.
  */
-/* Frozen: held by value in aprend_render_pass_desc and APREND_COMMAND. It never changes; a new need gets a new type. */
-typedef struct aprend_color_target {
+/* Frozen: held by value in APREND_RENDER_PASS_DESC and APREND_COMMAND. It never changes; a new need gets a new type. */
+typedef struct APREND_COLOR_TARGET {
 	/** The view rendered to. A view of a 2D texture. */
 	aprend_texture_view view;
 	/** Leave NULL: a resolve target is refused until SpudGPU has MSAA. */
@@ -980,15 +1063,15 @@ typedef struct aprend_color_target {
 	SPUDGPU_STORE_OP store_op;
 	/** RGBA the target is cleared to when #load_op clears. */
 	float clear_color[4];
-} aprend_color_target;
+} APREND_COLOR_TARGET;
 
 /**
  * @brief How one pass uses its depth target.
  *
  * Zeroed ops mean load and store.
  */
-/* Frozen: held by value in aprend_render_pass_desc and APREND_COMMAND. It never changes; a new need gets a new type. */
-typedef struct aprend_depth_target {
+/* Frozen: held by value in APREND_RENDER_PASS_DESC and APREND_COMMAND. It never changes; a new need gets a new type. */
+typedef struct APREND_DEPTH_TARGET {
 	/** The view rendered to, a view of a 2D texture. NULL for no depth. */
 	aprend_texture_view view;
 	/** What the pass starts with, for depth and for stencil. */
@@ -999,7 +1082,7 @@ typedef struct aprend_depth_target {
 	float clear_depth;
 	/** Stencil the target is cleared to when #stencil_load_op clears. */
 	uint32_t clear_stencil;
-} aprend_depth_target;
+} APREND_DEPTH_TARGET;
 
 #if __cplusplus
 }

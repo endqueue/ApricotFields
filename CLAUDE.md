@@ -29,13 +29,16 @@ so in its opening comment, along with what the module deliberately does *not* do
 | Core | `apricore.h` | `APRESULT`, `APRI_`, `apri_`, `APRICOTFIELDS_VERSION` | The version, the shared result enum, struct bases and debug names |
 | Aprend | `render/aprend*.h` | `aprend_` / `APREND_` | Renderer over SpudGPU. Older code, mid-overhaul |
 | ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `Apri*` types, `apmath_` / `APMATH_` | CPU ray casting, double precision; exact plane polygons on an integer grid (booleans, checks, per-edge offsets, weighted straight skeletons, triangulation); unrelated to Aprend |
-| ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own |
-| ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer, cues and sound banks |
+| ApArchive | `archive/aparchive.h` | `aparchive_` / `APARCHIVE_` | ZIP through caller callbacks; no I/O of its own. Entries whole or streamed (zlib-ng for streamed DEFLATE, libdeflate for whole), raw entries, updating, strict reading (`APARCHIVE_TODO.md`, items 1-10, 2026-10-30 on macOS) |
+| ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` / `APAUDIO_` | Mixer (with a lookahead limiter and dithered 16-bit output), cues and sound banks; WAV, FLAC, Ogg Vorbis and Ogg Opus decoding |
 | ApSync | `sync/apsyncnet.h` | `apsync_` / `APSYNC_` | Sessions, channels, snapshots over SpudNet |
+| ApJobs | `jobs/apjobs.h` | `apjobs_` / `APJOBS_` | A scheduler interface the caller implements (enqueue a function over a range of items, wait for it; Box2D v3's shape) and a reference pool of threads a caller may create; the one place ApricotFields starts threads on request. Card L12, built 2026-10-30 on macOS (`APJOBS_TODO.md`) |
 | ApText | `text/aptext.h` | `aptext_` / `APTEXT_` | Faces, fallback chains, shaping and line layout, MTSDF atlas, single-stroke faces; no file I/O, no GPU. Over HarfBuzz, msdfgen, SheenBidi and libunibreak; built 2026-10-29 on macOS and Windows (MSVC: tests, the cross-platform bits test with macOS's CRCs, ASan, 10 minutes' fuzzing); Linux never built (`APTEXT_TODO.md`) |
 
-`apricotfields.h` is not a full umbrella: it includes every Aprend header (fifteen) and
-nothing of the other modules. Callers include the module header they need.
+`aprend.h` is Aprend's umbrella: it includes every header in `render/` (fifteen) and
+nothing of the other modules, and no header includes all of ApricotFields (card A27,
+2026-10-28; it was `apricotfields.h` until 2026-10-29). `check.sh umbrella` checks it
+reaches every header in `render/`. Callers include the module header they need.
 
 Each module that has unfinished work keeps it in `AP<MODULE>_TODO.md` at the repo
 root. Read the module's TODO before changing it, and update it in the same change
@@ -44,16 +47,19 @@ when you finish or add an item.
 ## Two generations of code - match the one you're in
 
 Aprend is older and written differently from the four newer modules. Don't carry
-one style into the other, and don't convert Aprend to the newer shape unless asked.
-The whole conversion is decided (2026-10-28, `APREND_TODO.md`, "The contract
-conversion"), to be done before the first release; until it is, this holds.
+one style into the other. Its contract is the newer modules' since 2026-10-30
+(`APREND_TODO.md`, "The contract conversion", cards A2, A10, A14): every call
+that can fail returns `APRESULT`, a creation hands its handle through `out_`,
+and the reason goes into a per-call `APREND_ERROR`; nothing prints but the
+Debug build's check of overlapping calls. Its layout and allocation are still
+its own.
 
 | | Aprend (`src/render/`) | ApArchive, ApAudio, ApSync, ApMath |
 |---|---|---|
 | Indentation, braces | tabs, attached braces | 4 spaces, Allman braces |
-| Creating a handle | returns the handle, `NULL` on failure | returns `APRESULT`, handle through an `out_` parameter (set to null on failure) |
+| Creating a handle | returns `APRESULT`, handle through an `out_` parameter (set to null on failure) | the same |
 | Allocation | `malloc` + in-place construction, `goto` cleanup | `new (std::nothrow)` and `delete`, then a `try` block - not the convention any more, see "Code conventions" |
-| Failure detail | `printf` of the `SPUDRESULT` | per-call `AP<MODULE>_ERROR` message struct |
+| Failure detail | per-call `APREND_ERROR` (`aprend_fail`, `aprend_fail_spud`; a compile's and a submit's through `aprend_cmd_report` / `aprend_report`) | per-call `AP<MODULE>_ERROR` message struct |
 
 Public headers use tabs in both generations.
 
@@ -69,7 +75,8 @@ block near the top. A new header gets the same block.
 - **Results.** Every call that can fail returns `APRESULT`. Use the general codes
   first; add an `APRESULT_<MODULE>_*` code to `apricore.h` only for a failure the
   caller would branch on, in the module's own numbered block (ApArchive 1001+,
-  ApSync 2001+, ApText 6001+). Never renumber an existing code.
+  ApSync 2001+, ApText 6001+; struct types ApJobs 7000+). Never renumber an
+  existing code.
 - **Error messages.** A call that can fail for a reason worth a sentence takes an
   `AP<MODULE>_ERROR *` (NULL to skip). It is per call, not stored on the object, so
   reads a header allows to overlap (an archive reader's) stay safe.
@@ -107,6 +114,11 @@ block near the top. A new header gets the same block.
   `@par Threads` holds only what is particular to that module. Don't add a
   callback that runs on a module's own thread; ApSync delivers events by polling
   for that reason.
+- **A new call on an object opens with the Debug overlap check**
+  (`APRI_ENTER`, `src/aprioverlap.hpp`; Aprend's `APREND_ENTER`), right
+  after its handle's null check, on the object or the unit its header
+  names - unless it is a destroy or marked `Thread:`. The object's struct
+  holds an `apri_overlap`. Nothing is checked in Release.
 - **Platform gaps come from SpudLib's `SPUD*_EXT_*` macros**, never from a
   platform's name, and surface as `APRESULT_UNSUPPORTED`.
 
@@ -148,17 +160,17 @@ heap.
   is what initialises it. The in-place form needs `<new>`.
 
   ```cpp
-  aprend_uniform_buffer_t *object = (aprend_uniform_buffer_t *)malloc(sizeof(aprend_uniform_buffer_t));
+  aprend_buffer_t *object = (aprend_buffer_t *)malloc(sizeof(aprend_buffer_t));
   if (!object)
       return nullptr;
-  object = new (object) aprend_uniform_buffer_t();
+  object = new (object) aprend_buffer_t();
   ```
 
   It is destroyed the same two steps in reverse: the destructor called explicitly,
   then `free`.
 
   ```cpp
-  object->~aprend_uniform_buffer_t();
+  object->~aprend_buffer_t();
   free(object);
   ```
 - **A type with no constructor:** `calloc`, check the pointer, and that is all.
@@ -166,7 +178,7 @@ heap.
   destroyed with `free` alone.
 
   ```cpp
-  aprend_uniform *uniforms = (aprend_uniform *)calloc(count, sizeof(aprend_uniform));
+  APREND_UNIFORM *uniforms = (APREND_UNIFORM *)calloc(count, sizeof(APREND_UNIFORM));
   if (!uniforms)
       return nullptr;
   ```
@@ -175,7 +187,7 @@ heap.
   place and have its destructor called, or those members are never set up or
   released. That is every handle struct in the newer modules, and every Aprend
   handle struct (they declare constructors). The public C structs - descs,
-  `aprend_uniform`, the `Apri*` math types - are plain.
+  `APREND_UNIFORM`, the `Apri*` math types - are plain.
 - A function that returns `APRESULT` returns `APRESULT_OUT_OF_MEMORY` for the null
   pointer. Constructing in place doesn't remove the `try`: filling the object in
   can still throw `std::bad_alloc`, and the `catch` then calls the destructor and
@@ -242,9 +254,10 @@ heap.
   laid out identically to their GLM counterparts so `to_glm()` can reinterpret them
   in place; changing a member's order or type breaks that silently.
 - Aprend's descs and lit scene settings start with an `APRI_STRUCT_BASE base`,
-  as the newer modules' do; its calls refuse a wrong base in their own way
-  (NULL, false, or nothing recorded, after printing why), through
-  `aprend_base_ok()` in `src/render/aprend_internal.hpp`. A desc Aprend
+  as the newer modules' do; its calls refuse a wrong base with
+  `apri_struct_check`'s code and a message, through `aprend_base_check()` in
+  `src/render/aprend_internal.hpp` (`aprend_base_ok()`, which printed, went
+  on 2026-10-30). A desc Aprend
   builds for its own calls sets its base like any caller's. A getter that
   returns a desc sets the base itself. `APREND_COMMAND`'s `_params` is padded
   to a fixed 120 bytes, so the command stays 128 bytes as commands are added.
@@ -259,7 +272,7 @@ heap.
 
 - Aprend calls SpudGPU's backend-agnostic C API only. It never includes a Vulkan,
   D3D12 or Metal header and never branches on the backend at runtime.
-- Aprend is handed its `spudgpu_device` in `aprend_instance_desc`. It doesn't
+- Aprend is handed its `spudgpu_device` in `APREND_INSTANCE_DESC`. It doesn't
   create the SpudGPU instance, list adapters, choose one or create the device.
 - A SpudGPU device has only the features it was created with, so Aprend reads
   features from the device (`aprend_instance_t::features`), never the
@@ -278,8 +291,9 @@ heap.
   rest of Aprend makes one begin/end call either way. Nothing in Aprend does this
   yet.
 - Picking is not Aprend's job. GPU pick-ID buffers were removed on purpose.
-- `aprendbuffers.h` carries its author's note that it is due a rewrite. Extend it
-  only as far as the task needs.
+- `aprendbuffers.h` is one `aprend_buffer` for every use (card A14, rewritten
+  2026-10-30): a usage mask, `APREND_BUFFER_WRITES`, and per-frame copies in
+  place of buffer sets. Mesh types are a caller's, never Aprend's.
 
 ## Reference: Hazel
 
@@ -341,7 +355,12 @@ registered with `add_test` behind `APRICOTFIELDS_BUILD_TESTS`.
   `APRESULT_NOT_IMPLEMENTED` reports itself pending and stops, so the
   implementation turns it on without editing it (`tests/aptext_tests.c`).
 - A new module ships with its tests file; a new call ships with a test in the
-  existing one. Brute-force comparison against a slow obvious implementation is the
+  existing one.
+- `tests/apri_misuse_tests.c` calls every public function with zeroes: it is
+  generated from `abi.txt` (`python3 tests/misuse/make_misuse_tests.py`
+  after `./check.sh --update-abi`), never edited by hand.
+  `tests/aprinoalloc_tests.c` holds each module's steady state to no heap
+  allocation; a new per-frame path gets a scenario there. Brute-force comparison against a slow obvious implementation is the
   preferred check for anything algorithmic (`test_mesh_against_brute_force`).
 
 When asked to verify, on macOS: configure with the `apricotfields-macos-metal`
@@ -352,7 +371,8 @@ there is no separate `-debug` configure preset any more.)
 **Fuzzing.** `tests/fuzz/` holds a libFuzzer target per reader of bytes the
 caller can't vouch for; today `aparchive_fuzz` (ApArchive's reader over an
 archive in memory, which also writes back what it read and reads that
-again) and `aptext_fuzz` (font files, Hershey fonts and saved atlases).
+again), `aptext_fuzz` (font files, Hershey fonts and saved atlases) and
+`apaudio_fuzz` (WAV, FLAC, Vorbis and Opus files).
 `tests/fuzz/aprifuzz.hpp` says how they are built.
 
 - Every normal build runs each as a ctest, `<target>_regressions`, replaying
@@ -378,9 +398,16 @@ again) and `aptext_fuzz` (font files, Hershey fonts and saved atlases).
 
 - A new source or header file is added to the `add_library` list in
   `CMakeLists.txt` by hand; there is no glob.
-- Third-party code is vendored under `../.deps/` (glm, libdeflate, glaze,
+- Third-party code is vendored under `../.deps/` (glm, libdeflate, zlib-ng
+  for ApArchive's streamed DEFLATE since 2026-10-30, glaze,
   SPIRV-Cross, Clipper2, earcut.hpp; ApText's HarfBuzz, msdfgen, SheenBidi
-  and libunibreak) and linked `PRIVATE` unless a public header needs it.
+  and libunibreak; ApAudio's decoders, dr_flac, stb_vorbis, libogg, libopus
+  and opusfile, since 2026-10-30) and linked `PRIVATE` unless a public
+  header needs it. Where a vendored file writes a global or has a bug a
+  fuzzer found, it is read as it is and a changed copy is written into the
+  build directory at configure time, each change named and checked to
+  still apply (stb_vorbis and dr_flac, as Hosek and Wilkie's data); the
+  file itself is never edited.
   ApText's four are built here from their sources as static libraries of
   their own (`aptext_*`), pinned by tag and fetched when `../.deps/` has no
   copy, with floating-point contraction off for the reason ApMath's polygons

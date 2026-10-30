@@ -20,3 +20,6 @@ layout(set = 0, binding = 9) uniform texture2D ambient_occlusion;
 layout(set = 0, binding = 10) uniform samplerShadow shadow_sampler_reversed;
 // Point lights' shadows: six layers a shadow, one a cube face.
 layout(set = 0, binding = 11) uniform texture2DArray point_shadow_map;
+// The opaque picture behind, mipped, for transmission
+// (APREND_COMMAND_COPY_SCENE_COLOR): what the surfaces wrote, exposed.
+layout(set = 0, binding = 12) uniform texture2D scene_color;

@@ -5,11 +5,14 @@
 #include <new>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <zlib-ng.h>
+#include "../aprioverlap.hpp"
 
-// Whole-buffer ZIP writing and reading: one entry in, one entry out, with
-// ZIP64 where sizes, offsets or the entry count need it. What isn't here
-// yet is listed in APARCHIVE_TODO.md.
+// ZIP writing and reading, entries whole or in pieces, with ZIP64 where
+// sizes, offsets or the entry count need it. What isn't here yet is listed
+// in APARCHIVE_TODO.md.
 
 // ---- Errors -------------------------------------------------------------------
 
@@ -91,6 +94,7 @@ static const uint32_t SIG_CENTRAL = 0x02014b50;
 static const uint32_t SIG_END = 0x06054b50;
 static const uint32_t SIG_END64 = 0x06064b50;
 static const uint32_t SIG_LOCATOR64 = 0x07064b50;
+static const uint32_t SIG_DESCRIPTOR = 0x08074b50;
 
 static const size_t LOCAL_HEADER_SIZE = 30;
 static const size_t CENTRAL_HEADER_SIZE = 46;
@@ -267,13 +271,162 @@ static bool deflate_decompress(void *, const void *in, uint64_t in_size, void *o
     return result == LIBDEFLATE_SUCCESS;
 }
 
+// ---- DEFLATE in pieces (zlib-ng) -------------------------------------------
+//
+// For streamed entries only (card A24): raw DEFLATE (no zlib header), its
+// window, memory level and strategy fixed here, so a level gives the same
+// bytes every time with zlib-ng's version pinned.
+
+struct deflate_stream_t
+{
+    zng_stream z;
+    bool compress;
+};
+
+static void *deflate_stream_begin(void *, bool compress, int32_t level)
+{
+    if (compress && (level < 0 || level > 9))
+        return nullptr;
+    deflate_stream_t *stream = (deflate_stream_t *)calloc(1, sizeof(deflate_stream_t));
+    if (!stream)
+        return nullptr;
+    stream->compress = compress;
+    int result = compress ? zng_deflateInit2(&stream->z, level, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY)
+                          : zng_inflateInit2(&stream->z, -15);
+    if (result != Z_OK)
+    {
+        free(stream);
+        return nullptr;
+    }
+    return stream;
+}
+
+static bool deflate_stream_process(void *, void *state, const void *in, uint64_t in_size, uint64_t *in_used,
+                                   void *out, uint64_t out_capacity, uint64_t *out_size, bool finish, bool *done)
+{
+    deflate_stream_t *stream = (deflate_stream_t *)state;
+    // zlib counts in 32 bits: a call takes what fits, and is called again.
+    uint32_t in_count = in_size > UINT32_MAX ? UINT32_MAX : (uint32_t)in_size;
+    uint32_t out_count = out_capacity > UINT32_MAX ? UINT32_MAX : (uint32_t)out_capacity;
+    stream->z.next_in = (const uint8_t *)in;
+    stream->z.avail_in = in_count;
+    stream->z.next_out = (uint8_t *)out;
+    stream->z.avail_out = out_count;
+    int result;
+    if (stream->compress)
+        result = zng_deflate(&stream->z, finish && in_count == in_size ? Z_FINISH : Z_NO_FLUSH);
+    else
+        result = zng_inflate(&stream->z, Z_NO_FLUSH);
+    *in_used = in_count - stream->z.avail_in;
+    *out_size = out_count - stream->z.avail_out;
+    *done = result == Z_STREAM_END;
+    return result == Z_OK || result == Z_STREAM_END || result == Z_BUF_ERROR;
+}
+
+static void deflate_stream_end(void *, void *state)
+{
+    deflate_stream_t *stream = (deflate_stream_t *)state;
+    if (stream->compress)
+        zng_deflateEnd(&stream->z);
+    else
+        zng_inflateEnd(&stream->z);
+    free(stream);
+}
+
+// ---- Standard extra fields --------------------------------------------------
+
+static const int64_t TICKS_PER_SECOND = 10000000;
+// 1601-01-01 to 1970-01-01, in 100-nanosecond ticks.
+static const uint64_t NTFS_TO_UNIX_TICKS = 116444736000000000ull;
+
+// aparchive_extra_find(), on bytes: whether a record before [id]'s isn't
+// whole tells MALFORMED from NOT_FOUND.
+static APRESULT extra_find(const uint8_t *extra, size_t size, uint16_t id, const uint8_t **out_data,
+                           size_t *out_size)
+{
+    size_t at = 0;
+    while (at < size)
+    {
+        if (size - at < 4)
+            return APRESULT_APARCHIVE_MALFORMED;
+        size_t record_size = get16(extra + at + 2);
+        if (size - at - 4 < record_size)
+            return APRESULT_APARCHIVE_MALFORMED;
+        if (get16(extra + at) == id)
+        {
+            *out_data = extra + at + 4;
+            *out_size = record_size;
+            return APRESULT_OK;
+        }
+        at += 4 + record_size;
+    }
+    return APRESULT_NOT_FOUND;
+}
+
+static int64_t floor_seconds(int64_t ticks)
+{
+    int64_t seconds = ticks / TICKS_PER_SECOND;
+    return ticks % TICKS_PER_SECOND < 0 ? seconds - 1 : seconds;
+}
+
+static void put_u16(uint8_t *out, uint16_t value)
+{
+    out[0] = (uint8_t)value;
+    out[1] = (uint8_t)(value >> 8);
+}
+
+static void put_u32(uint8_t *out, uint32_t value)
+{
+    put_u16(out, (uint16_t)value);
+    put_u16(out + 2, (uint16_t)(value >> 16));
+}
+
+static void put_u64(uint8_t *out, uint64_t value)
+{
+    put_u32(out, (uint32_t)value);
+    put_u32(out + 4, (uint32_t)(value >> 32));
+}
+
 // ---- Writing ------------------------------------------------------------------
 
+static bool is_directory_name(const char *name, size_t name_size)
+{
+    return name_size != 0 && name[name_size - 1] == '/';
+}
+
+// The checks for an extra field the caller hands over, local or central.
+static APRESULT check_extra(const APARCHIVE_ENTRY_DESC &desc, const void *data, uint16_t size, const char *which,
+                            APARCHIVE_ERROR *error)
+{
+    if (!data && size != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "%s_size is %u but %s is null", which, size, which);
+    if (size == 0)
+        return APRESULT_OK;
+    const uint8_t *extra = (const uint8_t *)data;
+    const uint8_t *zip64;
+    size_t zip64_size;
+    if (!extra_is_whole_records(extra, size))
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': %s isn't whole extra field records", desc.name, which);
+    if (find_extra(extra, size, EXTRA_ZIP64, &zip64, &zip64_size))
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': %s has a ZIP64 record, which the writer writes itself",
+                    desc.name, which);
+    // Room for the ZIP64 record a header may need.
+    if (size > UINT16_MAX - ZIP64_EXTRA_MAX_SIZE)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': %s is %u bytes, over the %u that fit", desc.name, which,
+                    size, (unsigned)(UINT16_MAX - ZIP64_EXTRA_MAX_SIZE));
+    return APRESULT_OK;
+}
+
 // The checks every new entry goes through before anything is written.
-static APRESULT check_new_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, APARCHIVE_ERROR *error)
+// [need_codec]: the writer compresses it (a raw entry's method needn't be
+// in the table).
+static APRESULT check_new_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, bool need_codec,
+                                APARCHIVE_ERROR *error)
 {
     if (writer->failed || writer->finished)
         return fail(error, APRESULT_INVALID_ARGUMENT, "the writer is %s", writer->finished ? "finished" : "unusable after an earlier failure");
+    if (writer->streaming)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "a streamed entry is open: end it first");
     if (!desc.name)
         return fail(error, APRESULT_INVALID_ARGUMENT, "the entry has no name");
     size_t name_size = strlen(desc.name);
@@ -284,31 +437,30 @@ static APRESULT check_new_entry(aparchive_writer writer, const APARCHIVE_ENTRY_D
     if (!desc.utf8_name_flag && !is_ascii(desc.name, name_size))
         return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' has non-ASCII characters but utf8_name_flag isn't set",
                     desc.name);
-    if (desc.name[name_size - 1] == '/')
-        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is a directory entry, which the writer doesn't write yet",
-                    desc.name);
+    if (is_directory_name(desc.name, name_size))
+    {
+        if (!writer->allow_directory_entries)
+            return fail(error, APRESULT_INVALID_ARGUMENT,
+                        "'%s' is a directory entry, which the writer's desc doesn't allow", desc.name);
+        if (desc.method != APARCHIVE_METHOD_STORED)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is a directory entry, so STORED", desc.name);
+    }
     if (writer->names.count(desc.name))
         return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is already in the archive", desc.name);
     if (desc.alignment > 1 && (desc.alignment & (desc.alignment - 1)) != 0)
         return fail(error, APRESULT_INVALID_ARGUMENT, "alignment %u isn't a power of two", desc.alignment);
-    if (!desc.extra && desc.extra_size != 0)
-        return fail(error, APRESULT_INVALID_ARGUMENT, "extra_size is %u but extra is null", desc.extra_size);
-    if (desc.extra_size != 0)
+    APRESULT result = check_extra(desc, desc.extra, desc.extra_size, "extra", error);
+    if (result != APRESULT_OK)
+        return result;
+    if (desc.central_extra)
     {
-        const uint8_t *extra = (const uint8_t *)desc.extra;
-        const uint8_t *zip64;
-        size_t zip64_size;
-        if (!extra_is_whole_records(extra, desc.extra_size))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': extra isn't whole extra field records", desc.name);
-        if (find_extra(extra, desc.extra_size, EXTRA_ZIP64, &zip64, &zip64_size))
-            return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': extra has a ZIP64 record, which the writer writes itself",
-                        desc.name);
-        // Room for the ZIP64 record the central header may need.
-        if (desc.extra_size > UINT16_MAX - ZIP64_EXTRA_MAX_SIZE)
-            return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': extra is %u bytes, over the %u that fit", desc.name,
-                        desc.extra_size, (unsigned)(UINT16_MAX - ZIP64_EXTRA_MAX_SIZE));
+        result = check_extra(desc, desc.central_extra, desc.central_extra_size, "central_extra", error);
+        if (result != APRESULT_OK)
+            return result;
     }
-    if (!aparchive_codecs_has(writer->codecs, desc.method))
+    if (!desc.comment && desc.comment_size != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "comment_size is %u but comment is null", desc.comment_size);
+    if (need_codec && !aparchive_codecs_has(writer->codecs, desc.method))
         return fail(error, APRESULT_APARCHIVE_UNKNOWN_METHOD, "method %u isn't in the writer's codec table",
                     desc.method);
     if (writer->entries.size() >= UINT32_MAX)
@@ -317,11 +469,20 @@ static APRESULT check_new_entry(aparchive_writer writer, const APARCHIVE_ENTRY_D
 }
 
 // Appends [size] bytes to the sink. A failure leaves a partial record
-// behind, so it ends the writer.
+// behind, so it ends the writer. An update's archive is cut first.
 static bool emit(aparchive_writer writer, const void *data, uint64_t size)
 {
     if (size == 0)
         return true;
+    if (writer->truncate_pending)
+    {
+        writer->truncate_pending = false;
+        if (!writer->truncate(writer->sink.user, writer->truncate_at))
+        {
+            writer->failed = true;
+            return false;
+        }
+    }
     if (!writer->sink.write(writer->sink.user, data, size))
     {
         writer->failed = true;
@@ -331,14 +492,125 @@ static bool emit(aparchive_writer writer, const void *data, uint64_t size)
     return true;
 }
 
+// An entry's local header, ready to write: its ZIP64 record (sizes, or
+// zeros for a streamed entry), the caller's records, then the padding that
+// puts the data on its alignment. May throw std::bad_alloc.
+static APRESULT local_header_bytes(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, uint16_t flags,
+                                   uint32_t crc, uint64_t stored_size, uint64_t size, bool zip64, bool streamed,
+                                   std::vector<uint8_t> &header, APARCHIVE_ERROR *error)
+{
+    size_t name_size = strlen(desc.name);
+    std::vector<uint8_t> extra;
+    if (zip64)
+    {
+        put16(extra, EXTRA_ZIP64);
+        put16(extra, 16);
+        put64(extra, streamed ? 0 : size);
+        put64(extra, streamed ? 0 : stored_size);
+    }
+    if (desc.extra_size)
+        put_bytes(extra, desc.extra, desc.extra_size);
+    if (desc.alignment > 1)
+    {
+        uint64_t data_offset = writer->offset + LOCAL_HEADER_SIZE + name_size + extra.size();
+        uint64_t padding = (desc.alignment - data_offset % desc.alignment) % desc.alignment;
+        // A record is at least its 4-byte header.
+        while (padding != 0 && padding < 4)
+            padding += desc.alignment;
+        if (padding > UINT16_MAX || extra.size() + padding > UINT16_MAX)
+            return fail(error, APRESULT_INVALID_ARGUMENT,
+                        "'%s': alignment %u needs more padding than an extra field holds", desc.name, desc.alignment);
+        if (padding)
+        {
+            put16(extra, EXTRA_PADDING);
+            put16(extra, (uint16_t)(padding - 4));
+            extra.insert(extra.end(), (size_t)padding - 4, (uint8_t)0);
+        }
+    }
+    if (extra.size() > UINT16_MAX)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': the extra field would be %llu bytes", desc.name,
+                    (unsigned long long)extra.size());
+
+    // A streamed entry's sizes and CRC-32 are in its data descriptor; with
+    // ZIP64 its sizes say "see the ZIP64 record", as Info-ZIP writes them.
+    uint32_t small_stored = zip64 ? UINT32_MAX : streamed ? 0 : (uint32_t)stored_size;
+    uint32_t small_size = zip64 ? UINT32_MAX : streamed ? 0 : (uint32_t)size;
+    header.clear();
+    header.reserve(LOCAL_HEADER_SIZE + name_size + extra.size());
+    put32(header, SIG_LOCAL);                                 //  0
+    put16(header, version_needed(desc.method, zip64));        //  4
+    put16(header, flags);                                     //  6
+    put16(header, desc.method);                               //  8
+    put16(header, desc.dos_time);                             // 10
+    put16(header, desc.dos_date);                             // 12
+    put32(header, streamed ? 0 : crc);                        // 14
+    put32(header, small_stored);                              // 18
+    put32(header, small_size);                                // 22
+    put16(header, (uint16_t)name_size);                       // 26
+    put16(header, (uint16_t)extra.size());                    // 28
+    put_bytes(header, desc.name, name_size);
+    put_bytes(header, extra.data(), extra.size());
+    return APRESULT_OK;
+}
+
+// What the central directory needs about a new entry, recorded in the
+// writer. May throw std::bad_alloc.
+static void record_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, uint16_t flags, uint32_t crc,
+                         uint64_t stored_size, uint64_t size, uint64_t header_offset)
+{
+    aparchive_written_entry_t entry;
+    entry.name.assign(desc.name);
+    entry.method = desc.method;
+    entry.flags = flags;
+    entry.dos_date = desc.dos_date;
+    entry.dos_time = desc.dos_time;
+    entry.crc32 = crc;
+    entry.compressed_size = stored_size;
+    entry.uncompressed_size = size;
+    entry.local_header_offset = header_offset;
+    entry.zip64 = desc.zip64;
+    entry.version_made_by = (uint16_t)(desc.host_system << 8 | VERSION_MADE_BY);
+    entry.internal_attributes = desc.internal_attributes;
+    entry.external_attributes = desc.external_attributes;
+    if (desc.central_extra)
+        put_bytes(entry.extra, desc.central_extra, desc.central_extra_size);
+    else if (desc.extra_size)
+        put_bytes(entry.extra, desc.extra, desc.extra_size);
+    if (desc.comment_size)
+        put_bytes(entry.comment, desc.comment, desc.comment_size);
+    writer->entries.push_back(std::move(entry));
+    writer->names.insert(desc.name);
+}
+
+// Writes an entry whose stored bytes, sizes and CRC-32 are known. The
+// entry was checked. May throw std::bad_alloc.
+static APRESULT write_whole(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, const void *stored,
+                            uint64_t stored_size, uint64_t size, uint32_t crc, APARCHIVE_ERROR *error)
+{
+    bool zip64 = desc.zip64 || size >= UINT32_MAX || stored_size >= UINT32_MAX;
+    uint16_t flags = desc.utf8_name_flag ? FLAG_UTF8 : 0;
+    uint64_t header_offset = writer->offset;
+    std::vector<uint8_t> header;
+    APRESULT result = local_header_bytes(writer, desc, flags, crc, stored_size, size, zip64, false, header, error);
+    if (result != APRESULT_OK)
+        return result;
+    // Everything that can run out of memory comes before the first byte is
+    // written.
+    record_entry(writer, desc, flags, crc, stored_size, size, header_offset);
+    if (!emit(writer, header.data(), header.size()) || !emit(writer, stored, stored_size))
+        return fail(error, APRESULT_IO, "the sink failed while '%s' was being written", desc.name);
+    return APRESULT_OK;
+}
+
 // May throw std::bad_alloc.
 static APRESULT add_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, const void *data, uint64_t size,
                           APARCHIVE_ERROR *error)
 {
-    APRESULT result = check_new_entry(writer, desc, error);
+    APRESULT result = check_new_entry(writer, desc, true, error);
     if (result != APRESULT_OK)
         return result;
-    size_t name_size = strlen(desc.name);
+    if (is_directory_name(desc.name, strlen(desc.name)) && size != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is a directory entry, so has no data", desc.name);
 
     // The bytes as they'll be stored.
     const void *stored = data;
@@ -360,81 +632,198 @@ static APRESULT add_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &d
                         desc.name, desc.level);
         stored = compressed.data();
     }
-    uint32_t crc = aparchive_crc32(0, data, size);
-    bool zip64 = desc.zip64 || size >= UINT32_MAX || stored_size >= UINT32_MAX;
+    return write_whole(writer, desc, stored, stored_size, size, aparchive_crc32(0, data, size), error);
+}
 
-    // The local header's extra field: the ZIP64 sizes, the caller's
-    // records, then the padding that puts the data on its alignment.
-    uint64_t header_offset = writer->offset;
-    std::vector<uint8_t> extra;
-    if (zip64)
+// May throw std::bad_alloc.
+static APRESULT add_raw_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, const void *stored,
+                              uint64_t stored_size, uint64_t size, uint32_t crc, APARCHIVE_ERROR *error)
+{
+    APRESULT result = check_new_entry(writer, desc, false, error);
+    if (result != APRESULT_OK)
+        return result;
+    if (is_directory_name(desc.name, strlen(desc.name)) && size != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is a directory entry, so has no data", desc.name);
+    if (size != 0 && stored_size == 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' has %llu bytes of data but none stored", desc.name,
+                    (unsigned long long)size);
+    if (desc.method == APARCHIVE_METHOD_STORED && stored_size != size)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is STORED but its sizes differ", desc.name);
+    if (desc.method == APARCHIVE_METHOD_STORED && aparchive_crc32(0, stored, stored_size) != crc)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is STORED and its data doesn't have the CRC-32 given",
+                    desc.name);
+    return write_whole(writer, desc, stored, stored_size, size, crc, error);
+}
+
+// ---- Streamed entries ---------------------------------------------------------
+
+// How much compressed output a streamed entry gathers before the sink.
+static const size_t STREAM_BUFFER_SIZE = 64 * 1024;
+
+// May throw std::bad_alloc.
+static APRESULT begin_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC &desc, APARCHIVE_ERROR *error)
+{
+    APRESULT result = check_new_entry(writer, desc, true, error);
+    if (result != APRESULT_OK)
+        return result;
+    if (is_directory_name(desc.name, strlen(desc.name)))
+        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is a directory entry, which has no data to stream",
+                    desc.name);
+    const APARCHIVE_CODEC *codec = nullptr;
+    if (desc.method != APARCHIVE_METHOD_STORED)
     {
-        put16(extra, EXTRA_ZIP64);
-        put16(extra, 16);
-        put64(extra, size);
-        put64(extra, stored_size);
+        codec = writer->codecs->find(desc.method);
+        if (!codec->stream_begin)
+            return fail(error, APRESULT_UNSUPPORTED, "method %u's codec works on whole entries only", desc.method);
     }
-    if (desc.extra_size)
-        put_bytes(extra, desc.extra, desc.extra_size);
-    if (desc.alignment > 1)
+    uint16_t flags = (uint16_t)(FLAG_DATA_DESCRIPTOR | (desc.utf8_name_flag ? FLAG_UTF8 : 0));
+    uint64_t header_offset = writer->offset;
+    std::vector<uint8_t> header;
+    result = local_header_bytes(writer, desc, flags, 0, 0, 0, desc.zip64, true, header, error);
+    if (result != APRESULT_OK)
+        return result;
+    writer->stream_buffer.resize(STREAM_BUFFER_SIZE);
+    record_entry(writer, desc, flags, 0, 0, 0, header_offset);
+    // The codec last: nothing after it can fail but the sink.
+    void *state = nullptr;
+    if (codec)
     {
-        uint64_t data_offset = header_offset + LOCAL_HEADER_SIZE + name_size + extra.size();
-        uint64_t padding = (desc.alignment - data_offset % desc.alignment) % desc.alignment;
-        // A record is at least its 4-byte header.
-        while (padding != 0 && padding < 4)
-            padding += desc.alignment;
-        if (padding > UINT16_MAX || extra.size() + padding > UINT16_MAX)
-            return fail(error, APRESULT_INVALID_ARGUMENT,
-                        "'%s': alignment %u needs more padding than an extra field holds", desc.name, desc.alignment);
-        if (padding)
+        state = codec->stream_begin(codec->user, true, desc.level);
+        if (!state)
         {
-            put16(extra, EXTRA_PADDING);
-            put16(extra, (uint16_t)(padding - 4));
-            extra.insert(extra.end(), (size_t)padding - 4, (uint8_t)0);
+            writer->names.erase(writer->entries.back().name);
+            writer->entries.pop_back();
+            return fail(error, APRESULT_INVALID_ARGUMENT, "method %u can't stream '%s' at level %d", desc.method,
+                        desc.name, desc.level);
         }
     }
-    if (extra.size() > UINT16_MAX)
-        return fail(error, APRESULT_INVALID_ARGUMENT, "'%s': the extra field would be %llu bytes", desc.name,
-                    (unsigned long long)extra.size());
-
-    uint16_t flags = desc.utf8_name_flag ? FLAG_UTF8 : 0;
-    std::vector<uint8_t> header;
-    header.reserve(LOCAL_HEADER_SIZE + name_size + extra.size());
-    put32(header, SIG_LOCAL);                                     //  0
-    put16(header, version_needed(desc.method, zip64));            //  4
-    put16(header, flags);                                         //  6
-    put16(header, desc.method);                                   //  8
-    put16(header, desc.dos_time);                                 // 10
-    put16(header, desc.dos_date);                                 // 12
-    put32(header, crc);                                           // 14
-    put32(header, zip64 ? UINT32_MAX : (uint32_t)stored_size);    // 18
-    put32(header, zip64 ? UINT32_MAX : (uint32_t)size);           // 22
-    put16(header, (uint16_t)name_size);                           // 26
-    put16(header, (uint16_t)extra.size());                        // 28
-    put_bytes(header, desc.name, name_size);
-    put_bytes(header, extra.data(), extra.size());
-
-    // Everything that can run out of memory comes before the first byte is
-    // written.
-    aparchive_written_entry_t entry;
-    entry.name.assign(desc.name, name_size);
-    entry.method = desc.method;
-    entry.flags = flags;
-    entry.dos_date = desc.dos_date;
-    entry.dos_time = desc.dos_time;
-    entry.crc32 = crc;
-    entry.compressed_size = stored_size;
-    entry.uncompressed_size = size;
-    entry.local_header_offset = header_offset;
-    entry.zip64 = desc.zip64;
-    if (desc.extra_size)
-        put_bytes(entry.extra, desc.extra, desc.extra_size);
-    writer->names.insert(entry.name);
-    writer->entries.push_back(std::move(entry));
-
-    if (!emit(writer, header.data(), header.size()) || !emit(writer, stored, stored_size))
+    writer->streaming = true;
+    writer->stream_codec = codec;
+    writer->stream_state = state;
+    writer->stream_crc = 0;
+    writer->stream_in = 0;
+    writer->stream_out = 0;
+    if (!emit(writer, header.data(), header.size()))
         return fail(error, APRESULT_IO, "the sink failed while '%s' was being written", desc.name);
     return APRESULT_OK;
+}
+
+// Ends the writer's stream state, finished or not.
+static void close_stream(aparchive_writer writer)
+{
+    if (writer->stream_codec && writer->stream_state)
+        writer->stream_codec->stream_end(writer->stream_codec->user, writer->stream_state);
+    writer->stream_codec = nullptr;
+    writer->stream_state = nullptr;
+    writer->streaming = false;
+}
+
+// Emits [size] stored bytes of the open entry, within its size limit.
+static APRESULT emit_stream(aparchive_writer writer, const void *data, uint64_t size, APARCHIVE_ERROR *error)
+{
+    const aparchive_written_entry_t &entry = writer->entries.back();
+    if (!entry.zip64 && (size >= UINT32_MAX || writer->stream_out >= UINT32_MAX - size))
+    {
+        writer->failed = true;
+        return fail(error, APRESULT_LIMIT, "'%s' reached 4 GiB stored, without zip64", entry.name.c_str());
+    }
+    if (!emit(writer, data, size))
+        return fail(error, APRESULT_IO, "the sink failed while '%s' was being written", entry.name.c_str());
+    writer->stream_out += size;
+    return APRESULT_OK;
+}
+
+// Runs the open entry's codec over [data] (with [finish], to its end) and
+// writes what comes out.
+static APRESULT run_stream(aparchive_writer writer, const uint8_t *data, uint64_t size, bool finish,
+                           APARCHIVE_ERROR *error)
+{
+    const APARCHIVE_CODEC *codec = writer->stream_codec;
+    uint8_t *out = writer->stream_buffer.data();
+    for (;;)
+    {
+        uint64_t used = 0, made = 0;
+        bool done = false;
+        if (!codec->stream_process(codec->user, writer->stream_state, data, size, &used, out, STREAM_BUFFER_SIZE,
+                                   &made, finish, &done) ||
+            used > size || made > STREAM_BUFFER_SIZE)
+        {
+            writer->failed = true;
+            return fail(error, APRESULT_INVALID_ARGUMENT, "method %u failed to compress '%s'",
+                        writer->entries.back().method, writer->entries.back().name.c_str());
+        }
+        data += used;
+        size -= used;
+        APRESULT result = emit_stream(writer, out, made, error);
+        if (result != APRESULT_OK)
+            return result;
+        if (finish ? done : size == 0 && made < STREAM_BUFFER_SIZE)
+            return APRESULT_OK; // what the codec still holds comes out later
+        if (used == 0 && made == 0)
+        {
+            writer->failed = true;
+            return fail(error, APRESULT_INVALID_ARGUMENT, "method %u stopped compressing '%s'",
+                        writer->entries.back().method, writer->entries.back().name.c_str());
+        }
+    }
+}
+
+static APRESULT write_entry_data(aparchive_writer writer, const void *data, uint64_t size, APARCHIVE_ERROR *error)
+{
+    const aparchive_written_entry_t &entry = writer->entries.back();
+    if (!entry.zip64 && (size >= UINT32_MAX || writer->stream_in >= UINT32_MAX - size))
+    {
+        writer->failed = true;
+        return fail(error, APRESULT_LIMIT, "'%s' reached 4 GiB, without zip64", entry.name.c_str());
+    }
+    writer->stream_crc = aparchive_crc32(writer->stream_crc, data, size);
+    writer->stream_in += size;
+    if (!writer->stream_codec)
+        return emit_stream(writer, data, size, error);
+    if (size == 0)
+        return APRESULT_OK;
+    return run_stream(writer, (const uint8_t *)data, size, false, error);
+}
+
+// May throw std::bad_alloc.
+static APRESULT end_entry(aparchive_writer writer, APARCHIVE_ERROR *error)
+{
+    if (writer->stream_codec)
+    {
+        APRESULT result = run_stream(writer, nullptr, 0, true, error);
+        if (result != APRESULT_OK)
+            return result;
+    }
+    aparchive_written_entry_t &entry = writer->entries.back();
+    entry.crc32 = writer->stream_crc;
+    entry.uncompressed_size = writer->stream_in;
+    entry.compressed_size = writer->stream_out;
+    close_stream(writer);
+    std::vector<uint8_t> descriptor;
+    put32(descriptor, SIG_DESCRIPTOR);
+    put32(descriptor, entry.crc32);
+    if (entry.zip64)
+    {
+        put64(descriptor, entry.compressed_size);
+        put64(descriptor, entry.uncompressed_size);
+    }
+    else
+    {
+        put32(descriptor, (uint32_t)entry.compressed_size);
+        put32(descriptor, (uint32_t)entry.uncompressed_size);
+    }
+    if (!emit(writer, descriptor.data(), descriptor.size()))
+        return fail(error, APRESULT_IO, "the sink failed while '%s' was being written", entry.name.c_str());
+    return APRESULT_OK;
+}
+
+// Whether [comment] holds the end record's signature.
+static bool holds_end_signature(const uint8_t *comment, size_t size)
+{
+    for (size_t i = 0; i + 4 <= size; i++)
+        if (get32(comment + i) == SIG_END)
+            return true;
+    return false;
 }
 
 // May throw std::bad_alloc.
@@ -454,7 +843,7 @@ static APRESULT finish(aparchive_writer writer, APARCHIVE_ERROR *error)
 
         record.clear();
         put32(record, SIG_CENTRAL);                                                        //  0
-        put16(record, VERSION_MADE_BY);                                                    //  4
+        put16(record, entry.version_made_by);                                              //  4
         put16(record, version_needed(entry.method, zip64_size != 0));                      //  6
         put16(record, entry.flags);                                                        //  8
         put16(record, entry.method);                                                       // 10
@@ -465,10 +854,10 @@ static APRESULT finish(aparchive_writer writer, APARCHIVE_ERROR *error)
         put32(record, uncompressed64 ? UINT32_MAX : (uint32_t)entry.uncompressed_size);    // 24
         put16(record, (uint16_t)entry.name.size());                                        // 28
         put16(record, (uint16_t)extra_size);                                               // 30
-        put16(record, 0);                                                                  // 32 comment size
+        put16(record, (uint16_t)entry.comment.size());                                     // 32
         put16(record, 0);                                                                  // 34 disk
-        put16(record, 0);                                                                  // 36 internal attributes
-        put32(record, 0);                                                                  // 38 external attributes
+        put16(record, entry.internal_attributes);                                          // 36
+        put32(record, entry.external_attributes);                                          // 38
         put32(record, offset64 ? UINT32_MAX : (uint32_t)entry.local_header_offset);        // 42
         put_bytes(record, entry.name.data(), entry.name.size());
         if (zip64_size)
@@ -483,6 +872,7 @@ static APRESULT finish(aparchive_writer writer, APARCHIVE_ERROR *error)
                 put64(record, entry.local_header_offset);
         }
         put_bytes(record, entry.extra.data(), entry.extra.size());
+        put_bytes(record, entry.comment.data(), entry.comment.size());
         if (!emit(writer, record.data(), record.size()))
             return fail(error, APRESULT_IO, "the sink failed while the central directory was being written");
     }
@@ -518,11 +908,59 @@ static APRESULT finish(aparchive_writer writer, APARCHIVE_ERROR *error)
     put16(record, count64 ? UINT16_MAX : (uint16_t)entry_count);             // 10 entries
     put32(record, size64 ? UINT32_MAX : (uint32_t)directory_size);           // 12
     put32(record, offset64 ? UINT32_MAX : (uint32_t)directory_offset);       // 16
-    put16(record, 0);                                                        // 20 comment size
+    put16(record, (uint16_t)writer->comment.size());                         // 20 comment size
+    put_bytes(record, writer->comment.data(), writer->comment.size());
     if (!emit(writer, record.data(), record.size()))
         return fail(error, APRESULT_IO, "the sink failed while the end records were being written");
     writer->finished = true;
     return APRESULT_OK;
+}
+
+// An update writer's copy of a reader's entries. May throw std::bad_alloc.
+static void copy_entries(aparchive_writer writer, aparchive_reader reader)
+{
+    writer->entries.reserve(reader->entries.size());
+    for (size_t i = 0; i < reader->entries.size(); i++)
+    {
+        const APARCHIVE_ENTRY_INFO &info = reader->entries[i];
+        aparchive_written_entry_t entry;
+        entry.name.assign(info.name, info.name_size);
+        entry.method = info.method;
+        entry.flags = info.flags;
+        entry.dos_date = info.dos_date;
+        entry.dos_time = info.dos_time;
+        entry.crc32 = info.crc32;
+        entry.compressed_size = info.compressed_size;
+        entry.uncompressed_size = info.uncompressed_size;
+        entry.local_header_offset = info.local_header_offset;
+        entry.zip64 = reader->central_zip64[i];
+        entry.version_made_by = info.version_made_by;
+        entry.internal_attributes = info.internal_attributes;
+        entry.external_attributes = info.external_attributes;
+        // The extra field less its ZIP64 records, which finish() writes
+        // where they're needed. What follows a record that isn't whole is
+        // kept as it is.
+        const uint8_t *extra = (const uint8_t *)info.extra;
+        size_t at = 0;
+        while (info.extra_size - at >= 4)
+        {
+            size_t record_size = get16(extra + at + 2);
+            if (info.extra_size - at - 4 < record_size)
+                break;
+            if (get16(extra + at) != EXTRA_ZIP64)
+                put_bytes(entry.extra, extra + at, 4 + record_size);
+            at += 4 + record_size;
+        }
+        if (at < info.extra_size)
+            put_bytes(entry.extra, extra + at, info.extra_size - at);
+        if (info.comment_size)
+            put_bytes(entry.comment, info.comment, info.comment_size);
+        writer->names.insert(entry.name);
+        writer->entries.push_back(std::move(entry));
+    }
+    writer->comment = reader->comment;
+    writer->offset = reader->directory_offset;
+    writer->truncate_at = reader->directory_offset;
 }
 
 // ---- Reading ------------------------------------------------------------------
@@ -536,6 +974,77 @@ static APRESULT read_source(const APARCHIVE_SOURCE &source, uint64_t offset, voi
         return fail(error, APRESULT_APARCHIVE_MALFORMED, "%s runs past the end of the archive", what);
     if (count != 0 && !source.read(source.user, offset, buffer, count))
         return fail(error, APRESULT_IO, "the source failed reading %s", what);
+    return APRESULT_OK;
+}
+
+// Whether the 4 bytes at [offset] are [signature]; false where they can't
+// be read.
+static bool signature_at(const APARCHIVE_SOURCE &source, uint64_t offset, uint32_t signature)
+{
+    uint8_t bytes[4];
+    if (offset > source.size || source.size - offset < 4)
+        return false;
+    return source.read(source.user, offset, bytes, 4) && get32(bytes) == signature;
+}
+
+static APRESULT locate_data(aparchive_reader reader, uint32_t index, uint64_t *out_offset, bool *out_local_zip64,
+                            APARCHIVE_ERROR *error);
+
+// With APARCHIVE_STRICT_NO_GAPS: every byte from the start to the end
+// records belongs to an entry or a record. May throw std::bad_alloc.
+static APRESULT check_no_gaps(aparchive_reader reader, uint64_t directory_size, uint64_t directory_limit,
+                              uint64_t records_gap, APARCHIVE_ERROR *error)
+{
+    std::vector<uint32_t> order(reader->entries.size());
+    for (uint32_t i = 0; i < (uint32_t)order.size(); i++)
+        order[i] = i;
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+        return reader->entries[a].local_header_offset < reader->entries[b].local_header_offset;
+    });
+    uint64_t at = 0;
+    for (uint32_t index : order)
+    {
+        const APARCHIVE_ENTRY_INFO &info = reader->entries[index];
+        if (info.local_header_offset != at)
+            return fail(error, APRESULT_APARCHIVE_MALFORMED, "%llu bytes no entry accounts for before '%s'",
+                        (unsigned long long)(info.local_header_offset - at), info.name);
+        uint64_t data_offset;
+        bool local_zip64;
+        APRESULT result = locate_data(reader, index, &data_offset, &local_zip64, error);
+        if (result != APRESULT_OK)
+            return result;
+        at = data_offset + info.compressed_size;
+        if (info.flags & FLAG_DATA_DESCRIPTOR)
+        {
+            // An optional signature, the CRC-32, then both sizes: 8 bytes
+            // each when the local header has a ZIP64 record.
+            uint8_t descriptor[24];
+            size_t size_bytes = local_zip64 ? 8 : 4;
+            uint64_t room = reader->directory_offset - at;
+            size_t wanted = 4 + 4 + 2 * size_bytes;
+            size_t got = room < wanted ? (size_t)room : wanted;
+            result = read_source(reader->source, at, descriptor, got, error, info.name);
+            if (result != APRESULT_OK)
+                return result;
+            size_t skip = got >= 4 && get32(descriptor) == SIG_DESCRIPTOR ? 4 : 0;
+            if (got < skip + 4 + 2 * size_bytes)
+                return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s': its data descriptor runs into the directory",
+                            info.name);
+            const uint8_t *fields = descriptor + skip;
+            uint64_t compressed = local_zip64 ? get64(fields + 4) : get32(fields + 4);
+            uint64_t uncompressed = local_zip64 ? get64(fields + 12) : get32(fields + 8);
+            if (get32(fields) != info.crc32 || compressed != info.compressed_size ||
+                uncompressed != info.uncompressed_size)
+                return fail(error, APRESULT_APARCHIVE_MALFORMED,
+                            "'%s': its data descriptor disagrees with the central directory", info.name);
+            at += skip + 4 + 2 * size_bytes;
+        }
+    }
+    if (at != reader->directory_offset)
+        return fail(error, APRESULT_APARCHIVE_MALFORMED, "%llu bytes no entry accounts for before the directory",
+                    (unsigned long long)(reader->directory_offset - at));
+    if (reader->directory_offset + directory_size != directory_limit || records_gap != 0)
+        return fail(error, APRESULT_APARCHIVE_MALFORMED, "bytes no record accounts for after the directory");
     return APRESULT_OK;
 }
 
@@ -569,6 +1078,9 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
         return fail(error, APRESULT_APARCHIVE_NOT_AN_ARCHIVE, "no end of central directory record: not a ZIP archive");
     const uint8_t *end = tail.data() + end_at;
     uint64_t end_offset = source.size - tail_size + end_at;
+    reader->comment.assign(end + END_SIZE, end + END_SIZE + get16(end + 20));
+    if ((desc.strict & APARCHIVE_STRICT_NO_ARCHIVE_COMMENT) && !reader->comment.empty())
+        return fail(error, APRESULT_APARCHIVE_MALFORMED, "the archive has a comment, which strict refuses");
 
     uint32_t disk = get16(end + 4);
     uint32_t directory_disk = get16(end + 6);
@@ -578,6 +1090,8 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
     uint64_t directory_offset = get32(end + 16);
     // Where the directory and everything before it must end.
     uint64_t directory_limit = end_offset;
+    // Bytes between the ZIP64 end record and its locator, for strict.
+    uint64_t records_gap = 0;
 
     // A field at its largest value means "see the ZIP64 end record", which
     // a locator just before the end record points to. With no locator the
@@ -598,6 +1112,11 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
             uint64_t end64_offset = get64(locator + 8);
             if (end64_offset > locator_offset || locator_offset - end64_offset < END64_SIZE)
                 return fail(error, APRESULT_APARCHIVE_MALFORMED, "the ZIP64 end record isn't where its locator says");
+            // Not there, but just before the locator: data in front of the
+            // archive that its offsets don't count (see below).
+            if (!signature_at(source, end64_offset, SIG_END64) &&
+                signature_at(source, locator_offset - END64_SIZE, SIG_END64))
+                end64_offset = locator_offset - END64_SIZE;
             uint8_t end64[END64_SIZE];
             result = read_source(source, end64_offset, end64, sizeof(end64), error, "the ZIP64 end record");
             if (result != APRESULT_OK)
@@ -608,6 +1127,7 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
             if (get32(end64) != SIG_END64 || end64_size < END64_SIZE - 12 ||
                 end64_size > locator_offset - end64_offset - 12)
                 return fail(error, APRESULT_APARCHIVE_MALFORMED, "the ZIP64 end record is malformed");
+            records_gap = locator_offset - end64_offset - 12 - end64_size;
             disk = get32(end64 + 16);
             directory_disk = get32(end64 + 20);
             disk_entry_count = get64(end64 + 24);
@@ -619,7 +1139,24 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
     }
     if (disk != 0 || directory_disk != 0 || disk_entry_count != entry_count)
         return fail(error, APRESULT_UNSUPPORTED, "the archive is split over several disks");
-    if (directory_offset > directory_limit || directory_size > directory_limit - directory_offset)
+
+    // A directory that isn't where the end record says, but ends just
+    // before it, has bytes in front of the archive that its offsets don't
+    // count. Only an archive that would otherwise fail is moved: one that
+    // opened before opens as it did.
+    bool fits = directory_offset <= directory_limit && directory_size <= directory_limit - directory_offset;
+    bool at_stated = entry_count == 0 || (fits && signature_at(source, directory_offset, SIG_CENTRAL));
+    if (!at_stated && directory_size <= directory_limit)
+    {
+        uint64_t candidate = directory_limit - directory_size;
+        if (candidate > directory_offset && signature_at(source, candidate, SIG_CENTRAL))
+        {
+            reader->shift = candidate - directory_offset;
+            directory_offset = candidate;
+            fits = true;
+        }
+    }
+    if (!fits)
         return fail(error, APRESULT_APARCHIVE_MALFORMED, "the central directory doesn't fit in the archive");
 
     // The limits on the directory, before any of it is read.
@@ -652,6 +1189,7 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
     // every entry fits.
     reader->names.reserve((size_t)(directory_size + entry_count));
     reader->entries.reserve((size_t)entry_count);
+    reader->central_zip64.reserve((size_t)entry_count);
     reader->name_index.reserve((size_t)entry_count);
 
     const uint8_t *directory = reader->central_directory.data();
@@ -678,7 +1216,9 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
                         (unsigned long long)k);
         const char *stored_name = (const char *)header + CENTRAL_HEADER_SIZE;
         const uint8_t *extra = header + CENTRAL_HEADER_SIZE + name_size;
+        const uint8_t *comment = extra + extra_size;
         at += CENTRAL_HEADER_SIZE + name_size + extra_size + comment_size;
+        bool sizes_zip64 = uncompressed_size == UINT32_MAX || compressed_size == UINT32_MAX;
 
         // The name, copied out so it can be NUL-terminated.
         size_t name_at = reader->names.size();
@@ -688,6 +1228,11 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
         if (!aparchive_is_safe_name(stored_name, name_size))
             return fail(error, APRESULT_APARCHIVE_MALFORMED, "entry %llu's name '%s' isn't safe", (unsigned long long)k,
                         name);
+        bool is_directory = stored_name[name_size - 1] == '/';
+        if ((desc.strict & APARCHIVE_STRICT_NO_DIRECTORY_ENTRIES) && is_directory)
+            return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s' is a directory entry, which strict refuses", name);
+        if ((desc.strict & APARCHIVE_STRICT_NO_ENTRY_COMMENTS) && comment_size != 0)
+            return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s' has a comment, which strict refuses", name);
 
         if (flags & FLAGS_ENCRYPTION)
             return fail(error, APRESULT_UNSUPPORTED, "'%s' is encrypted", name);
@@ -726,6 +1271,9 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
         }
         if (entry_disk != 0)
             return fail(error, APRESULT_UNSUPPORTED, "'%s' is on another disk of a split archive", name);
+        if (header_offset > UINT64_MAX - reader->shift)
+            return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s' doesn't fit before the central directory", name);
+        header_offset += reader->shift;
 
         // Sizes that can't be true, then the limits.
         if (method == APARCHIVE_METHOD_STORED && compressed_size != uncompressed_size)
@@ -764,10 +1312,16 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
         info.local_header_offset = header_offset;
         info.extra = extra_size ? extra : nullptr;
         info.extra_size = (uint16_t)extra_size;
-        info.is_directory = stored_name[name_size - 1] == '/';
+        info.is_directory = is_directory;
+        info.version_made_by = get16(header + 4);
+        info.internal_attributes = get16(header + 36);
+        info.external_attributes = get32(header + 38);
+        info.comment = comment_size ? comment : nullptr;
+        info.comment_size = (uint16_t)comment_size;
         if (!reader->name_index.emplace(std::string_view(name, name_size), (uint32_t)k).second)
             return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s' is in the archive twice", name);
         reader->entries.push_back(info);
+        reader->central_zip64.push_back(sizes_zip64);
     }
 
     // No two entries may share bytes: one small entry listed many times
@@ -787,12 +1341,17 @@ static APRESULT open_reader(const APARCHIVE_READER_DESC &desc, aparchive_reader 
         if (before_end > after.local_header_offset)
             return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s' and '%s' overlap", before.name, after.name);
     }
+    if (desc.strict & APARCHIVE_STRICT_NO_GAPS)
+        return check_no_gaps(reader, directory_size, directory_limit, records_gap, error);
     return APRESULT_OK;
 }
 
 // Where entry [index]'s stored bytes start, after checking its local header
-// against the central directory. May throw std::bad_alloc.
-static APRESULT locate_data(aparchive_reader reader, uint32_t index, uint64_t *out_offset, APARCHIVE_ERROR *error)
+// against the central directory; and whether that header has a ZIP64
+// record, which makes its data descriptor's sizes 8 bytes. May throw
+// std::bad_alloc.
+static APRESULT locate_data(aparchive_reader reader, uint32_t index, uint64_t *out_offset, bool *out_local_zip64,
+                            APARCHIVE_ERROR *error)
 {
     const APARCHIVE_ENTRY_INFO &info = reader->entries[index];
     uint8_t header[LOCAL_HEADER_SIZE];
@@ -821,6 +1380,9 @@ static APRESULT locate_data(aparchive_reader reader, uint32_t index, uint64_t *o
         return result;
     if (memcmp(rest.data(), info.name, name_size) != 0)
         return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s': the local header has another name", info.name);
+    const uint8_t *zip64;
+    size_t zip64_size;
+    bool has_zip64 = find_extra(rest.data() + name_size, extra_size, EXTRA_ZIP64, &zip64, &zip64_size);
 
     // With a data descriptor the local header was written before the sizes
     // and CRC-32 were known, and has nothing to compare.
@@ -828,10 +1390,7 @@ static APRESULT locate_data(aparchive_reader reader, uint32_t index, uint64_t *o
     {
         bool uncompressed64 = uncompressed_size == UINT32_MAX;
         bool compressed64 = compressed_size == UINT32_MAX;
-        const uint8_t *zip64;
-        size_t zip64_size;
-        if ((uncompressed64 || compressed64) &&
-            find_extra(rest.data() + name_size, extra_size, EXTRA_ZIP64, &zip64, &zip64_size))
+        if ((uncompressed64 || compressed64) && has_zip64)
         {
             // A local ZIP64 record should hold both sizes, uncompressed
             // first; some writers store only the one that didn't fit.
@@ -857,6 +1416,8 @@ static APRESULT locate_data(aparchive_reader reader, uint32_t index, uint64_t *o
     if (data_offset > reader->directory_offset || info.compressed_size > reader->directory_offset - data_offset)
         return fail(error, APRESULT_APARCHIVE_MALFORMED, "'%s' runs into the central directory", info.name);
     *out_offset = data_offset;
+    if (out_local_zip64)
+        *out_local_zip64 = has_zip64;
     return APRESULT_OK;
 }
 
@@ -865,7 +1426,7 @@ static APRESULT read_entry(aparchive_reader reader, uint32_t index, void *buffer
 {
     const APARCHIVE_ENTRY_INFO &info = reader->entries[index];
     uint64_t data_offset;
-    APRESULT result = locate_data(reader, index, &data_offset, error);
+    APRESULT result = locate_data(reader, index, &data_offset, nullptr, error);
     if (result != APRESULT_OK)
         return result;
     if (info.method == APARCHIVE_METHOD_STORED)
@@ -897,6 +1458,114 @@ static APRESULT read_entry(aparchive_reader reader, uint32_t index, void *buffer
     return APRESULT_OK;
 }
 
+// ---- Entries read in pieces -----------------------------------------------------
+
+// How much stored data an entry reader reads from the source at once.
+static const size_t ENTRY_READ_SIZE = 64 * 1024;
+
+static APRESULT entry_fail(aparchive_entry_reader entry, APARCHIVE_ERROR *error, APRESULT result, const char *what)
+{
+    entry->failed = true;
+    return fail(error, result, "'%s' %s", entry->reader->entries[entry->index].name, what);
+}
+
+// Runs the codec until [out] has [want] bytes or the data ends; [want] 0
+// with [check_end] runs it to its data's end, expecting nothing more.
+static APRESULT entry_decompress(aparchive_entry_reader entry, uint8_t *out, uint64_t want, uint64_t *out_made,
+                                 APARCHIVE_ERROR *error)
+{
+    const APARCHIVE_ENTRY_INFO &info = entry->reader->entries[entry->index];
+    const APARCHIVE_CODEC *codec = entry->codec;
+    uint64_t made = 0;
+    // Past the end, one byte of room: anything that comes out is too much.
+    uint8_t extra_byte;
+    bool to_end = want == 0;
+    while (to_end ? !entry->stream_done : made < want)
+    {
+        if (entry->in_at == entry->in_end && entry->in_read < info.compressed_size)
+        {
+            uint64_t left = info.compressed_size - entry->in_read;
+            size_t count = left < ENTRY_READ_SIZE ? (size_t)left : ENTRY_READ_SIZE;
+            APRESULT result = read_source(entry->reader->source, entry->data_offset + entry->in_read, entry->in.data(),
+                                          count, error, info.name);
+            if (result != APRESULT_OK)
+            {
+                entry->failed = true;
+                return result;
+            }
+            entry->in_read += count;
+            entry->in_at = 0;
+            entry->in_end = count;
+        }
+        if (entry->stream_done)
+            return entry_fail(entry, error, APRESULT_CORRUPT_DATA, "decompresses to fewer bytes than declared");
+        bool finish = entry->in_read == info.compressed_size;
+        uint64_t used = 0, got = 0;
+        uint8_t *to = to_end ? &extra_byte : out + made;
+        uint64_t room = to_end ? 1 : want - made;
+        bool done = false;
+        if (!codec->stream_process(codec->user, entry->state, entry->in.data() + entry->in_at,
+                                   entry->in_end - entry->in_at, &used, to, room, &got, finish, &done) ||
+            used > entry->in_end - entry->in_at || got > room)
+            return entry_fail(entry, error, APRESULT_CORRUPT_DATA, "doesn't decompress");
+        entry->in_at += (size_t)used;
+        entry->stream_done = done;
+        if (to_end && got != 0)
+            return entry_fail(entry, error, APRESULT_CORRUPT_DATA, "decompresses past its declared size");
+        made += got;
+        if (used == 0 && got == 0 && !done && (finish || entry->in_at < entry->in_end))
+            return entry_fail(entry, error, APRESULT_CORRUPT_DATA, "ends before its data does");
+    }
+    *out_made = made;
+    return APRESULT_OK;
+}
+
+static APRESULT entry_read(aparchive_entry_reader entry, void *buffer, uint64_t capacity, uint64_t *out_size,
+                           APARCHIVE_ERROR *error)
+{
+    const APARCHIVE_ENTRY_INFO &info = entry->reader->entries[entry->index];
+    *out_size = 0;
+    if (entry->finished)
+        return APRESULT_OK;
+    uint64_t left = info.uncompressed_size - entry->out_total;
+    uint64_t want = capacity < left ? capacity : left;
+    uint64_t made = 0;
+    if (!entry->codec)
+    {
+        APRESULT result = read_source(entry->reader->source, entry->data_offset + entry->out_total, buffer, want, error,
+                                      info.name);
+        if (result != APRESULT_OK)
+        {
+            entry->failed = true;
+            return result;
+        }
+        made = want;
+    }
+    else if (want != 0)
+    {
+        APRESULT result = entry_decompress(entry, (uint8_t *)buffer, want, &made, error);
+        if (result != APRESULT_OK)
+            return result;
+    }
+    entry->crc = aparchive_crc32(entry->crc, buffer, made);
+    entry->out_total += made;
+    if (entry->out_total == info.uncompressed_size)
+    {
+        if (entry->codec)
+        {
+            uint64_t none = 0;
+            APRESULT result = entry_decompress(entry, nullptr, 0, &none, error);
+            if (result != APRESULT_OK)
+                return result;
+        }
+        if (entry->crc != info.crc32)
+            return entry_fail(entry, error, APRESULT_CORRUPT_DATA, "fails its CRC-32");
+        entry->finished = true;
+    }
+    *out_size = made;
+    return APRESULT_OK;
+}
+
 extern "C"
 {
     // ---- Codecs -------------------------------------------------------------
@@ -913,6 +1582,7 @@ extern "C"
     {
         if (!codecs)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(codecs->overlap, "aparchive", "aparchive_codecs_add", "codec table");
         if (!codec)
             return APRESULT_INVALID_ARGUMENT;
         if (APRESULT result = apri_struct_check(&codec->base, APRI_STRUCT_TYPE_APARCHIVE_CODEC))
@@ -921,6 +1591,10 @@ extern "C"
         if (c.method == APARCHIVE_METHOD_STORED || !c.decompress)
             return APRESULT_INVALID_ARGUMENT;
         if ((c.compress == nullptr) != (c.compress_bound == nullptr))
+            return APRESULT_INVALID_ARGUMENT;
+        if ((c.stream_begin == nullptr) != (c.stream_process == nullptr))
+            return APRESULT_INVALID_ARGUMENT;
+        if ((c.stream_begin == nullptr) != (c.stream_end == nullptr))
             return APRESULT_INVALID_ARGUMENT;
         if (codecs->find(c.method))
             return APRESULT_INVALID_ARGUMENT;
@@ -943,6 +1617,9 @@ extern "C"
         codec.compress_bound = deflate_compress_bound;
         codec.compress = deflate_compress;
         codec.decompress = deflate_decompress;
+        codec.stream_begin = deflate_stream_begin;
+        codec.stream_process = deflate_stream_process;
+        codec.stream_end = deflate_stream_end;
         return aparchive_codecs_add(codecs, &codec);
     }
 
@@ -950,12 +1627,74 @@ extern "C"
     {
         if (!codecs)
             return false;
+        APRI_ENTER(codecs->overlap, "aparchive", "aparchive_codecs_has", "codec table");
         return method == APARCHIVE_METHOD_STORED || codecs->find(method) != nullptr;
     }
 
     void aparchive_codecs_destroy(aparchive_codecs codecs)
     {
         delete codecs;
+    }
+
+    APRESULT aparchive_codecs_compress_bound(aparchive_codecs codecs, uint16_t method, uint64_t in_size,
+                                             uint64_t *out_bound)
+    {
+        if (!codecs)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_bound)
+            return APRESULT_INVALID_ARGUMENT;
+        if (method == APARCHIVE_METHOD_STORED)
+        {
+            *out_bound = in_size;
+            return APRESULT_OK;
+        }
+        const APARCHIVE_CODEC *codec = codecs->find(method);
+        if (!codec)
+            return APRESULT_APARCHIVE_UNKNOWN_METHOD;
+        if (!codec->compress_bound)
+            return APRESULT_UNSUPPORTED;
+        *out_bound = codec->compress_bound(codec->user, in_size);
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_codecs_compress(aparchive_codecs codecs, uint16_t method, int32_t level, const void *in,
+                                       uint64_t in_size, void *out, uint64_t out_capacity, uint64_t *out_size,
+                                       APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!codecs)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "codecs is null");
+        if (!in && in_size != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "in is null but in_size is %llu",
+                        (unsigned long long)in_size);
+        if (!out && out_capacity != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out is null but out_capacity is %llu",
+                        (unsigned long long)out_capacity);
+        if (!out_size)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_size is null");
+        uint64_t bound = 0;
+        APRESULT result = aparchive_codecs_compress_bound(codecs, method, in_size, &bound);
+        if (result != APRESULT_OK)
+            return fail(out_error, result, "method %u can't compress", method);
+        if (out_capacity < bound)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_capacity %llu is under the bound, %llu",
+                        (unsigned long long)out_capacity, (unsigned long long)bound);
+        if (method == APARCHIVE_METHOD_STORED)
+        {
+            if (in_size)
+                memcpy(out, in, (size_t)in_size);
+            *out_size = in_size;
+            return APRESULT_OK;
+        }
+        const APARCHIVE_CODEC *codec = codecs->find(method);
+        uint64_t size = 0;
+        // A buffer of 0 bytes is still somewhere to write, as add_entry's is.
+        uint8_t nothing;
+        if (!codec->compress(codec->user, level, in, in_size, out ? out : &nothing, bound, &size) || size > bound)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "method %u failed to compress at level %d", method,
+                        level);
+        *out_size = size;
+        return APRESULT_OK;
     }
 
     // ---- Writing ------------------------------------------------------------
@@ -974,11 +1713,13 @@ extern "C"
             return APRESULT_INVALID_ARGUMENT;
         if (!d.codecs)
             return APRESULT_INVALID_ARGUMENT;
-        aparchive_writer_t *writer = new (std::nothrow) aparchive_writer_t();
+        aparchive_writer_t *writer = (aparchive_writer_t *)malloc(sizeof(aparchive_writer_t));
         if (!writer)
             return APRESULT_OUT_OF_MEMORY;
+        writer = new (writer) aparchive_writer_t();
         writer->sink = d.sink;
         writer->codecs = d.codecs;
+        writer->allow_directory_entries = d.allow_directory_entries;
         *out_writer = writer;
         return APRESULT_OK;
     }
@@ -989,6 +1730,7 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_add_entry", "writer");
         if (!desc)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC))
@@ -1008,6 +1750,184 @@ extern "C"
         }
     }
 
+    APRESULT aparchive_writer_add_raw_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC *desc,
+                                            const void *stored, uint64_t stored_size, uint64_t uncompressed_size,
+                                            uint32_t crc32, APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_add_raw_entry", "writer");
+        if (!desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC))
+            return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        if (!stored && stored_size != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "stored is null but stored_size is %llu",
+                        (unsigned long long)stored_size);
+        try
+        {
+            return add_raw_entry(writer, *desc, stored, stored_size, uncompressed_size, crc32, out_error);
+        }
+        catch (const std::bad_alloc &)
+        {
+            writer->failed = true;
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory adding the entry");
+        }
+    }
+
+    APRESULT aparchive_writer_begin_entry(aparchive_writer writer, const APARCHIVE_ENTRY_DESC *desc,
+                                          APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_begin_entry", "writer");
+        if (!desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC))
+            return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        try
+        {
+            return begin_entry(writer, *desc, out_error);
+        }
+        catch (const std::bad_alloc &)
+        {
+            writer->failed = true;
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory starting the entry");
+        }
+    }
+
+    APRESULT aparchive_writer_write_entry_data(aparchive_writer writer, const void *data, uint64_t size,
+                                               APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_write_entry_data", "writer");
+        if (!data && size != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "data is null but size is %llu", (unsigned long long)size);
+        if (writer->failed)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is unusable after an earlier failure");
+        if (!writer->streaming)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "no streamed entry is open");
+        return write_entry_data(writer, data, size, out_error);
+    }
+
+    APRESULT aparchive_writer_end_entry(aparchive_writer writer, APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_end_entry", "writer");
+        if (writer->failed)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is unusable after an earlier failure");
+        if (!writer->streaming)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "no streamed entry is open");
+        try
+        {
+            return end_entry(writer, out_error);
+        }
+        catch (const std::bad_alloc &)
+        {
+            writer->failed = true;
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory ending the entry");
+        }
+    }
+
+    APRESULT aparchive_writer_set_comment(aparchive_writer writer, const void *comment, uint16_t comment_size,
+                                          APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_set_comment", "writer");
+        if (!comment && comment_size != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "comment is null but comment_size is %u", comment_size);
+        if (writer->failed || writer->finished)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is %s",
+                        writer->finished ? "finished" : "unusable after an earlier failure");
+        if (holds_end_signature((const uint8_t *)comment, comment_size))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "the comment holds the end record's signature");
+        try
+        {
+            writer->comment.assign((const uint8_t *)comment, (const uint8_t *)comment + comment_size);
+        }
+        catch (const std::bad_alloc &)
+        {
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory copying the comment");
+        }
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_writer_remove_entry(aparchive_writer writer, const char *name, APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_remove_entry", "writer");
+        if (!name)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "name is null");
+        if (writer->failed || writer->finished)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is %s",
+                        writer->finished ? "finished" : "unusable after an earlier failure");
+        if (writer->streaming)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "a streamed entry is open: end it first");
+        for (size_t i = 0; i < writer->entries.size(); i++)
+        {
+            if (writer->entries[i].name != name)
+                continue;
+            // Erasing moves no entry's bytes: they're the sink's.
+            writer->names.erase(writer->entries[i].name);
+            writer->entries.erase(writer->entries.begin() + (ptrdiff_t)i);
+            return APRESULT_OK;
+        }
+        return fail(out_error, APRESULT_NOT_FOUND, "no entry is named '%s'", name);
+    }
+
+    APRESULT aparchive_writer_create_update(const APARCHIVE_UPDATE_DESC *desc, aparchive_writer *out_writer,
+                                            APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!out_writer)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_writer is null");
+        *out_writer = nullptr;
+        if (!desc)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APARCHIVE_UPDATE_DESC))
+            return fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        const APARCHIVE_UPDATE_DESC &d = *desc;
+        if (!d.reader)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's reader is null");
+        if (!d.truncate)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's truncate is null");
+        if (!d.sink.write)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's sink write callback is null");
+        if (!d.codecs)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's codecs is null");
+        aparchive_writer_t *writer = (aparchive_writer_t *)malloc(sizeof(aparchive_writer_t));
+        if (!writer)
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory creating the writer");
+        writer = new (writer) aparchive_writer_t();
+        writer->sink = d.sink;
+        writer->codecs = d.codecs;
+        writer->allow_directory_entries = d.allow_directory_entries;
+        writer->truncate = d.truncate;
+        writer->truncate_pending = true;
+        try
+        {
+            copy_entries(writer, d.reader);
+        }
+        catch (const std::bad_alloc &)
+        {
+            writer->~aparchive_writer_t();
+            free(writer);
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory copying the archive's entries");
+        }
+        *out_writer = writer;
+        return APRESULT_OK;
+    }
+
     uint64_t aparchive_writer_get_offset(aparchive_writer writer)
     {
         return writer ? writer->offset : 0;
@@ -1018,9 +1938,12 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_finish", "writer");
         if (writer->failed || writer->finished)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is %s",
                         writer->finished ? "finished" : "unusable after an earlier failure");
+        if (writer->streaming)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "a streamed entry is open: end it first");
         try
         {
             return finish(writer, out_error);
@@ -1034,7 +1957,10 @@ extern "C"
 
     void aparchive_writer_destroy(aparchive_writer writer)
     {
-        delete writer;
+        if (!writer)
+            return;
+        writer->~aparchive_writer_t();
+        free(writer);
     }
 
     // ---- Reading ------------------------------------------------------------
@@ -1053,6 +1979,11 @@ extern "C"
         const APARCHIVE_READER_DESC &d = *desc;
         if (!d.source.read || !d.codecs)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's source read callback or codecs is null");
+        const uint32_t strict_known = APARCHIVE_STRICT_NO_ARCHIVE_COMMENT | APARCHIVE_STRICT_NO_ENTRY_COMMENTS |
+                                      APARCHIVE_STRICT_NO_DIRECTORY_ENTRIES | APARCHIVE_STRICT_NO_GAPS;
+        if ((uint32_t)d.strict & ~strict_known)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's strict has unknown bits 0x%X",
+                        (unsigned)((uint32_t)d.strict & ~strict_known));
         aparchive_reader_t *reader = new (std::nothrow) aparchive_reader_t();
         if (!reader)
             return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory opening the archive");
@@ -1117,7 +2048,7 @@ extern "C"
                         (uint32_t)reader->entries.size());
         try
         {
-            return locate_data(reader, index, out_offset, out_error);
+            return locate_data(reader, index, out_offset, nullptr, out_error);
         }
         catch (const std::bad_alloc &)
         {
@@ -1151,6 +2082,342 @@ extern "C"
     void aparchive_reader_destroy(aparchive_reader reader)
     {
         delete reader;
+    }
+
+    APRESULT aparchive_reader_get_comment(aparchive_reader reader, const void **out_comment, uint16_t *out_size)
+    {
+        if (!reader)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_comment)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        *out_comment = reader->comment.empty() ? nullptr : reader->comment.data();
+        *out_size = (uint16_t)reader->comment.size();
+        return APRESULT_OK;
+    }
+
+    uint64_t aparchive_reader_get_offset_shift(aparchive_reader reader)
+    {
+        return reader ? reader->shift : 0;
+    }
+
+    APRESULT aparchive_reader_open_entry(aparchive_reader reader, uint32_t index,
+                                         aparchive_entry_reader *out_entry_reader, APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!out_entry_reader)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_entry_reader is null");
+        *out_entry_reader = nullptr;
+        if (!reader)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is null");
+        if (index >= reader->entries.size())
+            return fail(out_error, APRESULT_NOT_FOUND, "no entry %u (the archive has %u)", index,
+                        (uint32_t)reader->entries.size());
+        const APARCHIVE_ENTRY_INFO &info = reader->entries[index];
+        const APARCHIVE_CODEC *codec = nullptr;
+        if (info.method != APARCHIVE_METHOD_STORED)
+        {
+            codec = reader->codecs->find(info.method);
+            if (!codec)
+                return fail(out_error, APRESULT_APARCHIVE_UNKNOWN_METHOD,
+                            "'%s' uses method %u, which isn't in the codec table", info.name, info.method);
+            if (!codec->stream_begin)
+                return fail(out_error, APRESULT_UNSUPPORTED, "method %u's codec reads whole entries only",
+                            info.method);
+        }
+        aparchive_entry_reader_t *entry = (aparchive_entry_reader_t *)malloc(sizeof(aparchive_entry_reader_t));
+        if (!entry)
+            return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory opening '%s'", info.name);
+        entry = new (entry) aparchive_entry_reader_t();
+        entry->reader = reader;
+        entry->index = index;
+        APRESULT result;
+        try
+        {
+            result = locate_data(reader, index, &entry->data_offset, nullptr, out_error);
+            if (result == APRESULT_OK && codec)
+                entry->in.resize(ENTRY_READ_SIZE);
+        }
+        catch (const std::bad_alloc &)
+        {
+            result = fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory opening '%s'", info.name);
+        }
+        if (result == APRESULT_OK && codec)
+        {
+            entry->state = codec->stream_begin(codec->user, false, 0);
+            entry->codec = codec;
+            if (!entry->state)
+                result = fail(out_error, APRESULT_OUT_OF_MEMORY, "method %u couldn't start reading '%s'",
+                              info.method, info.name);
+        }
+        if (result != APRESULT_OK)
+        {
+            aparchive_entry_reader_destroy(entry);
+            return result;
+        }
+        *out_entry_reader = entry;
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_entry_reader_read(aparchive_entry_reader entry_reader, void *buffer, uint64_t capacity,
+                                         uint64_t *out_size, APARCHIVE_ERROR *out_error)
+    {
+        clear_error(out_error);
+        if (!entry_reader)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "entry_reader is null");
+        APRI_ENTER(entry_reader->overlap, "aparchive", "aparchive_entry_reader_read", "entry reader");
+        if (!buffer && capacity != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is null but capacity is %llu",
+                        (unsigned long long)capacity);
+        if (!out_size)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_size is null");
+        *out_size = 0;
+        if (entry_reader->failed)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "an earlier read of the entry failed");
+        return entry_read(entry_reader, buffer, capacity, out_size, out_error);
+    }
+
+    void aparchive_entry_reader_destroy(aparchive_entry_reader entry_reader)
+    {
+        if (!entry_reader)
+            return;
+        if (entry_reader->codec && entry_reader->state)
+            entry_reader->codec->stream_end(entry_reader->codec->user, entry_reader->state);
+        entry_reader->~aparchive_entry_reader_t();
+        free(entry_reader);
+    }
+
+    // ---- Extra fields ---------------------------------------------------------
+
+    APRESULT aparchive_extra_find(const void *extra, uint16_t extra_size, uint16_t id, const void **out_data,
+                                  uint16_t *out_size)
+    {
+        if (!extra && extra_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_data)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        const uint8_t *data = nullptr;
+        size_t size = 0;
+        APRESULT result = extra_find((const uint8_t *)extra, extra_size, id, &data, &size);
+        if (result != APRESULT_OK)
+            return result;
+        *out_data = data;
+        *out_size = (uint16_t)size;
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_extra_get_unix_times(const void *extra, uint16_t extra_size, APARCHIVE_FILE_TIMES *out_times)
+    {
+        if (!extra && extra_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_times)
+            return APRESULT_INVALID_ARGUMENT;
+        const uint8_t *data = nullptr;
+        size_t size = 0;
+        APRESULT result = extra_find((const uint8_t *)extra, extra_size, APARCHIVE_EXTRA_UNIX_TIMES, &data, &size);
+        if (result != APRESULT_OK)
+            return result;
+        if (size < 1)
+            return APRESULT_APARCHIVE_MALFORMED;
+        // The flags say which times the local record holds, in this order;
+        // a central one stops after the first. Times are signed seconds.
+        APARCHIVE_FILE_TIMES times{};
+        uint8_t flags = data[0];
+        size_t at = 1;
+        int64_t *values[3] = {&times.modified, &times.accessed, &times.created};
+        bool *known[3] = {&times.has_modified, &times.has_accessed, &times.has_created};
+        for (int i = 0; i < 3; i++)
+        {
+            if (!(flags & (1 << i)) || size - at < 4)
+                continue;
+            *values[i] = (int64_t)(int32_t)get32(data + at) * TICKS_PER_SECOND;
+            *known[i] = true;
+            at += 4;
+        }
+        *out_times = times;
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_extra_put_unix_times(const APARCHIVE_FILE_TIMES *times, bool central, void *out,
+                                            uint16_t out_capacity, uint16_t *out_size)
+    {
+        if (!times)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        const int64_t values[3] = {times->modified, times->accessed, times->created};
+        const bool known[3] = {times->has_modified, times->has_accessed, times->has_created};
+        uint8_t flags = 0;
+        int32_t seconds[3] = {0, 0, 0};
+        for (int i = 0; i < 3; i++)
+        {
+            if (!known[i])
+                continue;
+            int64_t value = floor_seconds(values[i]);
+            if (value < INT32_MIN || value > INT32_MAX)
+                return APRESULT_INVALID_ARGUMENT;
+            seconds[i] = (int32_t)value;
+            flags = (uint8_t)(flags | 1 << i);
+        }
+        if (flags == 0)
+            return APRESULT_INVALID_ARGUMENT;
+        // A central record holds the modified time alone.
+        uint16_t data_size = 1;
+        for (int i = 0; i < 3; i++)
+            if ((flags & (1 << i)) && (!central || i == 0))
+                data_size += 4;
+        *out_size = (uint16_t)(4 + data_size);
+        if (out_capacity < *out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        uint8_t *bytes = (uint8_t *)out;
+        put_u16(bytes, APARCHIVE_EXTRA_UNIX_TIMES);
+        put_u16(bytes + 2, data_size);
+        bytes[4] = flags;
+        size_t at = 5;
+        for (int i = 0; i < 3; i++)
+        {
+            if (!(flags & (1 << i)) || (central && i != 0))
+                continue;
+            put_u32(bytes + at, (uint32_t)seconds[i]);
+            at += 4;
+        }
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_extra_get_ntfs_times(const void *extra, uint16_t extra_size, APARCHIVE_FILE_TIMES *out_times)
+    {
+        if (!extra && extra_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_times)
+            return APRESULT_INVALID_ARGUMENT;
+        const uint8_t *data = nullptr;
+        size_t size = 0;
+        APRESULT result = extra_find((const uint8_t *)extra, extra_size, APARCHIVE_EXTRA_NTFS_TIMES, &data, &size);
+        if (result != APRESULT_OK)
+            return result;
+        // 4 reserved bytes, then attributes: a tag, a size, its data.
+        if (size < 4)
+            return APRESULT_APARCHIVE_MALFORMED;
+        const uint8_t *attributes = nullptr;
+        size_t attributes_size = 0;
+        result = extra_find(data + 4, size - 4, 0x0001, &attributes, &attributes_size);
+        if (result != APRESULT_OK)
+            return result;
+        if (attributes_size < 24)
+            return APRESULT_APARCHIVE_MALFORMED;
+        APARCHIVE_FILE_TIMES times{};
+        int64_t *values[3] = {&times.modified, &times.accessed, &times.created};
+        for (int i = 0; i < 3; i++)
+        {
+            uint64_t ticks = get64(attributes + 8 * i);
+            // What 64-bit ticks since 1970 hold, either way.
+            if (ticks >= NTFS_TO_UNIX_TICKS ? ticks - NTFS_TO_UNIX_TICKS > (uint64_t)INT64_MAX : false)
+                return APRESULT_APARCHIVE_MALFORMED;
+            *values[i] = ticks >= NTFS_TO_UNIX_TICKS ? (int64_t)(ticks - NTFS_TO_UNIX_TICKS)
+                                                    : -(int64_t)(NTFS_TO_UNIX_TICKS - ticks);
+        }
+        times.has_modified = true;
+        times.has_accessed = true;
+        times.has_created = true;
+        *out_times = times;
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_extra_put_ntfs_times(const APARCHIVE_FILE_TIMES *times, void *out, uint16_t out_capacity,
+                                            uint16_t *out_size)
+    {
+        if (!times)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!times->has_modified)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!times->has_accessed)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!times->has_created)
+            return APRESULT_INVALID_ARGUMENT;
+        const int64_t values[3] = {times->modified, times->accessed, times->created};
+        uint64_t ticks[3];
+        for (int i = 0; i < 3; i++)
+        {
+            if (values[i] < -(int64_t)NTFS_TO_UNIX_TICKS)
+                return APRESULT_INVALID_ARGUMENT;
+            ticks[i] = NTFS_TO_UNIX_TICKS + (uint64_t)values[i]; // wraps back into range for negatives
+        }
+        *out_size = 36;
+        if (out_capacity < 36)
+            return APRESULT_INVALID_ARGUMENT;
+        uint8_t *bytes = (uint8_t *)out;
+        put_u16(bytes, APARCHIVE_EXTRA_NTFS_TIMES);
+        put_u16(bytes + 2, 32);
+        put_u32(bytes + 4, 0); // reserved
+        put_u16(bytes + 8, 0x0001);
+        put_u16(bytes + 10, 24);
+        for (int i = 0; i < 3; i++)
+            put_u64(bytes + 12 + 8 * i, ticks[i]);
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_extra_get_unicode_path(const void *extra, uint16_t extra_size, const char *name,
+                                              uint16_t name_size, const char **out_path, uint16_t *out_size)
+    {
+        if (!extra && extra_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!name && name_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_path)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        const uint8_t *data = nullptr;
+        size_t size = 0;
+        APRESULT result = extra_find((const uint8_t *)extra, extra_size, APARCHIVE_EXTRA_UNICODE_PATH, &data, &size);
+        if (result != APRESULT_OK)
+            return result;
+        // A version, the CRC-32 of the name it was written beside, the name.
+        if (size < 5 || data[0] != 1)
+            return APRESULT_APARCHIVE_MALFORMED;
+        if (get32(data + 1) != aparchive_crc32(0, name, name_size))
+            return APRESULT_NOT_FOUND;
+        *out_path = (const char *)data + 5;
+        *out_size = (uint16_t)(size - 5);
+        return APRESULT_OK;
+    }
+
+    APRESULT aparchive_extra_put_unicode_path(const char *name, uint16_t name_size, const char *path,
+                                              uint16_t path_size, void *out, uint16_t out_capacity,
+                                              uint16_t *out_size)
+    {
+        if (!name && name_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!path && path_size != 0)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!is_valid_utf8(path, path_size))
+            return APRESULT_INVALID_ARGUMENT;
+        if (path_size > UINT16_MAX - 9)
+            return APRESULT_INVALID_ARGUMENT;
+        *out_size = (uint16_t)(9 + path_size);
+        if (out_capacity < *out_size)
+            return APRESULT_INVALID_ARGUMENT;
+        uint8_t *bytes = (uint8_t *)out;
+        put_u16(bytes, APARCHIVE_EXTRA_UNICODE_PATH);
+        put_u16(bytes + 2, (uint16_t)(5 + path_size));
+        bytes[4] = 1;
+        put_u32(bytes + 5, aparchive_crc32(0, name, name_size));
+        if (path_size)
+            memcpy(bytes + 9, path, path_size);
+        return APRESULT_OK;
     }
 
     // ---- Utilities ----------------------------------------------------------

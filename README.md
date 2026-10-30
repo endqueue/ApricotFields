@@ -23,12 +23,13 @@ Vulkan / D3D12 / Metal
 
 | Module | Header | Prefix | What |
 |---|---|---|---|
-| Aprend | `render/aprend*.h` (all through `apricotfields.h`) | `aprend_` | Renderer over SpudGPU: buffers, textures, pipelines, command lists, swap chains, a lit draw list, post-processing (bloom, tone mapping, GTAO, outlines) |
+| Aprend | `render/aprend*.h` (all through `aprend.h`) | `aprend_` | Renderer over SpudGPU: buffers, textures, pipelines, command lists, swap chains, a lit draw list, post-processing (bloom, tone mapping, GTAO, outlines) |
 | ApMath | `aprimath.h`, `math/apmathbvh.h`, `math/apmathpoly.h` | `apmath_` | Double-precision CPU ray casting over BVHs; exact plane polygons on an integer grid (booleans, offsets, straight skeletons, triangulation) |
 | ApArchive | `archive/aparchive.h` | `aparchive_` | ZIP reading and writing through caller callbacks, with no I/O of its own |
 | ApAudio | `audio/apaudio.h`, `audio/apaudiocues.h` | `apaudio_` | Mixer, cues and sound banks |
 | ApSync | `sync/apsyncnet.h` | `apsync_` | Sessions, channels and snapshots over SpudNet |
 | ApText | `text/aptext.h` | `aptext_` | Fonts from the caller's bytes, fallback chains, shaping (HarfBuzz), bidirectional text and line breaking, and an MTSDF glyph atlas; single-stroke (Hershey) faces as line segments. Run on macOS only so far |
+| ApJobs | `jobs/apjobs.h` | `apjobs_` | Parallel work through a scheduler the caller implements (enqueue a ranged task, wait for it), and a reference pool of threads a caller may create. Run on macOS only so far |
 | Core | `apricore.h` | `apri_` / `APRESULT` | The shared result codes, struct bases and debug names |
 
 Every call that can fail returns an `APRESULT`. Headers state which calls are

@@ -3,6 +3,7 @@
 
 #include "text/aptext.h"
 #include "../aprihashindex.hpp"
+#include "../aprioverlap.hpp"
 #include "../apriplaindata.hpp"
 #include <eqstd.hpp>
 #include <hb-ot.h>
@@ -113,6 +114,21 @@ struct aptext_face_t
     ~aptext_face_t();
 };
 
+// A single-stroke font as a reader has it: every glyph's advance and
+// polylines, in em units, y up, before it becomes a face.
+struct aptext_stroke_font
+{
+    eq::array<APTEXT_STROKE_GLYPH> glyphs;
+    eq::array<APTEXT_STROKE_POLYLINE> polylines;
+    eq::array<ApriVec2> points;
+};
+
+// The CAD formats' readers (aptext_cadfonts.cpp), on descs checked by the
+// callers. The SHX reader gives the descender its file sets.
+APRESULT aptext_read_lff(const APTEXT_LFF_FACE_DESC &desc, aptext_stroke_font &font, APTEXT_ERROR *error);
+APRESULT aptext_read_shx(const APTEXT_SHX_FACE_DESC &desc, aptext_stroke_font &font, float *out_descender,
+                         APTEXT_ERROR *error);
+
 // The glyph [face] maps [codepoint] to through its character map alone,
 // or 0 (with false) when it has none.
 bool aptext_face_lookup(const aptext_face_t *face, uint32_t codepoint, uint32_t *out_glyph);
@@ -193,8 +209,13 @@ struct aptext_layout_t
     eq::array<uint8_t> line_rtl; // per line: its paragraph is right to left
     eq::array<uint32_t> line_starts; // a paragraph's lines, as cluster indices
     hb_buffer_t *buffer = nullptr;
+    // SheenBidi's script locator, made on first use and kept: a rebuild
+    // allocates nothing for it (aptext_layout.cpp).
+    struct _SBScriptLocator *script_locator = nullptr;
 
     ~aptext_layout_t();
+    // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
+    apri_overlap overlap{};
 };
 
 // ---- Atlases ------------------------------------------------------------------
@@ -255,6 +276,8 @@ struct aptext_atlas_t
     apri_hash_index index;                 // face and glyph to entries' index
 
     ~aptext_atlas_t();
+    // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
+    apri_overlap overlap{};
 };
 
 // The bounds of one glyph's image, as aptext_generate_glyph() makes it.

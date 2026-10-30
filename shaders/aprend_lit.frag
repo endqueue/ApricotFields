@@ -253,6 +253,34 @@ vec3 point_or_spot(Surface s, AprendLitLight light) {
     return fall > 0.0 ? shade(s, l, light.radiance_type.rgb * fall) : vec3(0.0);
 }
 
+// What the opaque picture shows through the surface at [position]: the
+// view ray bent into the surface by its index of refraction, followed
+// through its thickness, and looked up where that point falls on the
+// screen, blurrier (a lower mip) the rougher the surface; tinted by the
+// distance travelled (Beer's law, glTF's KHR_materials_volume). Unexposed,
+// as every other light here is until the end.
+vec3 transmitted(Surface s, vec3 position) {
+    float ior       = max(u_lit_material.transmission.y, 1.0);
+    float thickness = max(u_lit_material.transmission.z, 0.0);
+    vec3 inside     = refract(-s.v, s.n, 1.0 / ior);
+    vec3 exit       = position + inside * thickness;
+    vec4 clip       = u_lit_scene.view_projection * vec4(exit, 1.0);
+    vec2 uv         = gl_FragCoord.xy * u_lit_scene.target_size.zw;
+    if (clip.w > 0.0)
+        uv = clip.xy / clip.w * 0.5 + 0.5; // SpudGPU's clip space: +Y down the target, as gl_FragCoord
+    // three.js's choice of mip: the roughness, sharpened as the index nears 1.
+    float rough = s.roughness * clamp(ior * 2.0 - 2.0, 0.0, 1.0);
+    float lod   = rough * max(u_lit_scene.scene_color_mips - 1.0, 0.0);
+    vec3 behind = textureLod(sampler2D(scene_color, environment_sampler), uv, lod).rgb;
+    if (u_lit_scene.output_encoding == 1u) // written encoded: back to linear
+        behind = mix(pow((behind + 0.055) / 1.055, vec3(2.4)), behind / 12.92, lessThanEqual(behind, vec3(0.04045)));
+    behind /= max(u_lit_scene.exposure, 1e-20);
+    float distance = u_lit_material.transmission.w;
+    if (distance > 0.0)
+        behind *= pow(max(u_lit_material.attenuation.rgb, vec3(0.0)), vec3(thickness / distance));
+    return behind;
+}
+
 void main() {
     vec2 uv   = material_uv(in_uv);
     uint maps = u_lit_material.maps;
@@ -309,6 +337,12 @@ void main() {
     s.roughness           = clamp(u_lit_material.roughness * orm.g, MIN_ROUGHNESS, 1.0);
     s.f0                  = mix(vec3(0.08 * clamp(u_lit_material.specular, 0.0, 1.0)), albedo, metalness);
     s.diffuse             = albedo * (1.0 - metalness);
+    // Transmission takes that share of the diffuse lobe: the light that
+    // would scatter back passes through instead (glTF's transmission).
+    float transmission = 0.0;
+    if ((u_lit_scene.flags & APREND_LIT_SCENE_SCENE_COLOR) != 0u)
+        transmission = clamp(u_lit_material.transmission.x, 0.0, 1.0) * (1.0 - metalness);
+    s.diffuse *= 1.0 - transmission;
     s.n_dot_v             = max(dot(s.n, s.v), 1e-4);
     s.clearcoat           = clamp(u_lit_material.clearcoat, 0.0, 1.0);
     s.clearcoat_roughness = clamp(u_lit_material.clearcoat_roughness, MIN_ROUGHNESS, 1.0);
@@ -356,6 +390,8 @@ void main() {
         ambient       = ambient * (1.0 - fc) + (0.04 * abc.x + abc.y) * s.clearcoat * ambient_coat;
     }
     color += occlusion * ambient;
+    if (transmission > 0.0)
+        color += transmission * albedo * (1.0 - (s.f0 * ab.x + ab.y)) * transmitted(s, in_position);
     color += emission;
 
     color *= u_lit_scene.exposure;

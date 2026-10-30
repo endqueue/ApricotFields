@@ -1,5 +1,13 @@
 # ABI snapshot of ApricotFields's public C headers, written by ./check.sh --update-abi.
 # Don't edit by hand. Read as: apple (arm64-apple-macos13), linux (x86_64-unknown-linux-gnu), windows (x86_64-pc-windows-msvc).
+const APARCHIVE_STRICT_NONE = 0
+const APARCHIVE_STRICT_NO_ARCHIVE_COMMENT = 1
+const APARCHIVE_STRICT_NO_DIRECTORY_ENTRIES = 3
+const APARCHIVE_STRICT_NO_ENTRY_COMMENTS = 2
+const APARCHIVE_STRICT_NO_GAPS = 4
+const APAUDIO_LIMITER_OFF = 1
+const APAUDIO_LIMITER_ON = 2
+const APAUDIO_LIMITER_UNSPECIFIED = 0
 const APAUDIO_RESAMPLER_LINEAR = 1
 const APAUDIO_RESAMPLER_SINC = 2
 const APAUDIO_RESAMPLER_UNSPECIFIED = 0
@@ -24,11 +32,41 @@ const APMATH_POLY_DEFECT_ZERO_LENGTH_EDGE = 2
 const APMATH_POLY_FILL_EVEN_ODD = 0
 const APMATH_POLY_FILL_NON_ZERO = 1
 const APMATH_POLY_FILL_POSITIVE = 2
+const APMATH_POLY_JOIN_MITER = 0
+const APMATH_POLY_JOIN_ROUND = 1
 const APMATH_POLY_OP_DIFFERENCE = 2
 const APMATH_POLY_OP_INTERSECTION = 1
 const APMATH_POLY_OP_UNION = 0
 const APMATH_POLY_OP_XOR = 3
+const APMATH_POLY_PLACE_INSIDE = 1
+const APMATH_POLY_PLACE_ON_EDGE = 2
+const APMATH_POLY_PLACE_OUTSIDE = 0
+const APREND_BATCH_CAP_BUTT = 1
+const APREND_BATCH_CAP_ROUND = 3
+const APREND_BATCH_CAP_SQUARE = 2
+const APREND_BATCH_CAP_UNSPECIFIED = 0
+const APREND_BATCH_DEPTH_OVER = 1
+const APREND_BATCH_DEPTH_TESTED = 2
+const APREND_BATCH_DEPTH_TESTED_REVERSED = 3
+const APREND_BATCH_DEPTH_UNSPECIFIED = 0
+const APREND_BATCH_JOIN_BEVEL = 2
+const APREND_BATCH_JOIN_MITER = 1
+const APREND_BATCH_JOIN_ROUND = 3
+const APREND_BATCH_JOIN_UNSPECIFIED = 0
+const APREND_BATCH_SPACE_SCREEN = 1
+const APREND_BATCH_SPACE_UNSPECIFIED = 0
+const APREND_BATCH_SPACE_WORLD = 2
+const APREND_BATCH_UNIT_PAPER_MM = 2
+const APREND_BATCH_UNIT_PIXELS = 1
+const APREND_BATCH_UNIT_UNSPECIFIED = 0
+const APREND_BUFFER_USAGE_INDEX = 2
+const APREND_BUFFER_USAGE_INDIRECT_ARGUMENTS = 16
+const APREND_BUFFER_USAGE_NONE = 0
+const APREND_BUFFER_USAGE_STORAGE = 8
+const APREND_BUFFER_USAGE_UNIFORM = 4
+const APREND_BUFFER_USAGE_VERTEX = 1
 const APREND_BUFFER_WRITES_MANY = 2
+const APREND_BUFFER_WRITES_NONE = 0
 const APREND_BUFFER_WRITES_ONCE = 1
 const APREND_COLOR_ENCODING_LINEAR = 0
 const APREND_COLOR_ENCODING_SRGB = 1
@@ -38,9 +76,11 @@ const APREND_COMMAND_BEGIN_RENDERING = 10
 const APREND_COMMAND_BEGIN_RENDER_PASS = 23
 const APREND_COMMAND_BLOOM = 29
 const APREND_COMMAND_BLUR = 36
+const APREND_COMMAND_COPY_SCENE_COLOR = 39
 const APREND_COMMAND_DISPATCH = 16
 const APREND_COMMAND_DISPATCH_MESH = 19
 const APREND_COMMAND_DRAW = 4
+const APREND_COMMAND_DRAW_BATCH = 40
 const APREND_COMMAND_DRAW_INDEXED = 5
 const APREND_COMMAND_DRAW_INDEXED_INDIRECT = 18
 const APREND_COMMAND_DRAW_INDIRECT = 17
@@ -96,8 +136,6 @@ const APREND_SHADER_SCALAR_TYPE_INT = 2
 const APREND_SHADER_SCALAR_TYPE_NONE = 0
 const APREND_SHADER_SCALAR_TYPE_OTHER = 5
 const APREND_SHADER_SCALAR_TYPE_UINT = 3
-const APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS = 1
-const APREND_STORAGE_BUFFER_USAGE_NONE = 0
 const APREND_TEXTURE_DIMENSION_1D = 0
 const APREND_TEXTURE_DIMENSION_1D_ARRAY = 4
 const APREND_TEXTURE_DIMENSION_2D = 1
@@ -164,6 +202,9 @@ const APREND_VERTEX_ELEMENT_TYPE_VEC4 = 3
 const APRESULT_APARCHIVE_MALFORMED = 1002
 const APRESULT_APARCHIVE_NOT_AN_ARCHIVE = 1001
 const APRESULT_APARCHIVE_UNKNOWN_METHOD = 1003
+const APRESULT_APREND_DEVICE_LOST = 5003
+const APRESULT_APREND_GPU_FAILURE = 5001
+const APRESULT_APREND_STALE = 5002
 const APRESULT_APSYNC_ADDRESS_IN_USE = 2001
 const APRESULT_APSYNC_NOT_CONNECTED = 2002
 const APRESULT_APTEXT_ATLAS_MISMATCH = 6002
@@ -179,11 +220,13 @@ const APRESULT_OUT_OF_MEMORY = 2
 const APRESULT_STRUCT_DUPLICATE_IN_CHAIN = 11
 const APRESULT_STRUCT_UNKNOWN_IN_CHAIN = 10
 const APRESULT_STRUCT_WRONG_TYPE = 9
+const APRESULT_TIMEOUT = 12
 const APRESULT_UNSUPPORTED = 7
 const APRI_STRUCT_TYPE_APARCHIVE_CODEC = 1000
 const APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC = 1002
 const APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO = 1004
 const APRI_STRUCT_TYPE_APARCHIVE_READER_DESC = 1003
+const APRI_STRUCT_TYPE_APARCHIVE_UPDATE_DESC = 1005
 const APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC = 1001
 const APRI_STRUCT_TYPE_APAUDIO_BUS_DESC = 3001
 const APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC = 3003
@@ -194,12 +237,18 @@ const APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC = 3000
 const APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC = 3002
 const APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC = 3005
 const APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC = 3004
+const APRI_STRUCT_TYPE_APJOBS_POOL_DESC = 7001
+const APRI_STRUCT_TYPE_APJOBS_SCHEDULER = 7000
 const APRI_STRUCT_TYPE_APMATH_CAST_DESC = 4002
 const APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC = 4001
 const APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC = 4000
 const APRI_STRUCT_TYPE_APMATH_POLY_BOOLEAN_DESC = 4003
 const APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC = 4004
 const APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC = 4005
+const APRI_STRUCT_TYPE_APREND_BATCH_DESC = 5026
+const APRI_STRUCT_TYPE_APREND_BATCH_FRAME = 5027
+const APRI_STRUCT_TYPE_APREND_BATCH_LINE = 5028
+const APRI_STRUCT_TYPE_APREND_BUFFER_DESC = 5025
 const APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC = 5011
 const APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC = 5013
 const APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC = 5003
@@ -241,6 +290,8 @@ const APRI_STRUCT_TYPE_APTEXT_GLYPH_IMAGE = 6008
 const APRI_STRUCT_TYPE_APTEXT_HERSHEY_FACE_DESC = 6002
 const APRI_STRUCT_TYPE_APTEXT_LAYOUT_DESC = 6005
 const APRI_STRUCT_TYPE_APTEXT_LAYOUT_INFO = 6006
+const APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC = 6013
+const APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC = 6014
 const APRI_STRUCT_TYPE_APTEXT_STROKE_FACE_DESC = 6001
 const APRI_STRUCT_TYPE_MAX_ENUM = 2147483647
 const APRI_STRUCT_TYPE_UNKNOWN = 0
@@ -285,23 +336,44 @@ const APTEXT_FEATURE_KERNING = 1
 const APTEXT_FEATURE_LIGATURES = 2
 fn aparchive_codecs_add APRESULT (aparchive_codecs, const APARCHIVE_CODEC *)
 fn aparchive_codecs_add_deflate APRESULT (aparchive_codecs)
+fn aparchive_codecs_compress APRESULT (aparchive_codecs, uint16_t, int32_t, const void *, uint64_t, void *, uint64_t, uint64_t *, APARCHIVE_ERROR *)
+fn aparchive_codecs_compress_bound APRESULT (aparchive_codecs, uint16_t, uint64_t, uint64_t *)
 fn aparchive_codecs_create APRESULT (aparchive_codecs *)
 fn aparchive_codecs_destroy void (aparchive_codecs)
 fn aparchive_codecs_has _Bool (aparchive_codecs, uint16_t)
 fn aparchive_crc32 uint32_t (uint32_t, const void *, uint64_t)
+fn aparchive_entry_reader_destroy void (aparchive_entry_reader)
+fn aparchive_entry_reader_read APRESULT (aparchive_entry_reader, void *, uint64_t, uint64_t *, APARCHIVE_ERROR *)
+fn aparchive_extra_find APRESULT (const void *, uint16_t, uint16_t, const void **, uint16_t *)
+fn aparchive_extra_get_ntfs_times APRESULT (const void *, uint16_t, APARCHIVE_FILE_TIMES *)
+fn aparchive_extra_get_unicode_path APRESULT (const void *, uint16_t, const char *, uint16_t, const char **, uint16_t *)
+fn aparchive_extra_get_unix_times APRESULT (const void *, uint16_t, APARCHIVE_FILE_TIMES *)
+fn aparchive_extra_put_ntfs_times APRESULT (const APARCHIVE_FILE_TIMES *, void *, uint16_t, uint16_t *)
+fn aparchive_extra_put_unicode_path APRESULT (const char *, uint16_t, const char *, uint16_t, void *, uint16_t, uint16_t *)
+fn aparchive_extra_put_unix_times APRESULT (const APARCHIVE_FILE_TIMES *, _Bool, void *, uint16_t, uint16_t *)
 fn aparchive_is_safe_name _Bool (const char *, uint64_t)
 fn aparchive_reader_destroy void (aparchive_reader)
 fn aparchive_reader_find APRESULT (aparchive_reader, const char *, uint32_t *)
+fn aparchive_reader_get_comment APRESULT (aparchive_reader, const void **, uint16_t *)
 fn aparchive_reader_get_data_offset APRESULT (aparchive_reader, uint32_t, uint64_t *, APARCHIVE_ERROR *)
 fn aparchive_reader_get_entry APRESULT (aparchive_reader, uint32_t, APARCHIVE_ENTRY_INFO *)
 fn aparchive_reader_get_entry_count uint32_t (aparchive_reader)
+fn aparchive_reader_get_offset_shift uint64_t (aparchive_reader)
 fn aparchive_reader_open APRESULT (const APARCHIVE_READER_DESC *, aparchive_reader *, APARCHIVE_ERROR *)
+fn aparchive_reader_open_entry APRESULT (aparchive_reader, uint32_t, aparchive_entry_reader *, APARCHIVE_ERROR *)
 fn aparchive_reader_read_entry APRESULT (aparchive_reader, uint32_t, void *, uint64_t, APARCHIVE_ERROR *)
 fn aparchive_writer_add_entry APRESULT (aparchive_writer, const APARCHIVE_ENTRY_DESC *, const void *, uint64_t, APARCHIVE_ERROR *)
+fn aparchive_writer_add_raw_entry APRESULT (aparchive_writer, const APARCHIVE_ENTRY_DESC *, const void *, uint64_t, uint64_t, uint32_t, APARCHIVE_ERROR *)
+fn aparchive_writer_begin_entry APRESULT (aparchive_writer, const APARCHIVE_ENTRY_DESC *, APARCHIVE_ERROR *)
 fn aparchive_writer_create APRESULT (const APARCHIVE_WRITER_DESC *, aparchive_writer *)
+fn aparchive_writer_create_update APRESULT (const APARCHIVE_UPDATE_DESC *, aparchive_writer *, APARCHIVE_ERROR *)
 fn aparchive_writer_destroy void (aparchive_writer)
+fn aparchive_writer_end_entry APRESULT (aparchive_writer, APARCHIVE_ERROR *)
 fn aparchive_writer_finish APRESULT (aparchive_writer, APARCHIVE_ERROR *)
 fn aparchive_writer_get_offset uint64_t (aparchive_writer)
+fn aparchive_writer_remove_entry APRESULT (aparchive_writer, const char *, APARCHIVE_ERROR *)
+fn aparchive_writer_set_comment APRESULT (aparchive_writer, const void *, uint16_t, APARCHIVE_ERROR *)
+fn aparchive_writer_write_entry_data APRESULT (aparchive_writer, const void *, uint64_t, APARCHIVE_ERROR *)
 fn apaudio_bus_create APRESULT (apaudio_mixer, const APAUDIO_BUS_DESC *, APAUDIO_BUS *, APAUDIO_ERROR *)
 fn apaudio_bus_destroy void (apaudio_mixer, APAUDIO_BUS)
 fn apaudio_bus_set_gain APRESULT (apaudio_mixer, APAUDIO_BUS, float, uint32_t)
@@ -327,7 +399,9 @@ fn apaudio_cues_set_sample_rate void (apaudio_cues, uint32_t)
 fn apaudio_cues_start APRESULT (apaudio_cues, APAUDIO_CUE, const APAUDIO_CUE_PLAY_DESC *, APAUDIO_VOICE *)
 fn apaudio_cues_stop void (apaudio_cues, APAUDIO_VOICE, _Bool)
 fn apaudio_cues_update void (apaudio_cues)
+fn apaudio_flac_decode APRESULT (const void *, uint64_t, uint64_t, APAUDIO_PCM *, APAUDIO_ERROR *)
 fn apaudio_format_from_spudaudio inline APAUDIO_FORMAT (const SPUDAUDIO_FORMAT *)
+fn apaudio_mixer_collect void (apaudio_mixer)
 fn apaudio_mixer_create APRESULT (const APAUDIO_MIXER_DESC *, apaudio_mixer *, APAUDIO_ERROR *)
 fn apaudio_mixer_destroy void (apaudio_mixer)
 fn apaudio_mixer_get_master_bus APAUDIO_BUS (apaudio_mixer)
@@ -338,16 +412,25 @@ fn apaudio_mixer_update void (apaudio_mixer)
 fn apaudio_modifier_create APRESULT (apaudio_mixer, const APAUDIO_MODIFIER_DESC *, APAUDIO_MODIFIER *, APAUDIO_ERROR *)
 fn apaudio_modifier_destroy void (apaudio_mixer, APAUDIO_MODIFIER)
 fn apaudio_modifier_set_active APRESULT (apaudio_mixer, APAUDIO_MODIFIER, _Bool)
+fn apaudio_opus_decode APRESULT (const void *, uint64_t, uint64_t, APAUDIO_PCM *, APAUDIO_ERROR *)
 fn apaudio_pcm_free void (APAUDIO_PCM *)
 fn apaudio_play APRESULT (apaudio_mixer, APAUDIO_SOUND, const APAUDIO_PLAY_DESC *, APAUDIO_VOICE *)
 fn apaudio_sound_create APRESULT (apaudio_mixer, const APAUDIO_SOUND_DESC *, APAUDIO_SOUND *, APAUDIO_ERROR *)
 fn apaudio_sound_destroy void (apaudio_mixer, APAUDIO_SOUND)
+fn apaudio_voice_is_folded _Bool (apaudio_mixer, APAUDIO_VOICE)
 fn apaudio_voice_is_live _Bool (apaudio_mixer, APAUDIO_VOICE)
 fn apaudio_voice_set_direction APRESULT (apaudio_mixer, APAUDIO_VOICE, const APAUDIO_DIRECTION *)
 fn apaudio_voice_set_gain APRESULT (apaudio_mixer, APAUDIO_VOICE, float)
 fn apaudio_voice_set_rate APRESULT (apaudio_mixer, APAUDIO_VOICE, float)
 fn apaudio_voice_stop APRESULT (apaudio_mixer, APAUDIO_VOICE, uint32_t)
+fn apaudio_vorbis_decode APRESULT (const void *, uint64_t, uint64_t, APAUDIO_PCM *, APAUDIO_ERROR *)
 fn apaudio_wav_decode APRESULT (const void *, uint64_t, APAUDIO_PCM *, APAUDIO_ERROR *)
+fn apjobs_get_processor_count uint32_t (void)
+fn apjobs_pool_create APRESULT (const APJOBS_POOL_DESC *, apjobs_pool *, APJOBS_ERROR *)
+fn apjobs_pool_destroy void (apjobs_pool)
+fn apjobs_pool_get_scheduler APRESULT (apjobs_pool, APJOBS_SCHEDULER *)
+fn apjobs_run APRESULT (const APJOBS_SCHEDULER *, APJOBS_TASK_FUNCTION, uint32_t, uint32_t, void *)
+fn apjobs_scheduler_check APRESULT (const APJOBS_SCHEDULER *, APJOBS_ERROR *)
 fn apmath_instance_bvh_cast _Bool (apmath_instance_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_INSTANCE_HIT *)
 fn apmath_instance_bvh_cast_all uint32_t (apmath_instance_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_INSTANCE_HIT *, uint32_t)
 fn apmath_instance_bvh_create APRESULT (const APMATH_INSTANCE_BVH_DESC *, apmath_instance_bvh *)
@@ -363,213 +446,201 @@ fn apmath_poly_boolean APRESULT (const APMATH_POLY_BOOLEAN_DESC *, apmath_poly *
 fn apmath_poly_destroy void (apmath_poly)
 fn apmath_poly_get_set APMATH_POLY_SET (apmath_poly)
 fn apmath_poly_get_triangulation_capacity uint32_t (const APMATH_POLY_SET *)
+fn apmath_poly_locate_point APRESULT (const APMATH_POLY_SET *, APMATH_POLY_FILL, APMATH_POLY_POINT, APMATH_POLY_PLACE *, APMATH_ERROR *)
 fn apmath_poly_offset_edges APRESULT (const APMATH_POLY_OFFSET_DESC *, apmath_poly *, APMATH_ERROR *)
 fn apmath_poly_skeleton APRESULT (const APMATH_POLY_SKELETON_DESC *, apmath_poly *, APMATH_ERROR *)
 fn apmath_poly_triangulate APRESULT (const APMATH_POLY_SET *, uint32_t *, uint32_t, uint32_t *, APMATH_ERROR *)
 fn apmath_poly_validate APRESULT (const APMATH_POLY_SET *, APMATH_POLY_DEFECT_INFO *, APMATH_ERROR *)
 fn apmath_ray_clip_aabb _Bool (APMATH_RAY *, const APMATH_AABB *)
-fn aprend_binding_layout_create aprend_binding_layout (aprend_instance, const aprend_binding_desc *, uint32_t)
-fn aprend_binding_layout_create_from_shaders aprend_binding_layout (aprend_instance, const aprend_shader *, uint32_t, uint32_t)
+fn aprend_batch_add_circles APRESULT (aprend_batch, const APREND_BATCH_CIRCLE *, uint32_t, APREND_ERROR *)
+fn aprend_batch_add_glyphs APRESULT (aprend_batch, const APREND_BATCH_GLYPH *, uint32_t, APREND_ERROR *)
+fn aprend_batch_add_line APRESULT (aprend_batch, const APREND_BATCH_LINE *, APREND_ERROR *)
+fn aprend_batch_add_quads APRESULT (aprend_batch, const APREND_BATCH_QUAD *, uint32_t, APREND_ERROR *)
+fn aprend_batch_begin APRESULT (aprend_batch, const APREND_BATCH_FRAME *, APREND_ERROR *)
+fn aprend_batch_create APRESULT (aprend_instance, const APREND_BATCH_DESC *, aprend_batch *, APREND_ERROR *)
+fn aprend_batch_debug_arrow APRESULT (aprend_batch, const float *, const float *, float, const float *, float, APREND_ERROR *)
+fn aprend_batch_debug_axes APRESULT (aprend_batch, const float *, float, float, APREND_ERROR *)
+fn aprend_batch_debug_box APRESULT (aprend_batch, const float *, const float *, const float *, const float *, const float *, float, APREND_ERROR *)
+fn aprend_batch_debug_sphere APRESULT (aprend_batch, const float *, float, const float *, float, APREND_ERROR *)
+fn aprend_batch_destroy void (aprend_batch)
+fn aprend_batch_get_shape_count uint32_t (aprend_batch)
+fn aprend_binding_layout_create APRESULT (aprend_instance, const APREND_BINDING_DESC *, uint32_t, aprend_binding_layout *, APREND_ERROR *)
+fn aprend_binding_layout_create_from_shaders APRESULT (aprend_instance, const aprend_shader *, uint32_t, uint32_t, aprend_binding_layout *, APREND_ERROR *)
 fn aprend_binding_layout_destroy void (aprend_binding_layout)
-fn aprend_binding_layout_find _Bool (aprend_binding_layout, const char *, uint32_t *, aprend_binding_desc *)
-fn aprend_binding_layout_get_binding _Bool (aprend_binding_layout, uint32_t, aprend_binding_desc *)
+fn aprend_binding_layout_find APRESULT (aprend_binding_layout, const char *, uint32_t *, APREND_BINDING_DESC *)
+fn aprend_binding_layout_get_binding APRESULT (aprend_binding_layout, uint32_t, APREND_BINDING_DESC *)
 fn aprend_binding_layout_get_binding_count uint32_t (aprend_binding_layout)
-fn aprend_binding_layout_get_block _Bool (aprend_binding_layout, uint32_t, uint32_t *, const aprend_shader_member **, uint32_t *)
-fn aprend_binding_layout_get_uniform_layout _Bool (aprend_binding_layout, uint32_t, aprend_uniform_layout *)
-fn aprend_binding_set_create aprend_binding_set (aprend_binding_layout, const aprend_binding_set_entry *, uint32_t)
+fn aprend_binding_layout_get_block APRESULT (aprend_binding_layout, uint32_t, uint32_t *, const APREND_SHADER_MEMBER **, uint32_t *)
+fn aprend_binding_layout_get_uniform_layout APRESULT (aprend_binding_layout, uint32_t, APREND_UNIFORM_LAYOUT *)
+fn aprend_binding_set_create APRESULT (aprend_binding_layout, const APREND_BINDING_SET_ENTRY *, uint32_t, aprend_binding_set *, APREND_ERROR *)
 fn aprend_binding_set_destroy void (aprend_binding_set)
-fn aprend_binding_set_update _Bool (aprend_binding_set, const aprend_binding_set_entry *, uint32_t)
+fn aprend_binding_set_update APRESULT (aprend_binding_set, const APREND_BINDING_SET_ENTRY *, uint32_t, APREND_ERROR *)
 fn aprend_blend_additive spudgpu_blend_attachment_desc (void)
 fn aprend_blend_alpha spudgpu_blend_attachment_desc (void)
 fn aprend_blend_premultiplied spudgpu_blend_attachment_desc (void)
-fn aprend_command_list_compile _Bool (aprend_command_list)
-fn aprend_command_list_create aprend_command_list (aprend_instance)
+fn aprend_buffer_create APRESULT (aprend_instance, const APREND_BUFFER_DESC *, aprend_buffer *, APREND_ERROR *)
+fn aprend_buffer_destroy void (aprend_buffer)
+fn aprend_buffer_get_desc APRESULT (aprend_buffer, APREND_BUFFER_DESC *)
+fn aprend_buffer_write APRESULT (aprend_buffer, uint64_t, const void *, uint64_t, APREND_ERROR *)
+fn aprend_buffer_write_uniform APRESULT (aprend_buffer, const APREND_UNIFORM_LAYOUT *, uint32_t, const void *, APREND_ERROR *)
+fn aprend_command_list_compile APRESULT (aprend_command_list, APREND_ERROR *)
+fn aprend_command_list_create APRESULT (aprend_instance, aprend_command_list *, APREND_ERROR *)
 fn aprend_command_list_destroy void (aprend_command_list)
 fn aprend_command_list_reset void (aprend_command_list)
-fn aprend_command_list_submit _Bool (aprend_command_list, spudgpu_command_queue)
-fn aprend_compute_pass_create aprend_compute_pass (aprend_instance, const aprend_compute_pass_desc *)
+fn aprend_command_list_send void (aprend_command_list, APREND_COMMAND)
+fn aprend_command_list_submit APRESULT (aprend_command_list, spudgpu_command_queue, APREND_ERROR *)
+fn aprend_compute_pass_create APRESULT (aprend_instance, const APREND_COMPUTE_PASS_DESC *, aprend_compute_pass *, APREND_ERROR *)
 fn aprend_compute_pass_destroy void (aprend_compute_pass)
-fn aprend_compute_pass_set_binding_set _Bool (aprend_compute_pass, uint32_t, aprend_binding_set)
-fn aprend_compute_pipeline_create aprend_compute_pipeline (aprend_instance, const aprend_compute_pipeline_desc *)
+fn aprend_compute_pass_set_binding_set APRESULT (aprend_compute_pass, uint32_t, aprend_binding_set, APREND_ERROR *)
+fn aprend_compute_pipeline_create APRESULT (aprend_instance, const APREND_COMPUTE_PIPELINE_DESC *, aprend_compute_pipeline *, APREND_ERROR *)
 fn aprend_compute_pipeline_destroy void (aprend_compute_pipeline)
-fn aprend_compute_pipeline_get_desc aprend_compute_pipeline_desc (aprend_compute_pipeline)
-fn aprend_draw_list_add _Bool (aprend_draw_list, const aprend_draw_mesh *, aprend_material, uint32_t, const void *)
-fn aprend_draw_list_build _Bool (aprend_draw_list)
-fn aprend_draw_list_create aprend_draw_list (aprend_instance, const aprend_draw_list_desc *)
+fn aprend_compute_pipeline_get_desc APRESULT (aprend_compute_pipeline, APREND_COMPUTE_PIPELINE_DESC *)
+fn aprend_draw_list_add APRESULT (aprend_draw_list, const APREND_DRAW_MESH *, aprend_material, uint32_t, const void *, APREND_ERROR *)
+fn aprend_draw_list_build APRESULT (aprend_draw_list, APREND_ERROR *)
+fn aprend_draw_list_create APRESULT (aprend_instance, const APREND_DRAW_LIST_DESC *, aprend_draw_list *, APREND_ERROR *)
 fn aprend_draw_list_destroy void (aprend_draw_list)
-fn aprend_draw_list_get_counts _Bool (aprend_draw_list, uint32_t *, uint32_t *, uint32_t *)
+fn aprend_draw_list_get_counts APRESULT (aprend_draw_list, uint32_t *, uint32_t *, uint32_t *)
 fn aprend_draw_list_reset void (aprend_draw_list)
-fn aprend_exposure_create aprend_exposure (aprend_instance, const aprend_exposure_desc *)
+fn aprend_exposure_create APRESULT (aprend_instance, const APREND_EXPOSURE_DESC *, aprend_exposure *, APREND_ERROR *)
 fn aprend_exposure_destroy void (aprend_exposure)
-fn aprend_framebuffer_clear_colors _Bool (aprend_framebuffer, spudgpu_command_queue, float, float, float, float)
-fn aprend_framebuffer_clear_depth _Bool (aprend_framebuffer, spudgpu_command_queue, _Bool, _Bool, float, uint32_t)
-fn aprend_framebuffer_create aprend_framebuffer (aprend_instance, const aprend_framebuffer_desc *)
+fn aprend_framebuffer_clear_colors APRESULT (aprend_framebuffer, spudgpu_command_queue, float, float, float, float, APREND_ERROR *)
+fn aprend_framebuffer_clear_depth APRESULT (aprend_framebuffer, spudgpu_command_queue, _Bool, _Bool, float, uint32_t, APREND_ERROR *)
+fn aprend_framebuffer_create APRESULT (aprend_instance, const APREND_FRAMEBUFFER_DESC *, aprend_framebuffer *, APREND_ERROR *)
 fn aprend_framebuffer_destroy void (aprend_framebuffer)
 fn aprend_framebuffer_get_color_attachment aprend_texture_view (aprend_framebuffer, uint32_t)
 fn aprend_framebuffer_get_depth_attachment aprend_texture_view (aprend_framebuffer)
-fn aprend_framebuffer_get_desc _Bool (aprend_framebuffer, aprend_framebuffer_desc *)
-fn aprend_framebuffer_resize _Bool (aprend_framebuffer, uint32_t, uint32_t)
-fn aprend_get_fullscreen_vertex_shader aprend_shader (aprend_instance)
+fn aprend_framebuffer_get_desc APRESULT (aprend_framebuffer, APREND_FRAMEBUFFER_DESC *)
+fn aprend_framebuffer_resize APRESULT (aprend_framebuffer, uint32_t, uint32_t, APREND_ERROR *)
+fn aprend_get_fullscreen_vertex_shader APRESULT (aprend_instance, aprend_shader *, APREND_ERROR *)
 fn aprend_get_optional_gpu_features SPUDGPU_FEATURES (void)
-fn aprend_gpu_timer_create aprend_gpu_timer (aprend_instance, const aprend_gpu_timer_desc *)
+fn aprend_gpu_timer_create APRESULT (aprend_instance, const APREND_GPU_TIMER_DESC *, aprend_gpu_timer *, APREND_ERROR *)
 fn aprend_gpu_timer_destroy void (aprend_gpu_timer)
-fn aprend_gpu_timer_get_ms _Bool (aprend_gpu_timer, uint32_t, double *)
-fn aprend_graphics_pipeline_create aprend_graphics_pipeline (aprend_instance, const aprend_graphics_pipeline_desc *)
+fn aprend_gpu_timer_get_ms APRESULT (aprend_gpu_timer, uint32_t, double *, APREND_ERROR *)
+fn aprend_graphics_pipeline_create APRESULT (aprend_instance, const APREND_GRAPHICS_PIPELINE_DESC *, aprend_graphics_pipeline *, APREND_ERROR *)
 fn aprend_graphics_pipeline_destroy void (aprend_graphics_pipeline)
-fn aprend_graphics_pipeline_get_desc aprend_graphics_pipeline_desc (aprend_graphics_pipeline)
-fn aprend_index_buffer_create aprend_index_buffer (aprend_instance, APREND_INDEX_STRIDE, uint32_t, APREND_BUFFER_WRITES, const void *)
-fn aprend_index_buffer_destroy void (aprend_index_buffer)
-fn aprend_index_buffer_get_index_count uint32_t (aprend_index_buffer)
-fn aprend_index_buffer_get_spudgpu_buffer_view spudgpu_buffer_view (aprend_index_buffer)
-fn aprend_index_buffer_get_stride APREND_INDEX_STRIDE (aprend_index_buffer)
-fn aprend_index_buffer_update _Bool (aprend_index_buffer, uint32_t, uint32_t, const void *)
-fn aprend_index_pool_allocate _Bool (aprend_index_pool, uint32_t, const void *, aprend_index_range *)
-fn aprend_index_pool_create aprend_index_pool (aprend_instance, const aprend_index_pool_desc *)
+fn aprend_graphics_pipeline_get_desc APRESULT (aprend_graphics_pipeline, APREND_GRAPHICS_PIPELINE_DESC *)
+fn aprend_index_pool_allocate APRESULT (aprend_index_pool, uint32_t, const void *, APREND_INDEX_RANGE *, APREND_ERROR *)
+fn aprend_index_pool_create APRESULT (aprend_instance, const APREND_INDEX_POOL_DESC *, aprend_index_pool *, APREND_ERROR *)
 fn aprend_index_pool_destroy void (aprend_index_pool)
-fn aprend_index_pool_free void (aprend_index_pool, const aprend_index_range *)
-fn aprend_index_pool_get_usage void (aprend_index_pool, uint64_t *, uint64_t *)
+fn aprend_index_pool_free APRESULT (aprend_index_pool, const APREND_INDEX_RANGE *, APREND_ERROR *)
+fn aprend_index_pool_get_usage APRESULT (aprend_index_pool, uint64_t *, uint64_t *)
 fn aprend_index_pool_trim void (aprend_index_pool)
-fn aprend_instance_create aprend_instance (const aprend_instance_desc *)
+fn aprend_instance_create APRESULT (const APREND_INSTANCE_DESC *, aprend_instance *, APREND_ERROR *)
 fn aprend_instance_destroy void (aprend_instance)
-fn aprend_instance_get_desc _Bool (aprend_instance, aprend_instance_desc *)
+fn aprend_instance_get_desc APRESULT (aprend_instance, APREND_INSTANCE_DESC *)
 fn aprend_instance_get_frame_index uint32_t (aprend_instance)
-fn aprend_instance_get_render_target_pool _Bool (aprend_instance, aprend_render_target_pool_info *)
-fn aprend_instance_next_frame uint32_t (aprend_instance)
-fn aprend_instance_set_render_target_retirement _Bool (aprend_instance, uint32_t, uint64_t)
-fn aprend_instance_trim_render_targets uint32_t (aprend_instance, uint32_t)
-fn aprend_instance_wait_idle _Bool (aprend_instance)
-fn aprend_lit_environment_create aprend_lit_environment (aprend_instance, const aprend_lit_environment_desc *)
+fn aprend_instance_get_render_target_pool APRESULT (aprend_instance, APREND_RENDER_TARGET_POOL_INFO *)
+fn aprend_instance_next_frame APRESULT (aprend_instance, uint64_t, uint32_t *, APREND_ERROR *)
+fn aprend_instance_set_render_target_retirement APRESULT (aprend_instance, uint32_t, uint64_t, APREND_ERROR *)
+fn aprend_instance_trim_render_targets APRESULT (aprend_instance, uint32_t, uint32_t *)
+fn aprend_instance_wait_idle APRESULT (aprend_instance, APREND_ERROR *)
+fn aprend_lit_environment_create APRESULT (aprend_instance, const APREND_LIT_ENVIRONMENT_DESC *, aprend_lit_environment *, APREND_ERROR *)
 fn aprend_lit_environment_destroy void (aprend_lit_environment)
 fn aprend_lit_environment_get_specular_mip_count uint32_t (aprend_lit_environment)
-fn aprend_lit_fit_sun_cascades _Bool (const aprend_lit_cascade_fit *, aprend_lit_sun_shadow *)
-fn aprend_lit_get_material_layout aprend_binding_layout (aprend_instance)
-fn aprend_lit_get_scene_layout aprend_binding_layout (aprend_instance)
-fn aprend_lit_get_shader aprend_shader (aprend_instance, APREND_LIT_SHADER)
-fn aprend_lit_get_shadow_layout aprend_binding_layout (aprend_instance)
-fn aprend_lit_instance_layout aprend_vertex_layout (void)
-fn aprend_lit_material_create aprend_material (aprend_instance)
-fn aprend_lit_material_get_map_uv_transform _Bool (aprend_material, APREND_LIT_MAP, float *)
-fn aprend_lit_material_get_values _Bool (aprend_material, aprend_lit_material_values *)
-fn aprend_lit_material_set_map _Bool (aprend_material, APREND_LIT_MAP, aprend_texture_view)
-fn aprend_lit_material_set_map_uv_transform _Bool (aprend_material, APREND_LIT_MAP, const float *)
-fn aprend_lit_material_set_sampler _Bool (aprend_material, aprend_sampler)
-fn aprend_lit_material_set_values _Bool (aprend_material, const aprend_lit_material_values *)
-fn aprend_lit_point_shadow_view_projection _Bool (const aprend_lit_light *, uint32_t, float, _Bool, float *)
-fn aprend_lit_scene_create aprend_lit_scene (aprend_instance)
+fn aprend_lit_fit_sun_cascades APRESULT (const APREND_LIT_CASCADE_FIT *, APREND_LIT_SUN_SHADOW *, APREND_ERROR *)
+fn aprend_lit_get_material_layout APRESULT (aprend_instance, aprend_binding_layout *, APREND_ERROR *)
+fn aprend_lit_get_scene_layout APRESULT (aprend_instance, aprend_binding_layout *, APREND_ERROR *)
+fn aprend_lit_get_shader APRESULT (aprend_instance, APREND_LIT_SHADER, aprend_shader *, APREND_ERROR *)
+fn aprend_lit_get_shadow_layout APRESULT (aprend_instance, aprend_binding_layout *, APREND_ERROR *)
+fn aprend_lit_instance_layout APREND_VERTEX_LAYOUT (void)
+fn aprend_lit_material_create APRESULT (aprend_instance, aprend_material *, APREND_ERROR *)
+fn aprend_lit_material_get_map_uv_transform APRESULT (aprend_material, APREND_LIT_MAP, float *, APREND_ERROR *)
+fn aprend_lit_material_get_values APRESULT (aprend_material, APREND_LIT_MATERIAL_VALUES *, APREND_ERROR *)
+fn aprend_lit_material_set_map APRESULT (aprend_material, APREND_LIT_MAP, aprend_texture_view, APREND_ERROR *)
+fn aprend_lit_material_set_map_uv_transform APRESULT (aprend_material, APREND_LIT_MAP, const float *, APREND_ERROR *)
+fn aprend_lit_material_set_sampler APRESULT (aprend_material, aprend_sampler, APREND_ERROR *)
+fn aprend_lit_material_set_values APRESULT (aprend_material, const APREND_LIT_MATERIAL_VALUES *, APREND_ERROR *)
+fn aprend_lit_point_shadow_view_projection APRESULT (const APREND_LIT_LIGHT *, uint32_t, float, _Bool, float *, APREND_ERROR *)
+fn aprend_lit_scene_create APRESULT (aprend_instance, aprend_lit_scene *, APREND_ERROR *)
 fn aprend_lit_scene_destroy void (aprend_lit_scene)
 fn aprend_lit_scene_get_material aprend_material (aprend_lit_scene)
 fn aprend_lit_scene_get_point_shadow_material aprend_material (aprend_lit_scene, uint32_t, uint32_t)
 fn aprend_lit_scene_get_spot_shadow_material aprend_material (aprend_lit_scene, uint32_t)
 fn aprend_lit_scene_get_sun_shadow_material aprend_material (aprend_lit_scene, uint32_t)
-fn aprend_lit_scene_set_ambient _Bool (aprend_lit_scene, const aprend_lit_ambient *)
-fn aprend_lit_scene_set_ambient_occlusion _Bool (aprend_lit_scene, aprend_texture_view, float)
-fn aprend_lit_scene_set_bent_normals _Bool (aprend_lit_scene, _Bool)
-fn aprend_lit_scene_set_lights _Bool (aprend_lit_scene, const aprend_lit_light *, uint32_t)
-fn aprend_lit_scene_set_point_shadows _Bool (aprend_lit_scene, aprend_texture_view, const aprend_lit_point_shadow *, uint32_t, _Bool)
-fn aprend_lit_scene_set_spot_shadows _Bool (aprend_lit_scene, aprend_texture_view, const aprend_lit_spot_shadow *, uint32_t, _Bool)
-fn aprend_lit_scene_set_sun _Bool (aprend_lit_scene, const aprend_lit_sun *)
-fn aprend_lit_scene_set_sun_shadow _Bool (aprend_lit_scene, const aprend_lit_sun_shadow *)
-fn aprend_lit_scene_set_view _Bool (aprend_lit_scene, const aprend_lit_view *)
-fn aprend_lit_spot_shadow_view_projection _Bool (const aprend_lit_light *, float, _Bool, float *)
-fn aprend_lit_vertex_layout aprend_vertex_layout (void)
-fn aprend_material_copy aprend_material (aprend_material)
-fn aprend_material_create aprend_material (aprend_instance, const aprend_material_desc *)
+fn aprend_lit_scene_set_ambient APRESULT (aprend_lit_scene, const APREND_LIT_AMBIENT *, APREND_ERROR *)
+fn aprend_lit_scene_set_ambient_occlusion APRESULT (aprend_lit_scene, aprend_texture_view, float, APREND_ERROR *)
+fn aprend_lit_scene_set_bent_normals APRESULT (aprend_lit_scene, _Bool, APREND_ERROR *)
+fn aprend_lit_scene_set_lights APRESULT (aprend_lit_scene, const APREND_LIT_LIGHT *, uint32_t, APREND_ERROR *)
+fn aprend_lit_scene_set_point_shadows APRESULT (aprend_lit_scene, aprend_texture_view, const APREND_LIT_POINT_SHADOW *, uint32_t, _Bool, APREND_ERROR *)
+fn aprend_lit_scene_set_scene_color APRESULT (aprend_lit_scene, aprend_texture_view, APREND_ERROR *)
+fn aprend_lit_scene_set_spot_shadows APRESULT (aprend_lit_scene, aprend_texture_view, const APREND_LIT_SPOT_SHADOW *, uint32_t, _Bool, APREND_ERROR *)
+fn aprend_lit_scene_set_sun APRESULT (aprend_lit_scene, const APREND_LIT_SUN *, APREND_ERROR *)
+fn aprend_lit_scene_set_sun_shadow APRESULT (aprend_lit_scene, const APREND_LIT_SUN_SHADOW *, APREND_ERROR *)
+fn aprend_lit_scene_set_view APRESULT (aprend_lit_scene, const APREND_LIT_VIEW *, APREND_ERROR *)
+fn aprend_lit_spot_shadow_view_projection APRESULT (const APREND_LIT_LIGHT *, float, _Bool, float *, APREND_ERROR *)
+fn aprend_lit_vertex_layout APREND_VERTEX_LAYOUT (void)
+fn aprend_material_copy APRESULT (aprend_material, aprend_material *, APREND_ERROR *)
+fn aprend_material_create APRESULT (aprend_instance, const APREND_MATERIAL_DESC *, aprend_material *, APREND_ERROR *)
 fn aprend_material_destroy void (aprend_material)
-fn aprend_material_find_uniform _Bool (aprend_binding_layout, const char *, aprend_material_uniform *, aprend_shader_member *)
+fn aprend_material_find_uniform APRESULT (aprend_binding_layout, const char *, APREND_MATERIAL_UNIFORM *, APREND_SHADER_MEMBER *, APREND_ERROR *)
 fn aprend_material_get_layout aprend_binding_layout (aprend_material)
-fn aprend_material_get_uniform_value _Bool (aprend_material, aprend_material_uniform, void *)
+fn aprend_material_get_uniform_value APRESULT (aprend_material, APREND_MATERIAL_UNIFORM, void *, APREND_ERROR *)
 fn aprend_material_is_complete _Bool (aprend_material)
-fn aprend_material_set_sampler _Bool (aprend_material, const char *, uint32_t, aprend_sampler)
-fn aprend_material_set_storage_buffer _Bool (aprend_material, const char *, uint32_t, aprend_storage_buffer, aprend_storage_buffer_set)
-fn aprend_material_set_texture _Bool (aprend_material, const char *, uint32_t, aprend_texture_view)
-fn aprend_material_set_uniform _Bool (aprend_material, const char *, const void *)
-fn aprend_material_set_uniform_buffer _Bool (aprend_material, const char *, uint32_t, aprend_uniform_buffer, aprend_uniform_buffer_set)
-fn aprend_material_set_uniform_bytes _Bool (aprend_material, const char *, uint32_t, uint32_t, const void *)
-fn aprend_material_set_uniform_value _Bool (aprend_material, aprend_material_uniform, const void *)
-fn aprend_render_pass_create aprend_render_pass (aprend_instance, const aprend_render_pass_desc *)
+fn aprend_material_set_sampler APRESULT (aprend_material, const char *, uint32_t, aprend_sampler, APREND_ERROR *)
+fn aprend_material_set_storage_buffer APRESULT (aprend_material, const char *, uint32_t, aprend_buffer, APREND_ERROR *)
+fn aprend_material_set_texture APRESULT (aprend_material, const char *, uint32_t, aprend_texture_view, APREND_ERROR *)
+fn aprend_material_set_uniform APRESULT (aprend_material, const char *, const void *, APREND_ERROR *)
+fn aprend_material_set_uniform_buffer APRESULT (aprend_material, const char *, uint32_t, aprend_buffer, APREND_ERROR *)
+fn aprend_material_set_uniform_bytes APRESULT (aprend_material, const char *, uint32_t, uint32_t, const void *, APREND_ERROR *)
+fn aprend_material_set_uniform_value APRESULT (aprend_material, APREND_MATERIAL_UNIFORM, const void *, APREND_ERROR *)
+fn aprend_render_pass_create APRESULT (aprend_instance, const APREND_RENDER_PASS_DESC *, aprend_render_pass *, APREND_ERROR *)
 fn aprend_render_pass_destroy void (aprend_render_pass)
 fn aprend_render_pass_get_pipeline aprend_graphics_pipeline (aprend_render_pass)
-fn aprend_render_pass_get_size _Bool (aprend_render_pass, uint32_t *, uint32_t *)
-fn aprend_render_pass_set_binding_set _Bool (aprend_render_pass, uint32_t, aprend_binding_set)
-fn aprend_sampler_create aprend_sampler (aprend_instance, const aprend_sampler_desc *)
+fn aprend_render_pass_get_size APRESULT (aprend_render_pass, uint32_t *, uint32_t *)
+fn aprend_render_pass_set_binding_set APRESULT (aprend_render_pass, uint32_t, aprend_binding_set, APREND_ERROR *)
+fn aprend_sampler_create APRESULT (aprend_instance, const APREND_SAMPLER_DESC *, aprend_sampler *, APREND_ERROR *)
 fn aprend_sampler_destroy void (aprend_sampler)
-fn aprend_sampler_get_desc aprend_sampler_desc (aprend_sampler)
+fn aprend_sampler_get_desc APRESULT (aprend_sampler, APREND_SAMPLER_DESC *)
 fn aprend_sampler_get_spudgpu_sampler spudgpu_sampler (aprend_sampler)
-fn aprend_send_command void (aprend_command_list, APREND_COMMAND)
-fn aprend_shader_create_spirv aprend_shader (aprend_instance, const void *, uint64_t, SPUDGPU_SHADER_STAGE)
+fn aprend_shader_create_spirv APRESULT (aprend_instance, const void *, uint64_t, SPUDGPU_SHADER_STAGE, aprend_shader *, APREND_ERROR *)
 fn aprend_shader_destroy void (aprend_shader)
-fn aprend_shader_find_resource const aprend_shader_resource *(aprend_shader, const char *)
-fn aprend_shader_get_reflection const aprend_shader_reflection *(aprend_shader)
+fn aprend_shader_find_resource const APREND_SHADER_RESOURCE *(aprend_shader, const char *)
+fn aprend_shader_get_reflection const APREND_SHADER_REFLECTION *(aprend_shader)
 fn aprend_shader_get_stage SPUDGPU_SHADER_STAGE (aprend_shader)
-fn aprend_shader_read_from_file_spirv aprend_shader (aprend_instance, const char *, SPUDGPU_SHADER_STAGE)
-fn aprend_storage_buffer_create aprend_storage_buffer (aprend_instance, uint64_t, APREND_STORAGE_BUFFER_USAGE, APREND_BUFFER_WRITES, const void *)
-fn aprend_storage_buffer_destroy void (aprend_storage_buffer)
-fn aprend_storage_buffer_get_size uint64_t (aprend_storage_buffer)
-fn aprend_storage_buffer_get_usage APREND_STORAGE_BUFFER_USAGE (aprend_storage_buffer)
-fn aprend_storage_buffer_set_create aprend_storage_buffer_set (aprend_instance, uint64_t, APREND_STORAGE_BUFFER_USAGE, APREND_BUFFER_WRITES, const void *)
-fn aprend_storage_buffer_set_destroy void (aprend_storage_buffer_set)
-fn aprend_storage_buffer_set_get_buffer aprend_storage_buffer (aprend_storage_buffer_set, uint32_t)
-fn aprend_storage_buffer_set_update _Bool (aprend_storage_buffer_set, uint64_t, uint64_t, const void *)
-fn aprend_storage_buffer_update _Bool (aprend_storage_buffer, uint64_t, uint64_t, const void *)
-fn aprend_swap_chain_acquire _Bool (aprend_swap_chain)
-fn aprend_swap_chain_create aprend_swap_chain (aprend_instance, const aprend_swap_chain_desc *)
+fn aprend_shader_read_from_file_spirv APRESULT (aprend_instance, const char *, SPUDGPU_SHADER_STAGE, aprend_shader *, APREND_ERROR *)
+fn aprend_swap_chain_acquire APRESULT (aprend_swap_chain, APREND_ERROR *)
+fn aprend_swap_chain_create APRESULT (aprend_instance, const APREND_SWAP_CHAIN_DESC *, aprend_swap_chain *, APREND_ERROR *)
 fn aprend_swap_chain_destroy void (aprend_swap_chain)
-fn aprend_swap_chain_get_back_buffer_size _Bool (aprend_swap_chain, uint32_t *, uint32_t *)
-fn aprend_swap_chain_get_desc _Bool (aprend_swap_chain, aprend_swap_chain_desc *)
-fn aprend_swap_chain_present _Bool (aprend_swap_chain)
-fn aprend_swap_chain_resize _Bool (aprend_swap_chain, uint32_t, uint32_t)
-fn aprend_texture2d_create aprend_texture2d (aprend_instance, const aprend_texture2d_desc *)
+fn aprend_swap_chain_get_back_buffer_size APRESULT (aprend_swap_chain, uint32_t *, uint32_t *)
+fn aprend_swap_chain_get_desc APRESULT (aprend_swap_chain, APREND_SWAP_CHAIN_DESC *)
+fn aprend_swap_chain_present APRESULT (aprend_swap_chain, APREND_ERROR *)
+fn aprend_swap_chain_resize APRESULT (aprend_swap_chain, uint32_t, uint32_t, APREND_ERROR *)
+fn aprend_texture2d_create APRESULT (aprend_instance, const APREND_TEXTURE2D_DESC *, aprend_texture2d *, APREND_ERROR *)
 fn aprend_texture2d_destroy void (aprend_texture2d)
-fn aprend_texture2d_generate_mips _Bool (aprend_texture2d, spudgpu_command_queue, uint32_t, SPUDGPU_FILTER)
-fn aprend_texture2d_get_data _Bool (aprend_texture2d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void **)
-fn aprend_texture2d_get_desc aprend_texture2d_desc (aprend_texture2d)
+fn aprend_texture2d_generate_mips APRESULT (aprend_texture2d, spudgpu_command_queue, uint32_t, SPUDGPU_FILTER, APREND_ERROR *)
+fn aprend_texture2d_get_data APRESULT (aprend_texture2d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void *, uint64_t, APREND_ERROR *)
+fn aprend_texture2d_get_desc APRESULT (aprend_texture2d, APREND_TEXTURE2D_DESC *)
 fn aprend_texture2d_get_spudgpu_image spudgpu_image (aprend_texture2d)
-fn aprend_texture2d_resize _Bool (aprend_texture2d, uint32_t, uint32_t)
-fn aprend_texture2d_update _Bool (aprend_texture2d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void **)
-fn aprend_texture3d_create aprend_texture3d (aprend_instance, const aprend_texture3d_desc *)
+fn aprend_texture2d_resize APRESULT (aprend_texture2d, uint32_t, uint32_t, APREND_ERROR *)
+fn aprend_texture2d_update APRESULT (aprend_texture2d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const void *, uint64_t, APREND_ERROR *)
+fn aprend_texture3d_create APRESULT (aprend_instance, const APREND_TEXTURE3D_DESC *, aprend_texture3d *, APREND_ERROR *)
 fn aprend_texture3d_destroy void (aprend_texture3d)
-fn aprend_texture3d_get_data _Bool (aprend_texture3d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void **)
-fn aprend_texture3d_get_desc aprend_texture3d_desc (aprend_texture3d)
+fn aprend_texture3d_get_data APRESULT (aprend_texture3d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void *, uint64_t, APREND_ERROR *)
+fn aprend_texture3d_get_desc APRESULT (aprend_texture3d, APREND_TEXTURE3D_DESC *)
 fn aprend_texture3d_get_spudgpu_image spudgpu_image (aprend_texture3d)
 fn aprend_texture3d_get_spudgpu_image_view spudgpu_image_view (aprend_texture3d)
-fn aprend_texture3d_resize _Bool (aprend_texture3d, uint32_t, uint32_t, uint32_t)
-fn aprend_texture3d_update _Bool (aprend_texture3d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, void **)
-fn aprend_texture_view_create_2d aprend_texture_view (aprend_texture2d, const aprend_texture_view_desc *)
-fn aprend_texture_view_create_3d aprend_texture_view (aprend_texture3d, const aprend_texture_view_desc *)
+fn aprend_texture3d_resize APRESULT (aprend_texture3d, uint32_t, uint32_t, uint32_t, APREND_ERROR *)
+fn aprend_texture3d_update APRESULT (aprend_texture3d, spudgpu_command_queue, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, const void *, uint64_t, APREND_ERROR *)
+fn aprend_texture_view_create_2d APRESULT (aprend_texture2d, const APREND_TEXTURE_VIEW_DESC *, aprend_texture_view *, APREND_ERROR *)
+fn aprend_texture_view_create_3d APRESULT (aprend_texture3d, const APREND_TEXTURE_VIEW_DESC *, aprend_texture_view *, APREND_ERROR *)
 fn aprend_texture_view_destroy void (aprend_texture_view)
-fn aprend_texture_view_get_desc aprend_texture_view_desc (aprend_texture_view)
+fn aprend_texture_view_get_desc APRESULT (aprend_texture_view, APREND_TEXTURE_VIEW_DESC *)
 fn aprend_texture_view_get_dimension APREND_TEXTURE_DIMENSION (aprend_texture_view)
 fn aprend_texture_view_get_spudgpu_image_view spudgpu_image_view (aprend_texture_view)
 fn aprend_texture_view_get_texture2d aprend_texture2d (aprend_texture_view)
 fn aprend_texture_view_get_type APREND_TEXTURE_VIEW_TYPE (aprend_texture_view)
-fn aprend_transient_allocate _Bool (aprend_instance, uint64_t, uint64_t, aprend_transient_span *)
+fn aprend_transient_allocate APRESULT (aprend_instance, uint64_t, uint64_t, APREND_TRANSIENT_SPAN *, APREND_ERROR *)
 fn aprend_transient_get_frame_usage uint64_t (aprend_instance)
-fn aprend_uniform_buffer_create aprend_uniform_buffer (aprend_instance, const aprend_uniform_layout *)
-fn aprend_uniform_buffer_destroy void (aprend_uniform_buffer)
-fn aprend_uniform_buffer_get_layout void (aprend_uniform_buffer, aprend_uniform_layout *)
-fn aprend_uniform_buffer_get_size uint32_t (aprend_uniform_buffer)
-fn aprend_uniform_buffer_set_create aprend_uniform_buffer_set (aprend_instance, const aprend_uniform_layout *)
-fn aprend_uniform_buffer_set_destroy void (aprend_uniform_buffer_set)
-fn aprend_uniform_buffer_set_get_buffer aprend_uniform_buffer (aprend_uniform_buffer_set, uint32_t)
-fn aprend_uniform_buffer_set_update _Bool (aprend_uniform_buffer_set, uint32_t, uint32_t, const void *)
-fn aprend_uniform_buffer_set_update_by_name _Bool (aprend_uniform_buffer_set, const char *, const void *)
-fn aprend_uniform_buffer_set_update_uniform _Bool (aprend_uniform_buffer_set, uint32_t, const void *)
-fn aprend_uniform_buffer_update _Bool (aprend_uniform_buffer, uint32_t, uint32_t, const void *)
-fn aprend_uniform_buffer_update_by_name _Bool (aprend_uniform_buffer, const char *, const void *)
-fn aprend_uniform_buffer_update_uniform _Bool (aprend_uniform_buffer, uint32_t, const void *)
-fn aprend_uniform_layout_get_uniform_index uint32_t (const aprend_uniform_layout *, const char *)
+fn aprend_uniform_layout_get_size APRESULT (const APREND_UNIFORM_LAYOUT *, uint32_t *, APREND_ERROR *)
+fn aprend_uniform_layout_get_uniform_index APRESULT (const APREND_UNIFORM_LAYOUT *, const char *, uint32_t *)
 fn aprend_uniform_type_get_size uint32_t (APREND_UNIFORM_TYPE)
-fn aprend_vertex_buffer_create aprend_vertex_buffer (aprend_instance, uint64_t, APREND_BUFFER_WRITES, const void *)
-fn aprend_vertex_buffer_destroy void (aprend_vertex_buffer)
-fn aprend_vertex_buffer_get_size uint64_t (aprend_vertex_buffer)
-fn aprend_vertex_buffer_update _Bool (aprend_vertex_buffer, uint64_t, uint64_t, const void *)
 fn aprend_vertex_element_type_get_size uint32_t (APREND_VERTEX_ELEMENT_TYPE)
-fn aprend_vertex_layout_get_element_index uint32_t (const aprend_vertex_layout *, const char *)
-fn aprend_vertex_pool_allocate _Bool (aprend_vertex_pool, uint32_t, const void *, aprend_vertex_range *)
-fn aprend_vertex_pool_create aprend_vertex_pool (aprend_instance, const aprend_vertex_pool_desc *)
+fn aprend_vertex_layout_get_element_index uint32_t (const APREND_VERTEX_LAYOUT *, const char *)
+fn aprend_vertex_pool_allocate APRESULT (aprend_vertex_pool, uint32_t, const void *, APREND_VERTEX_RANGE *, APREND_ERROR *)
+fn aprend_vertex_pool_create APRESULT (aprend_instance, const APREND_VERTEX_POOL_DESC *, aprend_vertex_pool *, APREND_ERROR *)
 fn aprend_vertex_pool_destroy void (aprend_vertex_pool)
-fn aprend_vertex_pool_free void (aprend_vertex_pool, const aprend_vertex_range *)
-fn aprend_vertex_pool_get_usage void (aprend_vertex_pool, uint64_t *, uint64_t *)
+fn aprend_vertex_pool_free APRESULT (aprend_vertex_pool, const APREND_VERTEX_RANGE *, APREND_ERROR *)
+fn aprend_vertex_pool_get_usage APRESULT (aprend_vertex_pool, uint64_t *, uint64_t *)
 fn aprend_vertex_pool_trim void (aprend_vertex_pool)
 fn apri_debug_name_get const char *(void *)
 fn apri_debug_name_set void (void *, const char *)
@@ -602,9 +673,13 @@ fn aptext_chain_get_face aptext_face (aptext_chain, uint32_t)
 fn aptext_chain_get_face_count uint32_t (aptext_chain)
 fn aptext_face_create APRESULT (const APTEXT_FACE_DESC *, aptext_face *, APTEXT_ERROR *)
 fn aptext_face_create_hershey APRESULT (const APTEXT_HERSHEY_FACE_DESC *, aptext_face *, APTEXT_ERROR *)
+fn aptext_face_create_lff APRESULT (const APTEXT_LFF_FACE_DESC *, aptext_face *, APTEXT_ERROR *)
+fn aptext_face_create_shx APRESULT (const APTEXT_SHX_FACE_DESC *, aptext_face *, APTEXT_ERROR *)
 fn aptext_face_create_stroke APRESULT (const APTEXT_STROKE_FACE_DESC *, aptext_face *, APTEXT_ERROR *)
 fn aptext_face_destroy void (aptext_face)
 fn aptext_face_find_glyph APRESULT (aptext_face, uint32_t, uint32_t *)
+fn aptext_face_get_axis APRESULT (aptext_face, uint32_t, APTEXT_AXIS *)
+fn aptext_face_get_axis_count uint32_t (aptext_face)
 fn aptext_face_get_glyph_strokes APRESULT (aptext_face, uint32_t, const ApriVec2 **, uint32_t *, const APTEXT_STROKE_POLYLINE **, uint32_t *)
 fn aptext_face_get_metrics APRESULT (aptext_face, APTEXT_FACE_METRICS *)
 fn aptext_generate_glyph APRESULT (const APTEXT_GLYPH_GENERATE_DESC *, void *, uint64_t, APTEXT_GLYPH_IMAGE *, APTEXT_ERROR *)
@@ -617,15 +692,21 @@ fn aptext_layout_get_lines APRESULT (aptext_layout, const APTEXT_LINE **, uint32
 fn aptext_layout_get_runs APRESULT (aptext_layout, const APTEXT_RUN **, uint32_t *)
 fn aptext_layout_get_strokes APRESULT (aptext_layout, APTEXT_SEGMENT *, uint32_t, uint32_t *)
 macro APARCHIVE_ERROR_MESSAGE_SIZE 256
+macro APARCHIVE_EXTRA_NTFS_TIMES 0x000A
+macro APARCHIVE_EXTRA_UNICODE_PATH 0x7075
+macro APARCHIVE_EXTRA_UNIX_TIMES 0x5455
 macro APARCHIVE_METHOD_DEFLATE 8
 macro APARCHIVE_METHOD_STORED 0
 macro APAUDIO_CUE_NAME_SIZE 64
 macro APAUDIO_ERROR_MESSAGE_SIZE 256
+macro APJOBS_ERROR_MESSAGE_SIZE 256
+macro APJOBS_POOL_MAX_THREADS 256
 macro APMATH_ERROR_MESSAGE_SIZE 256
 macro APMATH_POLY_COORD_LIMIT ((int64_t)1 << 40)
 macro APMATH_POLY_NO_RING UINT32_MAX
 macro APREND_BLUR_MAX_SIGMA 32.0f
 macro APREND_DRAW_LIST_NO_MATERIAL UINT32_MAX
+macro APREND_ERROR_MESSAGE_SIZE 256
 macro APREND_LIT_MATERIAL_SET 1u
 macro APREND_LIT_MAX_CASCADES 4u
 macro APREND_LIT_MAX_LIGHTS 128u
@@ -664,15 +745,18 @@ macro APSYNC_WAIT_FOREVER 0xFFFFFFFFu
 macro APTEXT_ERROR_MESSAGE_SIZE 256
 macro APTEXT_TAG(a,b,c,d) ((((uint32_t)(uint8_t)(a)) << 24U) | (((uint32_t)(uint8_t)(b)) << 16U) | (((uint32_t)(uint8_t)(c)) << 8U) | ((uint32_t)(uint8_t)(d)))
 opaque aparchive_codecs_t
+opaque aparchive_entry_reader_t
 opaque aparchive_reader_t
 opaque aparchive_writer_t
 opaque apaudio_cues_t
 opaque apaudio_mixer_t
+opaque apjobs_pool_t
 opaque apmath_instance_bvh_t
 opaque apmath_mesh_bvh_t
 opaque apmath_poly_t
 opaque aprend_binding_layout_t
 opaque aprend_binding_set_t
+opaque aprend_buffer_t
 opaque aprend_command_list_t
 opaque aprend_compute_pass_t
 opaque aprend_compute_pipeline_t
@@ -681,7 +765,6 @@ opaque aprend_exposure_t
 opaque aprend_framebuffer_t
 opaque aprend_gpu_timer_t
 opaque aprend_graphics_pipeline_t
-opaque aprend_index_buffer_t
 opaque aprend_index_pool_t
 opaque aprend_instance_t
 opaque aprend_lit_environment_t
@@ -690,29 +773,27 @@ opaque aprend_material_t
 opaque aprend_render_pass_t
 opaque aprend_sampler_t
 opaque aprend_shader_t
-opaque aprend_storage_buffer_set_t
-opaque aprend_storage_buffer_t
 opaque aprend_swap_chain_t
 opaque aprend_texture2d_t
 opaque aprend_texture3d_t
 opaque aprend_texture_view_t
-opaque aprend_uniform_buffer_set_t
-opaque aprend_uniform_buffer_t
-opaque aprend_vertex_buffer_t
 opaque aprend_vertex_pool_t
 opaque apsync_session_t
 opaque aptext_atlas_t
 opaque aptext_chain_t
 opaque aptext_face_t
 opaque aptext_layout_t
-struct APARCHIVE_CODEC size=56 align=8
+struct APARCHIVE_CODEC size=80 align=8
 field APARCHIVE_CODEC.base @0 APRI_STRUCT_BASE
 field APARCHIVE_CODEC.method @16 uint16_t
 field APARCHIVE_CODEC.user @24 void *
 field APARCHIVE_CODEC.compress_bound @32 uint64_t (*)(void *, uint64_t)
 field APARCHIVE_CODEC.compress @40 _Bool (*)(void *, int32_t, const void *, uint64_t, void *, uint64_t, uint64_t *)
 field APARCHIVE_CODEC.decompress @48 _Bool (*)(void *, const void *, uint64_t, void *, uint64_t)
-struct APARCHIVE_ENTRY_DESC size=64 align=8
+field APARCHIVE_CODEC.stream_begin @56 void *(*)(void *, _Bool, int32_t)
+field APARCHIVE_CODEC.stream_process @64 _Bool (*)(void *, void *, const void *, uint64_t, uint64_t *, void *, uint64_t, uint64_t *, _Bool, _Bool *)
+field APARCHIVE_CODEC.stream_end @72 void (*)(void *, void *)
+struct APARCHIVE_ENTRY_DESC size=104 align=8
 field APARCHIVE_ENTRY_DESC.base @0 APRI_STRUCT_BASE
 field APARCHIVE_ENTRY_DESC.name @16 const char *
 field APARCHIVE_ENTRY_DESC.method @24 uint16_t
@@ -724,7 +805,14 @@ field APARCHIVE_ENTRY_DESC.utf8_name_flag @40 _Bool
 field APARCHIVE_ENTRY_DESC.extra @48 const void *
 field APARCHIVE_ENTRY_DESC.extra_size @56 uint16_t
 field APARCHIVE_ENTRY_DESC.zip64 @58 _Bool
-struct APARCHIVE_ENTRY_INFO size=80 align=8
+field APARCHIVE_ENTRY_DESC.host_system @59 uint8_t
+field APARCHIVE_ENTRY_DESC.internal_attributes @60 uint16_t
+field APARCHIVE_ENTRY_DESC.external_attributes @64 uint32_t
+field APARCHIVE_ENTRY_DESC.central_extra @72 const void *
+field APARCHIVE_ENTRY_DESC.central_extra_size @80 uint16_t
+field APARCHIVE_ENTRY_DESC.comment @88 const void *
+field APARCHIVE_ENTRY_DESC.comment_size @96 uint16_t
+struct APARCHIVE_ENTRY_INFO size=104 align=8
 field APARCHIVE_ENTRY_INFO.base @0 APRI_STRUCT_BASE_OUT
 field APARCHIVE_ENTRY_INFO.name @16 const char *
 field APARCHIVE_ENTRY_INFO.name_size @24 uint16_t
@@ -739,8 +827,20 @@ field APARCHIVE_ENTRY_INFO.local_header_offset @56 uint64_t
 field APARCHIVE_ENTRY_INFO.extra @64 const void *
 field APARCHIVE_ENTRY_INFO.extra_size @72 uint16_t
 field APARCHIVE_ENTRY_INFO.is_directory @74 _Bool
+field APARCHIVE_ENTRY_INFO.version_made_by @76 uint16_t
+field APARCHIVE_ENTRY_INFO.internal_attributes @78 uint16_t
+field APARCHIVE_ENTRY_INFO.external_attributes @80 uint32_t
+field APARCHIVE_ENTRY_INFO.comment @88 const void *
+field APARCHIVE_ENTRY_INFO.comment_size @96 uint16_t
 struct APARCHIVE_ERROR size=256 align=1
 field APARCHIVE_ERROR.message @0 char[256]
+struct APARCHIVE_FILE_TIMES size=32 align=8
+field APARCHIVE_FILE_TIMES.modified @0 int64_t
+field APARCHIVE_FILE_TIMES.accessed @8 int64_t
+field APARCHIVE_FILE_TIMES.created @16 int64_t
+field APARCHIVE_FILE_TIMES.has_modified @24 _Bool
+field APARCHIVE_FILE_TIMES.has_accessed @25 _Bool
+field APARCHIVE_FILE_TIMES.has_created @26 _Bool
 struct APARCHIVE_READER_DESC size=88 align=8
 field APARCHIVE_READER_DESC.base @0 APRI_STRUCT_BASE
 field APARCHIVE_READER_DESC.source @16 APARCHIVE_SOURCE
@@ -750,6 +850,7 @@ field APARCHIVE_READER_DESC.max_central_directory_size @56 uint64_t
 field APARCHIVE_READER_DESC.max_entry_uncompressed_size @64 uint64_t
 field APARCHIVE_READER_DESC.max_total_uncompressed_size @72 uint64_t
 field APARCHIVE_READER_DESC.max_compression_ratio @80 uint32_t
+field APARCHIVE_READER_DESC.strict @84 APARCHIVE_STRICT
 struct APARCHIVE_SINK size=16 align=8
 field APARCHIVE_SINK.user @0 void *
 field APARCHIVE_SINK.write @8 _Bool (*)(void *, const void *, uint64_t)
@@ -757,10 +858,18 @@ struct APARCHIVE_SOURCE size=24 align=8
 field APARCHIVE_SOURCE.user @0 void *
 field APARCHIVE_SOURCE.size @8 uint64_t
 field APARCHIVE_SOURCE.read @16 _Bool (*)(void *, uint64_t, void *, uint64_t)
-struct APARCHIVE_WRITER_DESC size=40 align=8
+struct APARCHIVE_UPDATE_DESC size=64 align=8
+field APARCHIVE_UPDATE_DESC.base @0 APRI_STRUCT_BASE
+field APARCHIVE_UPDATE_DESC.reader @16 aparchive_reader
+field APARCHIVE_UPDATE_DESC.truncate @24 _Bool (*)(void *, uint64_t)
+field APARCHIVE_UPDATE_DESC.sink @32 APARCHIVE_SINK
+field APARCHIVE_UPDATE_DESC.codecs @48 aparchive_codecs
+field APARCHIVE_UPDATE_DESC.allow_directory_entries @56 _Bool
+struct APARCHIVE_WRITER_DESC size=48 align=8
 field APARCHIVE_WRITER_DESC.base @0 APRI_STRUCT_BASE
 field APARCHIVE_WRITER_DESC.sink @16 APARCHIVE_SINK
 field APARCHIVE_WRITER_DESC.codecs @32 aparchive_codecs
+field APARCHIVE_WRITER_DESC.allow_directory_entries @40 _Bool
 struct APAUDIO_BANK_SOURCE size=24 align=8
 field APAUDIO_BANK_SOURCE.user @0 void *
 field APAUDIO_BANK_SOURCE.get_size @8 _Bool (*)(void *, const char *, uint64_t *)
@@ -822,7 +931,7 @@ field APAUDIO_FORMAT.sample_rate @4 uint32_t
 field APAUDIO_FORMAT.channel_count @8 uint32_t
 field APAUDIO_FORMAT.interleaved @12 _Bool
 field APAUDIO_FORMAT.positions @16 const SPUDAUDIO_CHANNEL_POSITION *
-struct APAUDIO_MIXER_DESC size=96 align=8
+struct APAUDIO_MIXER_DESC size=112 align=8
 field APAUDIO_MIXER_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_MIXER_DESC.format @16 APAUDIO_FORMAT
 field APAUDIO_MIXER_DESC.max_frames @40 uint32_t
@@ -839,6 +948,10 @@ field APAUDIO_MIXER_DESC.max_modifiers @80 uint32_t
 field APAUDIO_MIXER_DESC.queue_capacity @84 uint32_t
 field APAUDIO_MIXER_DESC.resampler @88 APAUDIO_RESAMPLER
 field APAUDIO_MIXER_DESC.gain @92 float
+field APAUDIO_MIXER_DESC.limiter @96 APAUDIO_LIMITER
+field APAUDIO_MIXER_DESC.limiter_lookahead_us @100 uint32_t
+field APAUDIO_MIXER_DESC.limiter_release_us @104 uint32_t
+field APAUDIO_MIXER_DESC.limiter_ceiling @108 float
 struct APAUDIO_MODIFIER_DESC size=48 align=8
 field APAUDIO_MODIFIER_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_MODIFIER_DESC.targets @16 const APAUDIO_MODIFIER_TARGET *
@@ -875,6 +988,19 @@ field APAUDIO_SOUND_DESC.sample_rate @36 uint32_t
 field APAUDIO_SOUND_DESC.virtual_behavior @40 APAUDIO_VIRTUAL_BEHAVIOR
 field APAUDIO_SOUND_DESC.concurrency @48 APAUDIO_CONCURRENCY
 field APAUDIO_SOUND_DESC.bus @56 APAUDIO_BUS
+struct APJOBS_ERROR size=256 align=1
+field APJOBS_ERROR.message @0 char[256]
+struct APJOBS_POOL_DESC size=32 align=8
+field APJOBS_POOL_DESC.base @0 APRI_STRUCT_BASE
+field APJOBS_POOL_DESC.thread_count @16 uint32_t
+field APJOBS_POOL_DESC.max_tasks @20 uint32_t
+field APJOBS_POOL_DESC.debug_name @24 const char *
+struct APJOBS_SCHEDULER size=48 align=8
+field APJOBS_SCHEDULER.base @0 APRI_STRUCT_BASE
+field APJOBS_SCHEDULER.worker_count @16 uint32_t
+field APJOBS_SCHEDULER.user @24 void *
+field APJOBS_SCHEDULER.enqueue @32 APJOBS_ENQUEUE_FUNCTION
+field APJOBS_SCHEDULER.wait @40 APJOBS_WAIT_FUNCTION
 struct APMATH_AABB size=48 align=8
 field APMATH_AABB.lo @0 ApriDVec3
 field APMATH_AABB.hi @24 ApriDVec3
@@ -926,11 +1052,13 @@ field APMATH_POLY_DEFECT_INFO.ring @4 uint32_t
 field APMATH_POLY_DEFECT_INFO.edge @8 uint32_t
 field APMATH_POLY_DEFECT_INFO.other_ring @12 uint32_t
 field APMATH_POLY_DEFECT_INFO.other_edge @16 uint32_t
-struct APMATH_POLY_OFFSET_DESC size=80 align=8
+struct APMATH_POLY_OFFSET_DESC size=96 align=8
 field APMATH_POLY_OFFSET_DESC.base @0 APRI_STRUCT_BASE
 field APMATH_POLY_OFFSET_DESC.set @16 APMATH_POLY_SET
 field APMATH_POLY_OFFSET_DESC.distances @64 const double *
 field APMATH_POLY_OFFSET_DESC.miter_limit @72 double
+field APMATH_POLY_OFFSET_DESC.join @80 APMATH_POLY_JOIN
+field APMATH_POLY_OFFSET_DESC.arc_tolerance @88 double
 struct APMATH_POLY_POINT size=16 align=8
 field APMATH_POLY_POINT.x @0 int64_t
 field APMATH_POLY_POINT.y @8 int64_t
@@ -950,6 +1078,97 @@ field APMATH_RAY.origin @0 ApriDVec3
 field APMATH_RAY.direction @24 ApriDVec3
 field APMATH_RAY.t_min @48 double
 field APMATH_RAY.t_max @56 double
+struct APREND_BATCH_CIRCLE size=64 align=4
+field APREND_BATCH_CIRCLE.center @0 float[3]
+field APREND_BATCH_CIRCLE.radius_x @12 float[3]
+field APREND_BATCH_CIRCLE.radius_y @24 float[3]
+field APREND_BATCH_CIRCLE.color @36 float[4]
+field APREND_BATCH_CIRCLE.inner @52 float
+field APREND_BATCH_CIRCLE.start_angle @56 float
+field APREND_BATCH_CIRCLE.sweep_angle @60 float
+struct APREND_BATCH_DESC size=40 align=8
+field APREND_BATCH_DESC.base @0 APRI_STRUCT_BASE
+field APREND_BATCH_DESC.color_format @16 SPUDGPU_FORMAT
+field APREND_BATCH_DESC.depth_format @20 SPUDGPU_FORMAT
+field APREND_BATCH_DESC.max_shapes @24 uint32_t
+field APREND_BATCH_DESC.debug_name @32 const char *
+struct APREND_BATCH_FRAME size=128 align=8
+field APREND_BATCH_FRAME.base @0 APRI_STRUCT_BASE
+field APREND_BATCH_FRAME.space @16 APREND_BATCH_SPACE
+field APREND_BATCH_FRAME.depth @20 APREND_BATCH_DEPTH
+field APREND_BATCH_FRAME.view_projection @24 float[16]
+field APREND_BATCH_FRAME.viewport_size @88 float[2]
+field APREND_BATCH_FRAME.pixels_per_mm @96 float
+field APREND_BATCH_FRAME.texture @104 aprend_texture_view
+field APREND_BATCH_FRAME.atlas @112 aprend_texture_view
+field APREND_BATCH_FRAME.atlas_distance_range @120 float
+struct APREND_BATCH_GLYPH size=92 align=4
+field APREND_BATCH_GLYPH.origin @0 float[3]
+field APREND_BATCH_GLYPH.edge_x @12 float[3]
+field APREND_BATCH_GLYPH.edge_y @24 float[3]
+field APREND_BATCH_GLYPH.color @36 float[4]
+field APREND_BATCH_GLYPH.outline_color @52 float[4]
+field APREND_BATCH_GLYPH.outline_width @68 float
+field APREND_BATCH_GLYPH.uv_rect @72 float[4]
+field APREND_BATCH_GLYPH.layer @88 uint32_t
+struct APREND_BATCH_LINE size=88 align=8
+field APREND_BATCH_LINE.base @0 APRI_STRUCT_BASE
+field APREND_BATCH_LINE.points @16 const float *
+field APREND_BATCH_LINE.point_count @24 uint32_t
+field APREND_BATCH_LINE.closed @28 _Bool
+field APREND_BATCH_LINE.width @32 float
+field APREND_BATCH_LINE.unit @36 APREND_BATCH_UNIT
+field APREND_BATCH_LINE.cap @40 APREND_BATCH_CAP
+field APREND_BATCH_LINE.join @44 APREND_BATCH_JOIN
+field APREND_BATCH_LINE.miter_limit @48 float
+field APREND_BATCH_LINE.color @52 float[4]
+field APREND_BATCH_LINE.dashes @72 const float *
+field APREND_BATCH_LINE.dash_count @80 uint32_t
+field APREND_BATCH_LINE.dash_offset @84 float
+struct APREND_BATCH_QUAD size=72 align=4
+field APREND_BATCH_QUAD.origin @0 float[3]
+field APREND_BATCH_QUAD.edge_x @12 float[3]
+field APREND_BATCH_QUAD.edge_y @24 float[3]
+field APREND_BATCH_QUAD.color @36 float[4]
+field APREND_BATCH_QUAD.uv_rect @52 float[4]
+field APREND_BATCH_QUAD.textured @68 _Bool
+struct APREND_BINDING_DESC size=24 align=8
+field APREND_BINDING_DESC._binding @0 uint32_t
+field APREND_BINDING_DESC._type @4 SPUDGPU_DESCRIPTOR_TYPE
+field APREND_BINDING_DESC._count @8 uint32_t
+field APREND_BINDING_DESC._stages @12 SPUDGPU_SHADER_STAGE
+field APREND_BINDING_DESC._name @16 const char *
+struct APREND_BINDING_SET_ENTRY size=40 align=8
+field APREND_BINDING_SET_ENTRY._binding @0 uint32_t
+field APREND_BINDING_SET_ENTRY._array_element @4 uint32_t
+field APREND_BINDING_SET_ENTRY._type @8 SPUDGPU_DESCRIPTOR_TYPE
+field APREND_BINDING_SET_ENTRY._resource @16 union {}
+field APREND_BINDING_SET_ENTRY._resource._image @16 struct {}
+field APREND_BINDING_SET_ENTRY._resource._image._view @16 aprend_texture_view
+field APREND_BINDING_SET_ENTRY._resource._storage @16 struct {}
+field APREND_BINDING_SET_ENTRY._resource._storage._buffer @16 aprend_buffer
+field APREND_BINDING_SET_ENTRY._resource._uniform @16 struct {}
+field APREND_BINDING_SET_ENTRY._resource._uniform._buffer @16 aprend_buffer
+field APREND_BINDING_SET_ENTRY._resource._image._sampler @24 aprend_sampler
+field APREND_BINDING_SET_ENTRY._resource._storage._offset @24 uint64_t
+field APREND_BINDING_SET_ENTRY._resource._uniform._offset @24 uint64_t
+field APREND_BINDING_SET_ENTRY._resource._storage._range @32 uint64_t
+field APREND_BINDING_SET_ENTRY._resource._uniform._range @32 uint64_t
+struct APREND_BUFFER_DESC size=56 align=8
+field APREND_BUFFER_DESC.base @0 APRI_STRUCT_BASE
+field APREND_BUFFER_DESC.size @16 uint64_t
+field APREND_BUFFER_DESC.usage @24 APREND_BUFFER_USAGE
+field APREND_BUFFER_DESC.writes @28 APREND_BUFFER_WRITES
+field APREND_BUFFER_DESC.index_stride @32 APREND_INDEX_STRIDE
+field APREND_BUFFER_DESC.per_frame @36 _Bool
+field APREND_BUFFER_DESC.initial_data @40 const void *
+field APREND_BUFFER_DESC.debug_name @48 const char *
+struct APREND_COLOR_TARGET size=40 align=8
+field APREND_COLOR_TARGET.view @0 aprend_texture_view
+field APREND_COLOR_TARGET.resolve_view @8 aprend_texture_view
+field APREND_COLOR_TARGET.load_op @16 SPUDGPU_LOAD_OP
+field APREND_COLOR_TARGET.store_op @20 SPUDGPU_STORE_OP
+field APREND_COLOR_TARGET.clear_color @24 float[4]
 struct APREND_COMMAND size=128 align=8
 field APREND_COMMAND._type @0 APREND_COMMAND_TYPE
 field APREND_COMMAND._params @8 union {}
@@ -960,23 +1179,27 @@ field APREND_COMMAND._params._begin_label._label @8 const char *
 field APREND_COMMAND._params._begin_render_pass @8 struct {}
 field APREND_COMMAND._params._begin_render_pass._pass @8 aprend_render_pass
 field APREND_COMMAND._params._begin_rendering @8 struct {}
-field APREND_COMMAND._params._begin_rendering._color_targets @8 const aprend_color_target *
+field APREND_COMMAND._params._begin_rendering._color_targets @8 const APREND_COLOR_TARGET *
 field APREND_COMMAND._params._bloom @8 struct {}
 field APREND_COMMAND._params._bloom._source @8 aprend_texture_view
 field APREND_COMMAND._params._blur @8 struct {}
 field APREND_COMMAND._params._blur._source @8 aprend_texture_view
+field APREND_COMMAND._params._copy_scene_color @8 struct {}
+field APREND_COMMAND._params._copy_scene_color._source @8 aprend_texture_view
 field APREND_COMMAND._params._dispatch @8 struct {}
 field APREND_COMMAND._params._dispatch._group_count_x @8 uint32_t
 field APREND_COMMAND._params._dispatch_mesh @8 struct {}
 field APREND_COMMAND._params._dispatch_mesh._group_count_x @8 uint32_t
 field APREND_COMMAND._params._draw @8 struct {}
 field APREND_COMMAND._params._draw._vertex_count @8 uint32_t
+field APREND_COMMAND._params._draw_batch @8 struct {}
+field APREND_COMMAND._params._draw_batch._batch @8 struct aprend_batch_t *
 field APREND_COMMAND._params._draw_indexed @8 struct {}
 field APREND_COMMAND._params._draw_indexed._index_count @8 uint32_t
 field APREND_COMMAND._params._draw_indexed_instanced @8 struct {}
 field APREND_COMMAND._params._draw_indexed_instanced._index_count_per_instance @8 uint32_t
 field APREND_COMMAND._params._draw_indirect @8 struct {}
-field APREND_COMMAND._params._draw_indirect._buffer @8 aprend_storage_buffer
+field APREND_COMMAND._params._draw_indirect._buffer @8 aprend_buffer
 field APREND_COMMAND._params._draw_instanced @8 struct {}
 field APREND_COMMAND._params._draw_instanced._vertex_count_per_instance @8 uint32_t
 field APREND_COMMAND._params._draw_list @8 struct {}
@@ -1007,7 +1230,7 @@ field APREND_COMMAND._params._set_compute_pass._pass @8 aprend_compute_pass
 field APREND_COMMAND._params._set_compute_pipeline @8 struct {}
 field APREND_COMMAND._params._set_compute_pipeline._pipeline @8 aprend_compute_pipeline
 field APREND_COMMAND._params._set_index_buffer @8 struct {}
-field APREND_COMMAND._params._set_index_buffer._index_buffer @8 aprend_index_buffer
+field APREND_COMMAND._params._set_index_buffer._index_buffer @8 aprend_buffer
 field APREND_COMMAND._params._set_material @8 struct {}
 field APREND_COMMAND._params._set_material._slot @8 uint32_t
 field APREND_COMMAND._params._set_scissor_rects @8 struct {}
@@ -1015,11 +1238,11 @@ field APREND_COMMAND._params._set_scissor_rects._scissor_rects @8 const SPUDGPU_
 field APREND_COMMAND._params._set_shader_pipeline @8 struct {}
 field APREND_COMMAND._params._set_shader_pipeline._pipeline @8 aprend_graphics_pipeline
 field APREND_COMMAND._params._set_transient_index_buffer @8 struct {}
-field APREND_COMMAND._params._set_transient_index_buffer._span @8 aprend_transient_span
+field APREND_COMMAND._params._set_transient_index_buffer._span @8 APREND_TRANSIENT_SPAN
 field APREND_COMMAND._params._set_transient_vertex_buffer @8 struct {}
-field APREND_COMMAND._params._set_transient_vertex_buffer._span @8 aprend_transient_span
+field APREND_COMMAND._params._set_transient_vertex_buffer._span @8 APREND_TRANSIENT_SPAN
 field APREND_COMMAND._params._set_vertex_buffers @8 struct {}
-field APREND_COMMAND._params._set_vertex_buffers._vertex_buffers @8 aprend_vertex_buffer *
+field APREND_COMMAND._params._set_vertex_buffers._vertex_buffers @8 aprend_buffer *
 field APREND_COMMAND._params._set_viewports @8 struct {}
 field APREND_COMMAND._params._set_viewports._viewports @8 const SPUDGPU_VIEWPORT *
 field APREND_COMMAND._params._tone_map @8 struct {}
@@ -1034,6 +1257,7 @@ field APREND_COMMAND._params._auto_exposure._source @16 aprend_texture_view
 field APREND_COMMAND._params._begin_rendering._color_target_count @16 uint32_t
 field APREND_COMMAND._params._bloom._target @16 aprend_texture_view
 field APREND_COMMAND._params._blur._target @16 aprend_texture_view
+field APREND_COMMAND._params._copy_scene_color._target @16 aprend_texture_view
 field APREND_COMMAND._params._dispatch._group_count_z @16 uint32_t
 field APREND_COMMAND._params._dispatch_mesh._group_count_z @16 uint32_t
 field APREND_COMMAND._params._draw_indexed._base_vertex_location @16 int32_t
@@ -1064,7 +1288,7 @@ field APREND_COMMAND._params._set_scissor_rects._scissor_rect_count @20 uint32_t
 field APREND_COMMAND._params._set_vertex_buffers._start_slot @20 uint32_t
 field APREND_COMMAND._params._set_viewports._viewport_count @20 uint32_t
 field APREND_COMMAND._params._auto_exposure._delta_time @24 float
-field APREND_COMMAND._params._begin_rendering._depth_target @24 aprend_depth_target
+field APREND_COMMAND._params._begin_rendering._depth_target @24 APREND_DEPTH_TARGET
 field APREND_COMMAND._params._bloom._threshold @24 float
 field APREND_COMMAND._params._blur._sigma @24 float
 field APREND_COMMAND._params._draw_indexed_instanced._start_instance_location @24 uint32_t
@@ -1081,7 +1305,6 @@ field APREND_COMMAND._params._lit_sky._turbidity @28 float
 field APREND_COMMAND._params._present_texture._filter @28 SPUDGPU_FILTER
 field APREND_COMMAND._params._tone_map._curve @28 APREND_TONE_CURVE
 field APREND_COMMAND._params._bloom._radius @32 float
-field APREND_COMMAND._params._draw_indirect._set @32 aprend_storage_buffer_set
 field APREND_COMMAND._params._draw_texture._border_color @32 float[4]
 field APREND_COMMAND._params._lit_ambient_occlusion._radius @32 float
 field APREND_COMMAND._params._lit_sky._intensity @32 float
@@ -1107,16 +1330,389 @@ field APREND_COMMAND._params._draw_texture._target_rect @64 APREND_TEXEL_RECT
 field APREND_COMMAND._params._begin_rendering._height @68 uint32_t
 field APREND_COMMAND._params._begin_rendering._timer @72 aprend_gpu_timer
 field APREND_COMMAND._params._begin_rendering._timer_slot @80 uint32_t
-struct APREND_DEFAULT_VERTEX size=48 align=4
-field APREND_DEFAULT_VERTEX.position @0 float[3]
-field APREND_DEFAULT_VERTEX.normal @12 float[3]
-field APREND_DEFAULT_VERTEX.uv @24 float[2]
-field APREND_DEFAULT_VERTEX.color @32 float[4]
+struct APREND_COMPUTE_PASS_DESC size=56 align=8
+field APREND_COMPUTE_PASS_DESC.base @0 APRI_STRUCT_BASE
+field APREND_COMPUTE_PASS_DESC._pipeline @16 aprend_compute_pipeline
+field APREND_COMPUTE_PASS_DESC._binding_sets @24 aprend_binding_set[4]
+struct APREND_COMPUTE_PIPELINE_DESC size=128 align=8
+field APREND_COMPUTE_PIPELINE_DESC.base @0 APRI_STRUCT_BASE
+field APREND_COMPUTE_PIPELINE_DESC._debug_name @16 const char *
+field APREND_COMPUTE_PIPELINE_DESC.compute_shader @24 aprend_shader
+field APREND_COMPUTE_PIPELINE_DESC._entry_point @32 const char *
+field APREND_COMPUTE_PIPELINE_DESC._binding_layouts @40 aprend_binding_layout[4]
+field APREND_COMPUTE_PIPELINE_DESC._binding_layout_count @72 uint32_t
+field APREND_COMPUTE_PIPELINE_DESC._push_constant_ranges @76 spudgpu_push_constant_range_desc[4]
+field APREND_COMPUTE_PIPELINE_DESC._push_constant_range_count @124 uint32_t
+struct APREND_DEPTH_TARGET size=32 align=8
+field APREND_DEPTH_TARGET.view @0 aprend_texture_view
+field APREND_DEPTH_TARGET.depth_load_op @8 SPUDGPU_LOAD_OP
+field APREND_DEPTH_TARGET.stencil_load_op @12 SPUDGPU_LOAD_OP
+field APREND_DEPTH_TARGET.depth_store_op @16 SPUDGPU_STORE_OP
+field APREND_DEPTH_TARGET.stencil_store_op @20 SPUDGPU_STORE_OP
+field APREND_DEPTH_TARGET.clear_depth @24 float
+field APREND_DEPTH_TARGET.clear_stencil @28 uint32_t
+struct APREND_DRAW_LIST_DESC size=32 align=8
+field APREND_DRAW_LIST_DESC.base @0 APRI_STRUCT_BASE
+field APREND_DRAW_LIST_DESC._order @16 APREND_DRAW_LIST_ORDER
+field APREND_DRAW_LIST_DESC._instance_stride @20 uint32_t
+field APREND_DRAW_LIST_DESC._instance_slot @24 uint32_t
+struct APREND_DRAW_MESH size=96 align=8
+field APREND_DRAW_MESH._vertex_buffers @0 aprend_buffer[8]
+field APREND_DRAW_MESH._vertex_buffer_count @64 uint32_t
+field APREND_DRAW_MESH._index_buffer @72 aprend_buffer
+field APREND_DRAW_MESH._first @80 uint32_t
+field APREND_DRAW_MESH._count @84 uint32_t
+field APREND_DRAW_MESH._base_vertex @88 int32_t
+struct APREND_ERROR size=256 align=1
+field APREND_ERROR.message @0 char[256]
+struct APREND_EXPOSURE_DESC size=48 align=8
+field APREND_EXPOSURE_DESC.base @0 APRI_STRUCT_BASE
+field APREND_EXPOSURE_DESC.key @16 float
+field APREND_EXPOSURE_DESC.min_log @20 float
+field APREND_EXPOSURE_DESC.max_log @24 float
+field APREND_EXPOSURE_DESC.up_rate @28 float
+field APREND_EXPOSURE_DESC.down_rate @32 float
+field APREND_EXPOSURE_DESC.low_share @36 float
+field APREND_EXPOSURE_DESC.high_share @40 float
+struct APREND_FRAMEBUFFER_DESC size=48 align=8
+field APREND_FRAMEBUFFER_DESC.base @0 APRI_STRUCT_BASE
+field APREND_FRAMEBUFFER_DESC.width @16 uint32_t
+field APREND_FRAMEBUFFER_DESC.height @20 uint32_t
+field APREND_FRAMEBUFFER_DESC.attachments @24 const APREND_FRAMEBUFFER_TEXTURE_SPEC *
+field APREND_FRAMEBUFFER_DESC.attachment_count @32 uint32_t
+field APREND_FRAMEBUFFER_DESC.depth_format @36 SPUDGPU_FORMAT
+field APREND_FRAMEBUFFER_DESC.sample_count @40 uint32_t
+struct APREND_FRAMEBUFFER_TEXTURE_SPEC size=16 align=8
+field APREND_FRAMEBUFFER_TEXTURE_SPEC.existing_texture @0 aprend_texture2d
+field APREND_FRAMEBUFFER_TEXTURE_SPEC.format @8 SPUDGPU_FORMAT
+field APREND_FRAMEBUFFER_TEXTURE_SPEC.shader_resource @12 _Bool
+struct APREND_GPU_TIMER_DESC size=32 align=8
+field APREND_GPU_TIMER_DESC.base @0 APRI_STRUCT_BASE
+field APREND_GPU_TIMER_DESC._slot_count @16 uint32_t
+field APREND_GPU_TIMER_DESC._queue @24 spudgpu_command_queue
+struct APREND_GRAPHICS_PIPELINE_DESC size=728 align=8
+field APREND_GRAPHICS_PIPELINE_DESC.base @0 APRI_STRUCT_BASE
+field APREND_GRAPHICS_PIPELINE_DESC._debug_name @16 const char *
+field APREND_GRAPHICS_PIPELINE_DESC._vertex_bindings @24 APREND_VERTEX_BINDING_DESC[8]
+field APREND_GRAPHICS_PIPELINE_DESC._vertex_binding_count @280 uint32_t
+field APREND_GRAPHICS_PIPELINE_DESC._topology @284 SPUDGPU_PRIMITIVE_TOPOLOGY
+field APREND_GRAPHICS_PIPELINE_DESC._cull_mode @288 SPUDGPU_CULL_MODE
+field APREND_GRAPHICS_PIPELINE_DESC._front_face_ccw @292 _Bool
+field APREND_GRAPHICS_PIPELINE_DESC._depth_test @293 _Bool
+field APREND_GRAPHICS_PIPELINE_DESC._depth_write @294 _Bool
+field APREND_GRAPHICS_PIPELINE_DESC._depth_compare_op @296 SPUDGPU_COMPARE_OP
+field APREND_GRAPHICS_PIPELINE_DESC._wireframe @300 _Bool
+field APREND_GRAPHICS_PIPELINE_DESC._depth_bias_constant @304 int32_t
+field APREND_GRAPHICS_PIPELINE_DESC._depth_bias_slope @308 float
+field APREND_GRAPHICS_PIPELINE_DESC._depth_bias_clamp @312 float
+field APREND_GRAPHICS_PIPELINE_DESC._blends @316 spudgpu_blend_attachment_desc[8]
+field APREND_GRAPHICS_PIPELINE_DESC.vertex_shader @544 aprend_shader
+field APREND_GRAPHICS_PIPELINE_DESC.fragment_shader @552 aprend_shader
+field APREND_GRAPHICS_PIPELINE_DESC._vertex_entry_point @560 const char *
+field APREND_GRAPHICS_PIPELINE_DESC._fragment_entry_point @568 const char *
+field APREND_GRAPHICS_PIPELINE_DESC.mesh_shader @576 aprend_shader
+field APREND_GRAPHICS_PIPELINE_DESC._mesh_entry_point @584 const char *
+field APREND_GRAPHICS_PIPELINE_DESC.color_attachment_formats @592 SPUDGPU_FORMAT[8]
+field APREND_GRAPHICS_PIPELINE_DESC.color_attachment_count @624 uint32_t
+field APREND_GRAPHICS_PIPELINE_DESC.depth_format @628 SPUDGPU_FORMAT
+field APREND_GRAPHICS_PIPELINE_DESC._binding_layouts @632 aprend_binding_layout[4]
+field APREND_GRAPHICS_PIPELINE_DESC._binding_layout_count @664 uint32_t
+field APREND_GRAPHICS_PIPELINE_DESC._push_constant_ranges @668 spudgpu_push_constant_range_desc[4]
+field APREND_GRAPHICS_PIPELINE_DESC._push_constant_range_count @716 uint32_t
+field APREND_GRAPHICS_PIPELINE_DESC._vertex_inputs_by_name @720 _Bool
+struct APREND_INDEX_POOL_DESC size=40 align=8
+field APREND_INDEX_POOL_DESC.base @0 APRI_STRUCT_BASE
+field APREND_INDEX_POOL_DESC.stride @16 APREND_INDEX_STRIDE
+field APREND_INDEX_POOL_DESC.block_index_count @20 uint32_t
+field APREND_INDEX_POOL_DESC.memory_limit @24 uint64_t
+field APREND_INDEX_POOL_DESC.debug_name @32 const char *
+struct APREND_INDEX_RANGE size=24 align=8
+field APREND_INDEX_RANGE.buffer @0 aprend_buffer
+field APREND_INDEX_RANGE.first_index @8 uint32_t
+field APREND_INDEX_RANGE.index_count @12 uint32_t
+field APREND_INDEX_RANGE._id @16 uint32_t
+field APREND_INDEX_RANGE._generation @20 uint32_t
+struct APREND_INSTANCE_DESC size=48 align=8
+field APREND_INSTANCE_DESC.base @0 APRI_STRUCT_BASE
+field APREND_INSTANCE_DESC.device @16 spudgpu_device
+field APREND_INSTANCE_DESC.frames_in_flight @24 uint32_t
+field APREND_INSTANCE_DESC.transient_chunk_size @32 uint64_t
+field APREND_INSTANCE_DESC.transient_memory_limit @40 uint64_t
+struct APREND_LIT_AMBIENT size=104 align=8
+field APREND_LIT_AMBIENT.base @0 APRI_STRUCT_BASE
+field APREND_LIT_AMBIENT.up @16 float[3]
+field APREND_LIT_AMBIENT.sky @28 float[3]
+field APREND_LIT_AMBIENT.ground @40 float[3]
+field APREND_LIT_AMBIENT.environment @56 aprend_lit_environment
+field APREND_LIT_AMBIENT.environment_intensity @64 float
+field APREND_LIT_AMBIENT.environment_rotation @68 float[9]
+struct APREND_LIT_CASCADE_FIT size=112 align=8
+field APREND_LIT_CASCADE_FIT.base @0 APRI_STRUCT_BASE
+field APREND_LIT_CASCADE_FIT.eye_position @16 float[3]
+field APREND_LIT_CASCADE_FIT.view_direction @28 float[3]
+field APREND_LIT_CASCADE_FIT.view_up @40 float[3]
+field APREND_LIT_CASCADE_FIT.orthographic @52 _Bool
+field APREND_LIT_CASCADE_FIT.fov_y @56 float
+field APREND_LIT_CASCADE_FIT.half_height @60 float
+field APREND_LIT_CASCADE_FIT.aspect @64 float
+field APREND_LIT_CASCADE_FIT.near_depth @68 float
+field APREND_LIT_CASCADE_FIT.far_depth @72 float
+field APREND_LIT_CASCADE_FIT.cascade_count @76 uint32_t
+field APREND_LIT_CASCADE_FIT.split_lambda @80 float
+field APREND_LIT_CASCADE_FIT.sun_direction @84 float[3]
+field APREND_LIT_CASCADE_FIT.caster_distance @96 float
+field APREND_LIT_CASCADE_FIT.map_size @100 uint32_t
+field APREND_LIT_CASCADE_FIT.reversed_depth @104 _Bool
+struct APREND_LIT_ENVIRONMENT_DESC size=24 align=8
+field APREND_LIT_ENVIRONMENT_DESC.base @0 APRI_STRUCT_BASE
+field APREND_LIT_ENVIRONMENT_DESC.specular_size @16 uint32_t
+field APREND_LIT_ENVIRONMENT_DESC.irradiance_size @20 uint32_t
+struct APREND_LIT_INSTANCE size=64 align=4
+field APREND_LIT_INSTANCE.transform @0 float[16]
+struct APREND_LIT_LIGHT size=52 align=4
+field APREND_LIT_LIGHT.type @0 APREND_LIT_LIGHT_TYPE
+field APREND_LIT_LIGHT.position @4 float[3]
+field APREND_LIT_LIGHT.direction @16 float[3]
+field APREND_LIT_LIGHT.radiance @28 float[3]
+field APREND_LIT_LIGHT.range @40 float
+field APREND_LIT_LIGHT.inner_angle @44 float
+field APREND_LIT_LIGHT.outer_angle @48 float
+struct APREND_LIT_MATERIAL_VALUES size=144 align=8
+field APREND_LIT_MATERIAL_VALUES.base @0 APRI_STRUCT_BASE
+field APREND_LIT_MATERIAL_VALUES.base_color @16 float[4]
+field APREND_LIT_MATERIAL_VALUES.emission @32 float[3]
+field APREND_LIT_MATERIAL_VALUES.roughness @44 float
+field APREND_LIT_MATERIAL_VALUES.metalness @48 float
+field APREND_LIT_MATERIAL_VALUES.specular @52 float
+field APREND_LIT_MATERIAL_VALUES.normal_scale @56 float
+field APREND_LIT_MATERIAL_VALUES.occlusion_strength @60 float
+field APREND_LIT_MATERIAL_VALUES.alpha_cutoff @64 float
+field APREND_LIT_MATERIAL_VALUES.uv_transform @68 float[6]
+field APREND_LIT_MATERIAL_VALUES.clearcoat @92 float
+field APREND_LIT_MATERIAL_VALUES.clearcoat_roughness @96 float
+field APREND_LIT_MATERIAL_VALUES.sheen_color @100 float[3]
+field APREND_LIT_MATERIAL_VALUES.sheen_roughness @112 float
+field APREND_LIT_MATERIAL_VALUES.transmission @116 float
+field APREND_LIT_MATERIAL_VALUES.ior @120 float
+field APREND_LIT_MATERIAL_VALUES.thickness @124 float
+field APREND_LIT_MATERIAL_VALUES.attenuation_color @128 float[3]
+field APREND_LIT_MATERIAL_VALUES.attenuation_distance @140 float
+struct APREND_LIT_POINT_SHADOW size=404 align=4
+field APREND_LIT_POINT_SHADOW.light @0 uint32_t
+field APREND_LIT_POINT_SHADOW.view_projection @4 float[6][16]
+field APREND_LIT_POINT_SHADOW.depth_bias @388 float
+field APREND_LIT_POINT_SHADOW.normal_offset @392 float
+field APREND_LIT_POINT_SHADOW.softness @396 float
+field APREND_LIT_POINT_SHADOW.strength @400 float
+struct APREND_LIT_SPOT_SHADOW size=84 align=4
+field APREND_LIT_SPOT_SHADOW.light @0 uint32_t
+field APREND_LIT_SPOT_SHADOW.view_projection @4 float[16]
+field APREND_LIT_SPOT_SHADOW.depth_bias @68 float
+field APREND_LIT_SPOT_SHADOW.normal_offset @72 float
+field APREND_LIT_SPOT_SHADOW.softness @76 float
+field APREND_LIT_SPOT_SHADOW.strength @80 float
+struct APREND_LIT_SUN size=48 align=8
+field APREND_LIT_SUN.base @0 APRI_STRUCT_BASE
+field APREND_LIT_SUN.direction @16 float[3]
+field APREND_LIT_SUN.radiance @28 float[3]
+field APREND_LIT_SUN.disc_angle @40 float
+struct APREND_LIT_SUN_SHADOW size=320 align=8
+field APREND_LIT_SUN_SHADOW.base @0 APRI_STRUCT_BASE
+field APREND_LIT_SUN_SHADOW.map @16 aprend_texture_view
+field APREND_LIT_SUN_SHADOW.cascade_count @24 uint32_t
+field APREND_LIT_SUN_SHADOW.view_projection @28 float[4][16]
+field APREND_LIT_SUN_SHADOW.split_depths @284 float[4]
+field APREND_LIT_SUN_SHADOW.depth_bias @300 float
+field APREND_LIT_SUN_SHADOW.normal_offset @304 float
+field APREND_LIT_SUN_SHADOW.softness @308 float
+field APREND_LIT_SUN_SHADOW.strength @312 float
+field APREND_LIT_SUN_SHADOW.reversed_depth @316 _Bool
+struct APREND_LIT_VERTEX size=48 align=4
+field APREND_LIT_VERTEX.position @0 float[3]
+field APREND_LIT_VERTEX.normal @12 float[3]
+field APREND_LIT_VERTEX.uv @24 float[2]
+field APREND_LIT_VERTEX.tangent @32 float[4]
+struct APREND_LIT_VIEW size=120 align=8
+field APREND_LIT_VIEW.base @0 APRI_STRUCT_BASE
+field APREND_LIT_VIEW.eye_position @16 float[3]
+field APREND_LIT_VIEW.view_direction @28 float[3]
+field APREND_LIT_VIEW.view_projection @40 float[16]
+field APREND_LIT_VIEW.target_width @104 uint32_t
+field APREND_LIT_VIEW.target_height @108 uint32_t
+field APREND_LIT_VIEW.exposure @112 float
+field APREND_LIT_VIEW.output_encoding @116 APREND_COLOR_ENCODING
+struct APREND_MATERIAL_DESC size=40 align=8
+field APREND_MATERIAL_DESC.base @0 APRI_STRUCT_BASE
+field APREND_MATERIAL_DESC._layout @16 aprend_binding_layout
+field APREND_MATERIAL_DESC._external_blocks @24 const char *const *
+field APREND_MATERIAL_DESC._external_block_count @32 uint32_t
+struct APREND_MATERIAL_UNIFORM size=16 align=8
+field APREND_MATERIAL_UNIFORM._layout @0 aprend_binding_layout
+field APREND_MATERIAL_UNIFORM._binding_index @8 uint32_t
+field APREND_MATERIAL_UNIFORM._member_index @12 uint32_t
+struct APREND_RENDER_PASS_DESC size=440 align=8
+field APREND_RENDER_PASS_DESC.base @0 APRI_STRUCT_BASE
+field APREND_RENDER_PASS_DESC._pipeline @16 aprend_graphics_pipeline
+field APREND_RENDER_PASS_DESC._framebuffer @24 aprend_framebuffer
+field APREND_RENDER_PASS_DESC._color_targets @32 APREND_COLOR_TARGET[8]
+field APREND_RENDER_PASS_DESC._color_target_count @352 uint32_t
+field APREND_RENDER_PASS_DESC._depth_target @360 APREND_DEPTH_TARGET
+field APREND_RENDER_PASS_DESC._binding_sets @392 aprend_binding_set[4]
+field APREND_RENDER_PASS_DESC._timer @424 aprend_gpu_timer
+field APREND_RENDER_PASS_DESC._timer_slot @432 uint32_t
+struct APREND_RENDER_TARGET_POOL_INFO size=40 align=8
+field APREND_RENDER_TARGET_POOL_INFO.base @0 APRI_STRUCT_BASE_OUT
+field APREND_RENDER_TARGET_POOL_INFO.texture_count @16 uint32_t
+field APREND_RENDER_TARGET_POOL_INFO.busy_count @20 uint32_t
+field APREND_RENDER_TARGET_POOL_INFO.bytes @24 uint64_t
+field APREND_RENDER_TARGET_POOL_INFO.busy_bytes @32 uint64_t
+struct APREND_SAMPLER_DESC size=72 align=8
+field APREND_SAMPLER_DESC.base @0 APRI_STRUCT_BASE
+field APREND_SAMPLER_DESC.mag_filter @16 SPUDGPU_FILTER
+field APREND_SAMPLER_DESC.min_filter @20 SPUDGPU_FILTER
+field APREND_SAMPLER_DESC.mipmap_filter @24 SPUDGPU_FILTER
+field APREND_SAMPLER_DESC.address_mode_u @28 SPUDGPU_ADDRESS_MODE
+field APREND_SAMPLER_DESC.address_mode_v @32 SPUDGPU_ADDRESS_MODE
+field APREND_SAMPLER_DESC.address_mode_w @36 SPUDGPU_ADDRESS_MODE
+field APREND_SAMPLER_DESC.mip_lod_bias @40 float
+field APREND_SAMPLER_DESC.min_lod @44 float
+field APREND_SAMPLER_DESC.max_lod @48 float
+field APREND_SAMPLER_DESC.max_anisotropy @52 float
+field APREND_SAMPLER_DESC.compare_enable @56 _Bool
+field APREND_SAMPLER_DESC.compare_op @60 SPUDGPU_COMPARE_OP
+field APREND_SAMPLER_DESC.debug_name @64 const char *
+struct APREND_SHADER_INPUT size=32 align=8
+field APREND_SHADER_INPUT.name @0 const char *
+field APREND_SHADER_INPUT.location @8 uint32_t
+field APREND_SHADER_INPUT.location_count @12 uint32_t
+field APREND_SHADER_INPUT.scalar_type @16 APREND_SHADER_SCALAR_TYPE
+field APREND_SHADER_INPUT.components @20 uint32_t
+field APREND_SHADER_INPUT.used @24 _Bool
+struct APREND_SHADER_MEMBER size=40 align=8
+field APREND_SHADER_MEMBER.name @0 const char *
+field APREND_SHADER_MEMBER.type @8 APREND_UNIFORM_TYPE
+field APREND_SHADER_MEMBER.offset @12 uint32_t
+field APREND_SHADER_MEMBER.size @16 uint32_t
+field APREND_SHADER_MEMBER.array_count @20 uint32_t
+field APREND_SHADER_MEMBER.array_stride @24 uint32_t
+field APREND_SHADER_MEMBER.matrix_stride @28 uint32_t
+field APREND_SHADER_MEMBER.row_major @32 _Bool
+field APREND_SHADER_MEMBER.used @33 _Bool
+struct APREND_SHADER_REFLECTION size=104 align=8
+field APREND_SHADER_REFLECTION.stage @0 SPUDGPU_SHADER_STAGE
+field APREND_SHADER_REFLECTION.entry_point @8 const char *
+field APREND_SHADER_REFLECTION.resources @16 const APREND_SHADER_RESOURCE *
+field APREND_SHADER_REFLECTION.resource_count @24 uint32_t
+field APREND_SHADER_REFLECTION.members @32 const APREND_SHADER_MEMBER *
+field APREND_SHADER_REFLECTION.member_count @40 uint32_t
+field APREND_SHADER_REFLECTION.inputs @48 const APREND_SHADER_INPUT *
+field APREND_SHADER_REFLECTION.input_count @56 uint32_t
+field APREND_SHADER_REFLECTION.has_push_constants @60 _Bool
+field APREND_SHADER_REFLECTION.push_constant_name @64 const char *
+field APREND_SHADER_REFLECTION.push_constant_begin @72 uint32_t
+field APREND_SHADER_REFLECTION.push_constant_end @76 uint32_t
+field APREND_SHADER_REFLECTION.push_constant_first_member @80 uint32_t
+field APREND_SHADER_REFLECTION.push_constant_member_count @84 uint32_t
+field APREND_SHADER_REFLECTION.color_output_count @88 uint32_t
+field APREND_SHADER_REFLECTION.workgroup_size @92 uint32_t[3]
+struct APREND_SHADER_RESOURCE size=64 align=8
+field APREND_SHADER_RESOURCE.name @0 const char *
+field APREND_SHADER_RESOURCE.block_name @8 const char *
+field APREND_SHADER_RESOURCE.set @16 uint32_t
+field APREND_SHADER_RESOURCE.binding @20 uint32_t
+field APREND_SHADER_RESOURCE.type @24 SPUDGPU_DESCRIPTOR_TYPE
+field APREND_SHADER_RESOURCE.count @28 uint32_t
+field APREND_SHADER_RESOURCE.block_size @32 uint32_t
+field APREND_SHADER_RESOURCE.runtime_array_stride @36 uint32_t
+field APREND_SHADER_RESOURCE.first_member @40 uint32_t
+field APREND_SHADER_RESOURCE.member_count @44 uint32_t
+field APREND_SHADER_RESOURCE.image_shape @48 APREND_TEXTURE_VIEW_SHAPE
+field APREND_SHADER_RESOURCE.image_scalar_type @52 APREND_SHADER_SCALAR_TYPE
+field APREND_SHADER_RESOURCE.image_depth_compare @56 _Bool
+field APREND_SHADER_RESOURCE.read_only @57 _Bool
+field APREND_SHADER_RESOURCE.used @58 _Bool
+struct APREND_SWAP_CHAIN_DESC size=56 align=8
+field APREND_SWAP_CHAIN_DESC.base @0 APRI_STRUCT_BASE
+field APREND_SWAP_CHAIN_DESC.surface @16 spudgpu_surface
+field APREND_SWAP_CHAIN_DESC.queue @24 spudgpu_command_queue
+field APREND_SWAP_CHAIN_DESC.width @32 uint32_t
+field APREND_SWAP_CHAIN_DESC.height @36 uint32_t
+field APREND_SWAP_CHAIN_DESC.buffer_count @40 uint32_t
+field APREND_SWAP_CHAIN_DESC.format @44 SPUDGPU_FORMAT
+field APREND_SWAP_CHAIN_DESC.present_mode @48 SPUDGPU_PRESENT_MODE
 struct APREND_TEXEL_RECT size=16 align=4
 field APREND_TEXEL_RECT.x @0 uint32_t
 field APREND_TEXEL_RECT.y @4 uint32_t
 field APREND_TEXEL_RECT.width @8 uint32_t
 field APREND_TEXEL_RECT.height @12 uint32_t
+struct APREND_TEXTURE2D_DESC size=56 align=8
+field APREND_TEXTURE2D_DESC.base @0 APRI_STRUCT_BASE
+field APREND_TEXTURE2D_DESC.width @16 uint32_t
+field APREND_TEXTURE2D_DESC.height @20 uint32_t
+field APREND_TEXTURE2D_DESC.format @24 SPUDGPU_FORMAT
+field APREND_TEXTURE2D_DESC.usage @28 APREND_TEXTURE_USAGE_BITS
+field APREND_TEXTURE2D_DESC.mip_levels @32 uint32_t
+field APREND_TEXTURE2D_DESC.array_layers @36 uint32_t
+field APREND_TEXTURE2D_DESC.sample_count @40 uint32_t
+field APREND_TEXTURE2D_DESC.cube_capable @44 _Bool
+field APREND_TEXTURE2D_DESC.debug_name @48 const char *
+struct APREND_TEXTURE3D_DESC size=48 align=8
+field APREND_TEXTURE3D_DESC.base @0 APRI_STRUCT_BASE
+field APREND_TEXTURE3D_DESC.width @16 uint32_t
+field APREND_TEXTURE3D_DESC.height @20 uint32_t
+field APREND_TEXTURE3D_DESC.depth @24 uint32_t
+field APREND_TEXTURE3D_DESC.format @28 SPUDGPU_FORMAT
+field APREND_TEXTURE3D_DESC.usage @32 APREND_TEXTURE_USAGE_BITS
+field APREND_TEXTURE3D_DESC.mip_levels @36 uint32_t
+field APREND_TEXTURE3D_DESC.debug_name @40 const char *
+struct APREND_TEXTURE_VIEW_DESC size=48 align=8
+field APREND_TEXTURE_VIEW_DESC.base @0 APRI_STRUCT_BASE
+field APREND_TEXTURE_VIEW_DESC.type @16 APREND_TEXTURE_VIEW_TYPE
+field APREND_TEXTURE_VIEW_DESC.shape @20 APREND_TEXTURE_VIEW_SHAPE
+field APREND_TEXTURE_VIEW_DESC.aspect @24 APREND_TEXTURE_VIEW_ASPECT
+field APREND_TEXTURE_VIEW_DESC.base_mip @28 uint32_t
+field APREND_TEXTURE_VIEW_DESC.mip_count @32 uint32_t
+field APREND_TEXTURE_VIEW_DESC.base_layer @36 uint32_t
+field APREND_TEXTURE_VIEW_DESC.layer_count @40 uint32_t
+struct APREND_TRANSIENT_SPAN size=48 align=8
+field APREND_TRANSIENT_SPAN.data @0 void *
+field APREND_TRANSIENT_SPAN.size @8 uint64_t
+field APREND_TRANSIENT_SPAN._chunk @16 void *
+field APREND_TRANSIENT_SPAN._offset @24 uint64_t
+field APREND_TRANSIENT_SPAN._epoch @32 uint64_t
+field APREND_TRANSIENT_SPAN._frame @40 uint32_t
+struct APREND_UNIFORM size=24 align=8
+field APREND_UNIFORM.name @0 const char *
+field APREND_UNIFORM.type @8 APREND_UNIFORM_TYPE
+field APREND_UNIFORM.array_count @12 uint32_t
+field APREND_UNIFORM.offset @16 uint32_t
+struct APREND_UNIFORM_LAYOUT size=24 align=8
+field APREND_UNIFORM_LAYOUT.count @0 uint32_t
+field APREND_UNIFORM_LAYOUT.uniforms @8 const APREND_UNIFORM *
+field APREND_UNIFORM_LAYOUT.size @16 uint32_t
+struct APREND_VERTEX_BINDING_DESC size=32 align=8
+field APREND_VERTEX_BINDING_DESC._layout @0 APREND_VERTEX_LAYOUT
+field APREND_VERTEX_BINDING_DESC._per_instance @24 _Bool
+struct APREND_VERTEX_ELEMENT size=16 align=8
+field APREND_VERTEX_ELEMENT.name @0 const char *
+field APREND_VERTEX_ELEMENT.type @8 APREND_VERTEX_ELEMENT_TYPE
+field APREND_VERTEX_ELEMENT.offset @12 uint32_t
+struct APREND_VERTEX_LAYOUT size=24 align=8
+field APREND_VERTEX_LAYOUT.count @0 uint32_t
+field APREND_VERTEX_LAYOUT.elements @8 const APREND_VERTEX_ELEMENT *
+field APREND_VERTEX_LAYOUT.stride @16 uint32_t
+struct APREND_VERTEX_POOL_DESC size=40 align=8
+field APREND_VERTEX_POOL_DESC.base @0 APRI_STRUCT_BASE
+field APREND_VERTEX_POOL_DESC.vertex_stride @16 uint32_t
+field APREND_VERTEX_POOL_DESC.block_vertex_count @20 uint32_t
+field APREND_VERTEX_POOL_DESC.memory_limit @24 uint64_t
+field APREND_VERTEX_POOL_DESC.debug_name @32 const char *
+struct APREND_VERTEX_RANGE size=24 align=8
+field APREND_VERTEX_RANGE.buffer @0 aprend_buffer
+field APREND_VERTEX_RANGE.first_vertex @8 uint32_t
+field APREND_VERTEX_RANGE.vertex_count @12 uint32_t
+field APREND_VERTEX_RANGE._id @16 uint32_t
+field APREND_VERTEX_RANGE._generation @20 uint32_t
 struct APRI_STRUCT_BASE size=16 align=8
 field APRI_STRUCT_BASE.type @0 APRI_STRUCT_TYPE
 field APRI_STRUCT_BASE.next @8 const struct APRI_STRUCT_BASE *
@@ -1199,6 +1795,12 @@ field APTEXT_ATLAS_LOAD_DESC.data @24 const void *
 field APTEXT_ATLAS_LOAD_DESC.data_size @32 uint64_t
 field APTEXT_ATLAS_LOAD_DESC.faces @40 const aptext_face *
 field APTEXT_ATLAS_LOAD_DESC.face_count @48 uint32_t
+struct APTEXT_AXIS size=20 align=4
+field APTEXT_AXIS.tag @0 uint32_t
+field APTEXT_AXIS.min_value @4 float
+field APTEXT_AXIS.default_value @8 float
+field APTEXT_AXIS.max_value @12 float
+field APTEXT_AXIS.hidden @16 _Bool
 struct APTEXT_CHAIN_DESC size=32 align=8
 field APTEXT_CHAIN_DESC.base @0 APRI_STRUCT_BASE
 field APTEXT_CHAIN_DESC.faces @16 const aptext_face *
@@ -1211,12 +1813,14 @@ field APTEXT_DIRTY_RECT.width @12 uint32_t
 field APTEXT_DIRTY_RECT.height @16 uint32_t
 struct APTEXT_ERROR size=256 align=1
 field APTEXT_ERROR.message @0 char[256]
-struct APTEXT_FACE_DESC size=40 align=8
+struct APTEXT_FACE_DESC size=56 align=8
 field APTEXT_FACE_DESC.base @0 APRI_STRUCT_BASE
 field APTEXT_FACE_DESC.data @16 const void *
 field APTEXT_FACE_DESC.data_size @24 uint64_t
 field APTEXT_FACE_DESC.collection_index @32 uint32_t
 field APTEXT_FACE_DESC.copy_data @36 _Bool
+field APTEXT_FACE_DESC.variations @40 const struct APTEXT_VARIATION *
+field APTEXT_FACE_DESC.variation_count @48 uint32_t
 struct APTEXT_FACE_METRICS size=64 align=8
 field APTEXT_FACE_METRICS.base @0 APRI_STRUCT_BASE_OUT
 field APTEXT_FACE_METRICS.kind @16 APTEXT_FACE_KIND
@@ -1296,6 +1900,13 @@ field APTEXT_LAYOUT_INFO.missing_codepoint_count @28 uint32_t
 field APTEXT_LAYOUT_INFO.replaced_sequence_count @32 uint32_t
 field APTEXT_LAYOUT_INFO.width @36 float
 field APTEXT_LAYOUT_INFO.height @40 float
+struct APTEXT_LFF_FACE_DESC size=56 align=8
+field APTEXT_LFF_FACE_DESC.base @0 APRI_STRUCT_BASE
+field APTEXT_LFF_FACE_DESC.data @16 const void *
+field APTEXT_LFF_FACE_DESC.data_size @24 uint64_t
+field APTEXT_LFF_FACE_DESC.units_per_em @32 float
+field APTEXT_LFF_FACE_DESC.arc_tolerance @36 float
+field APTEXT_LFF_FACE_DESC.metrics @40 APTEXT_STROKE_METRICS
 struct APTEXT_LINE size=44 align=4
 field APTEXT_LINE.first_glyph @0 uint32_t
 field APTEXT_LINE.glyph_count @4 uint32_t
@@ -1324,6 +1935,14 @@ field APTEXT_SEGMENT.y0 @4 float
 field APTEXT_SEGMENT.x1 @8 float
 field APTEXT_SEGMENT.y1 @12 float
 field APTEXT_SEGMENT.glyph_index @16 uint32_t
+struct APTEXT_SHX_FACE_DESC size=56 align=8
+field APTEXT_SHX_FACE_DESC.base @0 APRI_STRUCT_BASE
+field APTEXT_SHX_FACE_DESC.data @16 const void *
+field APTEXT_SHX_FACE_DESC.data_size @24 uint64_t
+field APTEXT_SHX_FACE_DESC.high_codepoints @32 const uint32_t *
+field APTEXT_SHX_FACE_DESC.high_codepoint_count @40 uint32_t
+field APTEXT_SHX_FACE_DESC.arc_tolerance @44 float
+field APTEXT_SHX_FACE_DESC.line_gap @48 float
 struct APTEXT_STROKE_FACE_DESC size=72 align=8
 field APTEXT_STROKE_FACE_DESC.base @0 APRI_STRUCT_BASE
 field APTEXT_STROKE_FACE_DESC.glyphs @16 const APTEXT_STROKE_GLYPH *
@@ -1345,412 +1964,19 @@ field APTEXT_STROKE_METRICS.line_gap @8 float
 struct APTEXT_STROKE_POLYLINE size=8 align=4
 field APTEXT_STROKE_POLYLINE.first_point @0 uint32_t
 field APTEXT_STROKE_POLYLINE.point_count @4 uint32_t
-struct aprend_binding_desc size=24 align=8
-field aprend_binding_desc._binding @0 uint32_t
-field aprend_binding_desc._type @4 SPUDGPU_DESCRIPTOR_TYPE
-field aprend_binding_desc._count @8 uint32_t
-field aprend_binding_desc._stages @12 SPUDGPU_SHADER_STAGE
-field aprend_binding_desc._name @16 const char *
-struct aprend_binding_set_entry size=48 align=8
-field aprend_binding_set_entry._binding @0 uint32_t
-field aprend_binding_set_entry._array_element @4 uint32_t
-field aprend_binding_set_entry._type @8 SPUDGPU_DESCRIPTOR_TYPE
-field aprend_binding_set_entry._resource @16 union {}
-field aprend_binding_set_entry._resource._image @16 struct {}
-field aprend_binding_set_entry._resource._image._view @16 aprend_texture_view
-field aprend_binding_set_entry._resource._storage @16 struct {}
-field aprend_binding_set_entry._resource._storage._buffer @16 aprend_storage_buffer
-field aprend_binding_set_entry._resource._uniform @16 struct {}
-field aprend_binding_set_entry._resource._uniform._buffer @16 aprend_uniform_buffer
-field aprend_binding_set_entry._resource._image._sampler @24 aprend_sampler
-field aprend_binding_set_entry._resource._storage._offset @24 uint64_t
-field aprend_binding_set_entry._resource._uniform._offset @24 uint64_t
-field aprend_binding_set_entry._resource._storage._range @32 uint64_t
-field aprend_binding_set_entry._resource._uniform._range @32 uint64_t
-field aprend_binding_set_entry._resource._storage._set @40 aprend_storage_buffer_set
-field aprend_binding_set_entry._resource._uniform._set @40 aprend_uniform_buffer_set
-struct aprend_color_target size=40 align=8
-field aprend_color_target.view @0 aprend_texture_view
-field aprend_color_target.resolve_view @8 aprend_texture_view
-field aprend_color_target.load_op @16 SPUDGPU_LOAD_OP
-field aprend_color_target.store_op @20 SPUDGPU_STORE_OP
-field aprend_color_target.clear_color @24 float[4]
-struct aprend_compute_pass_desc size=56 align=8
-field aprend_compute_pass_desc.base @0 APRI_STRUCT_BASE
-field aprend_compute_pass_desc._pipeline @16 aprend_compute_pipeline
-field aprend_compute_pass_desc._binding_sets @24 aprend_binding_set[4]
-struct aprend_compute_pipeline_desc size=128 align=8
-field aprend_compute_pipeline_desc.base @0 APRI_STRUCT_BASE
-field aprend_compute_pipeline_desc._debug_name @16 const char *
-field aprend_compute_pipeline_desc.compute_shader @24 aprend_shader
-field aprend_compute_pipeline_desc._entry_point @32 const char *
-field aprend_compute_pipeline_desc._binding_layouts @40 aprend_binding_layout[4]
-field aprend_compute_pipeline_desc._binding_layout_count @72 uint32_t
-field aprend_compute_pipeline_desc._push_constant_ranges @76 spudgpu_push_constant_range_desc[4]
-field aprend_compute_pipeline_desc._push_constant_range_count @124 uint32_t
-struct aprend_depth_target size=32 align=8
-field aprend_depth_target.view @0 aprend_texture_view
-field aprend_depth_target.depth_load_op @8 SPUDGPU_LOAD_OP
-field aprend_depth_target.stencil_load_op @12 SPUDGPU_LOAD_OP
-field aprend_depth_target.depth_store_op @16 SPUDGPU_STORE_OP
-field aprend_depth_target.stencil_store_op @20 SPUDGPU_STORE_OP
-field aprend_depth_target.clear_depth @24 float
-field aprend_depth_target.clear_stencil @28 uint32_t
-struct aprend_draw_list_desc size=32 align=8
-field aprend_draw_list_desc.base @0 APRI_STRUCT_BASE
-field aprend_draw_list_desc._order @16 APREND_DRAW_LIST_ORDER
-field aprend_draw_list_desc._instance_stride @20 uint32_t
-field aprend_draw_list_desc._instance_slot @24 uint32_t
-struct aprend_draw_mesh size=96 align=8
-field aprend_draw_mesh._vertex_buffers @0 aprend_vertex_buffer[8]
-field aprend_draw_mesh._vertex_buffer_count @64 uint32_t
-field aprend_draw_mesh._index_buffer @72 aprend_index_buffer
-field aprend_draw_mesh._first @80 uint32_t
-field aprend_draw_mesh._count @84 uint32_t
-field aprend_draw_mesh._base_vertex @88 int32_t
-struct aprend_exposure_desc size=48 align=8
-field aprend_exposure_desc.base @0 APRI_STRUCT_BASE
-field aprend_exposure_desc.key @16 float
-field aprend_exposure_desc.min_log @20 float
-field aprend_exposure_desc.max_log @24 float
-field aprend_exposure_desc.up_rate @28 float
-field aprend_exposure_desc.down_rate @32 float
-field aprend_exposure_desc.low_share @36 float
-field aprend_exposure_desc.high_share @40 float
-struct aprend_framebuffer_desc size=48 align=8
-field aprend_framebuffer_desc.base @0 APRI_STRUCT_BASE
-field aprend_framebuffer_desc.width @16 uint32_t
-field aprend_framebuffer_desc.height @20 uint32_t
-field aprend_framebuffer_desc.attachments @24 const aprend_framebuffer_texture_spec *
-field aprend_framebuffer_desc.attachment_count @32 uint32_t
-field aprend_framebuffer_desc.depth_format @36 SPUDGPU_FORMAT
-field aprend_framebuffer_desc.sample_count @40 uint32_t
-struct aprend_framebuffer_texture_spec size=16 align=8
-field aprend_framebuffer_texture_spec.existing_texture @0 aprend_texture2d
-field aprend_framebuffer_texture_spec.format @8 SPUDGPU_FORMAT
-field aprend_framebuffer_texture_spec.shader_resource @12 _Bool
-struct aprend_gpu_timer_desc size=32 align=8
-field aprend_gpu_timer_desc.base @0 APRI_STRUCT_BASE
-field aprend_gpu_timer_desc._slot_count @16 uint32_t
-field aprend_gpu_timer_desc._queue @24 spudgpu_command_queue
-struct aprend_graphics_pipeline_desc size=728 align=8
-field aprend_graphics_pipeline_desc.base @0 APRI_STRUCT_BASE
-field aprend_graphics_pipeline_desc._debug_name @16 const char *
-field aprend_graphics_pipeline_desc._vertex_bindings @24 aprend_vertex_binding_desc[8]
-field aprend_graphics_pipeline_desc._vertex_binding_count @280 uint32_t
-field aprend_graphics_pipeline_desc._topology @284 SPUDGPU_PRIMITIVE_TOPOLOGY
-field aprend_graphics_pipeline_desc._cull_mode @288 SPUDGPU_CULL_MODE
-field aprend_graphics_pipeline_desc._front_face_ccw @292 _Bool
-field aprend_graphics_pipeline_desc._depth_test @293 _Bool
-field aprend_graphics_pipeline_desc._depth_write @294 _Bool
-field aprend_graphics_pipeline_desc._depth_compare_op @296 SPUDGPU_COMPARE_OP
-field aprend_graphics_pipeline_desc._wireframe @300 _Bool
-field aprend_graphics_pipeline_desc._depth_bias_constant @304 int32_t
-field aprend_graphics_pipeline_desc._depth_bias_slope @308 float
-field aprend_graphics_pipeline_desc._depth_bias_clamp @312 float
-field aprend_graphics_pipeline_desc._blends @316 spudgpu_blend_attachment_desc[8]
-field aprend_graphics_pipeline_desc.vertex_shader @544 aprend_shader
-field aprend_graphics_pipeline_desc.fragment_shader @552 aprend_shader
-field aprend_graphics_pipeline_desc._vertex_entry_point @560 const char *
-field aprend_graphics_pipeline_desc._fragment_entry_point @568 const char *
-field aprend_graphics_pipeline_desc.mesh_shader @576 aprend_shader
-field aprend_graphics_pipeline_desc._mesh_entry_point @584 const char *
-field aprend_graphics_pipeline_desc.color_attachment_formats @592 SPUDGPU_FORMAT[8]
-field aprend_graphics_pipeline_desc.color_attachment_count @624 uint32_t
-field aprend_graphics_pipeline_desc.depth_format @628 SPUDGPU_FORMAT
-field aprend_graphics_pipeline_desc._binding_layouts @632 aprend_binding_layout[4]
-field aprend_graphics_pipeline_desc._binding_layout_count @664 uint32_t
-field aprend_graphics_pipeline_desc._push_constant_ranges @668 spudgpu_push_constant_range_desc[4]
-field aprend_graphics_pipeline_desc._push_constant_range_count @716 uint32_t
-field aprend_graphics_pipeline_desc._vertex_inputs_by_name @720 _Bool
-struct aprend_index_pool_desc size=32 align=8
-field aprend_index_pool_desc.base @0 APRI_STRUCT_BASE
-field aprend_index_pool_desc.stride @16 APREND_INDEX_STRIDE
-field aprend_index_pool_desc.block_index_count @20 uint32_t
-field aprend_index_pool_desc.memory_limit @24 uint64_t
-struct aprend_index_range size=24 align=8
-field aprend_index_range.buffer @0 aprend_index_buffer
-field aprend_index_range.first_index @8 uint32_t
-field aprend_index_range.index_count @12 uint32_t
-field aprend_index_range._id @16 uint32_t
-field aprend_index_range._generation @20 uint32_t
-struct aprend_instance_desc size=48 align=8
-field aprend_instance_desc.base @0 APRI_STRUCT_BASE
-field aprend_instance_desc.device @16 spudgpu_device
-field aprend_instance_desc.frames_in_flight @24 uint32_t
-field aprend_instance_desc.transient_chunk_size @32 uint64_t
-field aprend_instance_desc.transient_memory_limit @40 uint64_t
-struct aprend_lit_ambient size=104 align=8
-field aprend_lit_ambient.base @0 APRI_STRUCT_BASE
-field aprend_lit_ambient.up @16 float[3]
-field aprend_lit_ambient.sky @28 float[3]
-field aprend_lit_ambient.ground @40 float[3]
-field aprend_lit_ambient.environment @56 aprend_lit_environment
-field aprend_lit_ambient.environment_intensity @64 float
-field aprend_lit_ambient.environment_rotation @68 float[9]
-struct aprend_lit_cascade_fit size=112 align=8
-field aprend_lit_cascade_fit.base @0 APRI_STRUCT_BASE
-field aprend_lit_cascade_fit.eye_position @16 float[3]
-field aprend_lit_cascade_fit.view_direction @28 float[3]
-field aprend_lit_cascade_fit.view_up @40 float[3]
-field aprend_lit_cascade_fit.orthographic @52 _Bool
-field aprend_lit_cascade_fit.fov_y @56 float
-field aprend_lit_cascade_fit.half_height @60 float
-field aprend_lit_cascade_fit.aspect @64 float
-field aprend_lit_cascade_fit.near_depth @68 float
-field aprend_lit_cascade_fit.far_depth @72 float
-field aprend_lit_cascade_fit.cascade_count @76 uint32_t
-field aprend_lit_cascade_fit.split_lambda @80 float
-field aprend_lit_cascade_fit.sun_direction @84 float[3]
-field aprend_lit_cascade_fit.caster_distance @96 float
-field aprend_lit_cascade_fit.map_size @100 uint32_t
-field aprend_lit_cascade_fit.reversed_depth @104 _Bool
-struct aprend_lit_environment_desc size=24 align=8
-field aprend_lit_environment_desc.base @0 APRI_STRUCT_BASE
-field aprend_lit_environment_desc.specular_size @16 uint32_t
-field aprend_lit_environment_desc.irradiance_size @20 uint32_t
-struct aprend_lit_instance size=64 align=4
-field aprend_lit_instance.transform @0 float[16]
-struct aprend_lit_light size=52 align=4
-field aprend_lit_light.type @0 APREND_LIT_LIGHT_TYPE
-field aprend_lit_light.position @4 float[3]
-field aprend_lit_light.direction @16 float[3]
-field aprend_lit_light.radiance @28 float[3]
-field aprend_lit_light.range @40 float
-field aprend_lit_light.inner_angle @44 float
-field aprend_lit_light.outer_angle @48 float
-struct aprend_lit_material_values size=120 align=8
-field aprend_lit_material_values.base @0 APRI_STRUCT_BASE
-field aprend_lit_material_values.base_color @16 float[4]
-field aprend_lit_material_values.emission @32 float[3]
-field aprend_lit_material_values.roughness @44 float
-field aprend_lit_material_values.metalness @48 float
-field aprend_lit_material_values.specular @52 float
-field aprend_lit_material_values.normal_scale @56 float
-field aprend_lit_material_values.occlusion_strength @60 float
-field aprend_lit_material_values.alpha_cutoff @64 float
-field aprend_lit_material_values.uv_transform @68 float[6]
-field aprend_lit_material_values.clearcoat @92 float
-field aprend_lit_material_values.clearcoat_roughness @96 float
-field aprend_lit_material_values.sheen_color @100 float[3]
-field aprend_lit_material_values.sheen_roughness @112 float
-struct aprend_lit_point_shadow size=404 align=4
-field aprend_lit_point_shadow.light @0 uint32_t
-field aprend_lit_point_shadow.view_projection @4 float[6][16]
-field aprend_lit_point_shadow.depth_bias @388 float
-field aprend_lit_point_shadow.normal_offset @392 float
-field aprend_lit_point_shadow.softness @396 float
-field aprend_lit_point_shadow.strength @400 float
-struct aprend_lit_spot_shadow size=84 align=4
-field aprend_lit_spot_shadow.light @0 uint32_t
-field aprend_lit_spot_shadow.view_projection @4 float[16]
-field aprend_lit_spot_shadow.depth_bias @68 float
-field aprend_lit_spot_shadow.normal_offset @72 float
-field aprend_lit_spot_shadow.softness @76 float
-field aprend_lit_spot_shadow.strength @80 float
-struct aprend_lit_sun size=48 align=8
-field aprend_lit_sun.base @0 APRI_STRUCT_BASE
-field aprend_lit_sun.direction @16 float[3]
-field aprend_lit_sun.radiance @28 float[3]
-field aprend_lit_sun.disc_angle @40 float
-struct aprend_lit_sun_shadow size=320 align=8
-field aprend_lit_sun_shadow.base @0 APRI_STRUCT_BASE
-field aprend_lit_sun_shadow.map @16 aprend_texture_view
-field aprend_lit_sun_shadow.cascade_count @24 uint32_t
-field aprend_lit_sun_shadow.view_projection @28 float[4][16]
-field aprend_lit_sun_shadow.split_depths @284 float[4]
-field aprend_lit_sun_shadow.depth_bias @300 float
-field aprend_lit_sun_shadow.normal_offset @304 float
-field aprend_lit_sun_shadow.softness @308 float
-field aprend_lit_sun_shadow.strength @312 float
-field aprend_lit_sun_shadow.reversed_depth @316 _Bool
-struct aprend_lit_vertex size=48 align=4
-field aprend_lit_vertex.position @0 float[3]
-field aprend_lit_vertex.normal @12 float[3]
-field aprend_lit_vertex.uv @24 float[2]
-field aprend_lit_vertex.tangent @32 float[4]
-struct aprend_lit_view size=120 align=8
-field aprend_lit_view.base @0 APRI_STRUCT_BASE
-field aprend_lit_view.eye_position @16 float[3]
-field aprend_lit_view.view_direction @28 float[3]
-field aprend_lit_view.view_projection @40 float[16]
-field aprend_lit_view.target_width @104 uint32_t
-field aprend_lit_view.target_height @108 uint32_t
-field aprend_lit_view.exposure @112 float
-field aprend_lit_view.output_encoding @116 APREND_COLOR_ENCODING
-struct aprend_material_desc size=40 align=8
-field aprend_material_desc.base @0 APRI_STRUCT_BASE
-field aprend_material_desc._layout @16 aprend_binding_layout
-field aprend_material_desc._external_blocks @24 const char *const *
-field aprend_material_desc._external_block_count @32 uint32_t
-struct aprend_material_uniform size=16 align=8
-field aprend_material_uniform._layout @0 aprend_binding_layout
-field aprend_material_uniform._binding_index @8 uint32_t
-field aprend_material_uniform._member_index @12 uint32_t
-struct aprend_render_pass_desc size=440 align=8
-field aprend_render_pass_desc.base @0 APRI_STRUCT_BASE
-field aprend_render_pass_desc._pipeline @16 aprend_graphics_pipeline
-field aprend_render_pass_desc._framebuffer @24 aprend_framebuffer
-field aprend_render_pass_desc._color_targets @32 aprend_color_target[8]
-field aprend_render_pass_desc._color_target_count @352 uint32_t
-field aprend_render_pass_desc._depth_target @360 aprend_depth_target
-field aprend_render_pass_desc._binding_sets @392 aprend_binding_set[4]
-field aprend_render_pass_desc._timer @424 aprend_gpu_timer
-field aprend_render_pass_desc._timer_slot @432 uint32_t
-struct aprend_render_target_pool_info size=40 align=8
-field aprend_render_target_pool_info.base @0 APRI_STRUCT_BASE_OUT
-field aprend_render_target_pool_info.texture_count @16 uint32_t
-field aprend_render_target_pool_info.busy_count @20 uint32_t
-field aprend_render_target_pool_info.bytes @24 uint64_t
-field aprend_render_target_pool_info.busy_bytes @32 uint64_t
-struct aprend_sampler_desc size=72 align=8
-field aprend_sampler_desc.base @0 APRI_STRUCT_BASE
-field aprend_sampler_desc.mag_filter @16 SPUDGPU_FILTER
-field aprend_sampler_desc.min_filter @20 SPUDGPU_FILTER
-field aprend_sampler_desc.mipmap_filter @24 SPUDGPU_FILTER
-field aprend_sampler_desc.address_mode_u @28 SPUDGPU_ADDRESS_MODE
-field aprend_sampler_desc.address_mode_v @32 SPUDGPU_ADDRESS_MODE
-field aprend_sampler_desc.address_mode_w @36 SPUDGPU_ADDRESS_MODE
-field aprend_sampler_desc.mip_lod_bias @40 float
-field aprend_sampler_desc.min_lod @44 float
-field aprend_sampler_desc.max_lod @48 float
-field aprend_sampler_desc.max_anisotropy @52 float
-field aprend_sampler_desc.compare_enable @56 _Bool
-field aprend_sampler_desc.compare_op @60 SPUDGPU_COMPARE_OP
-field aprend_sampler_desc.debug_name @64 const char *
-struct aprend_shader_input size=32 align=8
-field aprend_shader_input.name @0 const char *
-field aprend_shader_input.location @8 uint32_t
-field aprend_shader_input.location_count @12 uint32_t
-field aprend_shader_input.scalar_type @16 APREND_SHADER_SCALAR_TYPE
-field aprend_shader_input.components @20 uint32_t
-field aprend_shader_input.used @24 _Bool
-struct aprend_shader_member size=40 align=8
-field aprend_shader_member.name @0 const char *
-field aprend_shader_member.type @8 APREND_UNIFORM_TYPE
-field aprend_shader_member.offset @12 uint32_t
-field aprend_shader_member.size @16 uint32_t
-field aprend_shader_member.array_count @20 uint32_t
-field aprend_shader_member.array_stride @24 uint32_t
-field aprend_shader_member.matrix_stride @28 uint32_t
-field aprend_shader_member.row_major @32 _Bool
-field aprend_shader_member.used @33 _Bool
-struct aprend_shader_reflection size=104 align=8
-field aprend_shader_reflection.stage @0 SPUDGPU_SHADER_STAGE
-field aprend_shader_reflection.entry_point @8 const char *
-field aprend_shader_reflection.resources @16 const aprend_shader_resource *
-field aprend_shader_reflection.resource_count @24 uint32_t
-field aprend_shader_reflection.members @32 const aprend_shader_member *
-field aprend_shader_reflection.member_count @40 uint32_t
-field aprend_shader_reflection.inputs @48 const aprend_shader_input *
-field aprend_shader_reflection.input_count @56 uint32_t
-field aprend_shader_reflection.has_push_constants @60 _Bool
-field aprend_shader_reflection.push_constant_name @64 const char *
-field aprend_shader_reflection.push_constant_begin @72 uint32_t
-field aprend_shader_reflection.push_constant_end @76 uint32_t
-field aprend_shader_reflection.push_constant_first_member @80 uint32_t
-field aprend_shader_reflection.push_constant_member_count @84 uint32_t
-field aprend_shader_reflection.color_output_count @88 uint32_t
-field aprend_shader_reflection.workgroup_size @92 uint32_t[3]
-struct aprend_shader_resource size=64 align=8
-field aprend_shader_resource.name @0 const char *
-field aprend_shader_resource.block_name @8 const char *
-field aprend_shader_resource.set @16 uint32_t
-field aprend_shader_resource.binding @20 uint32_t
-field aprend_shader_resource.type @24 SPUDGPU_DESCRIPTOR_TYPE
-field aprend_shader_resource.count @28 uint32_t
-field aprend_shader_resource.block_size @32 uint32_t
-field aprend_shader_resource.runtime_array_stride @36 uint32_t
-field aprend_shader_resource.first_member @40 uint32_t
-field aprend_shader_resource.member_count @44 uint32_t
-field aprend_shader_resource.image_shape @48 APREND_TEXTURE_VIEW_SHAPE
-field aprend_shader_resource.image_scalar_type @52 APREND_SHADER_SCALAR_TYPE
-field aprend_shader_resource.image_depth_compare @56 _Bool
-field aprend_shader_resource.read_only @57 _Bool
-field aprend_shader_resource.used @58 _Bool
-struct aprend_swap_chain_desc size=56 align=8
-field aprend_swap_chain_desc.base @0 APRI_STRUCT_BASE
-field aprend_swap_chain_desc.surface @16 spudgpu_surface
-field aprend_swap_chain_desc.queue @24 spudgpu_command_queue
-field aprend_swap_chain_desc.width @32 uint32_t
-field aprend_swap_chain_desc.height @36 uint32_t
-field aprend_swap_chain_desc.buffer_count @40 uint32_t
-field aprend_swap_chain_desc.format @44 SPUDGPU_FORMAT
-field aprend_swap_chain_desc.present_mode @48 SPUDGPU_PRESENT_MODE
-struct aprend_texture2d_desc size=56 align=8
-field aprend_texture2d_desc.base @0 APRI_STRUCT_BASE
-field aprend_texture2d_desc.width @16 uint32_t
-field aprend_texture2d_desc.height @20 uint32_t
-field aprend_texture2d_desc.format @24 SPUDGPU_FORMAT
-field aprend_texture2d_desc.usage @28 APREND_TEXTURE_USAGE_BITS
-field aprend_texture2d_desc.mip_levels @32 uint32_t
-field aprend_texture2d_desc.array_layers @36 uint32_t
-field aprend_texture2d_desc.sample_count @40 uint32_t
-field aprend_texture2d_desc.cube_capable @44 _Bool
-field aprend_texture2d_desc.debug_name @48 const char *
-struct aprend_texture3d_desc size=48 align=8
-field aprend_texture3d_desc.base @0 APRI_STRUCT_BASE
-field aprend_texture3d_desc.width @16 uint32_t
-field aprend_texture3d_desc.height @20 uint32_t
-field aprend_texture3d_desc.depth @24 uint32_t
-field aprend_texture3d_desc.format @28 SPUDGPU_FORMAT
-field aprend_texture3d_desc.usage @32 APREND_TEXTURE_USAGE_BITS
-field aprend_texture3d_desc.mip_levels @36 uint32_t
-field aprend_texture3d_desc.debug_name @40 const char *
-struct aprend_texture_view_desc size=48 align=8
-field aprend_texture_view_desc.base @0 APRI_STRUCT_BASE
-field aprend_texture_view_desc.type @16 APREND_TEXTURE_VIEW_TYPE
-field aprend_texture_view_desc.shape @20 APREND_TEXTURE_VIEW_SHAPE
-field aprend_texture_view_desc.aspect @24 APREND_TEXTURE_VIEW_ASPECT
-field aprend_texture_view_desc.base_mip @28 uint32_t
-field aprend_texture_view_desc.mip_count @32 uint32_t
-field aprend_texture_view_desc.base_layer @36 uint32_t
-field aprend_texture_view_desc.layer_count @40 uint32_t
-struct aprend_transient_span size=48 align=8
-field aprend_transient_span.data @0 void *
-field aprend_transient_span.size @8 uint64_t
-field aprend_transient_span._chunk @16 void *
-field aprend_transient_span._offset @24 uint64_t
-field aprend_transient_span._epoch @32 uint64_t
-field aprend_transient_span._frame @40 uint32_t
-struct aprend_uniform size=24 align=8
-field aprend_uniform.name @0 const char *
-field aprend_uniform.type @8 APREND_UNIFORM_TYPE
-field aprend_uniform.array_count @12 uint32_t
-field aprend_uniform.offset @16 uint32_t
-struct aprend_uniform_layout size=24 align=8
-field aprend_uniform_layout.count @0 uint32_t
-field aprend_uniform_layout.uniforms @8 aprend_uniform *
-field aprend_uniform_layout.size @16 uint32_t
-struct aprend_vertex_binding_desc size=32 align=8
-field aprend_vertex_binding_desc._layout @0 aprend_vertex_layout
-field aprend_vertex_binding_desc._per_instance @24 _Bool
-struct aprend_vertex_element size=16 align=8
-field aprend_vertex_element.name @0 const char *
-field aprend_vertex_element.type @8 APREND_VERTEX_ELEMENT_TYPE
-field aprend_vertex_element.offset @12 uint32_t
-struct aprend_vertex_layout size=24 align=8
-field aprend_vertex_layout.count @0 uint32_t
-field aprend_vertex_layout.elements @8 aprend_vertex_element *
-field aprend_vertex_layout.stride @16 uint32_t
-struct aprend_vertex_pool_desc size=32 align=8
-field aprend_vertex_pool_desc.base @0 APRI_STRUCT_BASE
-field aprend_vertex_pool_desc.vertex_stride @16 uint32_t
-field aprend_vertex_pool_desc.block_vertex_count @20 uint32_t
-field aprend_vertex_pool_desc.memory_limit @24 uint64_t
-struct aprend_vertex_range size=24 align=8
-field aprend_vertex_range.buffer @0 aprend_vertex_buffer
-field aprend_vertex_range.first_vertex @8 uint32_t
-field aprend_vertex_range.vertex_count @12 uint32_t
-field aprend_vertex_range._id @16 uint32_t
-field aprend_vertex_range._generation @20 uint32_t
+struct APTEXT_VARIATION size=8 align=4
+field APTEXT_VARIATION.tag @0 uint32_t
+field APTEXT_VARIATION.value @4 float
 typedef APARCHIVE_CODEC = struct APARCHIVE_CODEC
 typedef APARCHIVE_ENTRY_DESC = struct APARCHIVE_ENTRY_DESC
 typedef APARCHIVE_ENTRY_INFO = struct APARCHIVE_ENTRY_INFO
 typedef APARCHIVE_ERROR = struct APARCHIVE_ERROR
+typedef APARCHIVE_FILE_TIMES = struct APARCHIVE_FILE_TIMES
 typedef APARCHIVE_READER_DESC = struct APARCHIVE_READER_DESC
 typedef APARCHIVE_SINK = struct APARCHIVE_SINK
 typedef APARCHIVE_SOURCE = struct APARCHIVE_SOURCE
+typedef APARCHIVE_STRICT = enum APARCHIVE_STRICT
+typedef APARCHIVE_UPDATE_DESC = struct APARCHIVE_UPDATE_DESC
 typedef APARCHIVE_WRITER_DESC = struct APARCHIVE_WRITER_DESC
 typedef APAUDIO_BANK_SOURCE = struct APAUDIO_BANK_SOURCE
 typedef APAUDIO_BUS = uint64_t
@@ -1765,6 +1991,7 @@ typedef APAUDIO_CUE_PLAY_DESC = struct APAUDIO_CUE_PLAY_DESC
 typedef APAUDIO_DIRECTION = struct APAUDIO_DIRECTION
 typedef APAUDIO_ERROR = struct APAUDIO_ERROR
 typedef APAUDIO_FORMAT = struct APAUDIO_FORMAT
+typedef APAUDIO_LIMITER = uint32_t
 typedef APAUDIO_MIXER_DESC = struct APAUDIO_MIXER_DESC
 typedef APAUDIO_MODIFIER = uint64_t
 typedef APAUDIO_MODIFIER_DESC = struct APAUDIO_MODIFIER_DESC
@@ -1777,6 +2004,12 @@ typedef APAUDIO_SOUND = uint64_t
 typedef APAUDIO_SOUND_DESC = struct APAUDIO_SOUND_DESC
 typedef APAUDIO_VIRTUAL_BEHAVIOR = uint32_t
 typedef APAUDIO_VOICE = uint64_t
+typedef APJOBS_ENQUEUE_FUNCTION = void *(*)(APJOBS_TASK_FUNCTION, uint32_t, uint32_t, void *, void *)
+typedef APJOBS_ERROR = struct APJOBS_ERROR
+typedef APJOBS_POOL_DESC = struct APJOBS_POOL_DESC
+typedef APJOBS_SCHEDULER = struct APJOBS_SCHEDULER
+typedef APJOBS_TASK_FUNCTION = void (*)(uint32_t, uint32_t, uint32_t, void *)
+typedef APJOBS_WAIT_FUNCTION = void (*)(void *, void *)
 typedef APMATH_AABB = struct APMATH_AABB
 typedef APMATH_BVH_INSTANCE = struct APMATH_BVH_INSTANCE
 typedef APMATH_CAST_DESC = struct APMATH_CAST_DESC
@@ -1790,35 +2023,98 @@ typedef APMATH_POLY_BOOLEAN_DESC = struct APMATH_POLY_BOOLEAN_DESC
 typedef APMATH_POLY_DEFECT = enum APMATH_POLY_DEFECT
 typedef APMATH_POLY_DEFECT_INFO = struct APMATH_POLY_DEFECT_INFO
 typedef APMATH_POLY_FILL = enum APMATH_POLY_FILL
+typedef APMATH_POLY_JOIN = enum APMATH_POLY_JOIN
 typedef APMATH_POLY_OFFSET_DESC = struct APMATH_POLY_OFFSET_DESC
 typedef APMATH_POLY_OP = enum APMATH_POLY_OP
+typedef APMATH_POLY_PLACE = enum APMATH_POLY_PLACE
 typedef APMATH_POLY_POINT = struct APMATH_POLY_POINT
 typedef APMATH_POLY_SET = struct APMATH_POLY_SET
 typedef APMATH_POLY_SKELETON_DESC = struct APMATH_POLY_SKELETON_DESC
 typedef APMATH_RAY = struct APMATH_RAY
+typedef APREND_BATCH_CAP = enum APREND_BATCH_CAP
+typedef APREND_BATCH_CIRCLE = struct APREND_BATCH_CIRCLE
+typedef APREND_BATCH_DEPTH = enum APREND_BATCH_DEPTH
+typedef APREND_BATCH_DESC = struct APREND_BATCH_DESC
+typedef APREND_BATCH_FRAME = struct APREND_BATCH_FRAME
+typedef APREND_BATCH_GLYPH = struct APREND_BATCH_GLYPH
+typedef APREND_BATCH_JOIN = enum APREND_BATCH_JOIN
+typedef APREND_BATCH_LINE = struct APREND_BATCH_LINE
+typedef APREND_BATCH_QUAD = struct APREND_BATCH_QUAD
+typedef APREND_BATCH_SPACE = enum APREND_BATCH_SPACE
+typedef APREND_BATCH_UNIT = enum APREND_BATCH_UNIT
+typedef APREND_BINDING_DESC = struct APREND_BINDING_DESC
+typedef APREND_BINDING_SET_ENTRY = struct APREND_BINDING_SET_ENTRY
+typedef APREND_BUFFER_DESC = struct APREND_BUFFER_DESC
+typedef APREND_BUFFER_USAGE = uint32_t
 typedef APREND_BUFFER_WRITES = uint32_t
 typedef APREND_COLOR_ENCODING = uint32_t
+typedef APREND_COLOR_TARGET = struct APREND_COLOR_TARGET
 typedef APREND_COMMAND = struct APREND_COMMAND
 typedef APREND_COMMAND_TYPE = uint32_t
-typedef APREND_DEFAULT_VERTEX = struct APREND_DEFAULT_VERTEX
+typedef APREND_COMPUTE_PASS_DESC = struct APREND_COMPUTE_PASS_DESC
+typedef APREND_COMPUTE_PIPELINE_DESC = struct APREND_COMPUTE_PIPELINE_DESC
+typedef APREND_DEPTH_TARGET = struct APREND_DEPTH_TARGET
+typedef APREND_DRAW_LIST_DESC = struct APREND_DRAW_LIST_DESC
 typedef APREND_DRAW_LIST_ORDER = uint32_t
+typedef APREND_DRAW_MESH = struct APREND_DRAW_MESH
+typedef APREND_ERROR = struct APREND_ERROR
+typedef APREND_EXPOSURE_DESC = struct APREND_EXPOSURE_DESC
+typedef APREND_FRAMEBUFFER_DESC = struct APREND_FRAMEBUFFER_DESC
+typedef APREND_FRAMEBUFFER_TEXTURE_SPEC = struct APREND_FRAMEBUFFER_TEXTURE_SPEC
+typedef APREND_GPU_TIMER_DESC = struct APREND_GPU_TIMER_DESC
+typedef APREND_GRAPHICS_PIPELINE_DESC = struct APREND_GRAPHICS_PIPELINE_DESC
+typedef APREND_INDEX_POOL_DESC = struct APREND_INDEX_POOL_DESC
+typedef APREND_INDEX_RANGE = struct APREND_INDEX_RANGE
 typedef APREND_INDEX_STRIDE = enum APREND_INDEX_STRIDE
+typedef APREND_INSTANCE_DESC = struct APREND_INSTANCE_DESC
+typedef APREND_LIT_AMBIENT = struct APREND_LIT_AMBIENT
+typedef APREND_LIT_CASCADE_FIT = struct APREND_LIT_CASCADE_FIT
+typedef APREND_LIT_ENVIRONMENT_DESC = struct APREND_LIT_ENVIRONMENT_DESC
+typedef APREND_LIT_INSTANCE = struct APREND_LIT_INSTANCE
+typedef APREND_LIT_LIGHT = struct APREND_LIT_LIGHT
 typedef APREND_LIT_LIGHT_TYPE = uint32_t
 typedef APREND_LIT_MAP = uint32_t
+typedef APREND_LIT_MATERIAL_VALUES = struct APREND_LIT_MATERIAL_VALUES
+typedef APREND_LIT_POINT_SHADOW = struct APREND_LIT_POINT_SHADOW
 typedef APREND_LIT_SHADER = uint32_t
 typedef APREND_LIT_SKY_MODEL = uint32_t
+typedef APREND_LIT_SPOT_SHADOW = struct APREND_LIT_SPOT_SHADOW
+typedef APREND_LIT_SUN = struct APREND_LIT_SUN
+typedef APREND_LIT_SUN_SHADOW = struct APREND_LIT_SUN_SHADOW
+typedef APREND_LIT_VERTEX = struct APREND_LIT_VERTEX
+typedef APREND_LIT_VIEW = struct APREND_LIT_VIEW
+typedef APREND_MATERIAL_DESC = struct APREND_MATERIAL_DESC
+typedef APREND_MATERIAL_UNIFORM = struct APREND_MATERIAL_UNIFORM
+typedef APREND_RENDER_PASS_DESC = struct APREND_RENDER_PASS_DESC
+typedef APREND_RENDER_TARGET_POOL_INFO = struct APREND_RENDER_TARGET_POOL_INFO
+typedef APREND_SAMPLER_DESC = struct APREND_SAMPLER_DESC
+typedef APREND_SHADER_INPUT = struct APREND_SHADER_INPUT
+typedef APREND_SHADER_MEMBER = struct APREND_SHADER_MEMBER
+typedef APREND_SHADER_REFLECTION = struct APREND_SHADER_REFLECTION
+typedef APREND_SHADER_RESOURCE = struct APREND_SHADER_RESOURCE
 typedef APREND_SHADER_SCALAR_TYPE = uint32_t
-typedef APREND_STORAGE_BUFFER_USAGE = uint32_t
+typedef APREND_SWAP_CHAIN_DESC = struct APREND_SWAP_CHAIN_DESC
 typedef APREND_TEXEL_RECT = struct APREND_TEXEL_RECT
+typedef APREND_TEXTURE2D_DESC = struct APREND_TEXTURE2D_DESC
+typedef APREND_TEXTURE3D_DESC = struct APREND_TEXTURE3D_DESC
 typedef APREND_TEXTURE_DIMENSION = uint32_t
 typedef APREND_TEXTURE_SCALING = uint32_t
 typedef APREND_TEXTURE_USAGE_BITS = uint32_t
 typedef APREND_TEXTURE_VIEW_ASPECT = uint32_t
+typedef APREND_TEXTURE_VIEW_DESC = struct APREND_TEXTURE_VIEW_DESC
 typedef APREND_TEXTURE_VIEW_SHAPE = uint32_t
 typedef APREND_TEXTURE_VIEW_TYPE = uint32_t
 typedef APREND_TONE_CURVE = uint32_t
+typedef APREND_TRANSIENT_SPAN = struct APREND_TRANSIENT_SPAN
+typedef APREND_UNIFORM = struct APREND_UNIFORM
+typedef APREND_UNIFORM_LAYOUT = struct APREND_UNIFORM_LAYOUT
 typedef APREND_UNIFORM_TYPE = uint32_t
+typedef APREND_VERTEX_BINDING_DESC = struct APREND_VERTEX_BINDING_DESC
+typedef APREND_VERTEX_ELEMENT = struct APREND_VERTEX_ELEMENT
 typedef APREND_VERTEX_ELEMENT_TYPE = uint32_t
+typedef APREND_VERTEX_LAYOUT = struct APREND_VERTEX_LAYOUT
+typedef APREND_VERTEX_POOL_DESC = struct APREND_VERTEX_POOL_DESC
+typedef APREND_VERTEX_RANGE = struct APREND_VERTEX_RANGE
 typedef APRESULT = enum APRESULT
 typedef APRI_STRUCT_BASE = struct APRI_STRUCT_BASE
 typedef APRI_STRUCT_BASE_OUT = struct APRI_STRUCT_BASE_OUT
@@ -1838,6 +2134,7 @@ typedef APTEXT_ATLAS_DESC = struct APTEXT_ATLAS_DESC
 typedef APTEXT_ATLAS_GLYPH = struct APTEXT_ATLAS_GLYPH
 typedef APTEXT_ATLAS_INFO = struct APTEXT_ATLAS_INFO
 typedef APTEXT_ATLAS_LOAD_DESC = struct APTEXT_ATLAS_LOAD_DESC
+typedef APTEXT_AXIS = struct APTEXT_AXIS
 typedef APTEXT_CHAIN_DESC = struct APTEXT_CHAIN_DESC
 typedef APTEXT_DIRECTION = enum APTEXT_DIRECTION
 typedef APTEXT_DIRTY_RECT = struct APTEXT_DIRTY_RECT
@@ -1853,13 +2150,16 @@ typedef APTEXT_GLYPH_IMAGE = struct APTEXT_GLYPH_IMAGE
 typedef APTEXT_HERSHEY_FACE_DESC = struct APTEXT_HERSHEY_FACE_DESC
 typedef APTEXT_LAYOUT_DESC = struct APTEXT_LAYOUT_DESC
 typedef APTEXT_LAYOUT_INFO = struct APTEXT_LAYOUT_INFO
+typedef APTEXT_LFF_FACE_DESC = struct APTEXT_LFF_FACE_DESC
 typedef APTEXT_LINE = struct APTEXT_LINE
 typedef APTEXT_RUN = struct APTEXT_RUN
 typedef APTEXT_SEGMENT = struct APTEXT_SEGMENT
+typedef APTEXT_SHX_FACE_DESC = struct APTEXT_SHX_FACE_DESC
 typedef APTEXT_STROKE_FACE_DESC = struct APTEXT_STROKE_FACE_DESC
 typedef APTEXT_STROKE_GLYPH = struct APTEXT_STROKE_GLYPH
 typedef APTEXT_STROKE_METRICS = struct APTEXT_STROKE_METRICS
 typedef APTEXT_STROKE_POLYLINE = struct APTEXT_STROKE_POLYLINE
+typedef APTEXT_VARIATION = struct APTEXT_VARIATION
 typedef ApriDMat4 = struct ApriDMat4
 typedef ApriDVec3 = struct ApriDVec3
 typedef ApriDVec4 = struct ApriDVec4
@@ -1869,91 +2169,40 @@ typedef ApriVec2 = struct ApriVec2
 typedef ApriVec3 = struct ApriVec3
 typedef ApriVec4 = struct ApriVec4
 typedef aparchive_codecs = struct aparchive_codecs_t *
+typedef aparchive_entry_reader = struct aparchive_entry_reader_t *
 typedef aparchive_reader = struct aparchive_reader_t *
 typedef aparchive_writer = struct aparchive_writer_t *
 typedef apaudio_cues = struct apaudio_cues_t *
 typedef apaudio_mixer = struct apaudio_mixer_t *
+typedef apjobs_pool = struct apjobs_pool_t *
 typedef apmath_instance_bvh = struct apmath_instance_bvh_t *
 typedef apmath_mesh_bvh = struct apmath_mesh_bvh_t *
 typedef apmath_poly = struct apmath_poly_t *
-typedef aprend_binding_desc = struct aprend_binding_desc
+typedef aprend_batch = struct aprend_batch_t *
 typedef aprend_binding_layout = struct aprend_binding_layout_t *
 typedef aprend_binding_set = struct aprend_binding_set_t *
-typedef aprend_binding_set_entry = struct aprend_binding_set_entry
-typedef aprend_color_target = struct aprend_color_target
+typedef aprend_buffer = struct aprend_buffer_t *
 typedef aprend_command_list = struct aprend_command_list_t *
 typedef aprend_compute_pass = struct aprend_compute_pass_t *
-typedef aprend_compute_pass_desc = struct aprend_compute_pass_desc
 typedef aprend_compute_pipeline = struct aprend_compute_pipeline_t *
-typedef aprend_compute_pipeline_desc = struct aprend_compute_pipeline_desc
-typedef aprend_depth_target = struct aprend_depth_target
 typedef aprend_draw_list = struct aprend_draw_list_t *
-typedef aprend_draw_list_desc = struct aprend_draw_list_desc
-typedef aprend_draw_mesh = struct aprend_draw_mesh
 typedef aprend_exposure = struct aprend_exposure_t *
-typedef aprend_exposure_desc = struct aprend_exposure_desc
 typedef aprend_framebuffer = struct aprend_framebuffer_t *
-typedef aprend_framebuffer_desc = struct aprend_framebuffer_desc
-typedef aprend_framebuffer_texture_spec = struct aprend_framebuffer_texture_spec
 typedef aprend_gpu_timer = struct aprend_gpu_timer_t *
-typedef aprend_gpu_timer_desc = struct aprend_gpu_timer_desc
 typedef aprend_graphics_pipeline = struct aprend_graphics_pipeline_t *
-typedef aprend_graphics_pipeline_desc = struct aprend_graphics_pipeline_desc
-typedef aprend_index_buffer = struct aprend_index_buffer_t *
 typedef aprend_index_pool = struct aprend_index_pool_t *
-typedef aprend_index_pool_desc = struct aprend_index_pool_desc
-typedef aprend_index_range = struct aprend_index_range
 typedef aprend_instance = struct aprend_instance_t *
-typedef aprend_instance_desc = struct aprend_instance_desc
-typedef aprend_lit_ambient = struct aprend_lit_ambient
-typedef aprend_lit_cascade_fit = struct aprend_lit_cascade_fit
 typedef aprend_lit_environment = struct aprend_lit_environment_t *
-typedef aprend_lit_environment_desc = struct aprend_lit_environment_desc
-typedef aprend_lit_instance = struct aprend_lit_instance
-typedef aprend_lit_light = struct aprend_lit_light
-typedef aprend_lit_material_values = struct aprend_lit_material_values
-typedef aprend_lit_point_shadow = struct aprend_lit_point_shadow
 typedef aprend_lit_scene = struct aprend_lit_scene_t *
-typedef aprend_lit_spot_shadow = struct aprend_lit_spot_shadow
-typedef aprend_lit_sun = struct aprend_lit_sun
-typedef aprend_lit_sun_shadow = struct aprend_lit_sun_shadow
-typedef aprend_lit_vertex = struct aprend_lit_vertex
-typedef aprend_lit_view = struct aprend_lit_view
 typedef aprend_material = struct aprend_material_t *
-typedef aprend_material_desc = struct aprend_material_desc
-typedef aprend_material_uniform = struct aprend_material_uniform
 typedef aprend_render_pass = struct aprend_render_pass_t *
-typedef aprend_render_pass_desc = struct aprend_render_pass_desc
-typedef aprend_render_target_pool_info = struct aprend_render_target_pool_info
 typedef aprend_sampler = struct aprend_sampler_t *
-typedef aprend_sampler_desc = struct aprend_sampler_desc
 typedef aprend_shader = struct aprend_shader_t *
-typedef aprend_shader_input = struct aprend_shader_input
-typedef aprend_shader_member = struct aprend_shader_member
-typedef aprend_shader_reflection = struct aprend_shader_reflection
-typedef aprend_shader_resource = struct aprend_shader_resource
-typedef aprend_storage_buffer = struct aprend_storage_buffer_t *
-typedef aprend_storage_buffer_set = struct aprend_storage_buffer_set_t *
 typedef aprend_swap_chain = struct aprend_swap_chain_t *
-typedef aprend_swap_chain_desc = struct aprend_swap_chain_desc
 typedef aprend_texture2d = struct aprend_texture2d_t *
-typedef aprend_texture2d_desc = struct aprend_texture2d_desc
 typedef aprend_texture3d = struct aprend_texture3d_t *
-typedef aprend_texture3d_desc = struct aprend_texture3d_desc
 typedef aprend_texture_view = struct aprend_texture_view_t *
-typedef aprend_texture_view_desc = struct aprend_texture_view_desc
-typedef aprend_transient_span = struct aprend_transient_span
-typedef aprend_uniform = struct aprend_uniform
-typedef aprend_uniform_buffer = struct aprend_uniform_buffer_t *
-typedef aprend_uniform_buffer_set = struct aprend_uniform_buffer_set_t *
-typedef aprend_uniform_layout = struct aprend_uniform_layout
-typedef aprend_vertex_binding_desc = struct aprend_vertex_binding_desc
-typedef aprend_vertex_buffer = struct aprend_vertex_buffer_t *
-typedef aprend_vertex_element = struct aprend_vertex_element
-typedef aprend_vertex_layout = struct aprend_vertex_layout
 typedef aprend_vertex_pool = struct aprend_vertex_pool_t *
-typedef aprend_vertex_pool_desc = struct aprend_vertex_pool_desc
-typedef aprend_vertex_range = struct aprend_vertex_range
 typedef apsync_session = struct apsync_session_t *
 typedef aptext_atlas = struct aptext_atlas_t *
 typedef aptext_chain = struct aptext_chain_t *

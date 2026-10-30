@@ -8,15 +8,18 @@ is the older generation of code in this repo (see `CLAUDE.md`, "Two generations
 of code") and is mid-overhaul. This file holds what is known to be wrong or
 unfinished in it.
 
-## The umbrella header becomes `aprend.h` (card A27, decided 2026-10-28)
+## The umbrella header is `aprend.h` (card A27, decided 2026-10-28; done 2026-10-29)
 
-`include/apricotfields.h` includes every Aprend header and nothing else,
-so its name says more than it holds. It becomes `include/aprend.h`,
-Aprend's umbrella in name and fact; ApMath, ApSync, ApArchive and ApAudio
-keep their own headers, with no header including all of ApricotFields (as
-SpudLib has none). `check.sh umbrella` checks `aprend.h` reaches every
-header in `include/render/`. Every caller renamed in the same change, as
-card A1's were. Not started.
+`include/apricotfields.h` included every Aprend header and nothing else,
+so its name said more than it held. It is `include/aprend.h` since
+2026-10-29, Aprend's umbrella in name and fact; ApMath, ApSync, ApArchive,
+ApAudio and ApText keep their own headers, with no header including all of
+ApricotFields (as SpudLib has none). `check.sh umbrella` checks `aprend.h`
+reaches every header in `include/render/`. The one caller in the workspace
+that included it moved with it; the others include the `render/` headers
+they use. `src/apricotfields.cpp`, which held only a
+`hello()` nothing called, went with the old name. Built and tested on
+macOS (Metal).
 
 ## Deferred items and the 1.0 room check (card A15, decided 2026-10-28)
 
@@ -72,6 +75,258 @@ the same change:
   usage mask and the existing `APREND_BUFFER_WRITES` hint; the pools stay.
   Not mesh types: those are a caller's.
 - Card A1's three renames were made on their own, first (2026-10-28).
+- **The lost device needs SpudGPU** (decided with the user 2026-10-29):
+  SpudGPU has no device-lost result (its wait, submit and present give
+  `SPUDRESULT_API_SPECIFIC_FAILURE`, acquire `UINT32_MAX`). A
+  `SPUDRESULT_GPU_DEVICE_LOST` is added on every backend with A10's step
+  (`VK_ERROR_DEVICE_LOST`; `DXGI_ERROR_DEVICE_REMOVED`, `_HUNG` and
+  `_RESET`; a Metal command buffer's error), and Aprend passes it on as
+  `APRESULT_APREND_DEVICE_LOST`.
+- **Names, before 1.0** (decided with the user 2026-10-29): Aprend's value
+  structs and enums take the newer modules' upper-case names
+  (`aprend_texture2d_desc` becomes `APREND_TEXTURE2D_DESC`), and
+  `aprend_send_command`, the one call with its verb first, is renamed for
+  its object. A pass of its own after this conversion, with every caller,
+  unless it proves small enough to make with it. **Done 2026-10-30, with
+  the conversion:** the value structs group by group, and
+  `aprend_send_command` as `aprend_command_list_send`, beside `_reset`,
+  `_compile` and `_submit`, every caller with it.
+- **Progress:** A27's rename done 2026-10-29 (above). The plan, header by
+  header: core and context; images; shaders and pipelines; frames, passes,
+  post, timers and transient memory; materials and lit; draw lists and the
+  swap chain; commands. Then A10, then A14 (the buffers and pools convert
+  there, not before). Each group renames its value structs upper-case with
+  it, so callers break once.
+  - **Group 1, core and context: done 2026-10-29.** `APREND_ERROR`
+    (`aprendcontext.h`, with "Results and errors", the rule for every
+    header), `APRESULT_APREND_GPU_FAILURE` (5001) in `apricore.h`; in `src/`
+    `aprend_fail`, `aprend_fail_spud` (SpudGPU's result mapped and named),
+    `aprend_base_check` and `aprend_error_clear`. Converted:
+    `aprend_instance_create` (`out_instance`), `_wait_idle`, `_get_desc`,
+    `_get_render_target_pool`, `_trim_render_targets` (its count through
+    `out_trim_count`) and `_set_render_target_retirement`; renamed
+    `APREND_INSTANCE_DESC` and `APREND_RENDER_TARGET_POOL_INFO`. None of
+    these prints any more. Destroy calls can't fail: a create promises its
+    retires (`aprend_instance_reserve_release`), and the queue keeps room
+    for them; the creates take it group by group, and until 1f a retire
+    nobody promised still prints if it finds no memory. New:
+    `tests/aprend_contract_tests.c`, every refusal of these calls with its
+    code and message, headless. Built and tested on macOS: ApricotFields'
+    27 tests, plain and under ASan; `../apricottests`' GPU tests on Metal
+    under validation with warnings fatal; a caller's 35 and another's 45
+    tests over it. Windows and Linux not built.
+  - Left in this header: `aprend_instance_next_frame` (A10, step 1d).
+  - **Group 2, images: done 2026-10-29.** `aprendimages.h`: the 2D and 3D
+    texture creates, updates, readbacks, resizes and mip generation, the
+    view creates and the sampler create return `APRESULT`, handles through
+    `out_`, an `APREND_ERROR` on each that can fail for a reason worth a
+    sentence; the desc getters write through `out_desc`. An update or a
+    readback takes `const void *data` (`void *out_data`) and its
+    `data_size`, which must be the region's bytes exactly, in place of the
+    `void **ppData` it took. Renamed `APREND_TEXTURE2D_DESC`,
+    `APREND_TEXTURE3D_DESC`, `APREND_TEXTURE_VIEW_DESC`,
+    `APREND_SAMPLER_DESC`, `APREND_COLOR_TARGET` and `APREND_DEPTH_TARGET`.
+    Every create promises its destroy's retire, a resize the old image's,
+    and an upload or readback its own buffer's, so none of their retires
+    can find no room. `aprendimages.cpp` prints nothing. The internal
+    helpers under them (`aprend_record_immediate`,
+    `aprend_immediate_on_texture`, `aprend_wait_immediate`,
+    `aprend_instance_open_upload_batch`, the mip chain's) report through an
+    `APREND_ERROR`; the framebuffer clears and `GENERATE_MIPS`, not yet
+    converted, print what they hand back until their groups. Tests: every
+    image call's NULL refusal headless; a caller's GPU tests check the
+    region rules (sizes, NULLs, bounds) and a write read back exactly, and
+    the struct base refusals by code and message. Built and tested on
+    macOS (ApricotFields plain and ASan, the GPU tests on Metal under
+    validation, a caller's 35 tests and another's 45).
+  - **Group 3, shaders and pipelines: done 2026-10-29.** `aprendshader.h`
+    and `aprendpipeline.h`: the shader creates (from memory and from a
+    file), `aprend_get_fullscreen_vertex_shader`, both pipeline creates,
+    both binding layout creates and the binding set create give their
+    handle through `out_` with an `APREND_ERROR`; `aprend_binding_set_update`
+    takes one; the desc getters write through `out_desc`; the layout
+    lookups (`_find`, `_get_binding`, `_get_block`, `_get_uniform_layout`)
+    return `APRESULT`, `APRESULT_NOT_FOUND` where nothing matches. A file
+    that isn't there is `APRESULT_NOT_FOUND`, one that can't be read
+    `APRESULT_IO`; a set of more bindings than a layout takes
+    `APRESULT_LIMIT`. Every reflection mismatch a pipeline create finds is
+    its message. Renamed `APREND_SHADER_MEMBER`, `APREND_SHADER_RESOURCE`,
+    `APREND_SHADER_INPUT`, `APREND_SHADER_REFLECTION`,
+    `APREND_BINDING_DESC`, `APREND_VERTEX_ELEMENT`, `APREND_VERTEX_LAYOUT`,
+    `APREND_VERTEX_BINDING_DESC`, `APREND_GRAPHICS_PIPELINE_DESC`,
+    `APREND_COMPUTE_PIPELINE_DESC` and `APREND_BINDING_SET_ENTRY`. Every
+    create promises its destroy's retire. `aprendpipeline.cpp` prints only
+    from `aprend_binding_set_matches_images`, which a compile calls (group
+    7). Aprend's built-ins (`aprendbuiltin.cpp`) still print what they
+    can't make until the commands group. Built and tested on macOS as
+    group 2 was.
+  - **Group 4, framebuffers, passes, timers and transient memory: done
+    2026-10-29.** `aprendframes.h`, `aprendpass.h`, `aprendtimer.h`,
+    `aprendtransient.h`: the framebuffer, render pass, compute pass and
+    timer creates give their handle through `out_` with an
+    `APREND_ERROR`; the framebuffer's resize and clears, the passes'
+    `_set_binding_set`, `aprend_gpu_timer_get_ms` (`APRESULT_NOT_FOUND`
+    for a slot with no time yet) and `aprend_transient_allocate`
+    (`APRESULT_LIMIT` with no transient memory or past its limit) take one;
+    `aprend_framebuffer_get_desc` and `aprend_render_pass_get_size` return
+    `APRESULT`. Renamed `APREND_FRAMEBUFFER_TEXTURE_SPEC`,
+    `APREND_FRAMEBUFFER_DESC`, `APREND_RENDER_PASS_DESC`,
+    `APREND_COMPUTE_PASS_DESC`, `APREND_GPU_TIMER_DESC` and
+    `APREND_TRANSIENT_SPAN`. A timer's create promises its retire; the
+    framebuffer and the passes are freed at once, as before. What still
+    prints in these files is what a compile reads (a span's or a
+    framebuffer's state at `BEGIN_RENDER_PASS`), for the commands group.
+    `aprendpost.h`'s exposure goes with lit, where it is built. Built and
+    tested on macOS as group 2 was.
+  - **Group 5, materials, lit and exposure: done 2026-10-30.**
+    `aprendmaterial.h`, `aprendlit.h`, `aprendpost.h`: the material
+    create and copy, `aprend_lit_material_create`,
+    `aprend_lit_environment_create`, `aprend_lit_scene_create` and
+    `aprend_exposure_create` give their handle through `out_` with an
+    `APREND_ERROR`; so do the lit getters made on first use
+    (`aprend_lit_get_shader`, `_get_scene_layout`, `_get_shadow_layout`,
+    `_get_material_layout`). Every material setter and lookup, every lit
+    material and scene setter, `aprend_lit_fit_sun_cascades` and both
+    shadow view-projection calls return `APRESULT` with an error
+    (`APRESULT_NOT_FOUND` where no binding or member has the name).
+    `aprend_material_is_complete` stays a predicate. Renamed
+    `APREND_MATERIAL_DESC`, `APREND_MATERIAL_UNIFORM`, `APREND_LIT_VERTEX`,
+    `APREND_LIT_INSTANCE`, `APREND_LIT_MATERIAL_VALUES`,
+    `APREND_LIT_ENVIRONMENT_DESC`, `APREND_LIT_VIEW`, `APREND_LIT_SUN`,
+    `APREND_LIT_SUN_SHADOW`, `APREND_LIT_CASCADE_FIT`, `APREND_LIT_LIGHT`,
+    `APREND_LIT_SPOT_SHADOW`, `APREND_LIT_POINT_SHADOW`,
+    `APREND_LIT_AMBIENT` and `APREND_EXPOSURE_DESC`. A material's create
+    and copy promise its retire. Left printing: what the lit built-ins
+    can't make (`aprendlit.cpp`'s internal pipelines and placeholders, as
+    `aprendbuiltin.cpp`'s), which a create reports as
+    `APRESULT_APREND_GPU_FAILURE` with the part named, and what a compile
+    or a submit finds (`aprend_material_prepare`,
+    `aprend_material_stage_uploads`). Built and tested on macOS as group 2
+    was.
+  - **Group 6, draw lists and the swap chain: done 2026-10-30.**
+    `aprenddrawlist.h`, `aprendswapchain.h`: both creates give their
+    handle through `out_` with an `APREND_ERROR`; `aprend_draw_list_add`,
+    `_build`, `aprend_swap_chain_resize`, `_acquire` and `_present` take
+    one; the getters return `APRESULT`. Renamed `APREND_DRAW_LIST_DESC`,
+    `APREND_DRAW_MESH` and `APREND_SWAP_CHAIN_DESC`. An acquire SpudGPU
+    can't make is `APRESULT_APREND_GPU_FAILURE` until SpudGPU says why
+    (out of date, lost device: step 1d). Built and tested on macOS as
+    group 2 was.
+  - **Group 7, command lists: done 2026-10-30.** `aprendcommands.h`:
+    `aprend_command_list_create` gives the list through `out_` and promises
+    its retire; `_compile` and `_submit` return `APRESULT` with an
+    `APREND_ERROR`. A compile's message names the send it is about,
+    counted from the reset, a send that stands for others
+    (`BEGIN_RENDER_PASS`, `SET_COMPUTE_PASS`, `DRAW_LIST`) being one:
+    "command 2: draw command recorded outside a rendering pass". A command
+    refused when it was sent is reported by the next compile, at its send.
+    A submit of a list compiled against what has changed since is
+    `APRESULT_APREND_STALE` (5002, new). How it works: for the length of a
+    compile or submit the list points at the caller's error, and the
+    instance at the list (`aprend_cmd_report`, `aprend_report`,
+    `aprend_cmd_report_scope`), so every check a compile reaches - the
+    pass and draw list expansions, a material's preparation and uploads,
+    the built-ins and lit's internal pipelines, the render target pool, a
+    set's images against a pipeline's shaders - reports the first failure
+    there, and nothing prints; a recording's first failure is kept on the
+    list for the next compile. Outside a compile those internal checks
+    keep nothing: a create that reaches them reports its own failure.
+    `aprend_command_list_send` and `aprend_command_list_reset` stay `void`, as
+    Vulkan's recording calls are. Tests: the index and code of a compile's
+    failure, a submit before any compile, and a stale submit, in a
+    caller's GPU tests. Built and tested on macOS as group 2 was.
+  - **A10, `aprend_instance_next_frame`: done 2026-10-30.** It returns
+    `APRESULT`, takes a `timeout_ns` (UINT64_MAX without limit, 0 only
+    looks) and gives the new index through `out_frame_index`, with an
+    `APREND_ERROR`. It waits before it changes anything, so a wait that
+    runs out (`APRESULT_TIMEOUT`, 12, new and general) or fails leaves the
+    frame where it was and the call can be made again; a lost device is
+    `APRESULT_APREND_DEVICE_LOST` (5003, new), from SpudGPU's new
+    `SPUDRESULT_GPU_DEVICE_LOST`, which `aprend_instance_wait_idle` and the
+    submissions pass on as well. A failed submission of the frame's
+    updates and clears stops it there too (it dropped them before), and a
+    command allocator's failed reset is its failure, not a print. Before,
+    a failed wait moved the frame anyway. SpudGPU's half: Vulkan maps
+    `VK_ERROR_DEVICE_LOST` from the fence wait and the submissions, D3D12
+    asks `GetDeviceRemovedReason` before and after a fence wait and around
+    a submission; both written on macOS and not compiled (no Vulkan or
+    D3D12 headers here): the Windows run compiles and runs them. Metal
+    never returns it: a device on Apple Silicon isn't lost
+    (`MTLCommandBufferErrorDeviceRemoved` can't occur there, as the macOS
+    27 SDK says), a faulting command buffer failing alone. Tests: a turn
+    with no time to wait turns or runs out leaving the index, in a caller's
+    GPU tests; a NULL instance headless. A lost device isn't made to
+    happen by any test.
+  - **A14, `aprendbuffers.h`: done 2026-10-30.** One `aprend_buffer` for
+    every use, made from an `APREND_BUFFER_DESC` (new type 5025): a size, a
+    usage mask (`APREND_BUFFER_USAGE_VERTEX`, `_INDEX`, `_UNIFORM`,
+    `_STORAGE`, `_INDIRECT_ARGUMENTS`), `APREND_BUFFER_WRITES` (ONCE or
+    MANY, NONE refused), the index stride for an index buffer, `per_frame`,
+    the initial data and a debug name, copied. A mask is one bit, or
+    STORAGE with INDIRECT_ARGUMENTS: the states a command list can move a
+    buffer between; any other is `APRESULT_UNSUPPORTED` until a list can.
+    `aprend_buffer_create`, `_destroy`, `_get_desc`, `_write`, and
+    `aprend_buffer_write_uniform` with the caller's `APREND_UNIFORM_LAYOUT`
+    (a buffer keeps no layout); `aprend_uniform_layout_get_size` sizes a
+    block and `_get_uniform_index` returns `APRESULT` (`NOT_FOUND`). A
+    uniform buffer is UPLOAD memory mapped for life on every device and
+    starts as zeroes, as before; any other is kept as the vertex, index and
+    storage buffers were, and a buffer written directly is now mapped once
+    for its life rather than at each write. Buffer sets are gone:
+    `per_frame` makes `frames_in_flight` copies behind one handle, the
+    current frame's written and the compiled frame's read, so vertex, index
+    and argument buffers may have copies too, and a binding set entry,
+    `SET_VERTEX_BUFFERS`, `SET_INDEX_BUFFER`, an indirect draw and the
+    material's setters take one `aprend_buffer` (their `_set` members and
+    arguments went). Each use checks the usage it needs: the sends, binding
+    sets, materials, draw lists. The pools stay, over `aprend_buffer`
+    blocks named after the pool (`debug_name`, new in their descs), and
+    return `APRESULT` with an `APREND_ERROR`; a bad free is
+    `APRESULT_INVALID_ARGUMENT`. Renamed `APREND_UNIFORM`,
+    `APREND_UNIFORM_LAYOUT` (its `uniforms` now `const`),
+    `APREND_VERTEX_POOL_DESC`, `APREND_VERTEX_RANGE`,
+    `APREND_INDEX_POOL_DESC`, `APREND_INDEX_RANGE`; `APREND_DEFAULT_VERTEX`,
+    which nothing used, removed (no mesh types). Every create promises its
+    destroy's retire, and a ONCE buffer's write promises the retire of the
+    buffer it stages in. `aprendbuffers.cpp` and `aprendpools.cpp` print
+    nothing. Tests: every NULL refusal and the layout calls headless
+    (`aprend_contract_tests.c`); in a caller's GPU tests each create
+    refusal by code and message, a named buffer's desc and message, writes
+    to per-frame copies across frames on a two-frame instance, and the
+    usage refusals of a send, a binding set and a material. Built and
+    tested on macOS as group 2 was. Not run: copies drawn from (the GPU
+    tests' instance has one frame in flight, as before), and Windows and
+    Linux.
+  - **The conversion is finished (step 1f, 2026-10-30).** Nothing in
+    Aprend prints but the Debug build's check of overlapping calls, a
+    diagnostic that refuses nothing (`aprendcontext.h`, "Threads"); the
+    headers say so (`aprendcontext.h`, "Results and errors"). Every retire
+    is promised by what made the object: each create, a resize's old
+    image, an upload's and a readback's staging buffer, a ONCE buffer's
+    staged write (checked call by call); `aprend_instance_retire` asserts
+    a promise in Debug, and its print for an unpromised one went, as did
+    `aprend_base_ok` (every based struct is checked by
+    `aprend_base_check`). `aprend_command_list_send` and
+    `aprend_command_list_reset` return nothing, as Vulkan's recording
+    calls don't, and a refused send is reported by the next compile. A
+    caller's GPU tests no longer print "expect N refusals" before checks
+    whose refusals now print nothing. Run on macOS (Debug) on 2026-10-30:
+    ApricotFields' 27 tests plain and under ASan; the GPU tests on Metal
+    under API and shader validation with warnings fatal, both devices, and
+    under `leaks --atExit` (no leak without Metal's debug layer; with it,
+    six `MTLDebugSamplerState` wrappers of the layer's own object cache,
+    made for Aprend's samplers, which are released); a caller's 35 tests
+    and another's 45. **Still needed, on Windows** (ThinkPad P1, both
+    GPUs): the GPU tests on D3D12 (debug layer, and GPU-based validation
+    once) and on Vulkan (validation, synchronization validation), Debug,
+    and ApricotFields' tests plain and under `windows-*-asan`; the two
+    callers' suites there; and SpudGPU's new lost-device code compiled
+    for the first time (D3D12 and Vulkan). **On Linux** (Fedora): the same
+    over Vulkan, with the ASan and TSan presets. A device lost is not made
+    to happen by any test.
+  - **The names (2026-10-30):** `aprend_send_command` is
+    `aprend_command_list_send`, every caller with it; the value structs'
+    renames were made group by group. Nothing of the decision is left.
 
 The workspace's error policy is in the root `CLAUDE.md`, "Errors".
 
@@ -143,14 +398,14 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     and nothing defined them).
   - `aprend_uniform_buffer_update_by_name`, `aprend_texture2d_resize` and
     `aprend_texture3d_resize` implemented (they returned false).
-  - `aprend_send_command` copies the arrays of `SET_VERTEX_BUFFERS`,
+  - `aprend_command_list_send` copies the arrays of `SET_VERTEX_BUFFERS`,
     `SET_VIEWPORTS` and `SET_SCISSOR_RECTS` into the command list.
   - Texture update and readback and the framebuffer clears write a texture's
     tracked layout only after their submission succeeds, and leave the texture
     in the layout they found it in.
   - Storage buffers are created host-visible and host-coherent, and
     `aprend_storage_buffer_update` checks its range against the buffer's size.
-  - `aprend_graphics_pipeline_desc` takes `_cull_mode` and `_front_face_ccw` in
+  - `APREND_GRAPHICS_PIPELINE_DESC` takes `_cull_mode` and `_front_face_ccw` in
     place of `_backface_culling`.
 - **The changes of 2026-10-10 are compiled on all three backends**:
   - `aprend_uniform_set` is replaced by `aprend_binding_layout` and
@@ -180,8 +435,8 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     `aprend_buffer_store_write`, `aprend_uniform_buffer_update` (whose buffer
     stays mapped) and both texture update paths. The readbacks already called
     `spudgpu_invalidate_buffer`.
-  - `memory_flags` is gone from `aprend_texture2d_desc` and
-    `aprend_texture3d_desc`: a SpudGPU image has no memory kind.
+  - `memory_flags` is gone from `APREND_TEXTURE2D_DESC` and
+    `APREND_TEXTURE3D_DESC`: a SpudGPU image has no memory kind.
   - SpudGPU's heap and resource flags are gone too, and with them any
     zeroing: a new buffer's or image's contents are undefined on every
     backend. `aprend_uniform_buffer_create` zeroes its block for that
@@ -194,7 +449,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - Desc fields nothing read are gone (was item 4): `store_locally`,
     `initial_data` and its pitches on both texture descs, `_line_width` on the
     pipeline desc, `swap_chain_target` on the framebuffer desc, and the app
-    and engine names and versions on `aprend_instance_desc`, which is now the
+    and engine names and versions on `APREND_INSTANCE_DESC`, which is now the
     device alone. A view's `APREND_TEXTURE_VIEW_TYPE` is checked against the
     texture's usage bits, and a sampled view of a depth and stencil format is
     of the depth alone.
@@ -243,7 +498,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     instance destroyed before its first submission, returns at once without
     calling SpudGPU (2026-10-19): the fence starts at 0, and D3D12's debug
     layer warned at every such wait. Run on Windows, D3D12 and Vulkan.
-  - Buffer sets (item 12). `aprend_instance_desc::frames_in_flight`, a frame
+  - Buffer sets (item 12). `APREND_INSTANCE_DESC::frames_in_flight`, a frame
     index moved on by `aprend_instance_next_frame`, and
     `aprend_uniform_buffer_set` and `aprend_storage_buffer_set` with one copy
     for each frame. A binding set entry takes a set in place of a buffer; such
@@ -325,12 +580,12 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   to them. It describes the code as it is and changes none of it.
 - **Views of a range, cubes and per-mip layouts, written 2026-10-10 and
   compiled on all three backends** (items 16 and 17):
-  - `aprend_texture_view_desc` replaces the `type` argument of the two view
+  - `APREND_TEXTURE_VIEW_DESC` replaces the `type` argument of the two view
     create calls: a use, a shape (2D, 2D array, cube, cube array, 3D) and a
     mip and layer range, with `APREND_TEXTURE_VIEW_REMAINING` for "to the
     end". A 2D texture with several layers is viewed as a 2D array; before,
     it was asked for as a plain 2D view, which is invalid on Vulkan.
-  - `aprend_texture2d_desc::cube_capable`. A cube is a texture and a view.
+  - `APREND_TEXTURE2D_DESC::cube_capable`. A cube is a texture and a view.
   - A texture tracks a layout for each mip of each layer, and a command list
     an entry for each it touches. A view is moved over its range, with one
     barrier where the range is in one layout. Conflicts in a pass or a
@@ -369,7 +624,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     (item 39).
 - **View aspects and stencil sampling, written 2026-10-11 and compiled on
   all three backends** (item 16):
-  - `aprend_texture_view_desc::aspect` (COLOR, DEPTH, STENCIL,
+  - `APREND_TEXTURE_VIEW_DESC::aspect` (COLOR, DEPTH, STENCIL,
     DEPTH_STENCIL), required and checked against the texture's format and
     the view's type. Before, Aprend chose it from the format, and a sampled
     view of a depth and stencil texture was always the depth.
@@ -404,7 +659,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     allocated. `aprend_instance_next_frame` rewinds the run of the index it
     moves to, after its wait for that frame's submissions. Nothing is
     tracked for a span.
-  - `aprend_instance_desc` gains `transient_chunk_size` (0 is an instance
+  - `APREND_INSTANCE_DESC` gains `transient_chunk_size` (0 is an instance
     with no transient memory) and `transient_memory_limit` (0 is no limit).
     A span larger than a chunk gets one of its own, destroyed at the rewind.
   - Every submission flushes what the frame's spans hold. A compile refuses
@@ -431,7 +686,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   and `aprendranges_internal.hpp`, new; item 13):
   - `aprend_vertex_pool` and `aprend_index_pool` own a few large vertex or
     index buffers, the blocks, and hand out ranges of them
-    (`aprend_vertex_range`, `aprend_index_range`) that last until freed. For
+    (`APREND_VERTEX_RANGE`, `APREND_INDEX_RANGE`) that last until freed. For
     a caller with thousands of small meshes: a buffer each is a device
     allocation each, which a device limits in number and in smallest size.
   - A range names its block's buffer and its start. It is drawn as any
@@ -609,7 +864,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     cleared to 0 in every channel; only the cubes' color is read.
 - **Uniforms found once, written 2026-10-17; run on Metal** (from "Next,
   from the review", its first step). `aprend_material_find_uniform`
-  turns a member's name into an `aprend_material_uniform` once, against
+  turns a member's name into an `APREND_MATERIAL_UNIFORM` once, against
   a binding layout, and `aprend_material_set_uniform_value` and
   `aprend_material_get_uniform_value` write and read it with no string
   read. `aprend_material_set_uniform` is now a find and a set.
@@ -781,14 +1036,14 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
 - **A uniform buffer's uniforms found once, written 2026-10-18; run on
   Metal** (from "Next, from the review", its first step).
   - `aprend_uniform_layout_get_uniform_index(layout, name)` finds a uniform
-    of an `aprend_uniform_layout` by name, once, and
+    of an `APREND_UNIFORM_LAYOUT` by name, once, and
     `aprend_uniform_buffer_update_uniform(buffer, index, data)` and
     `aprend_uniform_buffer_set_update_uniform(set, index, data)` write it
     with no search. `aprend_uniform_buffer_update_by_name` is the lookup on
     the buffer's copy of its layout and then the write, as before (the
     first uniform of the name).
   - The handle is the uniform's index in its layout, not a struct as the
-    material's `aprend_material_uniform` is. A uniform buffer's layout is a
+    material's `APREND_MATERIAL_UNIFORM` is. A uniform buffer's layout is a
     plain struct the caller writes or reads from shaders and passes at
     create, not a handle, so the index is what names a uniform of it: it
     serves every buffer and buffer set of the layout, a caller that wrote
@@ -868,7 +1123,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - The uniform buffer update calls, and the set's create and update calls,
     print each refusal, as create does and as the material's calls do;
     they returned false silently.
-  - `aprend_uniform::size` is `array_count`: it was an element count named
+  - `APREND_UNIFORM::size` is `array_count`: it was an element count named
     a size. Source-compatible for a caller that fills the struct by
     position (a caller in the workspace does); one that names the field changes the name.
   - `../apricottests`' `test_uniform_buffer_index`: the alignments SpudGPU
@@ -893,9 +1148,9 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     `aprend_vertex_buffer_get_layout` and
     `aprend_vertex_buffer_get_spudgpu_buffer_view` are removed; nothing in
     the workspace called either.
-  - `aprend_vertex_layout` (in `aprendpipeline.h`, was `aprend_buffer_layout`
+  - `APREND_VERTEX_LAYOUT` (in `aprendpipeline.h`, was `aprend_buffer_layout`
     in `aprendbuffers.h`): `count`, `elements` and a required `stride`.
-    `aprend_vertex_element` is `name`, `type` and `offset`; its size follows
+    `APREND_VERTEX_ELEMENT` is `name`, `type` and `offset`; its size follows
     from the type (the `size` field, which nothing kept in step with the
     type, is gone). `APREND_VERTEX_ELEMENT_TYPE` (was
     `APREND_BUFFER_ELEMENT_TYPE`) gains `UINT` to `UINT4`, appended, so a
@@ -922,8 +1177,8 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     furthest element's end. `SET_TRANSIENT_VERTEX_BUFFER` has no `_stride`;
     the span is read at the pipeline's.
   - A vertex pool's desc takes `vertex_stride` in place of a layout.
-    Aprend's lit layouts have their strides (`sizeof(aprend_lit_vertex)`,
-    `sizeof(aprend_lit_instance)`).
+    Aprend's lit layouts have their strides (`sizeof(APREND_LIT_VERTEX)`,
+    `sizeof(APREND_LIT_INSTANCE)`).
   - Callers in the same change: the callers in the workspace (vertex
     layouts, vertex buffers sized in bytes, a solid pool's stride) and
     `../apricottests`.
@@ -948,7 +1203,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   entry above before that. Part of it has run without a device: see the
   last bullet.
   - `aprendshader.h` (new): the shader calls moved out of
-    `aprendpipeline.h`, and `aprend_shader_reflection`. A shader reflects
+    `aprendpipeline.h`, and `APREND_SHADER_REFLECTION`. A shader reflects
     its SPIR-V at creation through SPIRV-Cross's core
     (`aprendreflect.cpp`, `aprendreflect_internal.hpp`): each descriptor
     binding (set, binding, type, count, a block's size and members, an
@@ -969,14 +1224,14 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     pipeline desc) gives elements their locations from the inputs' names
     (item 11's positional locations).
   - `aprend_binding_layout_create_from_shaders`, and `_name` (new, last
-    field) on `aprend_binding_desc`; `aprend_binding_layout_find`,
+    field) on `APREND_BINDING_DESC`; `aprend_binding_layout_find`,
     `_get_binding`, `_get_binding_count`, `_get_block`,
     `_get_uniform_layout`. A layout made from shaders keeps its bindings'
     names and blocks.
   - A command list checks the texture views of each set it binds for a
     pipeline against the shape the shader declares, and a stencil read as
     other than unsigned or a depth as other than float.
-  - `APREND_UNIFORM_TYPE_MAT2` and `_MAT3`; `aprend_uniform_layout::size`
+  - `APREND_UNIFORM_TYPE_MAT2` and `_MAT3`; `APREND_UNIFORM_LAYOUT::size`
     (new, last field). `aprend_uniform_buffer_create` sizes from it, and
     std140's matrix columns of 16 are kept in the footprint and by
     `aprend_uniform_buffer_update_by_name` (item 1).
@@ -1365,7 +1620,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     ran over it on Windows on 2026-10-23 (D3D12 and Vulkan, RTX A2000; see
     item 38): on Vulkan the size check found that the caller sized its
     image to the size it asked for, not the size the surface gave.
-  - **Item 8**: `APREND_DESTRUCT__T` is one statement; `aprend_send_command`
+  - **Item 8**: `APREND_DESTRUCT__T` is one statement; `aprend_command_list_send`
     catches `std::bad_alloc` (the list then fails its compile, as for a
     malformed command); `aprend_framebuffer_create` and `_resize` reserve
     their vectors under a `catch` and check their arguments one to a line.
@@ -1379,7 +1634,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     the shader declares (`layout(rgba8)`, through Vulkan's table of
     compatible formats). `aprend_binding_layout_create_from_shaders`
     refuses two declarations of one block that differ other than in length.
-    What the frozen `aprend_shader_reflection` has no field for is kept in
+    What the frozen `APREND_SHADER_REFLECTION` has no field for is kept in
     Aprend's own store (`storage_formats`, `output_types`).
   - **The thread rule checked** (item 12): in a Debug build each call that
     meets in instance state opens with `APREND_ENTER`, which prints when a
@@ -1474,15 +1729,15 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     barriers through the same functions BLOOM uses, so they want a D3D12
     and a Vulkan run, synchronization validation included.
   - **Lighting** (item 24): cascade blending; a sun disc
-    (`aprend_lit_sun::disc_angle`) and Hosek and Wilkie's sky
+    (`APREND_LIT_SUN::disc_angle`) and Hosek and Wilkie's sky
     (`APREND_LIT_SKY_MODEL`, their dataset vendored and cooked on the CPU);
     a histogram for exposure (`low_share`, `high_share`, a compute
     dispatch); per-map uv transforms; GTAO proper with bent normals
     (`aprend_lit_scene_set_bent_normals`); point-light shadows
     (`aprend_lit_scene_set_point_shadows`, six faces a light); depth
     bounds for the tiles (`APREND_COMMAND_LIT_CULL_LIGHTS`). Fields appended
-    to two unreleased based structs (`aprend_lit_sun`,
-    `aprend_exposure_desc`) and to the lit material block; the rest is new
+    to two unreleased based structs (`APREND_LIT_SUN`,
+    `APREND_EXPOSURE_DESC`) and to the lit material block; the rest is new
     calls and commands. Each test against the formula worked out in C, and
     shown to fail against a broken or old version. A SpudGPU Metal fix
     (redundant compute set binds). New compute dispatches and barriers
@@ -1497,7 +1752,7 @@ Closed 2026-10-11 by item 18, compiled and not run on a device: `aprend_binding_
 gives a uniform buffer's layout as the shader has it, `mat2` and `mat3` have
 types, structs and arrays of structs are listed member by member, and every
 offset is the SPIR-V's. A layout written by hand is still the caller's to
-get right, and `aprend_uniform_buffer_update_by_name` assumes std140 (a
+get right, and `aprend_buffer_write_uniform` assumes std140 (a
 uniform block in `layout(std430)` or `scalar` through an extension would be
 written at the wrong strides; the material, which reads the strides, is
 not).
@@ -1566,7 +1821,7 @@ copy in `aprend_vertex_buffer_create`, the file buffer in
 
 Where the vector growth mattered most is done: `aprend_command_list_compile`
 catches it over its whole walk since 2026-10-18, and closes the SpudGPU
-list on the way out; `aprend_send_command` catches it since 2026-10-22 and
+list on the way out; `aprend_command_list_send` catches it since 2026-10-22 and
 fails the list's next compile; `aprend_framebuffer_create` and `_resize`
 reserve their vectors under a `catch` since the same day, so nothing after
 grows them.
@@ -1589,7 +1844,7 @@ today:
   caller's array may be a local". Both say that now (2026-10-22).
 - **Done 2026-10-28 (card A1, with the user): three breaking renames,**
   in one change with every caller in the workspace.
-  `aprend_framebuffer_texture_spec::use_for_gui`, which did exactly what
+  `APREND_FRAMEBUFFER_TEXTURE_SPEC::use_for_gui`, which did exactly what
   `shader_resource` does and named what a caller does with the texture, is
   gone; the misspelt `APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET` is
   `..._RENDER_TARGET`; and `aprend_destroy_texture_view`, the one destroy
@@ -1737,8 +1992,9 @@ or per instance (see "State of the code"). Left over:
 
 (Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
-Buffer sets give each frame in flight its own copy of a uniform or storage
-buffer (see "State of the code"), so the frame being written doesn't share a
+A buffer of per-frame copies (`APREND_BUFFER_DESC::per_frame`, since
+2026-10-30; buffer sets of uniform and storage buffers before) gives each
+frame in flight its own copy, so the frame being written doesn't share a
 buffer with one the GPU is reading. Left over:
 
 - **Pacing counts only what goes through Aprend**, on one queue. Every
@@ -1803,28 +2059,27 @@ buffer with one the GPU is reading. Left over:
 - **Released objects are held a little longer.** A resize every frame keeps
   the last few images alive until the frames using them finish.
 - **Some destroy calls don't go through the queue**, each for its own
-  reason. The swap chain waits for its queue, as above. A uniform or
-  storage buffer set, a framebuffer, a pass and a draw list are freed at
-  once: what they own on the GPU (a set's buffers, a framebuffer's views
-  and textures) is retired, and the handle itself holds nothing the GPU
-  reads. So a binding set that still names a destroyed buffer set reads
-  freed memory at its next `aprend_binding_set_update`, and such a destroy
-  is not one of the calls that is safe from any thread while the handle is
-  in use.
-- **Single buffers are as they were.** A uniform or storage buffer that isn't
-  in a set, and every vertex and index buffer, is still one allocation that
-  must not be written while a submitted frame reads it. There is no vertex or
-  index buffer set; a caller that rewrites geometry every frame keeps one
-  buffer for each frame itself.
+  reason. The swap chain waits for its queue, as above. A framebuffer, a
+  pass and a draw list are freed at once: what they own on the GPU (a
+  framebuffer's views and textures) is retired, and the handle itself holds
+  nothing the GPU reads. A buffer, per-frame copies and all, goes through
+  the queue as one handle (since 2026-10-30; a buffer set was freed at once
+  before, its buffers retired).
+- **A buffer of one copy is one allocation** that must not be written while
+  a submitted frame reads it. Any buffer can be made of per-frame copies,
+  vertex and index buffers too (since 2026-10-30), which a caller that
+  rewrites geometry every frame uses.
 - **A copy is not carried forward.** A copy holds what was written to it
-  `frames_in_flight` frames ago. A caller that updates part of a set each
-  frame reads stale bytes in the rest. Hazel's sets behave the same; a set
-  that copied forward what wasn't rewritten would hide the cost.
+  `frames_in_flight` frames ago. A caller that writes part of a buffer of
+  per-frame copies each frame reads stale bytes in the rest. Hazel's sets
+  behave the same; copies that carried forward what wasn't rewritten would
+  hide the cost.
 - **A list that binds a per-frame set is compiled every frame.** It reads the
   frame's copies through that frame's descriptor set, fixed at compile. A set
   bound through a dynamic offset would lift this; SpudGPU has none.
-- **Descriptor sets multiply**: a binding set with a buffer set in it takes
-  `frames_in_flight` sets from the layout's pool, 32 to a pool.
+- **Descriptor sets multiply**: a binding set with a buffer of per-frame
+  copies in it takes `frames_in_flight` sets from the layout's pool, 32 to
+  a pool.
 
 Hazel: `UniformBufferSet`, `StorageBufferSet`, `Renderer::SubmitResourceFree`,
 `RendererConfig::FramesInFlight`.
@@ -1908,7 +2163,7 @@ same command list as rendering, outside a pass. Left over:
 
 - **Storage barriers follow what the shaders write** (item 32,
   2026-10-18): a pipeline records the storage bindings its shaders write
-  (`storage_writes`, from reflection's `!aprend_shader_resource::read_only`),
+  (`storage_writes`, from reflection's `!APREND_SHADER_RESOURCE::read_only`),
   and the command list uses it to leave out the ordering barrier between
   two reads (see "State of the code").
 - **A buffer a shader writes has no way back to the CPU**: there is no
@@ -1980,7 +2235,7 @@ A view covers a range of its texture's mips and layers and has a shape, and a
 - **A storage image slot is one mip, and stays so.** It is not a gap: an
   image store takes no mip level in SPIR-V, and a D3D12 unordered access
   view is one mip slice. Writing several mips in one dispatch is an array
-  of slots (`image2D mips[N]`, `aprend_binding_desc::_count`) with a one-mip
+  of slots (`image2D mips[N]`, `APREND_BINDING_DESC::_count`) with a one-mip
   view in each, which the binding set and the per-mip layouts already take;
   `aprendimages.h` says so. No dispatch has run with one.
 - **1D textures and 1D views: not planned until something needs them.** A
@@ -2145,7 +2400,8 @@ Left over:
 - **A changed block is copied whole**, not the changed bytes.
 - **A material of a frequently changing block** (one written every frame)
   pays a copy and a barrier on its arena buffer each submission; a block
-  that changes every frame is a buffer set's job, as an external block.
+  that changes every frame is the job of a buffer of per-frame copies, as an
+  external block.
 
 ### 20. Render and compute passes: what is left
 
@@ -2193,7 +2449,7 @@ renders to an `aprend_framebuffer` and checks it against the pipeline (see
 - **Instance bytes are a per-instance vertex binding, not a storage
   buffer** as this item first asked. A vertex binding needs no binding
   layout of the list's own, works the same on every backend, and takes its
-  memory from the frame's transient arena, so it needs no buffer set. What
+  memory from the frame's transient arena, so it needs no per-frame copies. What
   it costs: a 4x4 matrix is four VEC4 elements at four locations (item 11),
   and a shader can't index another instance's data. A storage buffer path
   would be a second mode of the list, for a shader that wants one.
@@ -2305,7 +2561,7 @@ of the code") are what a batch of quads or glyphs is written into each
 frame. Not there: the batcher, the shaders, a font atlas, and uniform data
 from transient memory (a binding set reads a buffer, not a span).
 
-**Not started, on 2026-10-24, by decision.** The glyph batch needs ApText,
+**Built 2026-10-30 (below).** Before that: **Not started, on 2026-10-24, by decision.** The glyph batch needs ApText,
 which doesn't exist (`APTEXT_TODO.md`). The quads, lines, circles and debug
 drawing have no design here to build without it: only their memory and the
 glyph batch's shape are written down. What a batch's data is (push
@@ -2316,6 +2572,58 @@ recommendation is a one-page design approved before it is built.
 **Order confirmed 2026-10-28 with the user (card A16):** section B ran
 items 40, 21, 36 and 24 (written 2026-10-24), and this item comes last,
 after card A3 decides its design.
+
+#### Built 2026-10-30, run on Metal only
+
+`include/render/aprendbatch.h`, `src/render/aprendbatch.cpp`, five shaders
+(`aprend_batch*`). `aprend_batch_create` (the color and depth formats,
+`max_shapes`) makes its pipelines: four kinds by three depth modes (over,
+tested, tested reversed). `aprend_batch_begin` takes a frame
+(`APREND_BATCH_FRAME`: screen or world space, depth mode, view_projection,
+viewport, pixels per paper millimetre, the quads' texture and the glyphs'
+MTSDF atlas and its range) and room for `max_shapes` records of 128 bytes in
+transient memory; `aprend_batch_add_quads`, `_add_circles`, `_add_line`,
+`_add_glyphs` write records straight into it, checking everything first so
+a refused call adds nothing; `APREND_COMMAND_DRAW_BATCH` (40) is expanded at
+send into a pipeline, slot 0's material, the push constants (96 bytes: the
+view_projection, the viewport, the space and the atlas range) and an
+instanced draw for each run of one kind, in the order added. Debug:
+`aprend_batch_debug_box` (twelve edges), `_sphere` (three great circles of
+48 segments), `_arrow`, `_axes`. Lines: a record a segment; every measure
+in pixels after projection; world-space segments cut at the near plane, the
+line broken there; the dash phase laid out along the projected line on the
+CPU. Each segment's fragment shader works out a signed distance: the body,
+caps (butt, square, round), and at each corner the stroke split on the
+bisector so no texel is drawn twice, within which the body carried on is the
+mitre, cut by the outer chord for a bevel or a mitre past its limit, or the
+corner's distance for a round join; dashes up to four pairs, each finished
+with the cap. Circles and arcs by distance in the radius's own units,
+antialiased by `fwidth`; glyphs as designed below (median of RGB, the range
+from the frame, the outline from alpha, a fade below a pixel of range).
+Decided on the way (`../claude_made_decisions.md`, 2026-10-30): straight
+alpha in, premultiplied blending; quads, circles and glyphs as a corner (or
+centre) and two edges, so world-space ones lie in any plane; up to four
+dash pairs (CAD's dashed, centre and most others); push constants to the
+fragment stage only for glyphs (Metal's validation refuses bytes a stage
+doesn't read); `APREND_VERTEX_LAYOUT::elements` made `const`, which took
+two `check.baseline` entries with it.
+
+`../apricottests`' `test_batch`: a quad; a ring's hole, body and an edge
+through a texel against its distance measured as `fwidth` does; an arc's
+kept and dropped halves; a line's middle, an edge through texel centres
+(half), past it and past a butt end; a square cap; dashes and a dash's end;
+paper millimetres; the mitre, bevel and round join each at one texel
+worked out against the corner; a translucent L covered once at its inner and
+outer corners; glyphs from a hand-made two-page atlas, fill and outline; a
+world-space line; a line from behind the eye cut to one record; the debug
+calls' record counts; a call past `max_shapes` adding nothing; fourteen
+refusals. `test_batch_aptext_glyph`: ApText's 'a' generated as an MTSDF and
+drawn at twice its size, its 100 texels well inside filled and 60 well
+outside empty. Both devices, Metal's validation, and `leaks`: clean.
+**Needs D3D12 and Vulkan runs.** Not built: a depth-tested frame is
+untested on the GPU (only its refusals); bitmap atlases (the design's
+"later"); a 2D batch of filled polygons is ApMath's triangulation and the
+caller's mesh, as the header says.
 
 #### The batcher: the design (decided 2026-10-28 with the user, card A3)
 
@@ -2502,7 +2810,7 @@ Left:
       since item 22's revision.
 - [x] **Shadows from point lights** (a cube map each, six passes). Done
       2026-10-24, run on Metal only: `aprend_lit_scene_set_point_shadows()`
-      with `aprend_lit_point_shadow` (frozen: a light and six face
+      with `APREND_LIT_POINT_SHADOW` (frozen: a light and six face
       matrices, bias, offset, softness, strength), up to
       `APREND_LIT_MAX_POINT_SHADOWS` (4); face f of shadow i in layer
       6i + f of a 2D array depth map, rendered through
@@ -2551,7 +2859,7 @@ Left:
       fill with decoys and drop the real light (1024 texels dark); culled
       against the depth, the picture is the untiled one texel for texel;
       two refusals.
-- [ ] **Transmission** (glTF's KHR_materials_transmission): refraction of
+- [x] **Transmission** (glTF's KHR_materials_transmission): refraction of
       what is behind, needing a copy of the opaque picture.
       **Decided 2026-10-28 with the user (card A7):** a scene color copy
       command, copying the current color target into a mipped texture
@@ -2563,11 +2871,33 @@ Left:
       `SCREEN_TEXTURE`, three.js. Limits: glass behind glass and what is
       off screen don't show through (ray tracing, card S12, later).
       Tests: a refracted known quad read back against its place worked out
-      in C, on every backend. Not started.
+      in C, on every backend.
+      **Done 2026-10-30, run on Metal only** (both devices, under the
+      debug layer and shader validation). `APREND_COMMAND_COPY_SCENE_COLOR`
+      (39): `_source` stretched onto `_target`'s level (DRAW_TEXTURE's
+      path), then GENERATE_MIPS below it, linear both. The texture is the
+      caller's, as GTAO's target is, not the pool's: the scene binds it
+      for every draw after the command. `aprend_lit_scene_set_scene_color()`
+      (set 0 binding 12, flag 256, its mip count in the block's old
+      padding). `APREND_LIT_MATERIAL_VALUES` gains `transmission`, `ior`
+      (1.5 by default), `thickness`, `attenuation_color` and
+      `attenuation_distance` (block 256 to 288 bytes). The surface gives
+      the transmitted share of its diffuse lobe to the picture behind:
+      the view ray refracted, followed through the thickness, projected,
+      read at a mip of roughness times clamp(2 ior - 2) (three.js's
+      choice), decoded and unexposed as the surface wrote it, tinted by
+      Beer's law, times (1 - the split-sum's specular). Known limits, as
+      the card had them: glass behind glass and what is off screen.
+      `../apricottests`' `test_lit_transmission`: a red ramp copied and
+      read back (mip 0 exact, mip 1 the average), then four texels across
+      a full-target face at thickness 4 read within a step of the place
+      worked out in C (12 to 48 red away from where the unbent ray would
+      read), the tint halving them, no scene color giving black, and seven
+      refusals. **Needs D3D12 and Vulkan runs.**
 - [x] **A sun disc** in the sky shader (left out of the environment on
       purpose, where it would only blur), and Hosek-Wilkie's sky for a
       better horizon than Preetham's. Done 2026-10-24, run on Metal only.
-      - The disc: `aprend_lit_sun::disc_angle` (appended; 0 for none, to
+      - The disc: `APREND_LIT_SUN::disc_angle` (appended; 0 for none, to
         0.5 radians), drawn by `APREND_LIT_SHADER_SKY_FRAGMENT` over the
         environment, or over black: the sun's radiance spread over the
         disc's solid angle (pi times radiance over 2 pi (1 - cos)), so it
@@ -2654,7 +2984,7 @@ Left:
 - [x] **A histogram for exposure** (Unreal's), which can leave the
       darkest and brightest few percent out, in place of the log
       average. Done 2026-10-24, run on Metal only:
-      `aprend_exposure_desc::low_share` and `high_share` (appended); 0 and
+      `APREND_EXPOSURE_DESC::low_share` and `high_share` (appended); 0 and
       1 measure every texel by the exact log average as before; otherwise
       `aprend_exposure_histogram.comp` counts the luminance texture into 64
       bins over min_log to max_log (a group's bins in shared memory, one
@@ -2680,7 +3010,7 @@ Left:
       matrix a map, applied after the material's own, the identity at
       create, copied by `aprend_material_copy`, left alone by
       `set_values`); the material block grows to 256 bytes. A call rather
-      than a field of `aprend_lit_material_values`, since glTF's transform
+      than a field of `APREND_LIT_MATERIAL_VALUES`, since glTF's transform
       is per texture and `set_map` is per map. Compared: Hazel has one
       tiling for a material; Unreal's material graph transforms any
       texture's coordinates as the author wires it. Aprend's is glTF's.
@@ -2801,7 +3131,7 @@ Left:
       frame, times the frames in flight. Reported and trimmed since
       2026-10-24 (run on Metal only):
       `aprend_instance_get_render_target_pool()` fills an
-      `aprend_render_target_pool_info` (`APRI_STRUCT_BASE_OUT`, the first
+      `APREND_RENDER_TARGET_POOL_INFO` (`APRI_STRUCT_BASE_OUT`, the first
       in Aprend: textures, how many are busy, and their texel bytes, every
       mip, as the formats count them), and
       `aprend_instance_trim_render_targets(instance, idle_frames)` destroys
@@ -3053,7 +3383,7 @@ redrew during it or only once the drag ended (reported). No debug
   scaling instead (back buffers at the source's size, an EXACT copy, the
   compositor stretching for free, where the query says the surface takes
   it) is a later option, not added: it would be a field on
-  `aprend_swap_chain_desc`.
+  `APREND_SWAP_CHAIN_DESC`.
 
 **Tests** (`../apricottests`, no window): the present shader drawn into an
 offscreen target standing in for a back buffer (the draw is the same
@@ -3066,6 +3396,57 @@ each backend.
 
 **Why not a blit:** SpudGPU's blit resamples only on Vulkan; on D3D12 and
 Metal it is a copy (`spudgpu.h`).
+
+### 41-49. From the comparison with Hazel (2026-10-30)
+
+`ROADMAP.md` section 3.3: Hazel's `Renderer/`, `UI/` and shaders
+(`Hazelnut/Resources/Shaders/`, with `PostProcessing/` and
+`Include/GLSL/`) read against Aprend's headers and every item here. These
+nine are what Hazel can do that nothing above lists. Every one adds a call
+or a field, so none is built here (section 3.3 builds only what leaves the
+API's shape alone); each wants its shape decided first. Paths: `R/` is
+`Hazel/src/Hazel/Renderer/`, `Sh/` the shaders.
+
+- [ ] **41. Depth of field**: single-pass bokeh from a focus distance and a
+      blur size (`R/SceneRenderer.h:100` `DOFSettings`,
+      `R/SceneRenderer.cpp:1245-1277`, `Sh/PostProcessing/DOF.glsl`). A
+      command beside BLOOM.
+- [ ] **42. Edges from normals and depth**: outlines on silhouettes and
+      creases, mixed in at the composite (`R/SceneRenderer.cpp:1173-1237`,
+      `Sh/PostProcessing/EdgeDetection.glsl`). OUTLINE works from a mask
+      only; SSR's normal target (card A6, waiting on A30) is the input.
+- [ ] **43. Soft shadows sized by the light (PCSS)**: a blocker search,
+      then a filter as wide as the penumbra (`Sh/Include/GLSL/
+      ShadowMapping.glslh:10,51,160`, `LightSize` in `Buffers.glslh`).
+      Aprend's `softness` is a fixed width in texels; the shadow structs
+      are frozen, so a light size is a new or chained struct.
+- [ ] **44. Lighting debug views**: a heat map of lights per tile and
+      cascades tinted (`Sh/HazelPBR_Static.glsl:309,325`). A debug mode on
+      the lit scene.
+- [ ] **45. Skinned meshes' built-in shaders**: skinned surface, pre-depth
+      and shadow vertex shaders over bones in a storage buffer
+      (`Sh/HazelPBR_Anim.glsl`, `DirShadowMap_Anim.glsl`,
+      `PreDepth_Anim.glsl`). Item 24's shape already lets a caller's own
+      vertex shader skin; whether Aprend ships skinned
+      `APREND_LIT_SHADER_*` vertex shaders is the question.
+- [ ] **46. A blurred sky background**: the environment drawn at a chosen
+      mip (`Sh/Skybox.glsl:31,39`, Hazel's `SkyboxLod`); Aprend's sky reads
+      mip 0. A field on LIT_SKY.
+- [ ] **47. GPU memory report**: used and available, allocation counts and
+      sizes for buffers and images (`R/GPUStats.h:7-18`). Cheap once item
+      35's allocator (VMA's statistics) exists.
+- [ ] **48. Per-frame draw and instance counts** (`R/Renderer.h:204-205`,
+      `R/SceneRenderer.h:121-131`): what a list's compile issued.
+- [ ] **49. More than one texture in a 2D batch** (Hazel's 32 slots,
+      `R/Renderer2D.h:146,182`): the batcher has one texture a frame;
+      `APREND_BATCH_QUAD` is frozen, so a slot index is a new quad type.
+
+Checked and already covered: every pass of Hazel's scene renderer (shadows,
+pre-depth, tiled culling, sky, IBL, PBR, GTAO, SSR as decided, bloom,
+composite, selection outline), its pipeline state, materials, command
+buffers, compute, instancing, 2D and debug drawing and text. Hazel's fog
+and film grain are switched off in its own composite. Hazel has no mesh
+LOD.
 
 ## Needs something SpudGPU doesn't expose yet
 
@@ -3111,7 +3492,7 @@ uint32_t mask = 0;
 aprend_get_format_sample_counts(instance, SPUDGPU_FORMAT_RGBA16_FLOAT, &mask);
 uint32_t samples = (mask & 4) ? 4 : 1;   /* the caller's choice */
 
-aprend_texture2d_desc msaa_desc = {
+APREND_TEXTURE2D_DESC msaa_desc = {
     .width = w, .height = h,
     .format = SPUDGPU_FORMAT_RGBA16_FLOAT,
     .usage = APREND_TEXTURE_USAGE_COLOR_TARGET | APREND_TEXTURE_USAGE_TRANSIENT,
@@ -3123,22 +3504,22 @@ aprend_texture2d_create(instance, &msaa_desc, &msaa_color);
 /* ...plus the single-sample texture it resolves into, and a multisampled
  *    depth target with the same sample_count... */
 
-aprend_color_target target = {
+APREND_COLOR_TARGET target = {
     .view = msaa_color_view,
     .resolve_view = scene_color_view,     /* must be NULL today */
     .load_op = SPUDGPU_LOAD_OP_CLEAR,
     .store_op = SPUDGPU_STORE_OP_DONT_CARE, /* samples discarded after resolve */
 };
 
-aprend_graphics_pipeline_desc pipe = { /* ... */ .sample_count = samples };
+APREND_GRAPHICS_PIPELINE_DESC pipe = { /* ... */ .sample_count = samples };
 ```
 
 - `aprend_get_format_sample_counts()` passes SpudGPU's query through
   (`spudgpu_get_format_properties()`, card A13).
-- `sample_count` on `aprend_texture2d_desc` and a new one on
-  `aprend_graphics_pipeline_desc`, which must match the pass's targets;
+- `sample_count` on `APREND_TEXTURE2D_DESC` and a new one on
+  `APREND_GRAPHICS_PIPELINE_DESC`, which must match the pass's targets;
   `BEGIN_RENDERING` refuses a mismatch.
-- `resolve_view` on `aprend_color_target` takes the resolve, and the depth
+- `resolve_view` on `APREND_COLOR_TARGET` takes the resolve, and the depth
   target gains its own resolve view and mode (one sample, nearest, or
   farthest), for what reads depth after the pass (GTAO, OUTLINE).
 - `APREND_TEXTURE_USAGE_TRANSIENT`: a target that lives within one pass
@@ -3157,7 +3538,7 @@ test or op state on the pipeline. Hazel leaves stencil off as well.
 
 **Decided 2026-10-28 with the user (card A5): add it.** Not started;
 SpudGPU's half first (`../spudlib/SPUDGPU_DEVICE_TODO.md`, "Later").
-`aprend_graphics_pipeline_desc` takes stencil state as SpudGPU's (compare,
+`APREND_GRAPHICS_PIPELINE_DESC` takes stencil state as SpudGPU's (compare,
 pass, fail and depth-fail ops for front and back faces, read and write
 masks), and a command sets the reference value between draws. What it is
 for: filling cut faces where a clipping plane or section box slices a

@@ -26,7 +26,7 @@ static uint64_t aprend_pooled_target_bytes(const aprend_pooled_target *target) {
 	return texels * bits / 8;
 }
 
-/* A new entry of the key given, with its texture and views. NULL, printed,
+/* A new entry of the key given, with its texture and views. NULL, reported,
  * with nothing kept, if it can't be made. */
 static aprend_pooled_target *aprend_pooled_target_make(
     aprend_instance instance,
@@ -36,7 +36,7 @@ static aprend_pooled_target *aprend_pooled_target_make(
     uint32_t levels) {
 	aprend_pooled_target *target = (aprend_pooled_target *)malloc(sizeof(aprend_pooled_target));
 	if (!target) {
-		printf("apricot: render target pool: out of memory\n");
+		aprend_report(instance, APRESULT_OUT_OF_MEMORY, "render target pool: out of memory");
 		return nullptr;
 	}
 	target             = new (target) aprend_pooled_target();
@@ -47,7 +47,7 @@ static aprend_pooled_target *aprend_pooled_target_make(
 	target->levels = levels;
 	target->bytes  = aprend_pooled_target_bytes(target);
 
-	aprend_texture2d_desc texture_desc{};
+	APREND_TEXTURE2D_DESC texture_desc{};
 	texture_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 	texture_desc.width        = width;
 	texture_desc.height       = height;
@@ -57,9 +57,9 @@ static aprend_pooled_target *aprend_pooled_target_make(
 	texture_desc.array_layers = 1;
 	texture_desc.sample_count = 1;
 	texture_desc.debug_name = "aprend pooled render target";
-	target->texture = aprend_texture2d_create(instance, &texture_desc);
+	(void)aprend_texture2d_create(instance, &texture_desc, &target->texture, nullptr);
 	if (!target->texture) {
-		printf("apricot: render target pool: a %ux%u target of %u levels can't be created\n", width, height, levels);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "render target pool: a %ux%u target of %u levels can't be created", width, height, levels);
 		aprend_pooled_target_release(target);
 		return nullptr;
 	}
@@ -67,12 +67,12 @@ static aprend_pooled_target *aprend_pooled_target_make(
 		target->level_targets.assign(levels, nullptr);
 		target->level_sources.assign(levels, nullptr);
 	} catch (...) {
-		printf("apricot: render target pool: out of memory\n");
+		aprend_report(instance, APRESULT_OUT_OF_MEMORY, "render target pool: out of memory");
 		aprend_pooled_target_release(target);
 		return nullptr;
 	}
 	for (uint32_t level = 0; level < levels; ++level) {
-		aprend_texture_view_desc view_desc{};
+		APREND_TEXTURE_VIEW_DESC view_desc{};
 		view_desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 		view_desc.shape              = APREND_TEXTURE_VIEW_SHAPE_2D;
 		view_desc.aspect             = APREND_TEXTURE_VIEW_ASPECT_COLOR;
@@ -81,11 +81,11 @@ static aprend_pooled_target *aprend_pooled_target_make(
 		view_desc.base_layer         = 0;
 		view_desc.layer_count        = 1;
 		view_desc.type               = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
-		target->level_targets[level] = aprend_texture_view_create_2d(target->texture, &view_desc);
+		(void)aprend_texture_view_create_2d(target->texture, &view_desc, &target->level_targets[level], nullptr);
 		view_desc.type               = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
-		target->level_sources[level] = aprend_texture_view_create_2d(target->texture, &view_desc);
+		(void)aprend_texture_view_create_2d(target->texture, &view_desc, &target->level_sources[level], nullptr);
 		if (!target->level_targets[level] || !target->level_sources[level]) {
-			printf("apricot: render target pool: the views of level %u can't be created\n", level);
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "render target pool: the views of level %u can't be created", level);
 			aprend_pooled_target_release(target);
 			return nullptr;
 		}
@@ -125,7 +125,7 @@ aprend_pooled_target *aprend_render_target_take(
 		}
 		cmd_list->pool_takes.push_back(take);
 	} catch (...) {
-		printf("apricot: render target pool: out of memory\n");
+		aprend_cmd_report(cmd_list, APRESULT_OUT_OF_MEMORY, "render target pool: out of memory");
 		// A new entry that made it into the pool stays there, untaken, for
 		// a later take; one that didn't is held by nothing.
 		const bool in_pool = !pool.targets.empty() && pool.targets.back() == found;
@@ -140,6 +140,10 @@ aprend_pooled_target *aprend_render_target_take(
 }
 
 void aprend_render_target_give_back(aprend_command_list_t *cmd_list) {
+	// A list that took nothing reads nothing of the instance: a reset may
+	// then overlap aprend_instance_next_frame, which writes frame_number.
+	if (cmd_list->pool_takes.empty())
+		return;
 	const uint64_t frame = cmd_list->instance->frame_number;
 	// The latest take of an entry first, so an entry taken twice by the list
 	// ends as it was before the first.
@@ -218,23 +222,16 @@ void aprend_render_target_pool_destroy(aprend_instance instance) {
 
 extern "C" {
 
-bool aprend_instance_get_render_target_pool(
+APRESULT aprend_instance_get_render_target_pool(
     aprend_instance instance,
-    aprend_render_target_pool_info *out_info) {
-	static const char who[] = "aprend_instance_get_render_target_pool";
-	if (!instance) {
-		printf("apricot: %s: instance is NULL\n", who);
-		return false;
-	}
-	if (!out_info) {
-		printf("apricot: %s: out_info is NULL\n", who);
-		return false;
-	}
-	if (const APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO)) {
-		printf("apricot: %s: out_info %s\n", who, apri_struct_check_message(result));
-		return false;
-	}
-	APREND_ENTER(instance, who);
+    APREND_RENDER_TARGET_POOL_INFO *out_info) {
+	if (!instance)
+		return APRESULT_INVALID_ARGUMENT;
+	if (!out_info)
+		return APRESULT_INVALID_ARGUMENT;
+	if (const APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO))
+		return result;
+	APREND_ENTER(instance, "aprend_instance_get_render_target_pool");
 	const aprend_render_target_pool &pool = instance->render_targets;
 	out_info->texture_count               = 0;
 	out_info->busy_count                  = 0;
@@ -249,37 +246,38 @@ bool aprend_instance_get_render_target_pool(
 			out_info->busy_bytes += bytes;
 		}
 	}
-	return true;
+	return APRESULT_OK;
 }
 
-uint32_t aprend_instance_trim_render_targets(
-    aprend_instance instance,
-    uint32_t idle_frames) {
-	if (!instance) {
-		printf("apricot: aprend_instance_trim_render_targets: instance is NULL\n");
-		return 0;
-	}
-	APREND_ENTER(instance, "aprend_instance_trim_render_targets");
-	return aprend_render_target_pool_retire(instance, idle_frames);
-}
-
-bool aprend_instance_set_render_target_retirement(
+APRESULT aprend_instance_trim_render_targets(
     aprend_instance instance,
     uint32_t idle_frames,
-    uint64_t keep_bytes) {
-	static const char who[] = "aprend_instance_set_render_target_retirement";
-	if (!instance) {
-		printf("apricot: %s: instance is NULL\n", who);
-		return false;
-	}
-	if (idle_frames == 0) {
-		printf("apricot: %s: idle_frames is 0\n", who);
-		return false;
-	}
-	APREND_ENTER(instance, who);
+    uint32_t *out_trim_count) {
+	if (out_trim_count)
+		*out_trim_count = 0;
+	if (!instance)
+		return APRESULT_INVALID_ARGUMENT;
+	APREND_ENTER(instance, "aprend_instance_trim_render_targets");
+	const uint32_t trimmed = aprend_render_target_pool_retire(instance, idle_frames);
+	if (out_trim_count)
+		*out_trim_count = trimmed;
+	return APRESULT_OK;
+}
+
+APRESULT aprend_instance_set_render_target_retirement(
+    aprend_instance instance,
+    uint32_t idle_frames,
+    uint64_t keep_bytes,
+    APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (idle_frames == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "idle_frames is 0");
+	APREND_ENTER(instance, "aprend_instance_set_render_target_retirement");
 	instance->render_targets.retire_idle_frames = idle_frames;
 	instance->render_targets.retire_keep_bytes  = keep_bytes;
-	return true;
+	return APRESULT_OK;
 }
 
 } // extern "C"

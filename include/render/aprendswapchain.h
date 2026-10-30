@@ -33,7 +33,7 @@ extern "C" {
 /**
  * @brief Configuration descriptor for a swap chain.
  */
-typedef struct aprend_swap_chain_desc {
+typedef struct APREND_SWAP_CHAIN_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
@@ -56,7 +56,7 @@ typedef struct aprend_swap_chain_desc {
 	SPUDGPU_FORMAT format;
 	/** How presenting is paced. Passed to SpudGPU as it is. */
 	SPUDGPU_PRESENT_MODE present_mode;
-} aprend_swap_chain_desc;
+} APREND_SWAP_CHAIN_DESC;
 
 /**
  * @brief Opaque handle to a swap chain.
@@ -71,20 +71,27 @@ typedef struct aprend_swap_chain_t *aprend_swap_chain;
  * the top left, never scaled by the compositor. The caller resizes the swap
  * chain to the window's size (aprend_swap_chain_resize()).
  *
- * @param[in] instance Instance whose device the swap chain is created on.
- * @param[in] desc     Swap chain configuration. Copied: only read during
- *                     the call.
+ * @param[in]  instance       Instance whose device the swap chain is
+ *                            created on.
+ * @param[in]  desc           Swap chain configuration. Copied: only read
+ *                            during the call.
+ * @param[out] out_swap_chain Receives the swap chain; NULL on failure.
+ * @param[out] out_error      Why it failed, when it did. May be NULL.
  *
- * @return The swap chain, or NULL if @p instance or @p desc is NULL,
- *         `surface` or `queue` is NULL, `width` or `height` is 0, the
- *         device was created without SPUDGPU_FEATURE_PRESENT, or it refuses
- *         the swap chain.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc
+ *         or @p out_swap_chain is NULL, `surface` or `queue` is NULL, or
+ *         `width` or `height` is 0; APRESULT_UNSUPPORTED if the device was
+ *         created without SPUDGPU_FEATURE_PRESENT; the struct codes for
+ *         `desc->base`; APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's
+ *         result if it refuses the swap chain.
  *
  * @see aprend_swap_chain_destroy()
  */
-aprend_swap_chain aprend_swap_chain_create(
+APRESULT aprend_swap_chain_create(
     aprend_instance instance,
-    const aprend_swap_chain_desc *desc);
+    const APREND_SWAP_CHAIN_DESC *desc,
+    aprend_swap_chain *out_swap_chain,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a swap chain.
@@ -110,16 +117,19 @@ void aprend_swap_chain_destroy(aprend_swap_chain swap_chain);
  * @param[in] swap_chain Swap chain to resize.
  * @param[in] width      New width in pixels. Never 0.
  * @param[in] height     New height in pixels. Never 0.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return true if the swap chain is that size now, which it is at once if
- *         it already was. false if @p swap_chain is NULL, @p width or
- *         @p height is 0, or the device refuses the new swap chain, which
- *         leaves it with no back buffers until a resize succeeds.
+ * @return APRESULT_OK if the swap chain is that size now, which it is at
+ *         once if it already was; APRESULT_INVALID_ARGUMENT if
+ *         @p swap_chain is NULL or @p width or @p height is 0; or the code
+ *         for SpudGPU's result if the device refuses the new swap chain,
+ *         which leaves it with no back buffers until a resize succeeds.
  */
-bool aprend_swap_chain_resize(
+APRESULT aprend_swap_chain_resize(
     aprend_swap_chain swap_chain,
     uint32_t width,
-    uint32_t height);
+    uint32_t height,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Reads a swap chain's descriptor.
@@ -129,12 +139,12 @@ bool aprend_swap_chain_resize(
  *                        except that `width` and `height` follow
  *                        aprend_swap_chain_resize().
  *
- * @return false, with nothing written, if @p swap_chain or @p out_desc is
- *         NULL.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p swap_chain or @p out_desc is NULL.
  */
-bool aprend_swap_chain_get_desc(
+APRESULT aprend_swap_chain_get_desc(
     aprend_swap_chain swap_chain,
-    aprend_swap_chain_desc *out_desc);
+    APREND_SWAP_CHAIN_DESC *out_desc);
 
 /**
  * @brief Acquires the next back buffer.
@@ -143,14 +153,16 @@ bool aprend_swap_chain_get_desc(
  * already acquired but nothing presenting into it was submitted, that one
  * is kept.
  *
- * @param[in] swap_chain Swap chain to acquire from.
+ * @param[in]  swap_chain Swap chain to acquire from.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return false if @p swap_chain is NULL, it has no back buffers (a failed
- *         resize), a list presenting into the acquired back buffer was
- *         submitted and it has not been presented yet, or SpudGPU acquired
- *         no image (printed); no back buffer is acquired then.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p swap_chain is NULL,
+ *         it has no back buffers (a failed resize), or a list presenting
+ *         into the acquired back buffer was submitted and it has not been
+ *         presented yet; APRESULT_APREND_GPU_FAILURE if SpudGPU acquired no
+ *         image. No back buffer is acquired on a failure.
  */
-bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain);
+APRESULT aprend_swap_chain_acquire(aprend_swap_chain swap_chain, APREND_ERROR *out_error);
 
 /**
  * @brief Reads the size of the back buffers as they were made.
@@ -163,13 +175,14 @@ bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain);
  * @param[out] out_width  Receives the back buffers' width in pixels.
  * @param[out] out_height Receives their height in pixels.
  *
- * @return false, with nothing written, if @p swap_chain, @p out_width or
- *         @p out_height is NULL, the swap chain has no back buffers (a
- *         failed resize), or SpudGPU can't say.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT, with nothing written, if
+ *         @p swap_chain, @p out_width or @p out_height is NULL or the swap
+ *         chain has no back buffers (a failed resize); or the code for
+ *         SpudGPU's result if it can't say.
  *
  * @see aprend_swap_chain_get_desc()
  */
-bool aprend_swap_chain_get_back_buffer_size(
+APRESULT aprend_swap_chain_get_back_buffer_size(
     aprend_swap_chain swap_chain,
     uint32_t *out_width,
     uint32_t *out_height);
@@ -178,12 +191,14 @@ bool aprend_swap_chain_get_back_buffer_size(
  * @brief Presents the acquired back buffer, after the list that presents
  * into it has been submitted.
  *
- * @param[in] swap_chain Swap chain to present.
+ * @param[in]  swap_chain Swap chain to present.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return false if @p swap_chain is NULL, it has no back buffers, or no
- *         list presenting into an acquired back buffer has been submitted.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT if @p swap_chain is
+ *         NULL, it has no back buffers, or no list presenting into an
+ *         acquired back buffer has been submitted.
  */
-bool aprend_swap_chain_present(aprend_swap_chain swap_chain);
+APRESULT aprend_swap_chain_present(aprend_swap_chain swap_chain, APREND_ERROR *out_error);
 
 #if __cplusplus
 }

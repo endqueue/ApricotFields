@@ -80,11 +80,11 @@ static const uint32_t s_tone_map_frag_spv[] =
 #include "aprend_tone_map.frag.spv.inc"
     ;
 
-static_assert(sizeof(aprend_lit_vertex) == 48, "aprend_lit_vertex is 48 bytes");
-static_assert(sizeof(aprend_lit_instance) == 64, "aprend_lit_instance is 64 bytes");
+static_assert(sizeof(APREND_LIT_VERTEX) == 48, "APREND_LIT_VERTEX is 48 bytes");
+static_assert(sizeof(APREND_LIT_INSTANCE) == 64, "APREND_LIT_INSTANCE is 64 bytes");
 static_assert(sizeof(aprend_lit_scene_block) == 960 + 64 * 6 * APREND_LIT_MAX_POINT_SHADOWS + 16 * APREND_LIT_MAX_POINT_SHADOWS + 64 * APREND_LIT_MAX_LIGHTS,
               "AprendLitScene's std140 size");
-static_assert(sizeof(aprend_lit_material_block) == 256, "AprendLitMaterial's std140 size");
+static_assert(sizeof(aprend_lit_material_block) == 288, "AprendLitMaterial's std140 size");
 static_assert(sizeof(aprend_lit_shadow_pass_block) == 64, "AprendLitShadowPass's std140 size");
 static_assert(sizeof(aprend_occlusion_block) == 176, "AprendOcclusionPass's std140 size");
 static_assert(sizeof(aprend_hosek_sky_block) == 160, "AprendHosekSky's std140 size");
@@ -132,21 +132,21 @@ struct expected_member {
 static bool aprend_lit_check_block(aprend_binding_layout layout, uint32_t binding, const char *what, uint32_t size,
                                    const expected_member *members, size_t count) {
 	uint32_t block_size               = 0;
-	const aprend_shader_member *found = nullptr;
+	const APREND_SHADER_MEMBER *found = nullptr;
 	uint32_t found_count              = 0;
-	if (!aprend_binding_layout_get_block(layout, binding, &block_size, &found, &found_count)) {
-		printf("apricot: %s has no block at binding %u\n", what, binding);
+	if (!(aprend_binding_layout_get_block(layout, binding, &block_size, &found, &found_count) == APRESULT_OK)) {
+		aprend_report(layout->instance, APRESULT_INVALID_ARGUMENT, "%s has no block at binding %u", what, binding);
 		return false;
 	}
 	bool ok = block_size <= size && size - block_size < 16;
 	if (!ok)
-		printf("apricot: %s is %u bytes in the shader, and its mirror %u\n", what, block_size, size);
+		aprend_report(layout->instance, APRESULT_INVALID_ARGUMENT, "%s is %u bytes in the shader, and its mirror %u", what, block_size, size);
 	for (size_t i = 0; i < count; ++i) {
 		bool here = false;
 		for (uint32_t m = 0; m < found_count && !here; ++m)
 			here = strcmp(found[m].name, members[i].name) == 0 && found[m].offset == members[i].offset;
 		if (!here) {
-			printf("apricot: %s's member \"%s\" is not at %u in the shader\n", what, members[i].name, members[i].offset);
+			aprend_report(layout->instance, APRESULT_INVALID_ARGUMENT, "%s's member \"%s\" is not at %u in the shader", what, members[i].name, members[i].offset);
 			ok = false;
 		}
 	}
@@ -190,6 +190,7 @@ static bool aprend_lit_check_scene_block(aprend_binding_layout layout) {
 	    {"tiles_x", MEMBER(B, tiles_x)},
 	    {"tiles_y", MEMBER(B, tiles_y)},
 	    {"occlusion_strength", MEMBER(B, occlusion_strength)},
+	    {"scene_color_mips", MEMBER(B, scene_color_mips)},
 	    {"lights[0].position_range", MEMBER(B, lights)},
 	    {"lights[0].outer_shadow", MEMBER(B, lights) + MEMBER(L, outer_shadow)},
 	    {"lights[127].outer_shadow", last + MEMBER(L, outer_shadow)},
@@ -214,6 +215,8 @@ static bool aprend_lit_check_material_block(aprend_binding_layout layout) {
 	    {"maps", MEMBER(B, maps)},
 	    {"uv_transform", MEMBER(B, uv_transform)},
 	    {"map_uv_transform", MEMBER(B, map_uv_transform)},
+	    {"transmission", MEMBER(B, transmission)},
+	    {"attenuation", MEMBER(B, attenuation)},
 	};
 	return aprend_lit_check_block(layout, 0, "AprendLitMaterial", (uint32_t)sizeof(B), members, COUNT_OF(members));
 }
@@ -263,16 +266,16 @@ static const struct {
 static aprend_shader aprend_lit_shader(aprend_instance instance, uint32_t which) {
 	aprend_shader &shader = instance->builtins.lit.shaders[which];
 	if (!shader) {
-		shader = aprend_shader_create_spirv(instance, s_lit_shaders[which].code, s_lit_shaders[which].size, s_lit_shaders[which].stage);
+		(void)aprend_shader_create_spirv(instance, s_lit_shaders[which].code, s_lit_shaders[which].size, s_lit_shaders[which].stage, &shader, nullptr);
 		if (!shader)
-			printf("apricot: Aprend's lit %s shader can't be created\n", s_lit_shaders[which].name);
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's lit %s shader can't be created", s_lit_shaders[which].name);
 	}
 	return shader;
 }
 
 static aprend_sampler aprend_lit_sampler(aprend_instance instance, SPUDGPU_ADDRESS_MODE address, bool compare, SPUDGPU_COMPARE_OP op,
                                          const char *name) {
-	aprend_sampler_desc desc{};
+	APREND_SAMPLER_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_SAMPLER_DESC);
 	desc.mag_filter     = SPUDGPU_FILTER_LINEAR;
 	desc.min_filter     = SPUDGPU_FILTER_LINEAR;
@@ -287,10 +290,24 @@ static aprend_sampler aprend_lit_sampler(aprend_instance instance, SPUDGPU_ADDRE
 	desc.compare_enable = compare;
 	desc.compare_op     = op;
 	desc.debug_name = name;
-	aprend_sampler sampler = aprend_sampler_create(instance, &desc);
+	aprend_sampler sampler = nullptr;
+	(void)aprend_sampler_create(instance, &desc, &sampler, nullptr);
 	if (!sampler)
-		printf("apricot: Aprend's %s can't be created\n", name);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's %s can't be created", name);
 	return sampler;
+}
+
+// A storage buffer of [size] bytes only shaders write, one copy or one per
+// frame in flight ([per_frame]), named [name]. [error] says why it failed.
+static APRESULT aprend_lit_storage_buffer(aprend_instance instance, uint64_t size, bool per_frame, const char *name, aprend_buffer *out_buffer, APREND_ERROR *error) {
+	APREND_BUFFER_DESC desc{};
+	desc.base       = apri_struct_base(APRI_STRUCT_TYPE_APREND_BUFFER_DESC);
+	desc.size       = size;
+	desc.usage      = APREND_BUFFER_USAGE_STORAGE;
+	desc.writes     = APREND_BUFFER_WRITES_ONCE;
+	desc.per_frame  = per_frame;
+	desc.debug_name = name;
+	return aprend_buffer_create(instance, &desc, out_buffer, error);
 }
 
 // A placeholder texture of 1x1 texels: one layer, six for a cube; of depth
@@ -301,7 +318,7 @@ static bool aprend_lit_placeholder(aprend_instance instance, APREND_TEXTURE_VIEW
 		return true;
 	const bool cube = shape == APREND_TEXTURE_VIEW_SHAPE_CUBE;
 	if (!*out_texture) {
-		aprend_texture2d_desc desc{};
+		APREND_TEXTURE2D_DESC desc{};
 		desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 		desc.width        = 1;
 		desc.height       = 1;
@@ -311,13 +328,13 @@ static bool aprend_lit_placeholder(aprend_instance instance, APREND_TEXTURE_VIEW
 		desc.array_layers = cube ? 6 : 1;
 		desc.sample_count = 1;
 		desc.cube_capable = cube;
-		*out_texture      = aprend_texture2d_create(instance, &desc);
+		(void)aprend_texture2d_create(instance, &desc, out_texture, nullptr);
 		if (!*out_texture) {
-			printf("apricot: Aprend's lit placeholder texture can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's lit placeholder texture can't be created");
 			return false;
 		}
 	}
-	aprend_texture_view_desc vd{};
+	APREND_TEXTURE_VIEW_DESC vd{};
 	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 	vd.shape       = shape;
@@ -326,9 +343,9 @@ static bool aprend_lit_placeholder(aprend_instance instance, APREND_TEXTURE_VIEW
 	vd.mip_count   = 1;
 	vd.base_layer  = 0;
 	vd.layer_count = cube ? 6 : 1;
-	*out_view      = aprend_texture_view_create_2d(*out_texture, &vd);
+	(void)aprend_texture_view_create_2d(*out_texture, &vd, out_view, nullptr);
 	if (!*out_view)
-		printf("apricot: Aprend's lit placeholder view can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's lit placeholder view can't be created");
 	return *out_view != nullptr;
 }
 
@@ -341,9 +358,8 @@ bool aprend_lit_prepare_resources(aprend_instance instance) {
 	if (!aprend_lit_placeholder(instance, APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY, true, &lit.placeholder_depth, &lit.placeholder_depth_view))
 		return false;
 	if (!lit.placeholder_tiles) {
-		lit.placeholder_tiles = aprend_storage_buffer_create(instance, 64, APREND_STORAGE_BUFFER_USAGE_NONE, APREND_BUFFER_WRITES_ONCE, nullptr);
-		if (!lit.placeholder_tiles) {
-			printf("apricot: Aprend's lit placeholder tiles can't be created\n");
+		if (aprend_lit_storage_buffer(instance, 64, false, "aprend lit placeholder tiles", &lit.placeholder_tiles, nullptr) != APRESULT_OK) {
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's lit placeholder tiles can't be created");
 			return false;
 		}
 	}
@@ -365,7 +381,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 	if (lit.brdf_lut_view && lit.brdf_lut_target)
 		return true;
 	if (!lit.brdf_lut) {
-		aprend_texture2d_desc desc{};
+		APREND_TEXTURE2D_DESC desc{};
 		desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 		desc.width        = APREND_BRDF_LUT_SIZE;
 		desc.height       = APREND_BRDF_LUT_SIZE;
@@ -374,13 +390,13 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 		desc.mip_levels   = 1;
 		desc.array_layers = 1;
 		desc.sample_count = 1;
-		lit.brdf_lut      = aprend_texture2d_create(instance, &desc);
+		(void)aprend_texture2d_create(instance, &desc, &lit.brdf_lut, nullptr);
 		if (!lit.brdf_lut) {
-			printf("apricot: Aprend's BRDF lookup texture can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's BRDF lookup texture can't be created");
 			return false;
 		}
 	}
-	aprend_texture_view_desc vd{};
+	APREND_TEXTURE_VIEW_DESC vd{};
 	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
 	vd.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
@@ -388,14 +404,14 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 	vd.layer_count = 1;
 	if (!lit.brdf_lut_view) {
 		vd.type           = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
-		lit.brdf_lut_view = aprend_texture_view_create_2d(lit.brdf_lut, &vd);
+		(void)aprend_texture_view_create_2d(lit.brdf_lut, &vd, &lit.brdf_lut_view, nullptr);
 	}
 	if (!lit.brdf_lut_target) {
 		vd.type             = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
-		lit.brdf_lut_target = aprend_texture_view_create_2d(lit.brdf_lut, &vd);
+		(void)aprend_texture_view_create_2d(lit.brdf_lut, &vd, &lit.brdf_lut_target, nullptr);
 	}
 	if (!lit.brdf_lut_view || !lit.brdf_lut_target)
-		printf("apricot: the views of Aprend's BRDF lookup texture can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the views of Aprend's BRDF lookup texture can't be created");
 	return lit.brdf_lut_view && lit.brdf_lut_target;
 }
 
@@ -405,7 +421,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance instance, aprend_shader fragment, const aprend_binding_layout *layouts,
                                                                uint32_t layout_count, SPUDGPU_FORMAT format, uint32_t push_size,
                                                                const char *name) {
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = name;
 	desc._vertex_binding_count       = 0;
@@ -433,9 +449,10 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
 	}
 	if (!desc.vertex_shader)
 		return nullptr;
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	aprend_graphics_pipeline pipeline = nullptr;
+	(void)aprend_graphics_pipeline_create(instance, &desc, &pipeline, nullptr);
 	if (!pipeline)
-		printf("apricot: Aprend's %s pipeline can't be created for format %d\n", name, (int)format);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's %s pipeline can't be created for format %d", name, (int)format);
 	return pipeline;
 }
 
@@ -469,7 +486,7 @@ static const struct {
 };
 
 // Every pass's fragment shader, the pass layout (a texture at 0, a sampler
-// at 1), and the occlusion pass's own layout. False, printed, if one can't
+// at 1), and the occlusion pass's own layout. False, reported, if one can't
 // be made.
 static bool aprend_lit_prepare_passes(aprend_instance instance) {
 	aprend_lit_builtins &lit = instance->builtins.lit;
@@ -478,9 +495,9 @@ static bool aprend_lit_prepare_passes(aprend_instance instance) {
 	for (uint32_t pass = 0; pass < APREND_LIT_PASS_COUNT; ++pass) {
 		if (lit.pass_frags[pass])
 			continue;
-		lit.pass_frags[pass] = aprend_shader_create_spirv(instance, s_passes[pass].code, s_passes[pass].size, SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, s_passes[pass].code, s_passes[pass].size, SPUDGPU_SHADER_STAGE_FRAGMENT, &lit.pass_frags[pass], nullptr);
 		if (!lit.pass_frags[pass]) {
-			printf("apricot: Aprend's %s shader can't be created\n", s_passes[pass].name);
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's %s shader can't be created", s_passes[pass].name);
 			return false;
 		}
 	}
@@ -489,26 +506,25 @@ static bool aprend_lit_prepare_passes(aprend_instance instance) {
 		aprend_shader readers[5] = {lit.pass_frags[APREND_LIT_PASS_FROM_CUBE], lit.pass_frags[APREND_LIT_PASS_FROM_EQUIRECT],
 		                            lit.pass_frags[APREND_LIT_PASS_PREFILTER], lit.pass_frags[APREND_LIT_PASS_IRRADIANCE],
 		                            lit.pass_frags[APREND_LIT_PASS_BLUR]};
-		lit.pass_layout = aprend_binding_layout_create_from_shaders(instance, readers, 5, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, readers, 5, 0, &lit.pass_layout, nullptr);
 		if (!lit.pass_layout) {
-			printf("apricot: the binding layout of Aprend's passes can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's passes can't be created");
 			return false;
 		}
 	}
 	if (!lit.occlusion_layout) {
-		lit.occlusion_layout = aprend_binding_layout_create_from_shaders(instance, &lit.pass_frags[APREND_LIT_PASS_OCCLUSION], 1, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, &lit.pass_frags[APREND_LIT_PASS_OCCLUSION], 1, 0, &lit.occlusion_layout, nullptr);
 		if (!lit.occlusion_layout || !aprend_lit_check_occlusion_block(lit.occlusion_layout)) {
 			aprend_binding_layout_destroy(lit.occlusion_layout);
 			lit.occlusion_layout = nullptr;
-			printf("apricot: the binding layout of Aprend's ambient occlusion can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's ambient occlusion can't be created");
 			return false;
 		}
 	}
 	if (!lit.histogram_comp) {
-		lit.histogram_comp =
-		    aprend_shader_create_spirv(instance, s_exposure_histogram_comp_spv, sizeof(s_exposure_histogram_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE);
+		(void)aprend_shader_create_spirv(instance, s_exposure_histogram_comp_spv, sizeof(s_exposure_histogram_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE, &lit.histogram_comp, nullptr);
 		if (!lit.histogram_comp) {
-			printf("apricot: Aprend's exposure histogram shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's exposure histogram shader can't be created");
 			return false;
 		}
 	}
@@ -516,18 +532,18 @@ static bool aprend_lit_prepare_passes(aprend_instance instance) {
 		// The histogram's dispatch writes the bins and the adapting pass
 		// reads them: one layout, so one set serves both.
 		aprend_shader readers[2] = {lit.histogram_comp, lit.pass_frags[APREND_LIT_PASS_ADAPT_HISTOGRAM]};
-		lit.histogram_layout     = aprend_binding_layout_create_from_shaders(instance, readers, 2, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, readers, 2, 0, &lit.histogram_layout, nullptr);
 		if (!lit.histogram_layout) {
-			printf("apricot: the binding layout of Aprend's exposure histogram can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's exposure histogram can't be created");
 			return false;
 		}
 	}
 	if (!lit.hosek_layout) {
-		lit.hosek_layout = aprend_binding_layout_create_from_shaders(instance, &lit.pass_frags[APREND_LIT_PASS_HOSEK_SKY], 1, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, &lit.pass_frags[APREND_LIT_PASS_HOSEK_SKY], 1, 0, &lit.hosek_layout, nullptr);
 		if (!lit.hosek_layout || !aprend_lit_check_hosek_block(lit.hosek_layout)) {
 			aprend_binding_layout_destroy(lit.hosek_layout);
 			lit.hosek_layout = nullptr;
-			printf("apricot: the binding layout of Aprend's Hosek-Wilkie sky can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's Hosek-Wilkie sky can't be created");
 			return false;
 		}
 	}
@@ -575,7 +591,7 @@ static aprend_graphics_pipeline aprend_lit_format_pipeline(aprend_instance insta
 		pipelines.push_back({format, pipeline});
 	} catch (...) {
 		aprend_graphics_pipeline_destroy(pipeline);
-		printf("apricot: no memory to keep Aprend's %s pipeline\n", name);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "no memory to keep Aprend's %s pipeline", name);
 		return nullptr;
 	}
 	return pipeline;
@@ -596,16 +612,16 @@ aprend_graphics_pipeline aprend_lit_tone_map_pipeline(aprend_instance instance, 
 	if (!aprend_builtin_bloom_prepare(instance) || !aprend_lit_prepare_passes(instance))
 		return nullptr;
 	if (!lit.tone_map_frag) {
-		lit.tone_map_frag = aprend_shader_create_spirv(instance, s_tone_map_frag_spv, sizeof(s_tone_map_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, s_tone_map_frag_spv, sizeof(s_tone_map_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &lit.tone_map_frag, nullptr);
 		if (!lit.tone_map_frag) {
-			printf("apricot: Aprend's tone map shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's tone map shader can't be created");
 			return nullptr;
 		}
 	}
 	if (!lit.tone_map_layout) {
-		lit.tone_map_layout = aprend_binding_layout_create_from_shaders(instance, &lit.tone_map_frag, 1, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, &lit.tone_map_frag, 1, 0, &lit.tone_map_layout, nullptr);
 		if (!lit.tone_map_layout) {
-			printf("apricot: the binding layout of Aprend's tone map shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's tone map shader can't be created");
 			return nullptr;
 		}
 	}
@@ -620,7 +636,7 @@ aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance) 
 		return lit.histogram_pipeline;
 	if (!aprend_lit_prepare_passes(instance))
 		return nullptr;
-	aprend_compute_pipeline_desc desc{};
+	APREND_COMPUTE_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend exposure histogram";
 	desc.compute_shader                       = lit.histogram_comp;
@@ -631,9 +647,9 @@ aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance) 
 	desc._push_constant_ranges[0].offset      = 0;
 	desc._push_constant_ranges[0].size        = sizeof(aprend_histogram_params);
 	desc._push_constant_range_count           = 1;
-	lit.histogram_pipeline                    = aprend_compute_pipeline_create(instance, &desc);
+	(void)aprend_compute_pipeline_create(instance, &desc, &lit.histogram_pipeline, nullptr);
 	if (!lit.histogram_pipeline)
-		printf("apricot: Aprend's exposure histogram pipeline can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's exposure histogram pipeline can't be created");
 	return lit.histogram_pipeline;
 }
 
@@ -642,31 +658,31 @@ aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 	if (lit.cull_pipeline)
 		return lit.cull_pipeline;
 	if (!lit.cull_comp) {
-		lit.cull_comp = aprend_shader_create_spirv(instance, s_lit_cull_comp_spv, sizeof(s_lit_cull_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE);
+		(void)aprend_shader_create_spirv(instance, s_lit_cull_comp_spv, sizeof(s_lit_cull_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE, &lit.cull_comp, nullptr);
 		if (!lit.cull_comp) {
-			printf("apricot: Aprend's light culling shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling shader can't be created");
 			return nullptr;
 		}
 	}
 	if (!lit.cull_layout) {
-		lit.cull_layout = aprend_binding_layout_create_from_shaders(instance, &lit.cull_comp, 1, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, &lit.cull_comp, 1, 0, &lit.cull_layout, nullptr);
 		if (!lit.cull_layout || !aprend_lit_check_scene_block(lit.cull_layout)) {
 			aprend_binding_layout_destroy(lit.cull_layout);
 			lit.cull_layout = nullptr;
-			printf("apricot: the binding layout of Aprend's light culling can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's light culling can't be created");
 			return nullptr;
 		}
 	}
-	aprend_compute_pipeline_desc desc{};
+	APREND_COMPUTE_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend light culling";
 	desc.compute_shader        = lit.cull_comp;
 	desc._entry_point          = "main";
 	desc._binding_layouts[0]   = lit.cull_layout;
 	desc._binding_layout_count = 1;
-	lit.cull_pipeline          = aprend_compute_pipeline_create(instance, &desc);
+	(void)aprend_compute_pipeline_create(instance, &desc, &lit.cull_pipeline, nullptr);
 	if (!lit.cull_pipeline)
-		printf("apricot: Aprend's light culling pipeline can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling pipeline can't be created");
 	return lit.cull_pipeline;
 }
 
@@ -677,10 +693,9 @@ aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instanc
 	if (!aprend_lit_cull_pipeline(instance) || !aprend_lit_prepare_passes(instance))
 		return nullptr;
 	if (!lit.cull_bounded_comp) {
-		lit.cull_bounded_comp =
-		    aprend_shader_create_spirv(instance, s_lit_cull_bounded_comp_spv, sizeof(s_lit_cull_bounded_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE);
+		(void)aprend_shader_create_spirv(instance, s_lit_cull_bounded_comp_spv, sizeof(s_lit_cull_bounded_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE, &lit.cull_bounded_comp, nullptr);
 		if (!lit.cull_bounded_comp) {
-			printf("apricot: Aprend's light culling shader with depth bounds can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling shader with depth bounds can't be created");
 			return nullptr;
 		}
 	}
@@ -688,13 +703,13 @@ aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instanc
 	// both; set 1 the depth, in a layout of its own that the compute stage
 	// sees (the pass layout's are the fragment stage's).
 	if (!lit.cull_depth_layout) {
-		lit.cull_depth_layout = aprend_binding_layout_create_from_shaders(instance, &lit.cull_bounded_comp, 1, 1);
+		(void)aprend_binding_layout_create_from_shaders(instance, &lit.cull_bounded_comp, 1, 1, &lit.cull_depth_layout, nullptr);
 		if (!lit.cull_depth_layout) {
-			printf("apricot: the depth layout of Aprend's light culling with depth bounds can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the depth layout of Aprend's light culling with depth bounds can't be created");
 			return nullptr;
 		}
 	}
-	aprend_compute_pipeline_desc desc{};
+	APREND_COMPUTE_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend light culling with depth bounds";
 	desc.compute_shader        = lit.cull_bounded_comp;
@@ -702,9 +717,9 @@ aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instanc
 	desc._binding_layouts[0]   = lit.cull_layout;
 	desc._binding_layouts[1]   = lit.cull_depth_layout;
 	desc._binding_layout_count = 2;
-	lit.cull_bounded_pipeline  = aprend_compute_pipeline_create(instance, &desc);
+	(void)aprend_compute_pipeline_create(instance, &desc, &lit.cull_bounded_pipeline, nullptr);
 	if (!lit.cull_bounded_pipeline)
-		printf("apricot: Aprend's light culling pipeline with depth bounds can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling pipeline with depth bounds can't be created");
 	return lit.cull_bounded_pipeline;
 }
 
@@ -712,16 +727,16 @@ aprend_binding_set aprend_texture_view_cull_depth_set(aprend_texture_view view) 
 	if (view->cull_depth_set)
 		return view->cull_depth_set;
 	aprend_instance instance = view->instance;
-	aprend_binding_set_entry entries[2]{};
+	APREND_BINDING_SET_ENTRY entries[2]{};
 	entries[0]._binding                  = 0;
 	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	entries[0]._resource._image._view    = view;
 	entries[1]._binding                  = 1;
 	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
 	entries[1]._resource._image._sampler = instance->builtins.lit.environment_sampler;
-	view->cull_depth_set                 = aprend_binding_set_create(instance->builtins.lit.cull_depth_layout, entries, 2);
+	(void)aprend_binding_set_create(instance->builtins.lit.cull_depth_layout, entries, 2, &view->cull_depth_set, nullptr);
 	if (!view->cull_depth_set)
-		printf("apricot: the binding set that reads a depth view for light culling can't be created\n");
+		aprend_report(view->instance, APRESULT_APREND_GPU_FAILURE, "the binding set that reads a depth view for light culling can't be created");
 	return view->cull_depth_set;
 }
 
@@ -731,16 +746,16 @@ aprend_binding_set aprend_texture_view_environment_set(aprend_texture_view view)
 	aprend_instance instance = view->instance;
 	if (!aprend_lit_prepare_passes(instance))
 		return nullptr;
-	aprend_binding_set_entry entries[2]{};
+	APREND_BINDING_SET_ENTRY entries[2]{};
 	entries[0]._binding                  = 0;
 	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	entries[0]._resource._image._view    = view;
 	entries[1]._binding                  = 1;
 	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
 	entries[1]._resource._image._sampler = instance->builtins.lit.environment_sampler;
-	view->environment_set                = aprend_binding_set_create(instance->builtins.lit.pass_layout, entries, 2);
+	(void)aprend_binding_set_create(instance->builtins.lit.pass_layout, entries, 2, &view->environment_set, nullptr);
 	if (!view->environment_set)
-		printf("apricot: the binding set that reads a view can't be created\n");
+		aprend_report(view->instance, APRESULT_APREND_GPU_FAILURE, "the binding set that reads a view can't be created");
 	return view->environment_set;
 }
 
@@ -801,7 +816,7 @@ void aprend_lit_builtins_destroy(aprend_instance instance) {
 		aprend_texture2d_destroy(*texture);
 		*texture = nullptr;
 	}
-	aprend_storage_buffer_destroy(lit.placeholder_tiles);
+	aprend_buffer_destroy(lit.placeholder_tiles);
 	lit.placeholder_tiles = nullptr;
 }
 
@@ -821,13 +836,13 @@ static void aprend_lit_write_block(aprend_material material, const char *name, c
 
 // ---- Vertex layouts -----------------------------------------------------------------
 
-static aprend_vertex_element s_lit_vertex_elements[] = {
-    {"in_position", APREND_VERTEX_ELEMENT_TYPE_VEC3, (uint32_t)offsetof(aprend_lit_vertex, position)},
-    {"in_normal", APREND_VERTEX_ELEMENT_TYPE_VEC3, (uint32_t)offsetof(aprend_lit_vertex, normal)},
-    {"in_uv", APREND_VERTEX_ELEMENT_TYPE_VEC2, (uint32_t)offsetof(aprend_lit_vertex, uv)},
-    {"in_tangent", APREND_VERTEX_ELEMENT_TYPE_VEC4, (uint32_t)offsetof(aprend_lit_vertex, tangent)},
+static const APREND_VERTEX_ELEMENT s_lit_vertex_elements[] = {
+    {"in_position", APREND_VERTEX_ELEMENT_TYPE_VEC3, (uint32_t)offsetof(APREND_LIT_VERTEX, position)},
+    {"in_normal", APREND_VERTEX_ELEMENT_TYPE_VEC3, (uint32_t)offsetof(APREND_LIT_VERTEX, normal)},
+    {"in_uv", APREND_VERTEX_ELEMENT_TYPE_VEC2, (uint32_t)offsetof(APREND_LIT_VERTEX, uv)},
+    {"in_tangent", APREND_VERTEX_ELEMENT_TYPE_VEC4, (uint32_t)offsetof(APREND_LIT_VERTEX, tangent)},
 };
-static aprend_vertex_element s_lit_instance_elements[] = {
+static const APREND_VERTEX_ELEMENT s_lit_instance_elements[] = {
     {"in_transform0", APREND_VERTEX_ELEMENT_TYPE_VEC4, 0},
     {"in_transform1", APREND_VERTEX_ELEMENT_TYPE_VEC4, 16},
     {"in_transform2", APREND_VERTEX_ELEMENT_TYPE_VEC4, 32},
@@ -836,35 +851,41 @@ static aprend_vertex_element s_lit_instance_elements[] = {
 
 extern "C" {
 
-aprend_vertex_layout aprend_lit_vertex_layout(void) {
-	aprend_vertex_layout layout{};
+APREND_VERTEX_LAYOUT aprend_lit_vertex_layout(void) {
+	APREND_VERTEX_LAYOUT layout{};
 	layout.count    = 4;
 	layout.elements = s_lit_vertex_elements;
-	layout.stride   = (uint32_t)sizeof(aprend_lit_vertex);
+	layout.stride   = (uint32_t)sizeof(APREND_LIT_VERTEX);
 	return layout;
 }
 
-aprend_vertex_layout aprend_lit_instance_layout(void) {
-	aprend_vertex_layout layout{};
+APREND_VERTEX_LAYOUT aprend_lit_instance_layout(void) {
+	APREND_VERTEX_LAYOUT layout{};
 	layout.count    = 4;
 	layout.elements = s_lit_instance_elements;
-	layout.stride   = (uint32_t)sizeof(aprend_lit_instance);
+	layout.stride   = (uint32_t)sizeof(APREND_LIT_INSTANCE);
 	return layout;
 }
 
-aprend_shader aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shader) {
+APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shader, aprend_shader *out_shader, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_shader)
+		*out_shader = nullptr;
 	if (!instance)
-		return nullptr;
-	if (shader > APREND_LIT_SHADER_SKY_FRAGMENT) {
-		printf("apricot: aprend_lit_get_shader: %u is not an APREND_LIT_SHADER\n", shader);
-		return nullptr;
-	}
-	return aprend_lit_shader(instance, shader);
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (shader > APREND_LIT_SHADER_SKY_FRAGMENT)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_SHADER", shader);
+	if (!out_shader)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
+	*out_shader = aprend_lit_shader(instance, shader);
+	if (!*out_shader)
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's lit shader %u can't be made", shader);
+	return APRESULT_OK;
 }
 
-aprend_binding_layout aprend_lit_get_scene_layout(aprend_instance instance) {
-	if (!instance)
-		return nullptr;
+// aprend_lit_get_scene_layout's work: the instance's layout, made on
+// first use. NULL, reported, if it can't be.
+static aprend_binding_layout aprend_lit_scene_layout(aprend_instance instance) {
 	aprend_lit_builtins &lit = instance->builtins.lit;
 	if (lit.scene_layout)
 		return lit.scene_layout;
@@ -875,9 +896,10 @@ aprend_binding_layout aprend_lit_get_scene_layout(aprend_instance instance) {
 	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SKY_FRAGMENT)};
 	if (!shaders[0] || !shaders[1] || !shaders[2])
 		return nullptr;
-	aprend_binding_layout layout = aprend_binding_layout_create_from_shaders(instance, shaders, 3, APREND_LIT_SCENE_SET);
+	aprend_binding_layout layout = nullptr;
+	(void)aprend_binding_layout_create_from_shaders(instance, shaders, 3, APREND_LIT_SCENE_SET, &layout, nullptr);
 	if (!layout) {
-		printf("apricot: the binding layout of Aprend's lit scene can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit scene can't be created");
 		return nullptr;
 	}
 	if (!aprend_lit_check_scene_block(layout)) {
@@ -888,18 +910,19 @@ aprend_binding_layout aprend_lit_get_scene_layout(aprend_instance instance) {
 	return layout;
 }
 
-aprend_binding_layout aprend_lit_get_shadow_layout(aprend_instance instance) {
-	if (!instance)
-		return nullptr;
+// aprend_lit_get_shadow_layout's work: the instance's layout, made on
+// first use. NULL, reported, if it can't be.
+static aprend_binding_layout aprend_lit_shadow_layout(aprend_instance instance) {
 	aprend_lit_builtins &lit = instance->builtins.lit;
 	if (lit.shadow_layout)
 		return lit.shadow_layout;
 	aprend_shader vertex = aprend_lit_shader(instance, APREND_LIT_SHADER_SHADOW_VERTEX);
 	if (!vertex)
 		return nullptr;
-	aprend_binding_layout layout = aprend_binding_layout_create_from_shaders(instance, &vertex, 1, APREND_LIT_SCENE_SET);
+	aprend_binding_layout layout = nullptr;
+	(void)aprend_binding_layout_create_from_shaders(instance, &vertex, 1, APREND_LIT_SCENE_SET, &layout, nullptr);
 	if (!layout) {
-		printf("apricot: the binding layout of Aprend's lit shadow pass can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit shadow pass can't be created");
 		return nullptr;
 	}
 	if (!aprend_lit_check_shadow_pass_block(layout)) {
@@ -910,9 +933,9 @@ aprend_binding_layout aprend_lit_get_shadow_layout(aprend_instance instance) {
 	return layout;
 }
 
-aprend_binding_layout aprend_lit_get_material_layout(aprend_instance instance) {
-	if (!instance)
-		return nullptr;
+// aprend_lit_get_material_layout's work: the instance's layout, made on
+// first use. NULL, reported, if it can't be.
+static aprend_binding_layout aprend_lit_material_layout(aprend_instance instance) {
 	aprend_lit_builtins &lit = instance->builtins.lit;
 	if (lit.material_layout)
 		return lit.material_layout;
@@ -920,9 +943,10 @@ aprend_binding_layout aprend_lit_get_material_layout(aprend_instance instance) {
 	                            aprend_lit_shader(instance, APREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT)};
 	if (!shaders[0] || !shaders[1])
 		return nullptr;
-	aprend_binding_layout layout = aprend_binding_layout_create_from_shaders(instance, shaders, 2, APREND_LIT_MATERIAL_SET);
+	aprend_binding_layout layout = nullptr;
+	(void)aprend_binding_layout_create_from_shaders(instance, shaders, 2, APREND_LIT_MATERIAL_SET, &layout, nullptr);
 	if (!layout) {
-		printf("apricot: the binding layout of Aprend's lit materials can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit materials can't be created");
 		return nullptr;
 	}
 	if (!aprend_lit_check_material_block(layout)) {
@@ -933,52 +957,88 @@ aprend_binding_layout aprend_lit_get_material_layout(aprend_instance instance) {
 	return layout;
 }
 
+// A layout getter's public form: the layout through [out_layout], or why
+// it can't be made.
+static APRESULT aprend_lit_layout_result(
+    aprend_instance instance,
+    aprend_binding_layout (*make)(aprend_instance),
+    const char *what,
+    aprend_binding_layout *out_layout,
+    APREND_ERROR *error) {
+	aprend_error_clear(error);
+	if (out_layout)
+		*out_layout = nullptr;
+	if (!instance)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (!out_layout)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "out_layout is NULL");
+	*out_layout = make(instance);
+	if (!*out_layout)
+		return aprend_fail(error, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit %s can't be made", what);
+	return APRESULT_OK;
+}
+
+APRESULT aprend_lit_get_scene_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error) {
+	return aprend_lit_layout_result(instance, aprend_lit_scene_layout, "scene", out_layout, out_error);
+}
+
+APRESULT aprend_lit_get_shadow_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error) {
+	return aprend_lit_layout_result(instance, aprend_lit_shadow_layout, "shadow pass", out_layout, out_error);
+}
+
+APRESULT aprend_lit_get_material_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error) {
+	return aprend_lit_layout_result(instance, aprend_lit_material_layout, "materials", out_layout, out_error);
+}
+
 // ---- Materials ----------------------------------------------------------------------
 
 static const char *const s_map_bindings[4] = {"base_color_map", "normal_map", "orm_map", "emission_map"};
 
-// [material]'s block, if it is a lit material; NULL, printed for [who], if
-// not.
-static aprend_material_slot *aprend_lit_material_slot(aprend_material material, const char *who) {
-	if (!material) {
-		printf("apricot: %s: material is NULL\n", who);
-		return nullptr;
-	}
-	if (!material->layout || material->layout != material->instance->builtins.lit.material_layout) {
-		printf("apricot: %s: material is not a lit material (aprend_lit_material_create)\n", who);
-		return nullptr;
-	}
+// [material]'s block, through [out_slot], if it is a lit material;
+// APRESULT_INVALID_ARGUMENT, [error] saying why, if not.
+static APRESULT aprend_lit_material_slot(aprend_material material, aprend_material_slot **out_slot, APREND_ERROR *error) {
+	if (!material)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (!material->layout || material->layout != material->instance->builtins.lit.material_layout)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "material is not a lit material (aprend_lit_material_create)");
 	aprend_material_slot *slot = aprend_lit_block_slot(material, "u_lit_material");
-	if (!slot || slot->block_size < sizeof(aprend_lit_material_block)) {
-		printf("apricot: %s: the material has no lit block\n", who);
-		return nullptr;
-	}
-	return slot;
+	if (!slot || slot->block_size < sizeof(aprend_lit_material_block))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the material has no lit block");
+	*out_slot = slot;
+	return APRESULT_OK;
 }
 
-aprend_material aprend_lit_material_create(aprend_instance instance) {
-	static const char who[] = "aprend_lit_material_create";
-	if (!instance) {
-		printf("apricot: %s: instance is NULL\n", who);
-		return nullptr;
-	}
-	aprend_binding_layout layout = aprend_lit_get_material_layout(instance);
-	if (!layout || !aprend_lit_prepare_resources(instance))
-		return nullptr;
-	aprend_material_desc desc{};
-	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
+APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *out_material, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_material)
+		*out_material = nullptr;
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_lit_material_create");
+	if (!out_material)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_material is NULL");
+	aprend_binding_layout layout = nullptr;
+	if (const APRESULT made = aprend_lit_get_material_layout(instance, &layout, out_error))
+		return made;
+	if (!aprend_lit_prepare_resources(instance))
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's lit resources can't be made");
+	APREND_MATERIAL_DESC desc{};
+	desc.base                = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
 	desc._layout             = layout;
-	aprend_material material = aprend_material_create(instance, &desc);
-	if (!material)
-		return nullptr;
+	aprend_material material = nullptr;
+	if (const APRESULT made = aprend_material_create(instance, &desc, &material, out_error))
+		return made;
 	const aprend_lit_builtins &lit = instance->builtins.lit;
-	bool ok                        = aprend_material_set_sampler(material, "material_sampler", 0, lit.material_sampler);
+	APRESULT set                   = aprend_material_set_sampler(material, "material_sampler", 0, lit.material_sampler, out_error);
 	for (const char *binding : s_map_bindings)
-		ok = aprend_material_set_texture(material, binding, 0, lit.placeholder_2d_view) && ok;
-	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
-	if (!ok || !slot) {
+		if (set == APRESULT_OK)
+			set = aprend_material_set_texture(material, binding, 0, lit.placeholder_2d_view, out_error);
+	aprend_material_slot *slot = nullptr;
+	if (set == APRESULT_OK)
+		set = aprend_lit_material_slot(material, &slot, out_error);
+	if (set != APRESULT_OK) {
 		aprend_material_destroy(material);
-		return nullptr;
+		return set;
 	}
 	aprend_lit_material_block block{};
 	for (int i = 0; i < 4; ++i)
@@ -999,28 +1059,30 @@ aprend_material aprend_lit_material_create(aprend_instance instance) {
 		rows[0] = 1.0f;
 		rows[5] = 1.0f;
 	}
+	block.transmission[1] = 1.5f; // glTF's default index
+	for (int i = 0; i < 3; ++i)
+		block.attenuation[i] = 1.0f;
 	memcpy(slot->bytes, &block, sizeof(block));
-	slot->dirty = true;
-	return material;
+	slot->dirty   = true;
+	*out_material = material;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_material_values *values) {
-	static const char who[]    = "aprend_lit_material_set_values";
-	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
-	if (!slot)
-		return false;
-	if (!values) {
-		printf("apricot: %s: values is NULL\n", who);
-		return false;
-	}
-	if (!aprend_base_ok(who, "values", &values->base, APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES))
-		return false;
-	const aprend_lit_material_values &v = *values;
+APRESULT aprend_lit_material_set_values(aprend_material material, const APREND_LIT_MATERIAL_VALUES *values, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	aprend_material_slot *slot = nullptr;
+	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+		return lit;
+	if (!values)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "values is NULL");
+	if (const APRESULT base = aprend_base_check(out_error, "values", &values->base, APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES))
+		return base;
+	const APREND_LIT_MATERIAL_VALUES &v = *values;
 	if (!all_finite(v.base_color, 4) || !all_finite(v.emission, 3) || !finite(v.roughness) || !finite(v.metalness) || !finite(v.specular) ||
 	    !finite(v.normal_scale) || !finite(v.occlusion_strength) || !finite(v.alpha_cutoff) || !all_finite(v.uv_transform, 6) ||
-	    !finite(v.clearcoat) || !finite(v.clearcoat_roughness) || !all_finite(v.sheen_color, 3) || !finite(v.sheen_roughness)) {
-		printf("apricot: %s: a value is not a finite number\n", who);
-		return false;
+	    !finite(v.clearcoat) || !finite(v.clearcoat_roughness) || !all_finite(v.sheen_color, 3) || !finite(v.sheen_roughness) ||
+	    !finite(v.transmission) || !finite(v.ior) || !finite(v.thickness) || !all_finite(v.attenuation_color, 3) || !finite(v.attenuation_distance)) {
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number");
 	}
 	aprend_lit_material_block block;
 	memcpy(&block, slot->bytes, sizeof(block));
@@ -1037,27 +1099,29 @@ bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_m
 	block.alpha_cutoff        = v.alpha_cutoff;
 	block.clearcoat           = v.clearcoat;
 	block.clearcoat_roughness = v.clearcoat_roughness;
+	const float transmission[4] = {v.transmission, v.ior, v.thickness, v.attenuation_distance};
+	memcpy(block.transmission, transmission, sizeof(transmission));
+	memcpy(block.attenuation, v.attenuation_color, sizeof(float) * 3);
+	block.attenuation[3] = 0.0f;
 	// The maps' bits stay: they follow the textures set, not the values.
 	const float *t      = v.uv_transform;
 	const float rows[8] = {t[0], t[1], t[2], 0.0f, t[3], t[4], t[5], 0.0f};
 	memcpy(block.uv_transform, rows, sizeof(rows));
 	memcpy(slot->bytes, &block, sizeof(block));
 	slot->dirty = true;
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_material_get_values(aprend_material material, aprend_lit_material_values *out_values) {
-	static const char who[]    = "aprend_lit_material_get_values";
-	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
-	if (!slot)
-		return false;
-	if (!out_values) {
-		printf("apricot: %s: out_values is NULL\n", who);
-		return false;
-	}
+APRESULT aprend_lit_material_get_values(aprend_material material, APREND_LIT_MATERIAL_VALUES *out_values, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	aprend_material_slot *slot = nullptr;
+	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+		return lit;
+	if (!out_values)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_values is NULL");
 	aprend_lit_material_block block;
 	memcpy(&block, slot->bytes, sizeof(block));
-	aprend_lit_material_values &v = *out_values;
+	APREND_LIT_MATERIAL_VALUES &v = *out_values;
 	v.base.type = APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES; // field by field: the caller's padding stays as it was
 	v.base.next = nullptr;
 	memcpy(v.base_color, block.base_color, sizeof(v.base_color));
@@ -1072,28 +1136,29 @@ bool aprend_lit_material_get_values(aprend_material material, aprend_lit_materia
 	v.alpha_cutoff        = block.alpha_cutoff;
 	v.clearcoat           = block.clearcoat;
 	v.clearcoat_roughness = block.clearcoat_roughness;
+	v.transmission         = block.transmission[0];
+	v.ior                  = block.transmission[1];
+	v.thickness            = block.transmission[2];
+	v.attenuation_distance = block.transmission[3];
+	memcpy(v.attenuation_color, block.attenuation, sizeof(v.attenuation_color));
 	const float *r        = block.uv_transform;
 	const float t[6]      = {r[0], r[1], r[2], r[4], r[5], r[6]};
 	memcpy(v.uv_transform, t, sizeof(t));
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, aprend_texture_view view) {
-	static const char who[]    = "aprend_lit_material_set_map";
-	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
-	if (!slot)
-		return false;
-	if (map > APREND_LIT_MAP_EMISSION) {
-		printf("apricot: %s: %u is not an APREND_LIT_MAP\n", who, map);
-		return false;
-	}
-	if (view && (view->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D || view->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)) {
-		printf("apricot: %s: view is not a 2D view of color\n", who);
-		return false;
-	}
+APRESULT aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, aprend_texture_view view, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	aprend_material_slot *slot = nullptr;
+	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+		return lit;
+	if (map > APREND_LIT_MAP_EMISSION)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_MAP", map);
+	if (view && (view->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D || view->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view is not a 2D view of color");
 	aprend_texture_view given = view ? view : material->instance->builtins.lit.placeholder_2d_view;
-	if (!aprend_material_set_texture(material, s_map_bindings[map], 0, given))
-		return false;
+	if (const APRESULT set = aprend_material_set_texture(material, s_map_bindings[map], 0, given, out_error))
+		return set;
 	aprend_lit_material_block block;
 	memcpy(&block, slot->bytes, sizeof(block));
 	if (view)
@@ -1102,48 +1167,38 @@ bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, a
 		block.maps &= ~(1u << map);
 	memcpy(slot->bytes, &block, sizeof(block));
 	slot->dirty = true;
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_LIT_MAP map, const float transform[6]) {
-	static const char who[]    = "aprend_lit_material_set_map_uv_transform";
-	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
-	if (!slot)
-		return false;
-	if (map > APREND_LIT_MAP_EMISSION) {
-		printf("apricot: %s: %u is not an APREND_LIT_MAP\n", who, map);
-		return false;
-	}
-	if (!transform) {
-		printf("apricot: %s: transform is NULL\n", who);
-		return false;
-	}
-	if (!all_finite(transform, 6)) {
-		printf("apricot: %s: a value of transform is not a finite number\n", who);
-		return false;
-	}
+APRESULT aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_LIT_MAP map, const float transform[6], APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	aprend_material_slot *slot = nullptr;
+	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+		return lit;
+	if (map > APREND_LIT_MAP_EMISSION)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_MAP", map);
+	if (!transform)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "transform is NULL");
+	if (!all_finite(transform, 6))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value of transform is not a finite number");
 	aprend_lit_material_block block;
 	memcpy(&block, slot->bytes, sizeof(block));
 	const float rows[8] = {transform[0], transform[1], transform[2], 0.0f, transform[3], transform[4], transform[5], 0.0f};
 	memcpy(block.map_uv_transform[map], rows, sizeof(rows));
 	memcpy(slot->bytes, &block, sizeof(block));
 	slot->dirty = true;
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_LIT_MAP map, float out_transform[6]) {
-	static const char who[]    = "aprend_lit_material_get_map_uv_transform";
-	aprend_material_slot *slot = aprend_lit_material_slot(material, who);
-	if (!slot)
-		return false;
-	if (map > APREND_LIT_MAP_EMISSION) {
-		printf("apricot: %s: %u is not an APREND_LIT_MAP\n", who, map);
-		return false;
-	}
-	if (!out_transform) {
-		printf("apricot: %s: out_transform is NULL\n", who);
-		return false;
-	}
+APRESULT aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_LIT_MAP map, float out_transform[6], APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	aprend_material_slot *slot = nullptr;
+	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+		return lit;
+	if (map > APREND_LIT_MAP_EMISSION)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_MAP", map);
+	if (!out_transform)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_transform is NULL");
 	aprend_lit_material_block block;
 	memcpy(&block, slot->bytes, sizeof(block));
 	const float *r = block.map_uv_transform[map];
@@ -1153,14 +1208,15 @@ bool aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_L
 	out_transform[3] = r[4];
 	out_transform[4] = r[5];
 	out_transform[5] = r[6];
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler) {
-	static const char who[] = "aprend_lit_material_set_sampler";
-	if (!aprend_lit_material_slot(material, who))
-		return false;
-	return aprend_material_set_sampler(material, "material_sampler", 0, sampler ? sampler : material->instance->builtins.lit.material_sampler);
+APRESULT aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	aprend_material_slot *slot = nullptr;
+	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+		return lit;
+	return aprend_material_set_sampler(material, "material_sampler", 0, sampler ? sampler : material->instance->builtins.lit.material_sampler, out_error);
 }
 
 } // extern "C"
@@ -1187,7 +1243,7 @@ aprend_lit_environment_t::~aprend_lit_environment_t() {
 // A texture of [layers] square layers of [size] and [mips] for Aprend's own
 // work, rendered to and sampled; a cube when [layers] is 6.
 static aprend_texture2d aprend_lit_work_texture(aprend_instance instance, uint32_t size, uint32_t mips, uint32_t layers, SPUDGPU_FORMAT format) {
-	aprend_texture2d_desc desc{};
+	APREND_TEXTURE2D_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 	desc.width        = size;
 	desc.height       = size;
@@ -1197,11 +1253,13 @@ static aprend_texture2d aprend_lit_work_texture(aprend_instance instance, uint32
 	desc.array_layers = layers;
 	desc.sample_count = 1;
 	desc.cube_capable = layers == 6;
-	return aprend_texture2d_create(instance, &desc);
+	aprend_texture2d texture_made = nullptr;
+	(void)aprend_texture2d_create(instance, &desc, &texture_made, nullptr);
+	return texture_made;
 }
 
 static aprend_texture_view aprend_lit_target_view(aprend_texture2d texture, uint32_t mip, uint32_t layer) {
-	aprend_texture_view_desc vd{};
+	APREND_TEXTURE_VIEW_DESC vd{};
 	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.type        = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
 	vd.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
@@ -1210,11 +1268,13 @@ static aprend_texture_view aprend_lit_target_view(aprend_texture2d texture, uint
 	vd.mip_count   = 1;
 	vd.base_layer  = layer;
 	vd.layer_count = 1;
-	return aprend_texture_view_create_2d(texture, &vd);
+	aprend_texture_view view_made = nullptr;
+	(void)aprend_texture_view_create_2d(texture, &vd, &view_made, nullptr);
+	return view_made;
 }
 
 static aprend_texture_view aprend_lit_whole_view(aprend_texture2d texture, bool cube) {
-	aprend_texture_view_desc vd{};
+	APREND_TEXTURE_VIEW_DESC vd{};
 	vd.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	vd.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 	vd.shape       = cube ? APREND_TEXTURE_VIEW_SHAPE_CUBE : APREND_TEXTURE_VIEW_SHAPE_2D;
@@ -1223,32 +1283,37 @@ static aprend_texture_view aprend_lit_whole_view(aprend_texture2d texture, bool 
 	vd.mip_count   = APREND_TEXTURE_VIEW_REMAINING;
 	vd.base_layer  = 0;
 	vd.layer_count = cube ? 6 : 1;
-	return aprend_texture_view_create_2d(texture, &vd);
+	aprend_texture_view view_made = nullptr;
+	(void)aprend_texture_view_create_2d(texture, &vd, &view_made, nullptr);
+	return view_made;
 }
 
 extern "C" {
 
-aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, const aprend_lit_environment_desc *desc) {
-	static const char who[] = "aprend_lit_environment_create";
-	if (!instance || !desc) {
-		printf("apricot: %s: %s is NULL\n", who, instance ? "desc" : "instance");
-		return nullptr;
-	}
-	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC))
-		return nullptr;
-	if (!power_of_2(desc->specular_size) || desc->specular_size < 16 || desc->specular_size > 2048) {
-		printf("apricot: %s: specular_size %u is not a power of 2 from 16 to 2048\n", who, desc->specular_size);
-		return nullptr;
-	}
-	if (!power_of_2(desc->irradiance_size) || desc->irradiance_size < 8 || desc->irradiance_size > 128) {
-		printf("apricot: %s: irradiance_size %u is not a power of 2 from 8 to 128\n", who, desc->irradiance_size);
-		return nullptr;
-	}
+APRESULT aprend_lit_environment_create(
+    aprend_instance instance,
+    const APREND_LIT_ENVIRONMENT_DESC *desc,
+    aprend_lit_environment *out_environment,
+    APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_environment)
+		*out_environment = nullptr;
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_lit_environment_create");
+	if (!desc)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
+	if (const APRESULT base = aprend_base_check(out_error, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC))
+		return base;
+	if (!power_of_2(desc->specular_size) || desc->specular_size < 16 || desc->specular_size > 2048)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "specular_size %u is not a power of 2 from 16 to 2048", desc->specular_size);
+	if (!power_of_2(desc->irradiance_size) || desc->irradiance_size < 8 || desc->irradiance_size > 128)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "irradiance_size %u is not a power of 2 from 8 to 128", desc->irradiance_size);
+	if (!out_environment)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_environment is NULL");
 	APREND_MALLOC__T(env, aprend_lit_environment_t);
-	if (!env) {
-		printf("apricot: %s: out of memory\n", who);
-		return nullptr;
-	}
+	if (!env)
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the environment");
 	APREND_CONSTRUCT__T(env, aprend_lit_environment_t);
 	env->instance      = instance;
 	env->desc          = *desc;
@@ -1257,8 +1322,7 @@ aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, c
 		env->specular_faces.resize((size_t)env->specular_mips * 6, nullptr);
 	} catch (...) {
 		APREND_DESTRUCT__T(env, aprend_lit_environment_t);
-		printf("apricot: %s: out of memory\n", who);
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the environment's views");
 	}
 	env->radiance   = aprend_lit_work_texture(instance, desc->specular_size, log2_of(desc->specular_size) + 1, 6, APREND_ENVIRONMENT_FORMAT);
 	env->specular   = aprend_lit_work_texture(instance, desc->specular_size, env->specular_mips, 6, APREND_ENVIRONMENT_FORMAT);
@@ -1281,11 +1345,11 @@ aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, c
 		ok                   = env->radiance_cube && env->specular_cube && env->irradiance_cube;
 	}
 	if (!ok) {
-		printf("apricot: %s: a texture or view of the environment can't be created\n", who);
 		APREND_DESTRUCT__T(env, aprend_lit_environment_t);
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "a texture or view of the environment can't be created");
 	}
-	return env;
+	*out_environment = env;
+	return APRESULT_OK;
 }
 
 void aprend_lit_environment_destroy(aprend_lit_environment environment) {
@@ -1305,12 +1369,12 @@ uint32_t aprend_lit_environment_get_specular_mip_count(aprend_lit_environment en
 aprend_material aprend_lit_environment_sky_material(aprend_lit_environment environment) {
 	if (environment->sky_material)
 		return environment->sky_material;
-	aprend_material_desc desc{};
+	APREND_MATERIAL_DESC desc{};
 	desc.base                 = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
 	desc._layout              = environment->instance->builtins.lit.hosek_layout;
-	environment->sky_material = aprend_material_create(environment->instance, &desc);
+	(void)aprend_material_create(environment->instance, &desc, &environment->sky_material, nullptr);
 	if (!environment->sky_material)
-		printf("apricot: LIT_SKY: the material of an environment's Hosek-Wilkie sky can't be made\n");
+		aprend_report(environment->instance, APRESULT_APREND_GPU_FAILURE, "LIT_SKY: the material of an environment's Hosek-Wilkie sky can't be made");
 	return environment->sky_material;
 }
 
@@ -1448,46 +1512,56 @@ static void aprend_lit_scene_free(aprend_lit_scene scene) {
 		aprend_material_destroy(material);
 	aprend_material_destroy(scene->cull_material);
 	aprend_material_destroy(scene->occlusion_material);
-	aprend_storage_buffer_set_destroy(scene->tiles);
+	aprend_buffer_destroy(scene->tiles);
 	APREND_DESTRUCT__T(scene, aprend_lit_scene_t);
 }
 
 extern "C" {
 
-aprend_lit_scene aprend_lit_scene_create(aprend_instance instance) {
-	static const char who[] = "aprend_lit_scene_create";
-	if (!instance) {
-		printf("apricot: %s: instance is NULL\n", who);
-		return nullptr;
-	}
-	aprend_binding_layout layout        = aprend_lit_get_scene_layout(instance);
-	aprend_binding_layout shadow_layout = aprend_lit_get_shadow_layout(instance);
-	if (!layout || !shadow_layout || !aprend_lit_prepare_resources(instance) || !aprend_lit_prepare_brdf_lut(instance) ||
-	    !aprend_lit_cull_pipeline(instance) || !aprend_lit_prepare_passes(instance))
-		return nullptr;
+APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out_scene, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_scene)
+		*out_scene = nullptr;
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_lit_scene_create");
+	if (!out_scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_scene is NULL");
+	aprend_binding_layout layout        = nullptr;
+	aprend_binding_layout shadow_layout = nullptr;
+	if (const APRESULT made = aprend_lit_get_scene_layout(instance, &layout, out_error))
+		return made;
+	if (const APRESULT made = aprend_lit_get_shadow_layout(instance, &shadow_layout, out_error))
+		return made;
+	if (!aprend_lit_prepare_resources(instance))
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's lit resources can't be made");
+	if (!aprend_lit_prepare_brdf_lut(instance))
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's lit BRDF table can't be made");
+	if (!aprend_lit_cull_pipeline(instance))
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling pipeline can't be made");
+	if (!aprend_lit_prepare_passes(instance))
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's lit passes can't be made");
 	APREND_MALLOC__T(scene, aprend_lit_scene_t);
-	if (!scene) {
-		printf("apricot: %s: out of memory\n", who);
-		return nullptr;
-	}
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the scene");
 	APREND_CONSTRUCT__T(scene, aprend_lit_scene_t);
 	scene->instance                = instance;
 	const aprend_lit_builtins &lit = instance->builtins.lit;
-	aprend_material_desc desc{};
+	APREND_MATERIAL_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_MATERIAL_DESC);
-	desc._layout    = layout;
-	scene->material = aprend_material_create(instance, &desc);
-	desc._layout    = shadow_layout;
+	desc._layout = layout;
+	(void)aprend_material_create(instance, &desc, &scene->material, nullptr);
+	desc._layout = shadow_layout;
 	for (aprend_material &material : scene->sun_shadow_materials)
-		material = aprend_material_create(instance, &desc);
+		(void)aprend_material_create(instance, &desc, &material, nullptr);
 	for (aprend_material &material : scene->spot_shadow_materials)
-		material = aprend_material_create(instance, &desc);
+		(void)aprend_material_create(instance, &desc, &material, nullptr);
 	for (aprend_material &material : scene->point_shadow_materials)
-		material = aprend_material_create(instance, &desc);
-	desc._layout              = lit.cull_layout;
-	scene->cull_material      = aprend_material_create(instance, &desc);
-	desc._layout              = lit.occlusion_layout;
-	scene->occlusion_material = aprend_material_create(instance, &desc);
+		(void)aprend_material_create(instance, &desc, &material, nullptr);
+	desc._layout = lit.cull_layout;
+	(void)aprend_material_create(instance, &desc, &scene->cull_material, nullptr);
+	desc._layout = lit.occlusion_layout;
+	(void)aprend_material_create(instance, &desc, &scene->occlusion_material, nullptr);
 
 	bool ok = scene->material && scene->cull_material && scene->occlusion_material;
 	for (aprend_material material : scene->sun_shadow_materials)
@@ -1497,29 +1571,30 @@ aprend_lit_scene aprend_lit_scene_create(aprend_instance instance) {
 	for (aprend_material material : scene->point_shadow_materials)
 		ok = ok && material;
 	aprend_material m = scene->material;
-	ok                = ok && aprend_material_set_storage_buffer(m, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr);
-	ok                = ok && aprend_material_set_texture(m, "sun_shadow_map", 0, lit.placeholder_depth_view);
-	ok                = ok && aprend_material_set_texture(m, "spot_shadow_map", 0, lit.placeholder_depth_view);
-	ok                = ok && aprend_material_set_texture(m, "point_shadow_map", 0, lit.placeholder_depth_view);
-	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler", 0, lit.shadow_sampler);
-	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler_reversed", 0, lit.shadow_sampler_reversed);
-	ok                = ok && aprend_material_set_texture(m, "environment_specular", 0, lit.placeholder_cube_view);
-	ok                = ok && aprend_material_set_texture(m, "environment_irradiance", 0, lit.placeholder_cube_view);
-	ok                = ok && aprend_material_set_texture(m, "brdf_lut", 0, lit.brdf_lut_view);
-	ok                = ok && aprend_material_set_sampler(m, "environment_sampler", 0, lit.environment_sampler);
-	ok                = ok && aprend_material_set_texture(m, "ambient_occlusion", 0, lit.placeholder_2d_view);
-	ok                = ok && aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr);
+	ok                = ok && aprend_material_set_storage_buffer(m, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "sun_shadow_map", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "spot_shadow_map", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "point_shadow_map", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler", 0, lit.shadow_sampler, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler_reversed", 0, lit.shadow_sampler_reversed, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "environment_specular", 0, lit.placeholder_cube_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "environment_irradiance", 0, lit.placeholder_cube_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "brdf_lut", 0, lit.brdf_lut_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_sampler(m, "environment_sampler", 0, lit.environment_sampler, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "ambient_occlusion", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "scene_color", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_lit_block_slot(m, "u_lit_scene") && aprend_lit_block_slot(scene->cull_material, "u_lit_scene");
 	if (!ok) {
-		printf("apricot: %s: the scene's materials can't be made\n", who);
 		aprend_lit_scene_free(scene);
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "the scene's materials can't be made");
 	}
 	scene->material->lit_scene   = scene;
 	scene->block.exposure        = 1.0f;
 	scene->block.output_encoding = APREND_COLOR_ENCODING_LINEAR;
 	aprend_lit_scene_commit(scene);
-	return scene;
+	*out_scene = scene;
+	return APRESULT_OK;
 }
 
 void aprend_lit_scene_destroy(aprend_lit_scene scene) {
@@ -1542,28 +1617,22 @@ aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scen
 	return scene && index < APREND_LIT_MAX_POINT_SHADOWS && face < 6 ? scene->point_shadow_materials[index * 6 + face] : nullptr;
 }
 
-bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *view) {
-	static const char who[] = "aprend_lit_scene_set_view";
-	if (!scene || !view) {
-		printf("apricot: %s: %s is NULL\n", who, scene ? "view" : "scene");
-		return false;
-	}
-	if (!aprend_base_ok(who, "view", &view->base, APRI_STRUCT_TYPE_APREND_LIT_VIEW))
-		return false;
-	const aprend_lit_view &v = *view;
+APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW *view, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene || !view)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", scene ? "view" : "scene");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_view");
+	if (const APRESULT base = aprend_base_check(out_error, "view", &view->base, APRI_STRUCT_TYPE_APREND_LIT_VIEW))
+		return base;
+	const APREND_LIT_VIEW &v = *view;
 	if (!all_finite(v.eye_position, 3) || !all_finite(v.view_direction, 3) || !all_finite(v.view_projection, 16) || !finite(v.exposure) ||
 	    v.exposure < 0.0f) {
-		printf("apricot: %s: a value is not a finite number, or the exposure is negative\n", who);
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number, or the exposure is negative");
 	}
-	if (v.output_encoding > APREND_COLOR_ENCODING_SRGB) {
-		printf("apricot: %s: %u is not an APREND_COLOR_ENCODING\n", who, v.output_encoding);
-		return false;
-	}
-	if ((v.target_width == 0) != (v.target_height == 0) || v.target_width > 16384 || v.target_height > 16384) {
-		printf("apricot: %s: a target of %u by %u: both sides 0, or both from 1 to 16384\n", who, v.target_width, v.target_height);
-		return false;
-	}
+	if (v.output_encoding > APREND_COLOR_ENCODING_SRGB)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_COLOR_ENCODING", v.output_encoding);
+	if ((v.target_width == 0) != (v.target_height == 0) || v.target_width > 16384 || v.target_height > 16384)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a target of %u by %u: both sides 0, or both from 1 to 16384", v.target_width, v.target_height);
 	glm::mat4 vp;
 	memcpy(&vp, v.view_projection, sizeof(vp));
 	bool projected = false;
@@ -1578,24 +1647,22 @@ bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *vi
 	aprend_lit_scene_block &b      = scene->block;
 	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
 	if (tiles_x != b.tiles_x || tiles_y != b.tiles_y || (tiled && !scene->tiles)) {
-		aprend_storage_buffer_set tiles = nullptr;
+		aprend_buffer tiles = nullptr;
 		if (tiled) {
 			const uint64_t size = (uint64_t)tiles_x * tiles_y * (APREND_LIT_MAX_TILE_LIGHTS + 1) * sizeof(uint32_t);
-			tiles               = aprend_storage_buffer_set_create(scene->instance, size, APREND_STORAGE_BUFFER_USAGE_NONE, APREND_BUFFER_WRITES_ONCE, nullptr);
-			if (!tiles) {
-				printf("apricot: %s: the view's light tiles can't be created\n", who);
-				return false;
-			}
+			const APRESULT made = aprend_lit_storage_buffer(scene->instance, size, true, "aprend lit tiles", &tiles, out_error);
+			if (made != APRESULT_OK)
+				return made;
 		}
-		const bool set = tiles ? aprend_material_set_storage_buffer(scene->material, "AprendLitTiles", 0, nullptr, tiles) &&
-		                             aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, nullptr, tiles)
-		                       : aprend_material_set_storage_buffer(scene->material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) &&
-		                             aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr);
-		if (!set) {
-			aprend_storage_buffer_set_destroy(tiles);
-			return false;
+		aprend_buffer buffer = tiles ? tiles : lit.placeholder_tiles;
+		APRESULT set         = aprend_material_set_storage_buffer(scene->material, "AprendLitTiles", 0, buffer, out_error);
+		if (set == APRESULT_OK)
+			set = aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, buffer, out_error);
+		if (set != APRESULT_OK) {
+			aprend_buffer_destroy(tiles);
+			return set;
 		}
-		aprend_storage_buffer_set_destroy(scene->tiles);
+		aprend_buffer_destroy(scene->tiles);
 		scene->tiles = tiles;
 	}
 	memcpy(b.eye_position, v.eye_position, sizeof(float) * 3);
@@ -1620,39 +1687,29 @@ bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *vi
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_TILES;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun) {
-	static const char who[] = "aprend_lit_scene_set_sun";
-	if (!scene || !sun) {
-		printf("apricot: %s: %s is NULL\n", who, scene ? "sun" : "scene");
-		return false;
-	}
-	if (!aprend_base_ok(who, "sun", &sun->base, APRI_STRUCT_TYPE_APREND_LIT_SUN))
-		return false;
+APRESULT aprend_lit_scene_set_sun(aprend_lit_scene scene, const APREND_LIT_SUN *sun, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene || !sun)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", scene ? "sun" : "scene");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_sun");
+	if (const APRESULT base = aprend_base_check(out_error, "sun", &sun->base, APRI_STRUCT_TYPE_APREND_LIT_SUN))
+		return base;
 	if (!all_finite(sun->direction, 3) || !all_finite(sun->radiance, 3) || sun->radiance[0] < 0.0f || sun->radiance[1] < 0.0f ||
 	    sun->radiance[2] < 0.0f) {
-		printf("apricot: %s: a value is not a finite number, or a radiance is negative\n", who);
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number, or a radiance is negative");
 	}
 	const bool lit = sun->radiance[0] > 0.0f || sun->radiance[1] > 0.0f || sun->radiance[2] > 0.0f;
-	if (lit && length3(sun->direction) == 0.0f) {
-		printf("apricot: %s: the sun has radiance and no direction\n", who);
-		return false;
-	}
-	if (!finite(sun->disc_angle)) {
-		printf("apricot: %s: disc_angle is not a finite number\n", who);
-		return false;
-	}
-	if (sun->disc_angle < 0.0f) {
-		printf("apricot: %s: disc_angle is negative\n", who);
-		return false;
-	}
-	if (sun->disc_angle > 0.5f) {
-		printf("apricot: %s: disc_angle %g is above 0.5\n", who, (double)sun->disc_angle);
-		return false;
-	}
+	if (lit && length3(sun->direction) == 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the sun has radiance and no direction");
+	if (!finite(sun->disc_angle))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "disc_angle is not a finite number");
+	if (sun->disc_angle < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "disc_angle is negative");
+	if (sun->disc_angle > 0.5f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "disc_angle %g is above 0.5", (double)sun->disc_angle);
 	aprend_lit_scene_block &b = scene->block;
 	unit3(sun->direction, b.sun_direction);
 	memcpy(b.sun_radiance, sun->radiance, sizeof(float) * 3);
@@ -1661,107 +1718,87 @@ bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun)
 	// earth's sun it is 1e-5.
 	b.sun_radiance[3] = (float)(1.0 - std::cos((double)sun->disc_angle));
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
 } // extern "C"
 
 // Whether [map] is a SHADER_RESOURCE view of depth shaped 2D_ARRAY, of
 // [scene]'s instance, with at least [layers] layers. Printed for [who].
-static bool aprend_lit_shadow_map_valid(aprend_lit_scene scene, aprend_texture_view map, uint32_t layers, const char *who) {
-	if (!map) {
-		printf("apricot: %s: the map is NULL\n", who);
-		return false;
-	}
-	if (map->instance != scene->instance) {
-		printf("apricot: %s: the map is of another instance\n", who);
-		return false;
-	}
+static APRESULT aprend_lit_shadow_map_valid(aprend_lit_scene scene, aprend_texture_view map, uint32_t layers, APREND_ERROR *error) {
+	if (!map)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map is NULL");
+	if (map->instance != scene->instance)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map is of another instance");
 	if (map->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || map->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY ||
 	    map->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_DEPTH) {
-		printf("apricot: %s: the map is not a SHADER_RESOURCE 2D_ARRAY view of depth\n", who);
-		return false;
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map is not a SHADER_RESOURCE 2D_ARRAY view of depth");
 	}
-	if (map->desc.layer_count < layers) {
-		printf("apricot: %s: the map has %u layers, and %u are needed\n", who, map->desc.layer_count, layers);
-		return false;
-	}
-	return true;
+	if (map->desc.layer_count < layers)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map has %u layers, and %u are needed", map->desc.layer_count, layers);
+	return APRESULT_OK;
 }
 
-static bool aprend_lit_shadow_params_valid(float bias, float normal_offset, float softness, float strength, const char *who) {
-	if (!finite(bias) || !finite(normal_offset) || !finite(softness) || !finite(strength)) {
-		printf("apricot: %s: a value is not a finite number\n", who);
-		return false;
-	}
-	if (softness < 0.0f || softness > 4.0f || strength < 0.0f || strength > 1.0f) {
-		printf("apricot: %s: softness is outside 0 to 4, or strength outside 0 to 1\n", who);
-		return false;
-	}
-	return true;
+static APRESULT aprend_lit_shadow_params_valid(float bias, float normal_offset, float softness, float strength, APREND_ERROR *error) {
+	if (!finite(bias) || !finite(normal_offset) || !finite(softness) || !finite(strength))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number");
+	if (softness < 0.0f || softness > 4.0f || strength < 0.0f || strength > 1.0f)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "softness is outside 0 to 4, or strength outside 0 to 1");
+	return APRESULT_OK;
 }
 
-// Whether [l] is a light aprend_lit_scene_set_lights() takes; printed for
-// [who] with its [index].
-static bool aprend_lit_light_valid(const aprend_lit_light &l, uint32_t index, const char *who) {
+// Whether [l] is a light aprend_lit_scene_set_lights() takes; [error] names
+// it by its [index] if not.
+static APRESULT aprend_lit_light_valid(const APREND_LIT_LIGHT &l, uint32_t index, APREND_ERROR *error) {
 	const float half_pi = 1.57079632679f;
-	if (l.type > APREND_LIT_LIGHT_TYPE_SPOT) {
-		printf("apricot: %s: light %u has type %u, which is not an APREND_LIT_LIGHT_TYPE\n", who, index, l.type);
-		return false;
-	}
+	if (l.type > APREND_LIT_LIGHT_TYPE_SPOT)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has type %u, which is not an APREND_LIT_LIGHT_TYPE", index, l.type);
 	if (!all_finite(l.position, 3) || !all_finite(l.direction, 3) || !all_finite(l.radiance, 3) || !finite(l.range) || !finite(l.inner_angle) ||
 	    !finite(l.outer_angle)) {
-		printf("apricot: %s: light %u has a value that is not a finite number\n", who, index);
-		return false;
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has a value that is not a finite number", index);
 	}
-	if (l.radiance[0] < 0.0f || l.radiance[1] < 0.0f || l.radiance[2] < 0.0f || !(l.range > 0.0f)) {
-		printf("apricot: %s: light %u has a negative radiance or a range that is not above 0\n", who, index);
-		return false;
-	}
+	if (l.radiance[0] < 0.0f || l.radiance[1] < 0.0f || l.radiance[2] < 0.0f || !(l.range > 0.0f))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has a negative radiance or a range that is not above 0", index);
 	if (l.type == APREND_LIT_LIGHT_TYPE_SPOT &&
 	    (length3(l.direction) == 0.0f || l.inner_angle < 0.0f || l.inner_angle > l.outer_angle || l.outer_angle > half_pi)) {
-		printf("apricot: %s: spot light %u has no direction, or angles that are not 0 <= inner <= outer <= pi / 2\n", who, index);
-		return false;
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "spot light %u has no direction, or angles that are not 0 <= inner <= outer <= pi / 2", index);
 	}
-	return true;
+	return APRESULT_OK;
 }
 
 extern "C" {
 
-bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_sun_shadow *shadow) {
-	static const char who[] = "aprend_lit_scene_set_sun_shadow";
-	if (!scene) {
-		printf("apricot: %s: scene is NULL\n", who);
-		return false;
-	}
+APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LIT_SUN_SHADOW *shadow, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_sun_shadow");
 	aprend_lit_scene_block &b = scene->block;
 	if (!shadow) {
-		if (!aprend_material_set_texture(scene->material, "sun_shadow_map", 0, scene->instance->builtins.lit.placeholder_depth_view))
-			return false;
+		if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_shadow_map", 0, scene->instance->builtins.lit.placeholder_depth_view, out_error))
+			return set;
 		b.flags &= ~(APREND_LIT_SCENE_FLAG_SUN_SHADOW | APREND_LIT_SCENE_FLAG_SUN_REVERSED);
 		b.sun_cascade_count = 0;
 		aprend_lit_scene_commit(scene);
-		return true;
+		return APRESULT_OK;
 	}
-	if (!aprend_base_ok(who, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
-		return false;
-	const aprend_lit_sun_shadow &s = *shadow;
-	if (s.cascade_count == 0 || s.cascade_count > APREND_LIT_MAX_CASCADES) {
-		printf("apricot: %s: %u cascades: 1 to %u\n", who, s.cascade_count, APREND_LIT_MAX_CASCADES);
-		return false;
-	}
-	if (!aprend_lit_shadow_map_valid(scene, s.map, s.cascade_count, who) ||
-	    !aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, who))
-		return false;
+	if (const APRESULT base = aprend_base_check(out_error, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
+		return base;
+	const APREND_LIT_SUN_SHADOW &s = *shadow;
+	if (s.cascade_count == 0 || s.cascade_count > APREND_LIT_MAX_CASCADES)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u cascades: 1 to %u", s.cascade_count, APREND_LIT_MAX_CASCADES);
+	if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, s.map, s.cascade_count, out_error))
+		return valid;
+	if (const APRESULT valid = aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, out_error))
+		return valid;
 	for (uint32_t c = 0; c < s.cascade_count; ++c) {
 		if (!all_finite(s.view_projection[c], 16) || !finite(s.split_depths[c]) || !(s.split_depths[c] > 0.0f) ||
 		    (c > 0 && !(s.split_depths[c] > s.split_depths[c - 1]))) {
-			printf("apricot: %s: cascade %u's matrix is not finite, or its split is not above the one before and 0\n", who, c);
-			return false;
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cascade %u's matrix is not finite, or its split is not above the one before and 0", c);
 		}
 	}
-	if (!aprend_material_set_texture(scene->material, "sun_shadow_map", 0, s.map))
-		return false;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_shadow_map", 0, s.map, out_error))
+		return set;
 	for (uint32_t c = 0; c < APREND_LIT_MAX_CASCADES; ++c) {
 		if (c < s.cascade_count) {
 			memcpy(b.sun_shadow_view_projection[c], s.view_projection[c], sizeof(float) * 16);
@@ -1785,30 +1822,25 @@ bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_su
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_SUN_REVERSED;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_lights(aprend_lit_scene scene, const aprend_lit_light *lights, uint32_t count) {
-	static const char who[] = "aprend_lit_scene_set_lights";
-	if (!scene) {
-		printf("apricot: %s: scene is NULL\n", who);
-		return false;
-	}
-	if (count > 0 && !lights) {
-		printf("apricot: %s: lights is NULL with a count of %u\n", who, count);
-		return false;
-	}
-	if (count > APREND_LIT_MAX_LIGHTS) {
-		printf("apricot: %s: %u lights, and a scene holds %u\n", who, count, APREND_LIT_MAX_LIGHTS);
-		return false;
-	}
+APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LIGHT *lights, uint32_t count, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_lights");
+	if (count > 0 && !lights)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "lights is NULL with a count of %u", count);
+	if (count > APREND_LIT_MAX_LIGHTS)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u lights, and a scene holds %u", count, APREND_LIT_MAX_LIGHTS);
 	for (uint32_t i = 0; i < count; ++i)
-		if (!aprend_lit_light_valid(lights[i], i, who))
-			return false;
+		if (const APRESULT valid = aprend_lit_light_valid(lights[i], i, out_error))
+			return valid;
 	aprend_lit_scene_block &b = scene->block;
 	memset(b.lights, 0, sizeof(b.lights));
 	for (uint32_t i = 0; i < count; ++i) {
-		const aprend_lit_light &l = lights[i];
+		const APREND_LIT_LIGHT &l = lights[i];
 		aprend_lit_light_block &o = b.lights[i];
 		memcpy(o.position_range, l.position, sizeof(float) * 3);
 		o.position_range[3] = l.range;
@@ -1820,44 +1852,40 @@ bool aprend_lit_scene_set_lights(aprend_lit_scene scene, const aprend_lit_light 
 	}
 	b.light_count = count;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const aprend_lit_spot_shadow *shadows, uint32_t count,
-                                       bool reversed_depth) {
-	static const char who[] = "aprend_lit_scene_set_spot_shadows";
-	if (!scene) {
-		printf("apricot: %s: scene is NULL\n", who);
-		return false;
-	}
-	if (count > APREND_LIT_MAX_SPOT_SHADOWS) {
-		printf("apricot: %s: %u spot shadows, and a scene holds %u\n", who, count, APREND_LIT_MAX_SPOT_SHADOWS);
-		return false;
-	}
-	if (count > 0 && !shadows) {
-		printf("apricot: %s: shadows is NULL with a count of %u\n", who, count);
-		return false;
-	}
-	if (count > 0 && !aprend_lit_shadow_map_valid(scene, map, count, who))
-		return false;
+APRESULT aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_SPOT_SHADOW *shadows, uint32_t count,
+                                       bool reversed_depth, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_spot_shadows");
+	if (count > APREND_LIT_MAX_SPOT_SHADOWS)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u spot shadows, and a scene holds %u", count, APREND_LIT_MAX_SPOT_SHADOWS);
+	if (count > 0 && !shadows)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows is NULL with a count of %u", count);
+	if (count > 0)
+		if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, map, count, out_error))
+			return valid;
 	for (uint32_t i = 0; i < count; ++i) {
-		const aprend_lit_spot_shadow &s = shadows[i];
-		if (!all_finite(s.view_projection, 16) || !aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, who))
-			return false;
+		const APREND_LIT_SPOT_SHADOW &s = shadows[i];
+		if (!all_finite(s.view_projection, 16))
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow %u's view_projection is not finite", i);
+		if (const APRESULT valid = aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, out_error))
+			return valid;
 		for (uint32_t j = 0; j < i; ++j) {
-			if (shadows[j].light == s.light) {
-				printf("apricot: %s: shadows %u and %u name one light, %u\n", who, j, i, s.light);
-				return false;
-			}
+			if (shadows[j].light == s.light)
+				return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows %u and %u name one light, %u", j, i, s.light);
 		}
 	}
 	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
-	if (!aprend_material_set_texture(scene->material, "spot_shadow_map", 0, count ? map : lit.placeholder_depth_view))
-		return false;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "spot_shadow_map", 0, count ? map : lit.placeholder_depth_view, out_error))
+		return set;
 	aprend_lit_scene_block &b = scene->block;
 	for (uint32_t i = 0; i < APREND_LIT_MAX_SPOT_SHADOWS; ++i) {
 		if (i < count) {
-			const aprend_lit_spot_shadow &s = shadows[i];
+			const APREND_LIT_SPOT_SHADOW &s = shadows[i];
 			memcpy(b.spot_shadow_view_projection[i], s.view_projection, sizeof(float) * 16);
 			b.spot_shadow_params[i][0]   = s.depth_bias;
 			b.spot_shadow_params[i][1]   = s.normal_offset;
@@ -1878,44 +1906,36 @@ bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_vi
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_SPOT_REVERSED;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const aprend_lit_point_shadow *shadows, uint32_t count,
-                                        bool reversed_depth) {
-	static const char who[] = "aprend_lit_scene_set_point_shadows";
-	if (!scene) {
-		printf("apricot: %s: scene is NULL\n", who);
-		return false;
-	}
-	if (count > APREND_LIT_MAX_POINT_SHADOWS) {
-		printf("apricot: %s: %u point shadows, and a scene holds %u\n", who, count, APREND_LIT_MAX_POINT_SHADOWS);
-		return false;
-	}
-	if (count > 0 && !shadows) {
-		printf("apricot: %s: shadows is NULL with a count of %u\n", who, count);
-		return false;
-	}
-	if (count > 0 && !aprend_lit_shadow_map_valid(scene, map, count * 6, who))
-		return false;
+APRESULT aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_POINT_SHADOW *shadows, uint32_t count,
+                                        bool reversed_depth, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_point_shadows");
+	if (count > APREND_LIT_MAX_POINT_SHADOWS)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u point shadows, and a scene holds %u", count, APREND_LIT_MAX_POINT_SHADOWS);
+	if (count > 0 && !shadows)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows is NULL with a count of %u", count);
+	if (count > 0)
+		if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, map, count * 6, out_error))
+			return valid;
 	for (uint32_t i = 0; i < count; ++i) {
-		const aprend_lit_point_shadow &s = shadows[i];
-		if (!all_finite(&s.view_projection[0][0], 6 * 16)) {
-			printf("apricot: %s: a value of shadow %u's matrices is not a finite number\n", who, i);
-			return false;
-		}
-		if (!aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, who))
-			return false;
+		const APREND_LIT_POINT_SHADOW &s = shadows[i];
+		if (!all_finite(&s.view_projection[0][0], 6 * 16))
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value of shadow %u's matrices is not a finite number", i);
+		if (const APRESULT valid = aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, out_error))
+			return valid;
 		for (uint32_t j = 0; j < i; ++j) {
-			if (shadows[j].light == s.light) {
-				printf("apricot: %s: shadows %u and %u name one light, %u\n", who, j, i, s.light);
-				return false;
-			}
+			if (shadows[j].light == s.light)
+				return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows %u and %u name one light, %u", j, i, s.light);
 		}
 	}
 	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
-	if (!aprend_material_set_texture(scene->material, "point_shadow_map", 0, count ? map : lit.placeholder_depth_view))
-		return false;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "point_shadow_map", 0, count ? map : lit.placeholder_depth_view, out_error))
+		return set;
 	aprend_lit_scene_block &b = scene->block;
 	for (uint32_t i = 0; i < APREND_LIT_MAX_POINT_SHADOWS; ++i) {
 		for (uint32_t face = 0; face < 6; ++face) {
@@ -1929,7 +1949,7 @@ bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_v
 			aprend_lit_write_block(scene->point_shadow_materials[i * 6 + face], "u_lit_shadow_pass", &pass, sizeof(pass));
 		}
 		if (i < count) {
-			const aprend_lit_point_shadow &s = shadows[i];
+			const APREND_LIT_POINT_SHADOW &s = shadows[i];
 			b.point_shadow_params[i][0]       = s.depth_bias;
 			b.point_shadow_params[i][1]       = s.normal_offset;
 			b.point_shadow_params[i][2]       = s.softness;
@@ -1945,49 +1965,40 @@ bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_v
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_POINT_REVERSED;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambient *ambient) {
-	static const char who[] = "aprend_lit_scene_set_ambient";
-	if (!scene || !ambient) {
-		printf("apricot: %s: %s is NULL\n", who, scene ? "ambient" : "scene");
-		return false;
-	}
-	if (!aprend_base_ok(who, "ambient", &ambient->base, APRI_STRUCT_TYPE_APREND_LIT_AMBIENT))
-		return false;
-	const aprend_lit_ambient &a = *ambient;
+APRESULT aprend_lit_scene_set_ambient(aprend_lit_scene scene, const APREND_LIT_AMBIENT *ambient, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene || !ambient)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", scene ? "ambient" : "scene");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_ambient");
+	if (const APRESULT base = aprend_base_check(out_error, "ambient", &ambient->base, APRI_STRUCT_TYPE_APREND_LIT_AMBIENT))
+		return base;
+	const APREND_LIT_AMBIENT &a = *ambient;
 	if (!all_finite(a.up, 3) || !all_finite(a.sky, 3) || !all_finite(a.ground, 3) || !finite(a.environment_intensity) ||
 	    !all_finite(a.environment_rotation, 9)) {
-		printf("apricot: %s: a value is not a finite number\n", who);
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number");
 	}
 	bool colored = false;
 	for (int i = 0; i < 3; ++i) {
-		if (a.sky[i] < 0.0f || a.ground[i] < 0.0f) {
-			printf("apricot: %s: a color is negative\n", who);
-			return false;
-		}
+		if (a.sky[i] < 0.0f || a.ground[i] < 0.0f)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a color is negative");
 		colored = colored || a.sky[i] > 0.0f || a.ground[i] > 0.0f;
 	}
-	if (a.environment_intensity < 0.0f) {
-		printf("apricot: %s: environment_intensity is negative\n", who);
-		return false;
-	}
-	if (colored && length3(a.up) == 0.0f) {
-		printf("apricot: %s: the hemisphere has colors and no up\n", who);
-		return false;
-	}
-	if (a.environment && a.environment->instance != scene->instance) {
-		printf("apricot: %s: environment is of another instance\n", who);
-		return false;
-	}
+	if (a.environment_intensity < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "environment_intensity is negative");
+	if (colored && length3(a.up) == 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the hemisphere has colors and no up");
+	if (a.environment && a.environment->instance != scene->instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "environment is of another instance");
 	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
 	aprend_texture_view specular   = a.environment ? a.environment->specular_cube : lit.placeholder_cube_view;
 	aprend_texture_view irradiance = a.environment ? a.environment->irradiance_cube : lit.placeholder_cube_view;
-	if (!aprend_material_set_texture(scene->material, "environment_specular", 0, specular) ||
-	    !aprend_material_set_texture(scene->material, "environment_irradiance", 0, irradiance))
-		return false;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "environment_specular", 0, specular, out_error))
+		return set;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "environment_irradiance", 0, irradiance, out_error))
+		return set;
 	scene->environment        = a.environment;
 	aprend_lit_scene_block &b = scene->block;
 	unit3(a.up, b.ambient_up);
@@ -2007,27 +2018,22 @@ bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambie
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_ENVIRONMENT;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_texture_view occlusion, float strength) {
-	static const char who[] = "aprend_lit_scene_set_ambient_occlusion";
-	if (!scene) {
-		printf("apricot: %s: scene is NULL\n", who);
-		return false;
-	}
-	if (!finite(strength) || strength < 0.0f || strength > 1.0f) {
-		printf("apricot: %s: strength is not from 0 to 1\n", who);
-		return false;
-	}
+APRESULT aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_texture_view occlusion, float strength, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_ambient_occlusion");
+	if (!finite(strength) || strength < 0.0f || strength > 1.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "strength is not from 0 to 1");
 	if (occlusion && (occlusion->instance != scene->instance || occlusion->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE ||
 	                  occlusion->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D || occlusion->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)) {
-		printf("apricot: %s: occlusion is not a SHADER_RESOURCE 2D view of color of the scene's instance\n", who);
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "occlusion is not a SHADER_RESOURCE 2D view of color of the scene's instance");
 	}
-	if (!aprend_material_set_texture(scene->material, "ambient_occlusion", 0,
-	                                 occlusion ? occlusion : scene->instance->builtins.lit.placeholder_2d_view))
-		return false;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "ambient_occlusion", 0, occlusion ? occlusion : scene->instance->builtins.lit.placeholder_2d_view, out_error))
+		return set;
 	aprend_lit_scene_block &b = scene->block;
 	b.occlusion_strength      = strength;
 	if (occlusion)
@@ -2035,64 +2041,80 @@ bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_textu
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_OCCLUSION;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read) {
-	if (!scene) {
-		printf("apricot: aprend_lit_scene_set_bent_normals: scene is NULL\n");
-		return false;
+APRESULT aprend_lit_scene_set_scene_color(aprend_lit_scene scene, aprend_texture_view scene_color, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_scene_color");
+	if (scene_color && scene_color->instance != scene->instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene_color is of another instance");
+	if (scene_color && scene_color->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene_color is not a SHADER_RESOURCE view");
+	if (scene_color && scene_color->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene_color is not a 2D view");
+	if (scene_color && scene_color->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene_color is not a view of color");
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "scene_color", 0, scene_color ? scene_color : scene->instance->builtins.lit.placeholder_2d_view, out_error))
+		return set;
+	aprend_lit_scene_block &b = scene->block;
+	if (scene_color) {
+		b.flags |= APREND_LIT_SCENE_FLAG_SCENE_COLOR;
+		b.scene_color_mips = (float)scene_color->desc.mip_count;
+	} else {
+		b.flags &= ~APREND_LIT_SCENE_FLAG_SCENE_COLOR;
+		b.scene_color_mips = 0.0f;
 	}
+	aprend_lit_scene_commit(scene);
+	return APRESULT_OK;
+}
+
+APRESULT aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_bent_normals");
 	aprend_lit_scene_block &b = scene->block;
 	if (read)
 		b.flags |= APREND_LIT_SCENE_FLAG_BENT_NORMALS;
 	else
 		b.flags &= ~APREND_LIT_SCENE_FLAG_BENT_NORMALS;
 	aprend_lit_scene_commit(scene);
-	return true;
+	return APRESULT_OK;
 }
 
 // ---- Fitting shadows --------------------------------------------------------------
 
-bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_sun_shadow *out_shadow) {
-	static const char who[] = "aprend_lit_fit_sun_cascades";
-	if (!fit || !out_shadow) {
-		printf("apricot: %s: %s is NULL\n", who, fit ? "out_shadow" : "fit");
-		return false;
-	}
-	if (!aprend_base_ok(who, "fit", &fit->base, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT))
-		return false;
-	if (!aprend_base_ok(who, "out_shadow", &out_shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
-		return false;
-	const aprend_lit_cascade_fit &f = *fit;
+APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_LIT_SUN_SHADOW *out_shadow, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!fit || !out_shadow)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", fit ? "out_shadow" : "fit");
+	if (const APRESULT base = aprend_base_check(out_error, "fit", &fit->base, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT))
+		return base;
+	if (const APRESULT base = aprend_base_check(out_error, "out_shadow", &out_shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
+		return base;
+	const APREND_LIT_CASCADE_FIT &f = *fit;
 	if (!all_finite(f.eye_position, 3) || !all_finite(f.view_direction, 3) || !all_finite(f.view_up, 3) || !all_finite(f.sun_direction, 3) ||
 	    !finite(f.fov_y) || !finite(f.half_height) || !finite(f.aspect) || !finite(f.near_depth) || !finite(f.far_depth) ||
 	    !finite(f.split_lambda) || !finite(f.caster_distance)) {
-		printf("apricot: %s: a value is not a finite number\n", who);
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number");
 	}
 	const glm::vec3 forward_in = vec3_of(f.view_direction), up_in = vec3_of(f.view_up), sun_in = vec3_of(f.sun_direction);
-	if (glm::length(forward_in) == 0.0f || glm::length(sun_in) == 0.0f) {
-		printf("apricot: %s: the view direction or the sun direction is 0\n", who);
-		return false;
-	}
+	if (glm::length(forward_in) == 0.0f || glm::length(sun_in) == 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the view direction or the sun direction is 0");
 	const glm::vec3 forward = glm::normalize(forward_in);
 	glm::vec3 right         = glm::cross(forward, up_in);
-	if (glm::length(right) <= 1e-6f * std::max(glm::length(up_in), 1e-30f)) {
-		printf("apricot: %s: view_up runs along the view direction\n", who);
-		return false;
-	}
+	if (glm::length(right) <= 1e-6f * std::max(glm::length(up_in), 1e-30f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view_up runs along the view direction");
 	right              = glm::normalize(right);
 	const glm::vec3 up = glm::cross(right, forward);
-	if (f.cascade_count == 0 || f.cascade_count > APREND_LIT_MAX_CASCADES || f.map_size == 0) {
-		printf("apricot: %s: %u cascades and a map of %u: 1 to %u, and above 0\n", who, f.cascade_count, APREND_LIT_MAX_CASCADES, f.map_size);
-		return false;
-	}
+	if (f.cascade_count == 0 || f.cascade_count > APREND_LIT_MAX_CASCADES || f.map_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u cascades and a map of %u: 1 to %u, and above 0", f.cascade_count, APREND_LIT_MAX_CASCADES, f.map_size);
 	if (!(f.far_depth > f.near_depth) || (!f.orthographic && !(f.near_depth > 0.0f)) || !(f.aspect > 0.0f) || f.split_lambda < 0.0f ||
 	    f.split_lambda > 1.0f || f.caster_distance < 0.0f || (f.orthographic ? !(f.half_height > 0.0f) : !(f.fov_y > 0.0f && f.fov_y < 3.1f))) {
-		printf("apricot: %s: the depths, the field of view or half height, the aspect, the split lambda or the caster distance is out of range\n",
-		       who);
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the depths, the field of view or half height, the aspect, the split lambda or the caster distance is out of range");
 	}
 
 	const glm::vec3 eye = vec3_of(f.eye_position);
@@ -2159,34 +2181,24 @@ bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_s
 		out_shadow->split_depths[c] = 0.0f;
 	}
 	out_shadow->cascade_count = f.cascade_count;
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_point_shadow_view_projection(const aprend_lit_light *light, uint32_t face, float near_depth, bool reversed_depth,
-                                             float out_view_projection[16]) {
-	static const char who[] = "aprend_lit_point_shadow_view_projection";
-	if (!light) {
-		printf("apricot: %s: light is NULL\n", who);
-		return false;
-	}
-	if (!out_view_projection) {
-		printf("apricot: %s: out_view_projection is NULL\n", who);
-		return false;
-	}
-	if (light->type != APREND_LIT_LIGHT_TYPE_POINT) {
-		printf("apricot: %s: the light is not a point light\n", who);
-		return false;
-	}
-	if (!aprend_lit_light_valid(*light, 0, who))
-		return false;
-	if (face >= 6) {
-		printf("apricot: %s: face %u is not below 6\n", who, face);
-		return false;
-	}
-	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range)) {
-		printf("apricot: %s: near_depth is not between 0 and the light's range\n", who);
-		return false;
-	}
+APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, uint32_t face, float near_depth, bool reversed_depth,
+                                             float out_view_projection[16], APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!light)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light is NULL");
+	if (!out_view_projection)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_view_projection is NULL");
+	if (light->type != APREND_LIT_LIGHT_TYPE_POINT)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the light is not a point light");
+	if (const APRESULT valid = aprend_lit_light_valid(*light, 0, out_error))
+		return valid;
+	if (face >= 6)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "face %u is not below 6", face);
+	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not between 0 and the light's range");
 	static const glm::vec3 axes[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
 	const glm::vec3 position = vec3_of(light->position), axis = axes[face];
 	// Any up that isn't the axis: what the matrix renders is what the
@@ -2199,25 +2211,19 @@ bool aprend_lit_point_shadow_view_projection(const aprend_lit_light *light, uint
 	                                            : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range);
 	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
 	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float near_depth, bool reversed_depth, float out_view_projection[16]) {
-	static const char who[] = "aprend_lit_spot_shadow_view_projection";
-	if (!light || !out_view_projection) {
-		printf("apricot: %s: %s is NULL\n", who, light ? "out_view_projection" : "light");
-		return false;
-	}
-	if (light->type != APREND_LIT_LIGHT_TYPE_SPOT) {
-		printf("apricot: %s: the light is not a spot\n", who);
-		return false;
-	}
-	if (!aprend_lit_light_valid(*light, 0, who))
-		return false;
-	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range)) {
-		printf("apricot: %s: near_depth is not between 0 and the light's range\n", who);
-		return false;
-	}
+APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_LIGHT *light, float near_depth, bool reversed_depth, float out_view_projection[16], APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!light || !out_view_projection)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", light ? "out_view_projection" : "light");
+	if (light->type != APREND_LIT_LIGHT_TYPE_SPOT)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the light is not a spot");
+	if (const APRESULT valid = aprend_lit_light_valid(*light, 0, out_error))
+		return valid;
+	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not between 0 and the light's range");
 	const glm::vec3 position = vec3_of(light->position), axis = glm::normalize(vec3_of(light->direction));
 	const glm::vec3 up       = std::fabs(axis.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
 	// Wide enough for the cone, with a margin the softness reads into.
@@ -2226,7 +2232,7 @@ bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float
 	                                            : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range);
 	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
 	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
-	return true;
+	return APRESULT_OK;
 }
 
 } // extern "C"
@@ -2235,7 +2241,7 @@ bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float
 
 aprend_exposure_t::~aprend_exposure_t() {
 	aprend_binding_set_destroy(this->histogram_set);
-	aprend_storage_buffer_set_destroy(this->histogram);
+	aprend_buffer_destroy(this->histogram);
 	for (int i = 0; i < 2; ++i) {
 		aprend_texture_view_destroy(this->value_views[i]);
 		aprend_texture_view_destroy(this->value_targets[i]);
@@ -2248,42 +2254,42 @@ aprend_exposure_t::~aprend_exposure_t() {
 
 extern "C" {
 
-aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_exposure_desc *desc) {
-	static const char who[] = "aprend_exposure_create";
-	if (!instance || !desc) {
-		printf("apricot: %s: %s is NULL\n", who, instance ? "desc" : "instance");
-		return nullptr;
-	}
-	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC))
-		return nullptr;
-	const aprend_exposure_desc &d = *desc;
+APRESULT aprend_exposure_create(
+    aprend_instance instance,
+    const APREND_EXPOSURE_DESC *desc,
+    aprend_exposure *out_exposure,
+    APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_exposure)
+		*out_exposure = nullptr;
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_exposure_create");
+	if (!desc)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
+	if (const APRESULT base = aprend_base_check(out_error, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC))
+		return base;
+	const APREND_EXPOSURE_DESC &d = *desc;
 	if (!finite(d.key) || !finite(d.min_log) || !finite(d.max_log) || !finite(d.up_rate) || !finite(d.down_rate) || !(d.key > 0.0f) ||
 	    !(d.min_log < d.max_log) || !(d.up_rate > 0.0f) || !(d.down_rate > 0.0f)) {
-		printf("apricot: %s: the key and rates are above 0, and min_log below max_log, all finite\n", who);
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the key and rates are above 0, and min_log below max_log, all finite");
 	}
-	if (!(d.low_share >= 0.0f)) {
-		printf("apricot: %s: low_share is negative or not a number\n", who);
-		return nullptr;
-	}
-	if (!(d.high_share <= 1.0f)) {
-		printf("apricot: %s: high_share is above 1 or not a number\n", who);
-		return nullptr;
-	}
-	if (!(d.low_share < d.high_share)) {
-		printf("apricot: %s: low_share %g is not below high_share %g\n", who, (double)d.low_share, (double)d.high_share);
-		return nullptr;
-	}
+	if (!(d.low_share >= 0.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "low_share is negative or not a number");
+	if (!(d.high_share <= 1.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "high_share is above 1 or not a number");
+	if (!(d.low_share < d.high_share))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "low_share %g is not below high_share %g", (double)d.low_share, (double)d.high_share);
 	// Every texel measured is the log average, exactly, through the
 	// luminance texture's mips; leaving some out takes a histogram.
 	const bool histogram = d.low_share > 0.0f || d.high_share < 1.0f;
+	if (!out_exposure)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_exposure is NULL");
 	if (histogram && !aprend_lit_histogram_pipeline(instance))
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's exposure histogram pipeline can't be made");
 	APREND_MALLOC__T(exposure, aprend_exposure_t);
-	if (!exposure) {
-		printf("apricot: %s: out of memory\n", who);
-		return nullptr;
-	}
+	if (!exposure)
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the exposure");
 	APREND_CONSTRUCT__T(exposure, aprend_exposure_t);
 	exposure->instance         = instance;
 	exposure->desc             = d;
@@ -2299,29 +2305,27 @@ aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_ex
 		ok                         = exposure->value_targets[i] && exposure->value_views[i];
 	}
 	if (ok && histogram) {
-		exposure->histogram = aprend_storage_buffer_set_create(instance, APREND_EXPOSURE_BINS * sizeof(uint32_t), APREND_STORAGE_BUFFER_USAGE_NONE,
-		                                                       APREND_BUFFER_WRITES_ONCE, nullptr);
-		if (exposure->histogram) {
-			aprend_binding_set_entry entries[3]{};
-			entries[0]._binding                  = 0;
-			entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-			entries[0]._resource._image._view    = exposure->luminance_view;
-			entries[1]._binding                  = 1;
-			entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
-			entries[1]._resource._image._sampler = instance->builtins.lit.environment_sampler;
-			entries[2]._binding                  = 2;
-			entries[2]._type                     = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			entries[2]._resource._storage._set   = exposure->histogram;
-			exposure->histogram_set              = aprend_binding_set_create(instance->builtins.lit.histogram_layout, entries, 3);
+		if (aprend_lit_storage_buffer(instance, APREND_EXPOSURE_BINS * sizeof(uint32_t), true, "aprend exposure histogram", &exposure->histogram, nullptr) == APRESULT_OK) {
+			APREND_BINDING_SET_ENTRY entries[3]{};
+			entries[0]._binding                   = 0;
+			entries[0]._type                      = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+			entries[0]._resource._image._view     = exposure->luminance_view;
+			entries[1]._binding                   = 1;
+			entries[1]._type                      = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+			entries[1]._resource._image._sampler  = instance->builtins.lit.environment_sampler;
+			entries[2]._binding                   = 2;
+			entries[2]._type                      = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			entries[2]._resource._storage._buffer = exposure->histogram;
+			(void)aprend_binding_set_create(instance->builtins.lit.histogram_layout, entries, 3, &exposure->histogram_set, nullptr);
 		}
 		ok = exposure->histogram_set != nullptr;
 	}
 	if (!ok) {
-		printf("apricot: %s: a texture, view, buffer or set can't be created\n", who);
 		APREND_DESTRUCT__T(exposure, aprend_exposure_t);
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "a texture, view, buffer or set of the exposure can't be created");
 	}
-	return exposure;
+	*out_exposure = exposure;
+	return APRESULT_OK;
 }
 
 void aprend_exposure_destroy(aprend_exposure exposure) {

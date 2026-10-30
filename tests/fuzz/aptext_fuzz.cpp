@@ -1,6 +1,7 @@
 // aptext_fuzz - ApText's readers of outside bytes: font files
-// (aptext_face_create(), through HarfBuzz), Hershey fonts
-// (aptext_face_create_hershey()) and saved atlases (aptext_atlas_load()).
+// (aptext_face_create(), through HarfBuzz, with and without variations),
+// Hershey, LFF and SHX fonts (aptext_face_create_hershey(), _lff(), _shx())
+// and saved atlases (aptext_atlas_load()).
 //
 // The input's first byte says which; the rest is what it reads:
 //   0: a font file. A face that opens is laid out, and the glyphs of the
@@ -9,6 +10,10 @@
 //      strokes taken.
 //   2: a font file's size (4 bytes, little-endian), the font, then a saved
 //      atlas, loaded with that face at fixed settings (the corpus's).
+//   3: an LFF font; 4: an SHX font (shape 128 as U+00E9). A face that
+//      opens is laid out, and its strokes taken, as Hershey's.
+//   5: a font file opened again with every variation axis it has at its
+//      most, then laid out.
 // Beyond not crashing, it checks:
 // - a failed create or load leaves no object and a terminated message;
 // - a layout's glyphs, lines and runs index each other and the text;
@@ -238,6 +243,114 @@ void fuzz_hershey(const uint8_t *data, size_t size)
     aptext_face_destroy(face);
 }
 
+// A stroke face that opened: laid out, and its strokes taken.
+void lay_out_strokes(aptext_face face)
+{
+    aptext_chain chain = nullptr;
+    aptext_layout layout = lay_out(face, &chain);
+    uint32_t count = 0;
+    if (aptext_layout_get_strokes(layout, nullptr, 0, &count) == APRESULT_OK && count < (1u << 20))
+    {
+        std::vector<APTEXT_SEGMENT> segments(count ? count : 1);
+        uint32_t filled = 0;
+        APRIFUZZ_CHECK(aptext_layout_get_strokes(layout, count ? segments.data() : nullptr, count, &filled) ==
+                       APRESULT_OK);
+        APRIFUZZ_CHECK(filled == count);
+    }
+    aptext_layout_destroy(layout);
+    aptext_chain_destroy(chain);
+    aptext_face_destroy(face);
+}
+
+void fuzz_lff(const uint8_t *data, size_t size)
+{
+    APTEXT_LFF_FACE_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC;
+    desc.data = data;
+    desc.data_size = size;
+    desc.units_per_em = 9.0f;
+    desc.arc_tolerance = 0.01f;
+    desc.metrics.ascender = 1.0f;
+    desc.metrics.descender = -0.25f;
+    aptext_face face = (aptext_face)&desc; // must be overwritten
+    APTEXT_ERROR error;
+    APRESULT result = aptext_face_create_lff(&desc, &face, &error);
+    APRIFUZZ_CHECK(message_is_terminated(error));
+    if (result != APRESULT_OK)
+    {
+        APRIFUZZ_CHECK(face == nullptr);
+        return;
+    }
+    lay_out_strokes(face);
+}
+
+void fuzz_shx(const uint8_t *data, size_t size)
+{
+    static const uint32_t high[1] = {0xE9};
+    APTEXT_SHX_FACE_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC;
+    desc.data = data;
+    desc.data_size = size;
+    desc.high_codepoints = high;
+    desc.high_codepoint_count = 1;
+    desc.arc_tolerance = 0.01f;
+    aptext_face face = (aptext_face)&desc; // must be overwritten
+    APTEXT_ERROR error;
+    APRESULT result = aptext_face_create_shx(&desc, &face, &error);
+    APRIFUZZ_CHECK(message_is_terminated(error));
+    if (result != APRESULT_OK)
+    {
+        APRIFUZZ_CHECK(face == nullptr);
+        return;
+    }
+    lay_out_strokes(face);
+}
+
+void fuzz_variable(const uint8_t *data, size_t size)
+{
+    APTEXT_FACE_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APTEXT_FACE_DESC;
+    desc.data = data;
+    desc.data_size = size;
+    aptext_face face = nullptr;
+    if (aptext_face_create(&desc, &face, nullptr) != APRESULT_OK)
+        return;
+    const uint32_t count = aptext_face_get_axis_count(face);
+    std::vector<APTEXT_VARIATION> variations;
+    for (uint32_t i = 0; i < count && i < 64; i++)
+    {
+        APTEXT_AXIS axis;
+        APRIFUZZ_CHECK(aptext_face_get_axis(face, i, &axis) == APRESULT_OK);
+        APRIFUZZ_CHECK(!(axis.min_value > axis.max_value));
+        bool seen = false;
+        for (const APTEXT_VARIATION &v : variations)
+            seen = seen || v.tag == axis.tag;
+        if (!seen && axis.max_value == axis.max_value)
+            variations.push_back({axis.tag, axis.max_value});
+    }
+    aptext_face_destroy(face);
+    if (variations.empty())
+        return;
+    desc.variations = variations.data();
+    desc.variation_count = (uint32_t)variations.size();
+    face = nullptr;
+    APTEXT_ERROR error;
+    if (aptext_face_create(&desc, &face, &error) != APRESULT_OK)
+    {
+        APRIFUZZ_CHECK(face == nullptr);
+        APRIFUZZ_CHECK(message_is_terminated(error));
+        return;
+    }
+    aptext_chain chain = nullptr;
+    aptext_layout layout = lay_out(face, &chain);
+    aptext_layout_destroy(layout);
+    aptext_chain_destroy(chain);
+    aptext_face_destroy(face);
+}
+
 void fuzz_atlas(const uint8_t *data, size_t size)
 {
     if (size < 4)
@@ -301,6 +414,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         break;
     case 2:
         fuzz_atlas(data + 1, size - 1);
+        break;
+    case 3:
+        fuzz_lff(data + 1, size - 1);
+        break;
+    case 4:
+        fuzz_shx(data + 1, size - 1);
+        break;
+    case 5:
+        fuzz_variable(data + 1, size - 1);
         break;
     default:
         break;

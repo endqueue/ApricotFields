@@ -6,6 +6,7 @@
 #include <new>
 #include <stdlib.h>
 #include <string.h>
+#include "../aprioverlap.hpp"
 
 // ApText's layouts (APTEXT_TODO.md, item 2). A build runs, for each
 // paragraph (the text between mandatory breaks):
@@ -311,15 +312,12 @@ struct bidi_objects
 {
     SBAlgorithmRef algorithm = nullptr;
     SBParagraphRef paragraph = nullptr;
-    SBScriptLocatorRef scripts = nullptr;
     SBLineRef line = nullptr;
 
     ~bidi_objects()
     {
         if (line)
             SBLineRelease(line);
-        if (scripts)
-            SBScriptLocatorRelease(scripts);
         if (paragraph)
             SBParagraphRelease(paragraph);
         if (algorithm)
@@ -366,16 +364,27 @@ static APRESULT place_line(build_context &c, bidi_objects &bidi, uint32_t p0, ui
     const uint32_t line_index = (uint32_t)layout->lines.count;
     const double baseline = (double)line_index * c.line_advance + c.baseline_offset;
 
-    if (bidi.line)
+    // A paragraph with no bidi pass (all level 0, see lay_out_paragraph)
+    // is one run a line.
+    SBRun whole;
+    whole.offset = l0 - p0;
+    whole.length = l1 - l0;
+    whole.level = 0;
+    SBUInteger run_count = 1;
+    const SBRun *bidi_runs = &whole;
+    if (bidi.paragraph)
     {
-        SBLineRelease(bidi.line);
-        bidi.line = nullptr;
+        if (bidi.line)
+        {
+            SBLineRelease(bidi.line);
+            bidi.line = nullptr;
+        }
+        bidi.line = SBParagraphCreateLine(bidi.paragraph, l0 - p0, l1 - l0);
+        if (!bidi.line)
+            return aptext_out_of_memory(c.error, "reordering a line");
+        run_count = SBLineGetRunCount(bidi.line);
+        bidi_runs = SBLineGetRunsPtr(bidi.line);
     }
-    bidi.line = SBParagraphCreateLine(bidi.paragraph, l0 - p0, l1 - l0);
-    if (!bidi.line)
-        return aptext_out_of_memory(c.error, "reordering a line");
-    const SBUInteger run_count = SBLineGetRunCount(bidi.line);
-    const SBRun *bidi_runs = SBLineGetRunsPtr(bidi.line);
 
     // The line's glyphs, run by run in visual order.
     layout->shaped.clear();
@@ -501,38 +510,62 @@ static APRESULT lay_out_paragraph(build_context &c, uint32_t p0, uint32_t p1, ui
     }
     const uint32_t length = p1 - p0;
 
-    // 1. Embedding levels.
+    // 1. Embedding levels. A paragraph that isn't right to left and holds
+    // no right-to-left character, Arabic number or directional format
+    // resolves to level 0 everywhere under the bidi algorithm (W7 makes
+    // its European numbers L, N1 and N2 its neutrals): it is laid out
+    // without SheenBidi's objects, which would allocate every build.
     bidi_objects bidi;
-    SBCodepointSequence sequence;
-    sequence.stringEncoding = SBStringEncodingUTF32;
-    sequence.stringBuffer = layout->bidi_codepoints.data + p0;
-    sequence.stringLength = length;
-    bidi.algorithm = SBAlgorithmCreate(&sequence);
-    if (!bidi.algorithm)
-        return aptext_out_of_memory(c.error, "finding the text's directions");
-    SBLevel base_level = SBLevelDefaultLTR;
-    if (d.direction == APTEXT_DIRECTION_LTR)
-        base_level = 0;
-    if (d.direction == APTEXT_DIRECTION_RTL)
-        base_level = 1;
-    bidi.paragraph = SBAlgorithmCreateParagraph(bidi.algorithm, 0, length, base_level);
-    if (!bidi.paragraph)
-        return aptext_out_of_memory(c.error, "finding the text's directions");
-    const bool rtl = (SBParagraphGetBaseLevel(bidi.paragraph) & 1) != 0;
-    const SBLevel *levels = SBParagraphGetLevelsPtr(bidi.paragraph);
+    bool simple = d.direction != APTEXT_DIRECTION_RTL;
+    for (uint32_t i = p0; i < p1 && simple; i++)
+    {
+        const SBBidiType type = SBCodepointGetBidiType(layout->bidi_codepoints[i]);
+        if (type == SBBidiTypeR || type == SBBidiTypeAL || type == SBBidiTypeAN || SBBidiTypeIsFormat(type))
+            simple = false;
+    }
+    bool rtl = false;
+    const SBLevel *levels = nullptr;
+    if (simple)
+    {
+        if (layout->levels.resize(length) != EQ_SUCCESS)
+            return aptext_out_of_memory(c.error, "finding the text's directions");
+        memset(layout->levels.data, 0, length);
+        levels = layout->levels.data;
+    }
+    else
+    {
+        SBCodepointSequence sequence;
+        sequence.stringEncoding = SBStringEncodingUTF32;
+        sequence.stringBuffer = layout->bidi_codepoints.data + p0;
+        sequence.stringLength = length;
+        bidi.algorithm = SBAlgorithmCreate(&sequence);
+        if (!bidi.algorithm)
+            return aptext_out_of_memory(c.error, "finding the text's directions");
+        SBLevel base_level = SBLevelDefaultLTR;
+        if (d.direction == APTEXT_DIRECTION_LTR)
+            base_level = 0;
+        if (d.direction == APTEXT_DIRECTION_RTL)
+            base_level = 1;
+        bidi.paragraph = SBAlgorithmCreateParagraph(bidi.algorithm, 0, length, base_level);
+        if (!bidi.paragraph)
+            return aptext_out_of_memory(c.error, "finding the text's directions");
+        rtl = (SBParagraphGetBaseLevel(bidi.paragraph) & 1) != 0;
+        levels = SBParagraphGetLevelsPtr(bidi.paragraph);
+    }
 
     // 2. Script runs, over the text as it is.
     SBCodepointSequence text;
     text.stringEncoding = SBStringEncodingUTF32;
     text.stringBuffer = layout->codepoints.data + p0;
     text.stringLength = length;
-    bidi.scripts = SBScriptLocatorCreate();
-    if (!bidi.scripts)
+    if (!layout->script_locator)
+        layout->script_locator = SBScriptLocatorCreate();
+    if (!layout->script_locator)
         return aptext_out_of_memory(c.error, "finding the text's scripts");
-    SBScriptLocatorLoadCodepoints(bidi.scripts, &text);
-    while (SBScriptLocatorMoveNext(bidi.scripts))
+    SBScriptLocatorLoadCodepoints(layout->script_locator, &text);
+    while (SBScriptLocatorMoveNext(layout->script_locator))
     {
-        const SBScriptAgent *agent = SBScriptLocatorGetAgent(bidi.scripts);
+        const SBScriptAgent *agent = SBScriptLocatorGetAgent(layout->script_locator);
         const uint32_t tag = SBScriptGetUnicodeTag(agent->script);
         for (SBUInteger i = agent->offset; i < agent->offset + agent->length && i < length; i++)
             layout->scripts[p0 + i] = tag;
@@ -826,6 +859,8 @@ aptext_layout_t::~aptext_layout_t()
 {
     if (buffer)
         hb_buffer_destroy(buffer);
+    if (script_locator)
+        SBScriptLocatorRelease(script_locator);
 }
 
 // Whether [tag] is a feature APTEXT_FEATURE_FLAGS controls.
@@ -936,6 +971,7 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_info", "layout");
         if (!out_info)
             return APRESULT_INVALID_ARGUMENT;
         if (APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APTEXT_LAYOUT_INFO))
@@ -954,6 +990,7 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_glyphs", "layout");
         if (!out_glyphs)
             return APRESULT_INVALID_ARGUMENT;
         if (!out_count)
@@ -967,6 +1004,7 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_lines", "layout");
         if (!out_lines)
             return APRESULT_INVALID_ARGUMENT;
         if (!out_count)
@@ -980,6 +1018,7 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_runs", "layout");
         if (!out_runs)
             return APRESULT_INVALID_ARGUMENT;
         if (!out_count)

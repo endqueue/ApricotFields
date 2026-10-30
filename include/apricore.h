@@ -132,17 +132,25 @@ uint32_t apri_get_version(void);
  * what is particular to it alone.
  *
  * Two overlapping calls on one object are a data race, not a failure a
- * call reports. Today only Aprend looks for it: a Debug build of Aprend
- * prints the name of a call that finds a call from another thread still
- * inside the same instance, and goes on (aprendcontext.h, "Threads"). It
- * checks overlap, not which thread calls. The other modules check nothing,
- * and no Release build checks anything.
+ * call reports. A Debug build looks for it, in every module: each call
+ * the rule covers - every call on an object but its destroy and the calls
+ * marked "Thread:" - opens by noting it is inside, and one that finds a
+ * call from another thread still inside the same object prints both
+ * calls' names on stderr and goes on, as Vulkan's validation layer reports
+ * an object used by two threads at once. A module whose objects share a
+ * unit checks the unit (Aprend's instance; ApAudio's roles, a mixer's
+ * control calls and its render each). It checks overlap, not which thread
+ * calls: a call from another thread once the last has returned is no
+ * overlap, nor is a call made from inside another on the same thread. No
+ * Release build checks anything.
  *
  * Where ApricotFields itself runs code on a thread of its own today, the
  * header says so on the call: ApSync starts a network thread for each
  * session, and a joining session one more, to look its host up
  * (apsyncnet.h). ApAudio starts none; its render call runs on whatever
- * thread the caller's audio stream calls it from (apaudio.h). Nothing else
+ * thread the caller's audio stream calls it from (apaudio.h). ApJobs'
+ * reference pool, which a caller creates only if it wants one, starts the
+ * threads its desc asks for and runs tasks on them (apjobs.h). Nothing else
  * in ApricotFields starts a thread or calls back from one.
  */
 
@@ -185,6 +193,9 @@ typedef enum APRESULT APRI_ENUM_BASE {
 	APRESULT_STRUCT_UNKNOWN_IN_CHAIN = 10,
 	/** One type twice in a chain. */
 	APRESULT_STRUCT_DUPLICATE_IN_CHAIN = 11,
+	/** A wait's time limit ran out first. Nothing the call would have
+	 * done is done. */
+	APRESULT_TIMEOUT = 12,
 
 	/* ApArchive (archive/aparchive.h) */
 
@@ -204,6 +215,19 @@ typedef enum APRESULT APRI_ENUM_BASE {
 	/** A joined session that has no snapshot yet, or whose connection to
 	 * the host has ended. */
 	APRESULT_APSYNC_NOT_CONNECTED = 2002,
+
+	/* Aprend (render/aprend*.h) */
+
+	/** SpudGPU refused something Aprend asked of it, for a reason no other
+	 * code names; the call's APREND_ERROR names SpudGPU's result. */
+	APRESULT_APREND_GPU_FAILURE = 5001,
+	/** A command list compiled against something that has changed since:
+	 * destroyed, resized, updated, or an earlier frame. Compile it again. */
+	APRESULT_APREND_STALE = 5002,
+	/** The device is lost (removed, or reset after a hang): nothing more
+	 * the instance submits runs. Destroy what was made of it, the instance
+	 * last, and the device; a caller that goes on makes them again. */
+	APRESULT_APREND_DEVICE_LOST = 5003,
 
 	/* ApText (text/aptext.h) */
 
@@ -268,6 +292,7 @@ typedef enum APRI_STRUCT_TYPE APRI_ENUM_BASE {
 	APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC = 1002, /**< APARCHIVE_ENTRY_DESC. */
 	APRI_STRUCT_TYPE_APARCHIVE_READER_DESC = 1003, /**< APARCHIVE_READER_DESC. */
 	APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO = 1004, /**< APARCHIVE_ENTRY_INFO, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APARCHIVE_UPDATE_DESC = 1005, /**< APARCHIVE_UPDATE_DESC. */
 
 	/* ApSync (sync/apsyncnet.h) */
 	APRI_STRUCT_TYPE_APSYNC_SESSION_DESC = 2000, /**< APSYNC_SESSION_DESC. */
@@ -295,31 +320,35 @@ typedef enum APRI_STRUCT_TYPE APRI_ENUM_BASE {
 	APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC = 4005, /**< APMATH_POLY_SKELETON_DESC. */
 
 	/* Aprend (render/aprend*.h) */
-	APRI_STRUCT_TYPE_APREND_INSTANCE_DESC = 5000, /**< aprend_instance_desc. */
-	APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC = 5001, /**< aprend_vertex_pool_desc. */
-	APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC = 5002, /**< aprend_index_pool_desc. */
-	APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC = 5003, /**< aprend_draw_list_desc. */
-	APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC = 5004, /**< aprend_framebuffer_desc. */
-	APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC = 5005, /**< aprend_texture2d_desc. */
-	APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC = 5006, /**< aprend_texture3d_desc. */
-	APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC = 5007, /**< aprend_texture_view_desc. */
-	APRI_STRUCT_TYPE_APREND_SAMPLER_DESC = 5008, /**< aprend_sampler_desc. */
-	APRI_STRUCT_TYPE_APREND_MATERIAL_DESC = 5009, /**< aprend_material_desc. */
-	APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC = 5010, /**< aprend_render_pass_desc. */
-	APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC = 5011, /**< aprend_compute_pass_desc. */
-	APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC = 5012, /**< aprend_graphics_pipeline_desc. */
-	APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC = 5013, /**< aprend_compute_pipeline_desc. */
-	APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC = 5014, /**< aprend_swap_chain_desc. */
-	APRI_STRUCT_TYPE_APREND_GPU_TIMER_DESC = 5015, /**< aprend_gpu_timer_desc. */
-	APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC = 5016, /**< aprend_exposure_desc. */
-	APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC = 5017, /**< aprend_lit_environment_desc. */
-	APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES = 5018, /**< aprend_lit_material_values. */
-	APRI_STRUCT_TYPE_APREND_LIT_VIEW = 5019, /**< aprend_lit_view. */
-	APRI_STRUCT_TYPE_APREND_LIT_SUN = 5020, /**< aprend_lit_sun. */
-	APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW = 5021, /**< aprend_lit_sun_shadow. */
-	APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT = 5022, /**< aprend_lit_cascade_fit. */
-	APRI_STRUCT_TYPE_APREND_LIT_AMBIENT = 5023, /**< aprend_lit_ambient. */
-	APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO = 5024, /**< aprend_render_target_pool_info, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APREND_INSTANCE_DESC = 5000, /**< APREND_INSTANCE_DESC. */
+	APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC = 5001, /**< APREND_VERTEX_POOL_DESC. */
+	APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC = 5002, /**< APREND_INDEX_POOL_DESC. */
+	APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC = 5003, /**< APREND_DRAW_LIST_DESC. */
+	APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC = 5004, /**< APREND_FRAMEBUFFER_DESC. */
+	APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC = 5005, /**< APREND_TEXTURE2D_DESC. */
+	APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC = 5006, /**< APREND_TEXTURE3D_DESC. */
+	APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC = 5007, /**< APREND_TEXTURE_VIEW_DESC. */
+	APRI_STRUCT_TYPE_APREND_SAMPLER_DESC = 5008, /**< APREND_SAMPLER_DESC. */
+	APRI_STRUCT_TYPE_APREND_MATERIAL_DESC = 5009, /**< APREND_MATERIAL_DESC. */
+	APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC = 5010, /**< APREND_RENDER_PASS_DESC. */
+	APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC = 5011, /**< APREND_COMPUTE_PASS_DESC. */
+	APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC = 5012, /**< APREND_GRAPHICS_PIPELINE_DESC. */
+	APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC = 5013, /**< APREND_COMPUTE_PIPELINE_DESC. */
+	APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC = 5014, /**< APREND_SWAP_CHAIN_DESC. */
+	APRI_STRUCT_TYPE_APREND_GPU_TIMER_DESC = 5015, /**< APREND_GPU_TIMER_DESC. */
+	APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC = 5016, /**< APREND_EXPOSURE_DESC. */
+	APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC = 5017, /**< APREND_LIT_ENVIRONMENT_DESC. */
+	APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES = 5018, /**< APREND_LIT_MATERIAL_VALUES. */
+	APRI_STRUCT_TYPE_APREND_LIT_VIEW = 5019, /**< APREND_LIT_VIEW. */
+	APRI_STRUCT_TYPE_APREND_LIT_SUN = 5020, /**< APREND_LIT_SUN. */
+	APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW = 5021, /**< APREND_LIT_SUN_SHADOW. */
+	APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT = 5022, /**< APREND_LIT_CASCADE_FIT. */
+	APRI_STRUCT_TYPE_APREND_LIT_AMBIENT = 5023, /**< APREND_LIT_AMBIENT. */
+	APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO = 5024, /**< APREND_RENDER_TARGET_POOL_INFO, an APRI_STRUCT_BASE_OUT. */
+	APRI_STRUCT_TYPE_APREND_BUFFER_DESC = 5025, /**< APREND_BUFFER_DESC. */
+	APRI_STRUCT_TYPE_APREND_BATCH_DESC = 5026, /**< APREND_BATCH_DESC. */
+	APRI_STRUCT_TYPE_APREND_BATCH_FRAME = 5027, /**< APREND_BATCH_FRAME. */
+	APRI_STRUCT_TYPE_APREND_BATCH_LINE = 5028, /**< APREND_BATCH_LINE. */
 
 	/* ApText (text/aptext.h) */
 	APRI_STRUCT_TYPE_APTEXT_FACE_DESC = 6000, /**< APTEXT_FACE_DESC. */
@@ -335,6 +364,12 @@ typedef enum APRI_STRUCT_TYPE APRI_ENUM_BASE {
 	APRI_STRUCT_TYPE_APTEXT_ATLAS_INFO = 6010, /**< APTEXT_ATLAS_INFO, an APRI_STRUCT_BASE_OUT. */
 	APRI_STRUCT_TYPE_APTEXT_ATLAS_GLYPH = 6011, /**< APTEXT_ATLAS_GLYPH, an APRI_STRUCT_BASE_OUT. */
 	APRI_STRUCT_TYPE_APTEXT_ATLAS_LOAD_DESC = 6012, /**< APTEXT_ATLAS_LOAD_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC = 6013, /**< APTEXT_LFF_FACE_DESC. */
+	APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC = 6014, /**< APTEXT_SHX_FACE_DESC. */
+
+	/* ApJobs (jobs/apjobs.h) */
+	APRI_STRUCT_TYPE_APJOBS_SCHEDULER = 7000, /**< APJOBS_SCHEDULER. */
+	APRI_STRUCT_TYPE_APJOBS_POOL_DESC = 7001, /**< APJOBS_POOL_DESC. */
 
 	/** Keeps the enum 32 bits wide on every compiler. Never a valid type. */
 	APRI_STRUCT_TYPE_MAX_ENUM = 0x7FFFFFFF

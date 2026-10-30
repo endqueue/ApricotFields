@@ -17,16 +17,16 @@
 #include <string>
 #include <vector>
 
-/* Owns everything aprend_shader_reflection points at. [view] is filled by
+/* Owns everything APREND_SHADER_REFLECTION points at. [view] is filled by
  * aprend_reflect_spirv and points into the vectors and strings below, so a
  * store is never copied or moved once filled: it lives inside the handle
  * that owns it. */
 struct aprend_reflection_store {
-	aprend_shader_reflection view{};
-	std::vector<aprend_shader_resource> resources{};
-	std::vector<aprend_shader_member> members{};
-	std::vector<aprend_shader_input> inputs{};
-	/* What the public view has no field for (aprend_shader_reflection is
+	APREND_SHADER_REFLECTION view{};
+	std::vector<APREND_SHADER_RESOURCE> resources{};
+	std::vector<APREND_SHADER_MEMBER> members{};
+	std::vector<APREND_SHADER_INPUT> inputs{};
+	/* What the public view has no field for (APREND_SHADER_REFLECTION is
 	 * frozen), kept for Aprend's own checks. */
 	/* A storage image the entry point uses whose GLSL declares a format
 	 * (`layout(rgba8)`): the format a view bound there has to be, the one
@@ -74,7 +74,7 @@ uint32_t aprend_uniform_type_column_size(APREND_UNIFORM_TYPE type);
  * way. The member is the caller's to have checked: a known type, with an
  * array count that is not 0. */
 void aprend_write_block_member(
-    const aprend_shader_member &member,
+    const APREND_SHADER_MEMBER &member,
     uint8_t *block,
     const void *data);
 
@@ -82,7 +82,7 @@ void aprend_write_block_member(
  * [out_data], tightly packed, as the caller would have given it. The same
  * checks are the caller's. */
 void aprend_read_block_member(
-    const aprend_shader_member &member,
+    const APREND_SHADER_MEMBER &member,
     const uint8_t *block,
     void *out_data);
 

@@ -905,7 +905,12 @@ static void check_faces(const test_set *set, const APMATH_POLY_SET *faces, doubl
     for (uint32_t ring = 0; ring < faces->ring_count; ring++)
     {
         uint32_t begin = ring_begin(faces, ring);
-        uint32_t next = (ring + 1) % set->point_count;
+        // The point after [ring]'s in its own input ring.
+        uint32_t input_ring = 0;
+        while (set->ring_ends[input_ring] <= ring)
+            input_ring++;
+        uint32_t input_begin = input_ring ? set->ring_ends[input_ring - 1] : 0;
+        uint32_t next = ring + 1 < set->ring_ends[input_ring] ? ring + 1 : input_begin;
         CHECK(faces->points[begin].x == set->points[ring].x && faces->points[begin].y == set->points[ring].y);
         CHECK(faces->points[begin + 1].x == set->points[next].x && faces->points[begin + 1].y == set->points[next].y);
         CHECK(faces->edge_tags[begin] == set->tags[ring]);
@@ -1050,7 +1055,14 @@ static void test_skeleton_arguments(void)
     bad = desc;
     bad.set = view(&holed);
     bad.weights = eight;
-    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_UNSUPPORTED);
+    CHECK(apmath_poly_skeleton(&bad, &poly, NULL) == APRESULT_OK);
+    apmath_poly_destroy(poly);
+    // A hole given as an outer ring (no ring_outers): wrong winding.
+    APMATH_POLY_SET as_outers = view(&holed);
+    as_outers.ring_outers = NULL;
+    bad.set = as_outers;
+    CHECK(apmath_poly_skeleton(&bad, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "polygons with holes") != NULL);
 
     // Two edges on one line at different weights.
     test_set run = {0};
@@ -1145,6 +1157,434 @@ static void test_triangulate_arguments(void)
     CHECK(apmath_poly_get_triangulation_capacity(NULL) == 0);
 }
 
+// The highest y of face [ring] of [faces].
+static int64_t face_top(const APMATH_POLY_SET *faces, uint32_t ring)
+{
+    uint32_t begin = ring_begin(faces, ring);
+    int64_t top = faces->points[begin].y;
+    for (uint32_t i = begin; i < faces->ring_ends[ring]; i++)
+        top = faces->points[i].y > top ? faces->points[i].y : top;
+    return top;
+}
+
+// Holes: a square with a square hole in the middle, one off to a side, and
+// two holes; every edge's face, the holes' among them, and together they
+// cover the polygon round the holes.
+static void test_skeleton_holes(void)
+{
+    current_test = "skeleton_holes";
+    const double ones[MAX_POINTS] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+
+    test_set centred = {0};
+    add_rect(&centred, 0, 0, 10000, 10000, 1);
+    int64_t hole_xy[] = {4000, 4000, 4000, 6000, 6000, 6000, 6000, 4000};
+    add_ring(&centred, hole_xy, 4, 5, 0);
+    CHECK(validate(&(APMATH_POLY_SET){0}).defect == APMATH_POLY_DEFECT_NONE);
+    APMATH_POLY_SET v = view(&centred);
+    CHECK(validate(&v).defect == APMATH_POLY_DEFECT_NONE);
+    apmath_poly faces = run_skeleton(&centred, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&centred, &s, 1e-6);
+        // Square and symmetric: the hole's edges meet the outer ones half
+        // way, at 2000 from each, and every face is a trapezoid.
+        for (uint32_t ring = 0; ring < s.ring_count; ring++)
+            CHECK(s.ring_ends[ring] - ring_begin(&s, ring) == 4);
+        apmath_poly_destroy(faces);
+    }
+
+    test_set off = {0};
+    add_rect(&off, 0, 0, 20000, 10000, 1);
+    int64_t off_xy[] = {3000, 3000, 3000, 7000, 7000, 7000, 7000, 3000};
+    add_ring(&off, off_xy, 4, 5, 0);
+    faces = run_skeleton(&off, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&off, &s, 1e-4);
+        apmath_poly_destroy(faces);
+    }
+
+    test_set two = {0};
+    add_rect(&two, 0, 0, 30000, 10000, 1);
+    int64_t first_xy[] = {4000, 3000, 4000, 7000, 8000, 7000, 8000, 3000};
+    int64_t second_xy[] = {18000, 2000, 18000, 6000, 25000, 6000, 25000, 2000};
+    add_ring(&two, first_xy, 4, 5, 0);
+    add_ring(&two, second_xy, 4, 9, 0);
+    faces = run_skeleton(&two, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&two, &s, 1e-4);
+        apmath_poly_destroy(faces);
+    }
+}
+
+// Card A21's rule: two edges that come to follow each other on one line
+// mid-way go on as one, the larger weight taking the line, then the edge
+// earlier in the input; the other's face ends there.
+static void test_skeleton_on_one_line(void)
+{
+    current_test = "skeleton_on_one_line";
+    // A step in the bottom: the low edge at weight 2 catches the high one at
+    // weight 1 when the step between them is gone, at t = 1000, both then at
+    // y = 2000. The faster takes the line: the high edge's face ends at
+    // 2000, the low edge's goes on above it.
+    test_set step = {0};
+    int64_t step_xy[] = {0, 0, 4000, 0, 4000, 1000, 10000, 1000, 10000, 8000, 0, 8000};
+    add_ring(&step, step_xy, 6, 1, APMATH_POLY_NO_RING);
+    const double weights[6] = {2, 1, 1, 1, 1, 1};
+    apmath_poly faces = run_skeleton(&step, weights);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&step, &s, 1e-4);
+        CHECK(s.ring_count == 6 && face_top(&s, 2) == 2000);
+        CHECK(s.ring_count == 6 && face_top(&s, 0) > 2000);
+        apmath_poly_destroy(faces);
+    }
+    // The same at equal weights, with the step the other way: the edges
+    // meet at y = 1000 when it's gone only if they move at different rates,
+    // so here they're given one: 2 and 2, the step at 1. They start a step
+    // apart and stay so - nothing merges, and nothing is wrong.
+    const double level[6] = {2, 1, 2, 1, 1, 1};
+    faces = run_skeleton(&step, level);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&step, &s, 1e-4);
+        apmath_poly_destroy(faces);
+    }
+    // Equal weights that meet: a bump below the bottom edge, its walls
+    // closing at t = 1000 when the bump's bottom reaches the line. The two
+    // halves of the bottom then follow each other on one line at weight 1:
+    // the earlier one, edge 0, takes it, and edge 4's face ends there.
+    test_set bump = {0};
+    int64_t bump_xy[] = {0, 0, 4000, 0, 4000, -1000, 6000, -1000, 6000, 0, 10000, 0, 10000, 8000, 0, 8000};
+    add_ring(&bump, bump_xy, 8, 1, APMATH_POLY_NO_RING);
+    const double ones[8] = {1, 1, 1, 1, 1, 1, 1, 1};
+    faces = run_skeleton(&bump, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&bump, &s, 1e-4);
+        CHECK(s.ring_count == 8 && face_top(&s, 4) <= 1000);
+        CHECK(s.ring_count == 8 && face_top(&s, 0) > 1000);
+        apmath_poly_destroy(faces);
+    }
+}
+
+// The cases the simulation meets least gracefully, each from a footprint
+// that reaches it, and each checked as every skeleton is: every face
+// closes, starts with its edge, and the faces cover the polygon.
+static void test_skeleton_degenerate(void)
+{
+    current_test = "skeleton_degenerate";
+    const double ones[MAX_POINTS] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+
+    // A plus: four reflex corners reach the middle at once, where every
+    // face's traces meet - more than two of them at one point.
+    test_set plus = {0};
+    int64_t plus_xy[] = {3000, 0, 6000, 0, 6000, 3000, 9000, 3000, 9000, 6000, 6000, 6000,
+                         6000, 9000, 3000, 9000, 3000, 6000, 0,    6000, 0,    3000, 3000, 3000};
+    add_ring(&plus, plus_xy, 12, 1, APMATH_POLY_NO_RING);
+    apmath_poly faces = run_skeleton(&plus, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&plus, &s, 1e-6);
+        apmath_poly_destroy(faces);
+    }
+
+    // A comb: two notches of one depth whose reflex corners reach the
+    // bottom edge at the same moment.
+    test_set comb = {0};
+    int64_t comb_xy[] = {0,     0,    20000, 0,    20000, 10000, 15500, 10000, 15000, 3000, 14500, 10000,
+                         5500, 10000, 5000,  3000, 4500,  10000, 0,     10000};
+    add_ring(&comb, comb_xy, 10, 1, APMATH_POLY_NO_RING);
+    faces = run_skeleton(&comb, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&comb, &s, 1e-4);
+        apmath_poly_destroy(faces);
+    }
+
+    // A reflex corner that reaches a convex one exactly: a chevron whose
+    // notch points straight at the tip opposite.
+    test_set chevron = {0};
+    int64_t chevron_xy[] = {0, 0, 10000, 5000, 0, 10000, 3000, 5000};
+    add_ring(&chevron, chevron_xy, 4, 1, APMATH_POLY_NO_RING);
+    faces = run_skeleton(&chevron, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&chevron, &s, 1e-4);
+        apmath_poly_destroy(faces);
+    }
+
+    // A regular-ish octagon: every corner meets in the middle at once.
+    test_set octagon = {0};
+    int64_t octagon_xy[] = {3000, 0, 7000, 0, 10000, 3000, 10000, 7000, 7000, 10000, 3000, 10000, 0, 7000, 0, 3000};
+    add_ring(&octagon, octagon_xy, 8, 1, APMATH_POLY_NO_RING);
+    faces = run_skeleton(&octagon, ones);
+    if (faces)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(faces);
+        check_faces(&octagon, &s, 1e-6);
+        apmath_poly_destroy(faces);
+    }
+}
+
+// ---- Locating a point ---------------------------------------------------------------
+
+// The winding number of [set]'s rings about (x, y), by adding up the angle
+// each edge turns through as seen from the point: the slow obvious way, in
+// doubles, for a point well away from every edge.
+static int slow_winding(const APMATH_POLY_SET *set, double x, double y)
+{
+    double total = 0.0;
+    for (uint32_t ring = 0; ring < set->ring_count; ring++)
+    {
+        uint32_t begin = ring_begin(set, ring), end = set->ring_ends[ring];
+        for (uint32_t i = begin; i < end; i++)
+        {
+            const APMATH_POLY_POINT *a = &set->points[i];
+            const APMATH_POLY_POINT *b = &set->points[i + 1 < end ? i + 1 : begin];
+            double ax = (double)a->x - x, ay = (double)a->y - y;
+            double bx = (double)b->x - x, by = (double)b->y - y;
+            total += atan2(ax * by - ay * bx, ax * bx + ay * by);
+        }
+    }
+    return (int)lround(total / (2.0 * M_PI));
+}
+
+static APMATH_POLY_PLACE locate(const APMATH_POLY_SET *set, APMATH_POLY_FILL fill, int64_t x, int64_t y)
+{
+    APMATH_POLY_POINT point = {x, y};
+    APMATH_POLY_PLACE place = (APMATH_POLY_PLACE)99;
+    CHECK(apmath_poly_locate_point(set, fill, point, &place, NULL) == APRESULT_OK);
+    return place;
+}
+
+static void test_locate_point(void)
+{
+    current_test = "locate_point";
+    // A square with a hole: inside, in the hole, outside, on an edge, on a
+    // corner, on the hole's edge.
+    test_set holed = {0};
+    add_rect(&holed, 0, 0, 100, 100, 1);
+    int64_t hole_xy[] = {40, 40, 40, 60, 60, 60, 60, 40};
+    add_ring(&holed, hole_xy, 4, 5, 0);
+    APMATH_POLY_SET s = view(&holed);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 10, 10) == APMATH_POLY_PLACE_INSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 50, 50) == APMATH_POLY_PLACE_OUTSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_EVEN_ODD, 50, 50) == APMATH_POLY_PLACE_OUTSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_POSITIVE, 50, 50) == APMATH_POLY_PLACE_OUTSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 150, 50) == APMATH_POLY_PLACE_OUTSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 100, 37) == APMATH_POLY_PLACE_ON_EDGE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 0, 0) == APMATH_POLY_PLACE_ON_EDGE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 50, 60) == APMATH_POLY_PLACE_ON_EDGE);
+    // On the line of an edge, past its end: not on it.
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 120, 0) == APMATH_POLY_PLACE_OUTSIDE);
+    // A point level with a vertex, the ray through it: counted once.
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, -10, 40) == APMATH_POLY_PLACE_OUTSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 20, 40) == APMATH_POLY_PLACE_INSIDE);
+
+    // Two overlapping squares, both counter-clockwise: winding 2 where they
+    // overlap, which each fill rule reads its own way.
+    test_set pair = {0};
+    add_rect(&pair, 0, 0, 60, 60, 1);
+    add_rect(&pair, 40, 40, 100, 100, 5);
+    s = view(&pair);
+    CHECK(locate(&s, APMATH_POLY_FILL_EVEN_ODD, 50, 50) == APMATH_POLY_PLACE_OUTSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_NON_ZERO, 50, 50) == APMATH_POLY_PLACE_INSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_POSITIVE, 50, 50) == APMATH_POLY_PLACE_INSIDE);
+    CHECK(locate(&s, APMATH_POLY_FILL_EVEN_ODD, 10, 10) == APMATH_POLY_PLACE_INSIDE);
+
+    // Against the slow way: random rings, crossing themselves and each
+    // other, either winding, at random points off every edge.
+    for (int round = 0; round < 40; round++)
+    {
+        test_set random = {0};
+        int rings = (int)random_int(1, 3);
+        for (int r = 0; r < rings; r++)
+        {
+            int64_t xy[16];
+            uint32_t count = (uint32_t)random_int(3, 8);
+            for (uint32_t i = 0; i < 2 * count; i++)
+                xy[i] = random_int(-1000, 1000);
+            add_ring(&random, xy, count, 1, APMATH_POLY_NO_RING);
+        }
+        s = view(&random);
+        for (int k = 0; k < 200; k++)
+        {
+            int64_t x = random_int(-1200, 1200), y = random_int(-1200, 1200);
+            APMATH_POLY_PLACE place = locate(&s, APMATH_POLY_FILL_NON_ZERO, x, y);
+            if (place == APMATH_POLY_PLACE_ON_EDGE)
+                continue;
+            int wind = slow_winding(&s, (double)x, (double)y);
+            CHECK((place == APMATH_POLY_PLACE_INSIDE) == (wind != 0));
+            CHECK((locate(&s, APMATH_POLY_FILL_EVEN_ODD, x, y) == APMATH_POLY_PLACE_INSIDE) == ((wind & 1) != 0));
+            CHECK((locate(&s, APMATH_POLY_FILL_POSITIVE, x, y) == APMATH_POLY_PLACE_INSIDE) == (wind > 0));
+        }
+    }
+
+    // Refusals.
+    APMATH_POLY_PLACE place;
+    APMATH_POLY_POINT origin = {0, 0};
+    APMATH_ERROR error;
+    s = view(&holed);
+    CHECK(apmath_poly_locate_point(NULL, APMATH_POLY_FILL_NON_ZERO, origin, &place, NULL) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apmath_poly_locate_point(&s, APMATH_POLY_FILL_NON_ZERO, origin, NULL, NULL) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apmath_poly_locate_point(&s, (APMATH_POLY_FILL)7, origin, &place, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "fill 7") != NULL);
+    APMATH_POLY_POINT far = {APMATH_POLY_COORD_LIMIT + 1, 0};
+    CHECK(apmath_poly_locate_point(&s, APMATH_POLY_FILL_NON_ZERO, far, &place, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "coordinate limit") != NULL);
+}
+
+// ---- Round joins ----------------------------------------------------------------
+
+static apmath_poly run_round_offset(const test_set *set, const double *distances, double tolerance)
+{
+    APMATH_POLY_OFFSET_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC;
+    desc.set = view(set);
+    desc.distances = distances;
+    desc.miter_limit = 2.0;
+    desc.join = APMATH_POLY_JOIN_ROUND;
+    desc.arc_tolerance = tolerance;
+    apmath_poly poly = NULL;
+    APMATH_ERROR error;
+    APRESULT result = apmath_poly_offset_edges(&desc, &poly, &error);
+    CHECK(result == APRESULT_OK);
+    if (result != APRESULT_OK)
+        printf("  %s\n", error.message);
+    return poly;
+}
+
+// The distance from (x, y) to the nearest point of the rectangle from (0, 0)
+// to (w, h), for a point outside it.
+static double rect_distance(double x, double y, double w, double h)
+{
+    double dx = x < 0.0 ? -x : (x > w ? x - w : 0.0);
+    double dy = y < 0.0 ? -y : (y > h ? y - h : 0.0);
+    return sqrt(dx * dx + dy * dy);
+}
+
+static void test_offset_round(void)
+{
+    current_test = "offset_round";
+    test_set square = {0};
+    add_rect(&square, 0, 0, 10000, 10000, 1);
+    const double out[4] = {1000, 1000, 1000, 1000};
+    apmath_poly grown = run_round_offset(&square, out, 2.0);
+    if (grown)
+    {
+        APMATH_POLY_SET s = apmath_poly_get_set(grown);
+        CHECK(s.ring_count == 1);
+        // Every point 1000 from the square, give or take rounding onto the
+        // grid; the area the square's, its sides moved out, and a circle of
+        // radius 1000 at the corners, less what the chords cut off.
+        bool distances_ok = true;
+        for (uint32_t i = 0; i < s.point_count; i++)
+        {
+            double d = rect_distance((double)s.points[i].x, (double)s.points[i].y, 10000.0, 10000.0);
+            if (fabs(d - 1000.0) > 1.0)
+                distances_ok = false;
+        }
+        CHECK(distances_ok);
+        double exact = 10000.0 * 10000.0 + 4.0 * 10000.0 * 1000.0 + M_PI * 1000.0 * 1000.0;
+        double area = set_area2(&s) / 2.0;
+        CHECK(area <= exact + 1e4);
+        CHECK(area >= exact - 4.0 * 2.0 * 1000.0 * M_PI / 2.0 - 1e4);
+        // Each corner's arc: more pieces than a bevel, and the tags those of
+        // the edges after each corner.
+        CHECK(s.point_count > 8);
+        apmath_poly_destroy(grown);
+    }
+    // A finer tolerance: more points.
+    apmath_poly coarse = run_round_offset(&square, out, 50.0);
+    apmath_poly fine = run_round_offset(&square, out, 0.5);
+    if (coarse && fine)
+    {
+        APMATH_POLY_SET c = apmath_poly_get_set(coarse), f = apmath_poly_get_set(fine);
+        CHECK(f.point_count > c.point_count);
+    }
+    apmath_poly_destroy(coarse);
+    apmath_poly_destroy(fine);
+
+    // Moved in, the corners close: the round join changes nothing, and the
+    // result is the mitred one.
+    const double in[4] = {-1000, -1000, -1000, -1000};
+    apmath_poly rounded = run_round_offset(&square, in, 2.0);
+    apmath_poly mitred = run_offset(&square, in, 2.0);
+    if (rounded && mitred)
+    {
+        APMATH_POLY_SET r = apmath_poly_get_set(rounded), m = apmath_poly_get_set(mitred);
+        CHECK(r.point_count == m.point_count);
+        CHECK(r.point_count == m.point_count && memcmp(r.points, m.points, sizeof(APMATH_POLY_POINT) * r.point_count) == 0);
+    }
+    apmath_poly_destroy(rounded);
+    apmath_poly_destroy(mitred);
+
+    // A hole grown into: its corners close too. Its outer ring's open.
+    test_set holed = {0};
+    add_rect(&holed, 0, 0, 10000, 10000, 1);
+    int64_t hole_xy[] = {4000, 4000, 4000, 6000, 6000, 6000, 6000, 4000};
+    add_ring(&holed, hole_xy, 4, 5, 0);
+    const double eight[8] = {500, 500, 500, 500, 500, 500, 500, 500};
+    apmath_poly holed_out = run_round_offset(&holed, eight, 2.0);
+    if (holed_out)
+    {
+        APMATH_POLY_SET h = apmath_poly_get_set(holed_out);
+        CHECK(h.ring_count == 2);
+        CHECK(validate(&h).defect == APMATH_POLY_DEFECT_NONE);
+        apmath_poly_destroy(holed_out);
+    }
+
+    // Different distances either side of a corner: the radius goes from
+    // one to the other, every point between the two from the corner.
+    const double uneven[4] = {1000, 2000, 1000, 2000};
+    apmath_poly uneven_out = run_round_offset(&square, uneven, 2.0);
+    if (uneven_out)
+    {
+        APMATH_POLY_SET u = apmath_poly_get_set(uneven_out);
+        bool within_ok = true;
+        for (uint32_t i = 0; i < u.point_count; i++)
+        {
+            double d = rect_distance((double)u.points[i].x, (double)u.points[i].y, 10000.0, 10000.0);
+            if (d < 1000.0 - 1.0 || d > 2000.0 + 1.0)
+                within_ok = false;
+        }
+        CHECK(within_ok);
+        apmath_poly_destroy(uneven_out);
+    }
+
+    // Refusals.
+    APMATH_POLY_OFFSET_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_OFFSET_DESC;
+    desc.set = view(&square);
+    desc.distances = out;
+    desc.miter_limit = 2.0;
+    desc.join = APMATH_POLY_JOIN_ROUND;
+    apmath_poly poly = NULL;
+    APMATH_ERROR error;
+    CHECK(apmath_poly_offset_edges(&desc, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "arc_tolerance") != NULL);
+    desc.arc_tolerance = INFINITY;
+    CHECK(apmath_poly_offset_edges(&desc, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    desc.arc_tolerance = 1.0;
+    desc.join = (APMATH_POLY_JOIN)5;
+    CHECK(apmath_poly_offset_edges(&desc, &poly, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "join 5") != NULL);
+    CHECK(poly == NULL);
+}
+
 int main(void)
 {
     test_validate_simple_rings();
@@ -1165,6 +1605,11 @@ int main(void)
     test_skeleton_roofs();
     test_skeleton_split();
     test_skeleton_arguments();
+    test_skeleton_holes();
+    test_skeleton_on_one_line();
+    test_skeleton_degenerate();
+    test_locate_point();
+    test_offset_round();
     test_triangulate_shapes();
     test_triangulate_arguments();
 

@@ -1,13 +1,13 @@
 # ApArchive TODO
 
-`include/archive/aparchive.h` reads and writes ZIP archives one whole entry at a
-time: STORED and DEFLATE (or any registered codec), ZIP64, aligned data, caller
-extra fields, reader limits. That covers any format built as a manifest, text
-entries and binary blobs to map in place.
+`include/archive/aparchive.h` reads and writes ZIP archives: STORED and DEFLATE
+(or any registered codec), entries whole or streamed in pieces, raw entries,
+updating, ZIP64, aligned data, caller extra fields, attributes, comments,
+directory entries, reader limits and strict reading.
 
-Below is what a general-purpose ZIP library has that this one doesn't yet, for the
-products that will need it (a game engine's asset packs, CGI scene and cache
-files, mechanical CAD).
+Items 1-10 below were what a general-purpose ZIP library had that this one
+didn't, for the products that will need it (a game engine's asset packs, CGI
+scene and cache files, mechanical CAD); all ten were built on 2026-10-30.
 
 ## The rule for adding any of it
 
@@ -23,117 +23,89 @@ Nothing here may change existing files or existing callers:
 
 Each item says how it fits that rule.
 
-## Not built
+## Built (2026-10-30, macOS): items 1-10
 
-### 1. Streamed entries
+All ten, under the rule above: new calls, and fields at the end of
+`APARCHIVE_CODEC`, `APARCHIVE_WRITER_DESC`, `APARCHIVE_ENTRY_DESC`,
+`APARCHIVE_ENTRY_INFO` and `APARCHIVE_READER_DESC` whose zero is the old
+behaviour (pre-1.0 ABI breaks, each listed against `abi.txt`; source is
+unchanged for a caller that zeroes its structs). `test_old_bytes_unchanged`
+holds the rule: an archive made with every call and field that existed
+before, its CRC-32 and size recorded from the code as it was before these
+items were written, and the same after. The reader opens every archive it
+opened before: the shift (item 10) is taken only when the directory isn't
+where the end record says.
 
-An entry bigger than memory, or one whose size isn't known up front, can't be
-written, and an entry can't be read in pieces.
+1. **Streamed entries.** `aparchive_writer_begin_entry` /
+   `write_entry_data` / `end_entry` (general-purpose bit 3, a data
+   descriptor with its signature, 8-byte sizes under `zip64`; an entry
+   reaching 4 GiB without `zip64` is `APRESULT_LIMIT` before a byte past
+   it); `aparchive_reader_open_entry` and `aparchive_entry_reader_read` /
+   `_destroy`, the CRC-32 and size checked by the read that hands out the
+   last byte. `APARCHIVE_CODEC` gains `stream_begin`, `stream_process` and
+   `stream_end` (all or none). DEFLATE streams through zlib-ng 2.3.3,
+   native mode (card A24), raw DEFLATE, window 15, memory level 8, default
+   strategy, levels 0-9 (10 and up refused for a streamed entry); whole
+   entries stay libdeflate's. A streamed archive's bytes are recorded in
+   the tests (`test_streamed_entries`) so a platform whose zlib-ng picks
+   other matches fails. Known difference, written into the header:
+   libdeflate decodes DEFLATE data that uses a code its Huffman table left
+   unassigned; zlib-ng refuses it, so such an entry reads whole and fails
+   in pieces with `APRESULT_CORRUPT_DATA` (found by `aparchive_fuzz`, kept
+   in its regressions).
+2. **Raw entries.** `aparchive_writer_add_raw_entry` (any method, the
+   codec table not needed; STORED's sizes and CRC-32 checked, data with no
+   stored bytes refused) and `aparchive_codecs_compress_bound` /
+   `aparchive_codecs_compress`, which give exactly the bytes
+   `add_entry` stores (tested: an archive written raw equals one written
+   whole).
+3. **Updating.** `APARCHIVE_UPDATE_DESC` (struct type 1005: the reader, a
+   `truncate` callback, the sink, codecs) and
+   `aparchive_writer_create_update`; `aparchive_writer_remove_entry`
+   drops an entry, so replacing is remove and add. Kept entries are not
+   read or moved; their central records are written again as read (less
+   ZIP64 records, rewritten where needed), so updating with no change
+   gives the same bytes. The cut happens just before the first byte is
+   written: a writer destroyed unused leaves the archive alone. An archive
+   with data in front is updated with true offsets.
+4. **Directory entries:** `APARCHIVE_WRITER_DESC::allow_directory_entries`
+   (STORED and empty; never streamed). Symbolic links are item 5's Unix
+   mode (0120777) with the target as data.
+5. **Attributes:** `host_system`, `internal_attributes`,
+   `external_attributes` on the entry desc; `version_made_by`,
+   `internal_attributes`, `external_attributes` on the info.
+6. **Central extra:** `central_extra` / `central_extra_size` (NULL: the
+   local extra, as before; non-NULL with size 0: none).
+7. **Comments:** `comment` / `comment_size` on the desc and the info;
+   `aparchive_writer_set_comment` (refusing the end record's signature
+   inside it) and `aparchive_reader_get_comment`.
+8. **Extra-field helpers:** `aparchive_extra_find`; the extended timestamp
+   (0x5455), NTFS times (0x000A) and Unicode path (0x7075) read and
+   written, times as `APARCHIVE_FILE_TIMES` (100 ns ticks since 1970,
+   frozen).
+9. **Strict reading:** `APARCHIVE_READER_DESC::strict`, `APARCHIVE_STRICT`
+   bits: no archive comment, no entry comments, no directory entries, no
+   gaps (reading every local header and data descriptor on open, the
+   descriptor checked against the directory). A refusal is
+   `APRESULT_APARCHIVE_MALFORMED`; an unknown bit is
+   `APRESULT_INVALID_ARGUMENT`.
+10. **Data in front:** the shift found from where the directory (and the
+    ZIP64 end record) actually sits; every offset reported is the
+    source's; `aparchive_reader_get_offset_shift`.
 
-- **Writing:** `aparchive_writer_begin_entry` / `write_entry_data` / `end_entry`.
-  The local header goes out with sizes unknown (general-purpose bit 3) and a data
-  descriptor follows the data. `APARCHIVE_ENTRY_DESC::zip64` already exists for the
-  case where a streamed entry may pass 4 GiB.
-- **Reading:** an entry-reader handle (`aparchive_reader_open_entry`, `read`,
-  `close`).
-- **Codecs:** `APARCHIVE_CODEC` gains stream callbacks (`stream_begin`,
-  `stream_process`, `stream_end`) at its end. A codec without them only works
-  whole, as now. libdeflate has no streaming, so streamed DEFLATE needs a second
-  implementation (zlib-ng, or miniz's `tdefl`/`tinfl`); its output won't match
-  libdeflate's byte for byte, which is fine because only new calls use it.
-- **Fit:** new calls and new trailing fields. The reader already reads entries
-  other tools wrote with data descriptors.
+`aparchive_fuzz` covers each new reader path: pieces against whole reads,
+the four strict flags, the comment, the shift, the extra helpers on every
+entry, an update (one entry dropped, one added) reopened with every kept
+entry as it was, a raw copy of every entry, and the rewrite streaming
+every other entry. Also converted: the writer is allocated by hand
+(`CLAUDE.md`, "Code conventions"), as the entry reader is.
 
-This is the biggest gap for asset packs and CGI caches.
-
-**Decided 2026-10-28 with the user (card A24): zlib-ng in native mode**
-(zlib licence; Fedora's system zlib since Fedora 40), pinned in
-`../.deps/`, linked privately, for streamed DEFLATE only. libdeflate stays
-for whole entries. Nothing existing changes: an entry written whole is
-written by libdeflate as today, so a document saved whole has the same
-bytes as before; every entry, whichever library wrote it, is standard
-DEFLATE that either library reads; a streamed entry's bytes differ from
-libdeflate's for the same data, but are the same from one save to the next
-with zlib-ng's version and level pinned. Not started.
-
-### 2. Raw (pre-compressed) entries
-
-Adding data that's already compressed: `aparchive_writer_add_raw_entry`, taking the
-compressed bytes, the uncompressed size and the CRC-32. It allows:
-
-- copying entries between archives without recompressing (repacking, merging),
-- compressing entries in parallel on the caller's threads, with the writer only
-  writing in order. That wants `aparchive_codecs_compress` / `compress_bound` too.
-
-The read side has it today: `aparchive_reader_get_data_offset` plus
-`compressed_size` give an entry's stored bytes.
-
-- **Fit:** new calls.
-
-### 3. Updating an existing archive
-
-Opening an archive, appending or replacing entries, and writing a new central
-directory. Needs a sink that can also read and truncate.
-
-- **Fit:** new calls. Depends on item 2.
-
-### 4. Directory entries and symlinks, on write
-
-The writer refuses names ending in `/`: directories exist only as name prefixes.
-A general archiver must be able to store an empty directory.
-
-- **Directories:** `APARCHIVE_WRITER_DESC::allow_directory_entries`, added at the
-  end, off by default.
-- **Symlinks:** wait on item 5.
-- **Fit:** a trailing field whose zero is today's behaviour. The reader already
-  reports directory entries (`APARCHIVE_ENTRY_INFO::is_directory`).
-
-### 5. File attributes and "version made by"
-
-Both are written as constants: host system 0 (MS-DOS), no attributes. Packaging
-tools need Unix permissions (the executable bit) and symlinks. Add them to
-`APARCHIVE_ENTRY_DESC` and `APARCHIVE_ENTRY_INFO`.
-
-- **Fit:** trailing fields; zero keeps host 0 and no attributes.
-
-### 6. Separate local and central extra fields
-
-`APARCHIVE_ENTRY_DESC::extra` goes into both headers. ZIP lets them differ, and
-some uses need it (central-only information).
-
-- **Fit:** a trailing `central_extra` field; NULL means "the same as `extra`".
-
-### 7. Comments
-
-No archive comment and no per-entry comment can be written, and the reader
-doesn't return the ones it finds (it accepts and skips them).
-
-- **Fit:** trailing fields and a new getter.
-
-### 8. Help with standard extra fields
-
-Callers hand-parse the extended timestamp (`0x5455`), the NTFS timestamp and the
-Unicode path field. Add a "find extra record by id" helper and encode/decode for
-timestamps.
-
-- **Fit:** new calls.
-
-### 9. Strict reading
-
-The reader accepts what ZIP allows. A caller that wants to refuse an archive
-comment, directory entries, or bytes no entry accounts for (gaps between entries)
-has to check for itself, and can't see the last one at all.
-
-- **Fit:** a trailing `strict` flags field in `APARCHIVE_READER_DESC`; zero is
-  today's lenient reading.
-
-### 10. Archives with data in front
-
-A self-extracting archive whose offsets don't account for the stub before the
-first entry isn't read. Most readers find the shift from where the central
-directory actually sits.
-
-- **Fit:** reader-only; it opens more archives, never fewer.
+**What has run where:** macOS (Apple M5 Pro, Debug), 2026-10-30: the
+tests plain, under ASan and UBSan, and under TSan; `aparchive_fuzz` (see
+"Testing still owed"). **Windows and Linux have built none of it:** there,
+zlib-ng 2.3.3 through its own CMake under MSVC and GCC, `aparchive_tests`
+(whose recorded streamed-DEFLATE bytes are the cross-platform check), the
+fuzz target's replay, Windows' `-asan` and Linux's `-asan` and `-tsan`.
 
 ## Smaller additions
 
@@ -161,8 +133,14 @@ directory actually sits.
   the fix, with ASan and UBSan. It found one bug, fixed: the names buffer was
   reserved for an archive whose every entry fits, so a directory whose entry
   count promised more than it held grew the buffer under the name index's
-  keys (a use-after-free, `tests/fuzz/regressions/aparchive_fuzz/`). Still
-  owed: running it on Linux, and longer runs on the CI machine.
+  keys (a use-after-free, `tests/fuzz/regressions/aparchive_fuzz/`).
+  Extended 2026-10-30 to items 1-10's reader paths (see "Built"): in its
+  first minutes it found whole and streamed DEFLATE disagreeing on a
+  stream with an unassigned Huffman code (kept as
+  `deflate_unassigned_code_whole_only.zip`, documented, not a bug in
+  either); then 15 minutes, 2,986,408 inputs, Debug, ASan and UBSan,
+  found nothing. Still owed: running it on Linux and Windows, and longer
+  runs on the CI machine.
 - **Other tools:** CI opens what the tests write with Python's `zipfile` and
   Info-ZIP `unzip -t`, and ApArchive opens archives those tools wrote.
 - **Real ZIP64 sizes:** the tests reach the ZIP64 records through an entry count

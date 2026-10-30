@@ -90,7 +90,64 @@ hb_draw_funcs_t *aptext_create_draw_funcs(void);
 
 // Fills an outline face from its blob: HarfBuzz's face and font, metrics
 // and fingerprint. [face]'s blob is set.
-static APRESULT open_outline(aptext_face_t *face, uint32_t collection_index, APTEXT_ERROR *error)
+// Sets [face]'s font on [variations] (checked to be finite by the caller):
+// each a distinct axis of the font, within its range. The fingerprint's
+// third word takes a CRC-32 of them in tag order, so a saved atlas is
+// never taken for another instance; with none it stays the glyph count.
+static APRESULT set_variations(aptext_face_t *face, const APTEXT_VARIATION *variations, uint32_t count, APTEXT_ERROR *error)
+{
+    if (count == 0)
+        return APRESULT_OK;
+    unsigned int axis_count = hb_ot_var_get_axis_count(face->hb_face);
+    eq::array<hb_ot_var_axis_info_t> axes;
+    eq::array<hb_variation_t> set;
+    if (axes.resize(axis_count) != EQ_SUCCESS)
+        return aptext_out_of_memory(error, "reading the font's axes");
+    if (set.reserve(count) != EQ_SUCCESS)
+        return aptext_out_of_memory(error, "setting the variations");
+    unsigned int got = axis_count;
+    if (axis_count)
+        hb_ot_var_get_axis_infos(face->hb_face, 0, &got, axes.data);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const APTEXT_VARIATION &v = variations[i];
+        const hb_ot_var_axis_info_t *axis = nullptr;
+        for (unsigned int a = 0; a < got; a++)
+            if (axes[a].tag == v.tag)
+                axis = &axes[a];
+        if (!axis)
+            return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "variations[%u]: the font has no axis '%c%c%c%c'", i,
+                               (char)(v.tag >> 24), (char)(v.tag >> 16), (char)(v.tag >> 8), (char)v.tag);
+        for (uint32_t k = 0; k < i; k++)
+            if (variations[k].tag == v.tag)
+                return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "variations[%u] and [%u] set one axis", k, i);
+        if (v.value < axis->min_value || v.value > axis->max_value)
+            return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "variations[%u]: %g is outside the axis's %g to %g", i,
+                               (double)v.value, (double)axis->min_value, (double)axis->max_value);
+        hb_variation_t h = {v.tag, v.value};
+        if (set.push(h) != EQ_SUCCESS)
+            return aptext_out_of_memory(error, "setting the variations");
+    }
+    hb_font_set_variations(face->font, set.data, (unsigned int)set.count);
+    std::sort(set.begin(), set.end(), [](const hb_variation_t &a, const hb_variation_t &b) { return a.tag < b.tag; });
+    uint32_t crc = 0;
+    for (const hb_variation_t &h : set)
+    {
+        uint32_t value_bits;
+        memcpy(&value_bits, &h.value, sizeof(value_bits));
+        const uint32_t words[2] = {h.tag, value_bits};
+        for (uint32_t w : words)
+        {
+            uint8_t bytes[4] = {(uint8_t)w, (uint8_t)(w >> 8), (uint8_t)(w >> 16), (uint8_t)(w >> 24)};
+            crc = libdeflate_crc32(crc, bytes, 4);
+        }
+    }
+    face->fingerprint[2] ^= crc | 0x80000000u;
+    return APRESULT_OK;
+}
+
+static APRESULT open_outline(aptext_face_t *face, uint32_t collection_index, const APTEXT_VARIATION *variations,
+                             uint32_t variation_count, APTEXT_ERROR *error)
 {
     unsigned int count = hb_face_count(face->blob);
     if (count == 0)
@@ -132,6 +189,8 @@ static APRESULT open_outline(aptext_face_t *face, uint32_t collection_index, APT
         return aptext_out_of_memory(error, "reading the font");
     }
     hb_font_set_scale(face->font, (int)units_per_em, (int)units_per_em);
+    if (APRESULT result = set_variations(face, variations, variation_count, error))
+        return result;
     hb_font_make_immutable(face->font);
     face->draw = aptext_create_draw_funcs();
     if (!face->draw)
@@ -271,12 +330,7 @@ static APRESULT fill_stroke(aptext_face_t *face, const stroke_source &source, AP
 // ---- Hershey fonts --------------------------------------------------------------
 
 // A Hershey file read: every glyph's advance and polylines, in em, y up.
-struct hershey_font
-{
-    eq::array<APTEXT_STROKE_GLYPH> glyphs;
-    eq::array<APTEXT_STROKE_POLYLINE> polylines;
-    eq::array<ApriVec2> points;
-};
+typedef aptext_stroke_font hershey_font;
 APRI_PLAIN_DATA(APTEXT_STROKE_GLYPH);
 
 static bool is_line_end(uint8_t c)
@@ -431,6 +485,40 @@ static APRESULT read_hershey(const APTEXT_HERSHEY_FACE_DESC &d, hershey_font &fo
     return APRESULT_OK;
 }
 
+static APRESULT check_stroke_metrics(const APTEXT_STROKE_METRICS &m, APTEXT_ERROR *error)
+{
+    if (!isfinite(m.ascender))
+        return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "metrics.ascender is not finite");
+    if (!isfinite(m.descender))
+        return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "metrics.descender is not finite");
+    if (m.ascender <= m.descender)
+        return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "metrics.ascender is not above metrics.descender");
+    if (!isfinite(m.line_gap))
+        return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "metrics.line_gap is not finite");
+    if (m.line_gap < 0.0f)
+        return aptext_fail(error, APRESULT_INVALID_ARGUMENT, "metrics.line_gap is negative");
+    return APRESULT_OK;
+}
+
+// A read font, made a face.
+static APRESULT make_stroke_face(aptext_stroke_font &font, const APTEXT_STROKE_METRICS &metrics, aptext_face *out_face,
+                                 APTEXT_ERROR *error)
+{
+    aptext_face_t *face = new_face();
+    if (!face)
+        return aptext_out_of_memory(error, "creating the face");
+    const uint32_t glyph_count = (uint32_t)font.glyphs.count;
+    stroke_source source = {font.glyphs.data, glyph_count, font.polylines.data, font.points.data};
+    if (APRESULT result = fill_stroke(face, source, error))
+    {
+        delete_face(face);
+        return result;
+    }
+    stroke_metrics(face, metrics, glyph_count);
+    *out_face = face;
+    return APRESULT_OK;
+}
+
 extern "C"
 {
     // ---- Faces ------------------------------------------------------------------
@@ -453,6 +541,14 @@ extern "C"
         if (d.data_size > 0xFFFFFFFFull)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT,
                                "desc's data_size is over 4 GiB, more than a font's 32-bit offsets address");
+        if (aptext_missing(d.variations, d.variation_count))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT,
+                               "desc's variations is null with a variation_count of %u", d.variation_count);
+        for (uint32_t i = 0; i < d.variation_count; i++)
+        {
+            if (!isfinite(d.variations[i].value))
+                return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "variations[%u]'s value is not finite", i);
+        }
 
         aptext_face_t *face = new_face();
         if (!face)
@@ -468,7 +564,7 @@ extern "C"
             return aptext_out_of_memory(out_error, "creating the face");
         }
         hb_blob_make_immutable(face->blob);
-        if (APRESULT result = open_outline(face, d.collection_index, out_error))
+        if (APRESULT result = open_outline(face, d.collection_index, d.variations, d.variation_count, out_error))
         {
             delete_face(face);
             return result;
@@ -644,6 +740,82 @@ extern "C"
         return APRESULT_OK;
     }
 
+    APRESULT aptext_face_create_lff(const APTEXT_LFF_FACE_DESC *desc, aptext_face *out_face, APTEXT_ERROR *out_error)
+    {
+        aptext_clear_error(out_error);
+        if (!out_face)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_face is null");
+        *out_face = nullptr;
+        if (!desc)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC))
+            return aptext_fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        const APTEXT_LFF_FACE_DESC &d = *desc;
+        if (!d.data)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's data is null");
+        if (d.data_size == 0)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's data_size is 0");
+        if (!isfinite(d.units_per_em))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's units_per_em is not finite");
+        if (d.units_per_em <= 0.0f)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's units_per_em is not above 0");
+        if (!isfinite(d.arc_tolerance))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's arc_tolerance is not finite");
+        if (d.arc_tolerance <= 0.0f)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's arc_tolerance is not above 0");
+        if (APRESULT result = check_stroke_metrics(d.metrics, out_error))
+            return result;
+        aptext_stroke_font font;
+        if (APRESULT result = aptext_read_lff(d, font, out_error))
+            return result;
+        return make_stroke_face(font, d.metrics, out_face, out_error);
+    }
+
+    APRESULT aptext_face_create_shx(const APTEXT_SHX_FACE_DESC *desc, aptext_face *out_face, APTEXT_ERROR *out_error)
+    {
+        aptext_clear_error(out_error);
+        if (!out_face)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_face is null");
+        *out_face = nullptr;
+        if (!desc)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC))
+            return aptext_fail(out_error, result, "desc %s", apri_struct_check_message(result));
+        const APTEXT_SHX_FACE_DESC &d = *desc;
+        if (!d.data)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's data is null");
+        if (d.data_size == 0)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's data_size is 0");
+        if (aptext_missing(d.high_codepoints, d.high_codepoint_count))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT,
+                               "desc's high_codepoints is null with a high_codepoint_count of %u", d.high_codepoint_count);
+        if (d.high_codepoint_count > 65408)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's high_codepoint_count is over 65,408");
+        for (uint32_t i = 0; i < d.high_codepoint_count; i++)
+        {
+            if (!aptext_is_valid_codepoint(d.high_codepoints[i]))
+                return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "high_codepoints[%u] 0x%X is not a codepoint",
+                                   i, d.high_codepoints[i]);
+        }
+        if (!isfinite(d.arc_tolerance))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's arc_tolerance is not finite");
+        if (d.arc_tolerance <= 0.0f)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's arc_tolerance is not above 0");
+        if (!isfinite(d.line_gap))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's line_gap is not finite");
+        if (d.line_gap < 0.0f)
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc's line_gap is negative");
+        aptext_stroke_font font;
+        float descender = 0.0f;
+        if (APRESULT result = aptext_read_shx(d, font, &descender, out_error))
+            return result;
+        APTEXT_STROKE_METRICS metrics;
+        metrics.ascender = 1.0f;
+        metrics.descender = descender;
+        metrics.line_gap = d.line_gap;
+        return make_stroke_face(font, metrics, out_face, out_error);
+    }
+
     APRESULT aptext_face_get_metrics(aptext_face face, APTEXT_FACE_METRICS *out_metrics)
     {
         if (!face)
@@ -655,6 +827,32 @@ extern "C"
         APRI_STRUCT_BASE_OUT base = out_metrics->base;
         *out_metrics = face->metrics;
         out_metrics->base = base;
+        return APRESULT_OK;
+    }
+
+    uint32_t aptext_face_get_axis_count(aptext_face face)
+    {
+        if (!face || face->kind != APTEXT_FACE_KIND_OUTLINE)
+            return 0;
+        return hb_ot_var_get_axis_count(face->hb_face);
+    }
+
+    APRESULT aptext_face_get_axis(aptext_face face, uint32_t index, APTEXT_AXIS *out_axis)
+    {
+        if (!face)
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_axis)
+            return APRESULT_INVALID_ARGUMENT;
+        if (index >= aptext_face_get_axis_count(face))
+            return APRESULT_NOT_FOUND;
+        hb_ot_var_axis_info_t info;
+        unsigned int one = 1;
+        hb_ot_var_get_axis_infos(face->hb_face, index, &one, &info);
+        out_axis->tag = info.tag;
+        out_axis->min_value = info.min_value;
+        out_axis->default_value = info.default_value;
+        out_axis->max_value = info.max_value;
+        out_axis->hidden = (info.flags & HB_OT_VAR_AXIS_FLAG_HIDDEN) != 0;
         return APRESULT_OK;
     }
 

@@ -14,7 +14,7 @@ extern "C" {
  *
  * A timer has slots. A pass names a timer and a slot
  * (APREND_COMMAND_BEGIN_RENDERING's `_timer` and `_timer_slot`,
- * aprendcommands.h, or aprend_render_pass_desc's): the GPU writes the time
+ * aprendcommands.h, or APREND_RENDER_PASS_DESC's): the GPU writes the time
  * as the pass's first work starts and as its last work ends, and the slot
  * holds the difference. Only a whole pass is timed, because that is what
  * every backend can measure: Apple GPUs sample their clocks at the
@@ -51,7 +51,7 @@ typedef struct aprend_gpu_timer_t *aprend_gpu_timer;
  *
  * No field has a default.
  */
-typedef struct aprend_gpu_timer_desc {
+typedef struct APREND_GPU_TIMER_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_GPU_TIMER_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Number of slots: passes that can be timed in one frame. Not 0. */
@@ -61,24 +61,31 @@ typedef struct aprend_gpu_timer_desc {
 	 * (aprendcontext.h). D3D12 counts time per queue.
 	 */
 	spudgpu_command_queue _queue;
-} aprend_gpu_timer_desc;
+} APREND_GPU_TIMER_DESC;
 
 /**
  * @brief Creates a GPU timer.
  *
- * @param[in] instance Instance whose passes it times.
- * @param[in] desc     Timer configuration. Only read during the call.
+ * @param[in]  instance  Instance whose passes it times.
+ * @param[in]  desc      Timer configuration. Only read during the call.
+ * @param[out] out_timer Receives the timer; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The timer, or NULL if @p instance or @p desc is NULL,
- *         `_slot_count` is 0, `_queue` is NULL, the device was created
- *         without SPUDGPU_FEATURE_PASS_TIMESTAMPS (timestamps at a pass's
- *         start and end), or it refuses the timer.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc
+ *         or @p out_timer is NULL, `_slot_count` is 0 or `_queue` is NULL;
+ *         APRESULT_LIMIT if `_slot_count` is above UINT32_MAX / 2;
+ *         APRESULT_UNSUPPORTED if the device was created without
+ *         SPUDGPU_FEATURE_PASS_TIMESTAMPS (timestamps at a pass's start and
+ *         end); the struct codes for `desc->base`; APRESULT_OUT_OF_MEMORY;
+ *         or the code for SpudGPU's result if it refuses the timer.
  *
  * @see aprend_gpu_timer_destroy()
  */
-aprend_gpu_timer aprend_gpu_timer_create(
+APRESULT aprend_gpu_timer_create(
     aprend_instance instance,
-    const aprend_gpu_timer_desc *desc);
+    const APREND_GPU_TIMER_DESC *desc,
+    aprend_gpu_timer *out_timer,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a GPU timer.
@@ -102,16 +109,20 @@ void aprend_gpu_timer_destroy(aprend_gpu_timer timer);
  * @param[in]  timer  Timer to read.
  * @param[in]  slot   Slot, below the timer's `_slot_count`.
  * @param[out] out_ms Receives the pass's GPU time in milliseconds.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL or out of
- *         range, if no submitted pass timed the slot the last time the
- *         current frame index was current, if this frame has already
- *         submitted a pass that times it, or if the times can't be read.
+ * @return APRESULT_OK; with nothing written, APRESULT_INVALID_ARGUMENT if
+ *         @p timer or @p out_ms is NULL or @p slot is out of range;
+ *         APRESULT_NOT_FOUND if no submitted pass timed the slot the last
+ *         time the current frame index was current, or this frame has
+ *         already submitted a pass that times it; or the code for
+ *         SpudGPU's result if the times can't be read.
  */
-bool aprend_gpu_timer_get_ms(
+APRESULT aprend_gpu_timer_get_ms(
     aprend_gpu_timer timer,
     uint32_t slot,
-    double *out_ms);
+    double *out_ms,
+    APREND_ERROR *out_error);
 
 #if __cplusplus
 }

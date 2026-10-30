@@ -21,9 +21,9 @@
  *
  * @par Instances
  * Instance bytes are read by the pipeline as a vertex binding that steps per
- * instance (aprend_vertex_binding_desc::_per_instance, aprendpipeline.h) at
- * the slot aprend_draw_list_desc::_instance_slot, with the stride
- * aprend_draw_list_desc::_instance_stride. A 4x4 matrix is four VEC4
+ * instance (APREND_VERTEX_BINDING_DESC::_per_instance, aprendpipeline.h) at
+ * the slot APREND_DRAW_LIST_DESC::_instance_slot, with the stride
+ * APREND_DRAW_LIST_DESC::_instance_stride. A 4x4 matrix is four VEC4
  * elements, at four locations. A batch's first instance is its draw's
  * `_start_instance_location`, so `gl_InstanceIndex` counts from there in
  * the shader and the per-instance binding reads the batch's own instances.
@@ -102,7 +102,7 @@ enum {
  *
  * No field has a default.
  */
-typedef struct aprend_draw_list_desc {
+typedef struct APREND_DRAW_LIST_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_DRAW_LIST_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** The order draws are recorded in. */
@@ -118,7 +118,7 @@ typedef struct aprend_draw_list_desc {
 	 * uses. Not read when #_instance_stride is 0.
 	 */
 	uint32_t _instance_slot;
-} aprend_draw_list_desc;
+} APREND_DRAW_LIST_DESC;
 
 /**
  * @brief What one draw draws: vertex buffers, and an index buffer if it is
@@ -130,23 +130,23 @@ typedef struct aprend_draw_list_desc {
  * range's start as `_first` or `_base_vertex`.
  */
 /* Frozen: a value, copied by every aprend_draw_list_add(). It never changes; a new need gets a new type. */
-typedef struct aprend_draw_mesh {
+typedef struct APREND_DRAW_MESH {
 	/**
 	 * The vertex buffers: `_vertex_buffers[N]` at vertex buffer slot N. The
 	 * first #_vertex_buffer_count are read; none of them NULL.
 	 */
-	aprend_vertex_buffer _vertex_buffers[APREND_MAX_VERTEX_BINDINGS];
+	aprend_buffer _vertex_buffers[APREND_MAX_VERTEX_BINDINGS];
 	/** How many vertex buffers. Not 0, and below the list's `_instance_slot` if it has instance bytes. */
 	uint32_t _vertex_buffer_count;
 	/** The index buffer, or NULL for a mesh that isn't indexed. */
-	aprend_index_buffer _index_buffer;
+	aprend_buffer _index_buffer;
 	/** The first index, or the first vertex of a mesh that isn't indexed. */
 	uint32_t _first;
 	/** How many indices, or vertices. Not 0. */
 	uint32_t _count;
 	/** Added to each index before it picks a vertex. 0 for a mesh that isn't indexed. */
 	int32_t _base_vertex;
-} aprend_draw_mesh;
+} APREND_DRAW_MESH;
 
 /**
  * @brief For APREND_COMMAND_DRAW_LIST's `_material_slot`: bind no
@@ -157,20 +157,26 @@ typedef struct aprend_draw_mesh {
 /**
  * @brief Creates an empty draw list.
  *
- * @param[in] instance Instance the list's instance bytes are written to the
- *                     transient memory of.
- * @param[in] desc     List configuration. Only read during the call.
+ * @param[in]  instance  Instance the list's instance bytes are written to
+ *                       the transient memory of.
+ * @param[in]  desc      List configuration. Only read during the call.
+ * @param[out] out_list  Receives the list; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The list, or NULL if @p instance or @p desc is NULL, `_order` is
- *         not an APREND_DRAW_LIST_ORDER, `_instance_stride` is not a
- *         multiple of 4, or it is not 0 and `_instance_slot` is not below
- *         APREND_MAX_VERTEX_BINDINGS or the instance has no transient memory.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc or
+ *         @p out_list is NULL, `_order` is not an APREND_DRAW_LIST_ORDER,
+ *         `_instance_stride` is not a multiple of 4, or it is not 0 and
+ *         `_instance_slot` is not below APREND_MAX_VERTEX_BINDINGS or the
+ *         instance has no transient memory; the struct codes for
+ *         `desc->base`; or APRESULT_OUT_OF_MEMORY.
  *
  * @see aprend_draw_list_destroy()
  */
-aprend_draw_list aprend_draw_list_create(
+APRESULT aprend_draw_list_create(
     aprend_instance instance,
-    const aprend_draw_list_desc *desc);
+    const APREND_DRAW_LIST_DESC *desc,
+    aprend_draw_list *out_list,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a draw list. The meshes and materials it names are the
@@ -217,21 +223,24 @@ void aprend_draw_list_reset(aprend_draw_list list);
  * @param[in] instance_data  @p instance_count instances of the list's
  *                           `_instance_stride` bytes, tightly packed; NULL
  *                           for a list whose stride is 0.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing added, if @p list or @p mesh is NULL,
- *         @p instance_count is 0, @p instance_data is NULL for a list with
- *         instance bytes, the mesh has no vertex buffers or more than
- *         APREND_MAX_VERTEX_BINDINGS, one of them is NULL, a slot it uses is
- *         the list's `_instance_slot`, its `_count` is 0, it is not indexed
- *         and has a `_base_vertex`, its buffers or @p material are of another
- *         instance, or memory runs out.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         added, if @p list or @p mesh is NULL, @p instance_count is 0, @p
+ *         instance_data is NULL for a list with instance bytes, the mesh has
+ *         no vertex buffers or more than APREND_MAX_VERTEX_BINDINGS, one of
+ *         them is NULL, a slot it uses is the list's `_instance_slot`, its
+ *         `_count` is 0, it is not indexed and has a `_base_vertex`, its
+ *         buffers or @p material are of another instance, or memory runs out.
  */
-bool aprend_draw_list_add(
+APRESULT aprend_draw_list_add(
     aprend_draw_list list,
-    const aprend_draw_mesh *mesh,
+    const APREND_DRAW_MESH *mesh,
     aprend_material material,
     uint32_t instance_count,
-    const void *instance_data);
+    const void *instance_data,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Sorts and batches a draw list's draws and writes its instance bytes
@@ -241,13 +250,16 @@ bool aprend_draw_list_add(
  * Build again after adding more. An empty list builds, and records nothing.
  *
  * @param[in] list List to build.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false if @p list is NULL, the transient memory can't be taken
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), if @p list is
+ *         NULL, the transient memory can't be taken
  *         (aprend_transient_allocate()), the instances number more than 32
  *         bits can count, or memory runs out. A failed build leaves the list
  *         unbuilt: a DRAW_LIST of it is refused until it builds.
  */
-bool aprend_draw_list_build(aprend_draw_list list);
+APRESULT aprend_draw_list_build(aprend_draw_list list, APREND_ERROR *out_error);
 
 /**
  * @brief Reads how many draws were added to a draw list and what they were
@@ -262,9 +274,11 @@ bool aprend_draw_list_build(aprend_draw_list list);
  * @param[out] out_instance_count Receives the instances of every draw. May
  *                                be NULL.
  *
- * @return false, with nothing written, if @p list is NULL.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if @p list is NULL.
  */
-bool aprend_draw_list_get_counts(
+APRESULT aprend_draw_list_get_counts(
     aprend_draw_list list,
     uint32_t *out_draw_count,
     uint32_t *out_batch_count,

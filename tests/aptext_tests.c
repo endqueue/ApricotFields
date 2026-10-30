@@ -3196,6 +3196,472 @@ static int tests_passed = 0;
 static int tests_pending = 0;
 static int tests_failed = 0;
 
+// ---- CAD single-stroke formats and variable fonts (2026-10-30) ----------------
+
+static const char *data_dir = NULL; // the tests' data folder, argv[1]
+
+static APTEXT_STROKE_METRICS cad_metrics(void)
+{
+    APTEXT_STROKE_METRICS m;
+    m.ascender = 1.0f;
+    m.descender = -0.25f;
+    m.line_gap = 0.0f;
+    return m;
+}
+
+static aptext_face lff_face(const char *text, APRESULT *out_result)
+{
+    APTEXT_LFF_FACE_DESC d;
+    memset(&d, 0, sizeof(d));
+    d.base.type = APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC;
+    d.data = text;
+    d.data_size = strlen(text);
+    d.units_per_em = 9.0f;
+    d.arc_tolerance = 0.01f;
+    d.metrics = cad_metrics();
+    aptext_face face = NULL;
+    *out_result = aptext_face_create_lff(&d, &face, NULL);
+    if (face)
+        track_face(face);
+    return face;
+}
+
+static bool strokes_of(aptext_face face, uint32_t codepoint, const ApriVec2 **points, uint32_t *point_count,
+                       const APTEXT_STROKE_POLYLINE **polylines, uint32_t *polyline_count)
+{
+    uint32_t glyph = 0;
+    if (aptext_face_find_glyph(face, codepoint, &glyph) != APRESULT_OK)
+        return false;
+    return aptext_face_get_glyph_strokes(face, glyph, points, point_count, polylines, polyline_count) == APRESULT_OK;
+}
+
+// LFF: an I, an O-like half circle by a bulge, an L referring to the I, the
+// space LibreCAD's fonts leave out; then every refusal.
+static void test_lff_face(void)
+{
+    const char *text = "# Format: LibreCAD Font 1\n"
+                       "# LetterSpacing: 2\n"
+                       "# WordSpacing: 5\n"
+                       "\n"
+                       "[0049] I\n"
+                       "0,0;0,9\n"
+                       "\n"
+                       "[004F] O\n"
+                       "4,0;4,8,A1\n"
+                       "\n"
+                       "[004C] L\n"
+                       "C0049\n"
+                       "0,0;5,0\n";
+    APRESULT result;
+    aptext_face face = lff_face(text, &result);
+    CHECK(result == APRESULT_OK);
+    if (!face)
+        return;
+    const ApriVec2 *points = NULL;
+    const APTEXT_STROKE_POLYLINE *lines = NULL;
+    uint32_t point_count = 0, line_count = 0;
+    CHECK(strokes_of(face, 0x49, &points, &point_count, &lines, &line_count));
+    CHECK(point_count == 2 && line_count == 1);
+    if (point_count == 2)
+        CHECK(points[0].y == 0.0f && points[1].y == -1.0f); // 9 up, y down in em
+    // The arc: every point on the circle round (4, 4), radius 4, to the
+    // right of the chord (anticlockwise from the bottom), and no chord's
+    // middle further inside than the tolerance.
+    CHECK(strokes_of(face, 0x4F, &points, &point_count, &lines, &line_count));
+    CHECK(line_count == 1 && point_count > 8);
+    float rightmost = 0.0f;
+    for (uint32_t i = 0; i < point_count; i++)
+    {
+        const float x = points[i].x * 9.0f - 4.0f, y = -points[i].y * 9.0f - 4.0f;
+        CHECK(fabsf(sqrtf(x * x + y * y) - 4.0f) < 1e-4f);
+        CHECK(x >= -1e-4f);
+        if (points[i].x > rightmost)
+            rightmost = points[i].x;
+        if (i > 0)
+        {
+            const float mx = (points[i].x + points[i - 1].x) * 4.5f - 4.0f;
+            const float my = -(points[i].y + points[i - 1].y) * 4.5f - 4.0f;
+            CHECK(4.0f - sqrtf(mx * mx + my * my) <= 0.01f * 9.0f + 1e-4f);
+        }
+    }
+    CHECK(fabsf(rightmost - 8.0f / 9.0f) < 1e-4f);
+    // L: the I's stroke copied, then its foot.
+    CHECK(strokes_of(face, 0x4C, &points, &point_count, &lines, &line_count));
+    CHECK(line_count == 2 && point_count == 4);
+    // Advances: the rightmost x plus the letter spacing; the space, the
+    // word spacing.
+    aptext_chain chain = open_chain(&face, 1);
+    if (chain)
+    {
+        APTEXT_LAYOUT_DESC ld = layout_desc(chain, "I O");
+        aptext_layout layout = lay_out(&ld);
+        LaidOut out;
+        if (layout && read_layout(layout, &out) && out.glyph_count == 3)
+        {
+            CHECK(fabsf(out.glyphs[1].x - 2.0f / 9.0f) < 1e-6f);
+            CHECK(fabsf(out.glyphs[2].x - 7.0f / 9.0f) < 1e-6f);
+        }
+        else
+            CHECK(!"the LFF face lays out");
+    }
+    // The same text, the same face, bit for bit.
+    aptext_face again = lff_face(text, &result);
+    const ApriVec2 *points2 = NULL;
+    uint32_t point_count2 = 0;
+    CHECK(again && strokes_of(face, 0x4F, &points, &point_count, &lines, &line_count) &&
+          strokes_of(again, 0x4F, &points2, &point_count2, &lines, &line_count) && point_count == point_count2 &&
+          memcmp(points, points2, sizeof(ApriVec2) * point_count) == 0);
+
+    const char *bad[] = {"[0049] I\n0,0;0,9\n\n[0049] I\n0,0;1,1\n", // twice
+                         "[0049] I\nC0041\n",                        // a reference to nothing
+                         "[0049] I\n0,0;0\n",                         // not x,y
+                         "[0049] I\n0,0,B2;1,1\n",                    // not Ab
+                         "0,0;1,1\n",                                 // strokes outside a glyph
+                         "[ZZ] I\n",                                  // not hex
+                         "# only a header\n"};                        // no glyph
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+    {
+        aptext_face refused = lff_face(bad[i], &result);
+        CHECK(result == APRESULT_APTEXT_NOT_A_FONT && refused == NULL);
+    }
+    APTEXT_LFF_FACE_DESC d;
+    memset(&d, 0, sizeof(d));
+    d.base.type = APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC;
+    d.data = text;
+    d.data_size = strlen(text);
+    d.units_per_em = 9.0f;
+    d.metrics = cad_metrics();
+    aptext_face refused = NULL;
+    CHECK(aptext_face_create_lff(&d, &refused, NULL) == APRESULT_INVALID_ARGUMENT); // no tolerance
+    d.arc_tolerance = 0.01f;
+    d.units_per_em = 0.0f;
+    CHECK(aptext_face_create_lff(&d, &refused, NULL) == APRESULT_INVALID_ARGUMENT);
+}
+
+// An SHX file built here.
+typedef struct ShxFile
+{
+    uint8_t bytes[1024];
+    uint32_t size;
+} ShxFile;
+
+static void shx_put(ShxFile *f, const void *data, uint32_t size)
+{
+    memcpy(f->bytes + f->size, data, size);
+    f->size += size;
+}
+
+static void shx_u16(ShxFile *f, uint32_t v)
+{
+    uint8_t b[2] = {(uint8_t)v, (uint8_t)(v >> 8)};
+    shx_put(f, b, 2);
+}
+
+// A shapes 1.0 file of [count] shapes: numbers, names and commands.
+static void shx_shapes(ShxFile *f, uint32_t count, const uint32_t *numbers, const char *const *names,
+                       const uint8_t *const *specs, const uint32_t *spec_sizes)
+{
+    f->size = 0;
+    shx_put(f, "AutoCAD-86 shapes 1.0\r\n\x1a", 24);
+    shx_u16(f, 0);
+    shx_u16(f, 255);
+    shx_u16(f, count);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        shx_u16(f, numbers[i]);
+        shx_u16(f, (uint32_t)strlen(names[i]) + 1 + spec_sizes[i]);
+    }
+    for (uint32_t i = 0; i < count; i++)
+    {
+        shx_put(f, names[i], (uint32_t)strlen(names[i]) + 1);
+        shx_put(f, specs[i], spec_sizes[i]);
+    }
+}
+
+static aptext_face shx_face(const ShxFile *f, const uint32_t *high, uint32_t high_count, APRESULT *out_result)
+{
+    APTEXT_SHX_FACE_DESC d;
+    memset(&d, 0, sizeof(d));
+    d.base.type = APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC;
+    d.data = f->bytes;
+    d.data_size = f->size;
+    d.high_codepoints = high;
+    d.high_codepoint_count = high_count;
+    d.arc_tolerance = 0.001f;
+    d.line_gap = 0.2f;
+    aptext_face face = NULL;
+    *out_result = aptext_face_create_shx(&d, &face, NULL);
+    if (face)
+        track_face(face);
+    return face;
+}
+
+static bool near2(ApriVec2 p, float x, float y)
+{
+    return fabsf(p.x - x) < 1e-4f && fabsf(p.y - y) < 1e-4f;
+}
+
+// SHX: vectors, pen up and down, an octant circle, a subshape, push and
+// pop, scale, a bulge arc, the vertical skip, a displacement list, a
+// fractional arc, a high shape through the caller's code page, a unifont;
+// then refusals. "above" is 10, so a unit is a tenth of an em.
+static void test_shx_face(void)
+{
+    static const uint8_t info[] = {10, 2, 0, 0};
+    static const uint8_t shape_i[] = {0xA4, 2, 0x50, 0};                     // up 10, pen up, east 5
+    static const uint8_t shape_o[] = {2, 8, 10, 5, 1, 10, 5, 0x00, 2, 8, 2, 0xFB, 0}; // a circle round (5, 5), to (12, 0)
+    static const uint8_t shape_s[] = {5, 7, 0x49, 6, 1, 4, 2, 0x20, 12, 0, 4, 127, 14, 0x40, 9, 1, 0, 0, 1, 0, 0, 0};
+    static const uint8_t shape_c[] = {2, 8, 10, 0, 1, 11, 0, 128, 0, 10, 0x02, 0}; // radius 10 from 0 to 67.5 degrees
+    static const uint8_t shape_e[] = {0x34, 0};                              // shape 128: up 3
+    const uint32_t numbers[] = {0, 0x49, 0x4F, 0x53, 0x43, 128};
+    const char *names[] = {"test", "I", "O", "S", "C", "E"};
+    const uint8_t *specs[] = {info, shape_i, shape_o, shape_s, shape_c, shape_e};
+    const uint32_t sizes[] = {sizeof(info), sizeof(shape_i), sizeof(shape_o), sizeof(shape_s), sizeof(shape_c), sizeof(shape_e)};
+    ShxFile f;
+    shx_shapes(&f, 6, numbers, names, specs, sizes);
+    const uint32_t high[] = {0xE9};
+    APRESULT result;
+    aptext_face face = shx_face(&f, high, 1, &result);
+    CHECK(result == APRESULT_OK);
+    if (!face)
+        return;
+    APTEXT_FACE_METRICS m;
+    memset(&m, 0, sizeof(m));
+    m.base.type = APRI_STRUCT_TYPE_APTEXT_FACE_METRICS;
+    CHECK(aptext_face_get_metrics(face, &m) == APRESULT_OK && m.ascender == 1.0f && fabsf(m.descender + 0.2f) < 1e-6f);
+    const ApriVec2 *p = NULL;
+    const APTEXT_STROKE_POLYLINE *lines = NULL;
+    uint32_t n = 0, ln = 0;
+    CHECK(strokes_of(face, 0x49, &p, &n, &lines, &ln) && n == 2 && ln == 1 && near2(p[0], 0, 0) && near2(p[1], 0, -1));
+    // O: a closed circle of radius 0.5 em round (0.5, 0.5) up.
+    CHECK(strokes_of(face, 0x4F, &p, &n, &lines, &ln) && ln == 1 && n > 16);
+    for (uint32_t i = 0; i < n; i++)
+    {
+        const float x = p[i].x - 0.5f, y = -p[i].y - 0.5f;
+        CHECK(fabsf(sqrtf(x * x + y * y) - 0.5f) < 1e-4f);
+    }
+    CHECK(n > 1 && near2(p[0], 1.0f, -0.5f) && near2(p[n - 1], 1.0f, -0.5f));
+    // S: the I's stroke (the subshape), then from (0, 0) after the pop: two
+    // units scaled by 2 east, a half circle to (4, 8) bulging east, the
+    // skipped north vector, then (6, 8) and (6, 10).
+    CHECK(strokes_of(face, 0x53, &p, &n, &lines, &ln) && ln == 2);
+    if (ln == 2 && n > 6)
+    {
+        CHECK(near2(p[0], 0, 0) && near2(p[1], 0, -1));
+        CHECK(near2(p[2], 0, 0) && near2(p[3], 0.4f, 0));
+        CHECK(near2(p[n - 3], 0.4f, -0.8f) && near2(p[n - 2], 0.6f, -0.8f) && near2(p[n - 1], 0.6f, -1.0f));
+        float east = 0.0f;
+        for (uint32_t i = 3; i < n - 2; i++)
+            east = fmaxf(east, p[i].x);
+        CHECK(fabsf(east - 0.8f) < 1e-3f); // the half circle reaches x 8
+    }
+    // C: from (10, 0) round the origin to 67.5 degrees.
+    CHECK(strokes_of(face, 0x43, &p, &n, &lines, &ln) && ln == 1 && n > 2);
+    if (n > 2)
+    {
+        CHECK(near2(p[0], 1.0f, 0.0f));
+        CHECK(near2(p[n - 1], 0.38268343f, -0.92387953f));
+    }
+    // Shape 128, through the caller's code page.
+    CHECK(strokes_of(face, 0xE9, &p, &n, &lines, &ln) && n == 2);
+    // Advances: where the pen ends.
+    uint32_t glyph = 0;
+    CHECK(aptext_face_find_glyph(face, 0x4F, &glyph) == APRESULT_OK);
+
+    // A unifont: a shape drawing another by its two-byte number.
+    {
+        ShxFile u;
+        u.size = 0;
+        shx_put(&u, "AutoCAD-86 unifont 1.0\r\n\x1a", 25);
+        const uint8_t count[4] = {3, 0, 0, 0};
+        shx_put(&u, count, 4);
+        static const uint8_t uinfo[] = {'u', 0, 10, 2, 0, 0, 0, 0};
+        shx_u16(&u, sizeof(uinfo));
+        shx_put(&u, uinfo, sizeof(uinfo));
+        static const uint8_t a[] = {'A', 0, 0x14, 0};                 // U+0041: up 1
+        static const uint8_t cyr[] = {0, 7, 0x00, 0x41, 0x10, 0};      // U+0410: the A, then east 1
+        shx_u16(&u, 0x41);
+        shx_u16(&u, sizeof(a));
+        shx_put(&u, a, sizeof(a));
+        shx_u16(&u, 0x410);
+        shx_u16(&u, sizeof(cyr));
+        shx_put(&u, cyr, sizeof(cyr));
+        aptext_face uface = shx_face(&u, NULL, 0, &result);
+        CHECK(result == APRESULT_OK);
+        CHECK(uface && strokes_of(uface, 0x410, &p, &n, &lines, &ln) && n == 3 && near2(p[2], 0.1f, -0.1f));
+    }
+
+    // Refusals.
+    ShxFile bad = f;
+    memcpy(bad.bytes, "AutoCAD-86 bigfont 1.0\r\n\x1a", 25);
+    aptext_face refused = shx_face(&bad, NULL, 0, &result);
+    CHECK(result == APRESULT_UNSUPPORTED && refused == NULL);
+    bad = f;
+    bad.bytes[0] = 'X';
+    refused = shx_face(&bad, NULL, 0, &result);
+    CHECK(result == APRESULT_APTEXT_NOT_A_FONT);
+    static const uint8_t unknown[] = {15, 0};
+    static const uint8_t loop[] = {7, 0x52, 0};
+    static const uint8_t pushes[] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0};
+    static const uint8_t unended[] = {0x14};
+    const uint8_t *refusing[] = {unknown, loop, pushes, unended};
+    const uint32_t refusing_sizes[] = {sizeof(unknown), sizeof(loop), sizeof(pushes), sizeof(unended)};
+    for (int i = 0; i < 4; i++)
+    {
+        const uint32_t nums[] = {0, 0x52};
+        const char *nm[] = {"t", "R"};
+        const uint8_t *sp[] = {info, refusing[i]};
+        const uint32_t sz[] = {sizeof(info), refusing_sizes[i]};
+        shx_shapes(&bad, 2, nums, nm, sp, sz);
+        refused = shx_face(&bad, NULL, 0, &result);
+        CHECK(result == APRESULT_APTEXT_NOT_A_FONT && refused == NULL);
+    }
+    APTEXT_SHX_FACE_DESC d;
+    memset(&d, 0, sizeof(d));
+    d.base.type = APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC;
+    d.data = f.bytes;
+    d.data_size = f.size;
+    d.line_gap = 0.0f;
+    CHECK(aptext_face_create_shx(&d, &refused, NULL) == APRESULT_INVALID_ARGUMENT); // no tolerance
+}
+
+static uint8_t *read_data(const char *name, size_t *out_size)
+{
+    if (!data_dir)
+        return NULL;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", data_dir, name);
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return NULL;
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    uint8_t *data = (uint8_t *)malloc((size_t)size);
+    if (data && fread(data, 1, (size_t)size, file) != (size_t)size)
+    {
+        free(data);
+        data = NULL;
+    }
+    fclose(file);
+    *out_size = (size_t)size;
+    return data;
+}
+
+// Variable fonts: Roboto's a, b and c. Its axes are read; at its heaviest
+// weight 'a' advances by another width and draws other pixels than at the
+// default; an
+// unknown axis, a value out of range, an axis twice and NaN are refused.
+static void test_variable_face(void)
+{
+    size_t size = 0;
+    uint8_t *font = read_data("aptext_variable_abc.ttf", &size);
+    CHECK(font != NULL);
+    if (!font)
+        return;
+    APTEXT_FACE_DESC fd;
+    memset(&fd, 0, sizeof(fd));
+    fd.base.type = APRI_STRUCT_TYPE_APTEXT_FACE_DESC;
+    fd.data = font;
+    fd.data_size = size;
+    fd.copy_data = true;
+    aptext_face plain = NULL, bold = NULL, refused = NULL;
+    CHECK(aptext_face_create(&fd, &plain, NULL) == APRESULT_OK);
+    const uint32_t wght = 0x77676874u;
+    uint32_t axes = aptext_face_get_axis_count(plain);
+    CHECK(axes >= 1);
+    APTEXT_AXIS weight;
+    memset(&weight, 0, sizeof(weight));
+    bool found = false;
+    for (uint32_t i = 0; i < axes; i++)
+    {
+        APTEXT_AXIS axis;
+        CHECK(aptext_face_get_axis(plain, i, &axis) == APRESULT_OK);
+        if (axis.tag == wght)
+        {
+            weight = axis;
+            found = true;
+        }
+    }
+    CHECK(found && weight.min_value < weight.default_value && weight.default_value < weight.max_value);
+    APTEXT_AXIS none;
+    CHECK(aptext_face_get_axis(plain, axes, &none) == APRESULT_NOT_FOUND);
+    CHECK(aptext_face_get_axis_count(NULL) == 0);
+
+    APTEXT_VARIATION v[2] = {{wght, weight.max_value}, {wght, weight.min_value}};
+    fd.variations = v;
+    fd.variation_count = 1;
+    CHECK(aptext_face_create(&fd, &bold, NULL) == APRESULT_OK);
+    if (plain && bold)
+    {
+        track_face(plain);
+        track_face(bold);
+        // Advances, laid out at one em.
+        float advances[2] = {0, 0};
+        aptext_face faces[2] = {plain, bold};
+        for (int i = 0; i < 2; i++)
+        {
+            aptext_chain chain = open_chain(&faces[i], 1);
+            APTEXT_LAYOUT_DESC ld = layout_desc(chain, "a");
+            aptext_layout layout = chain ? lay_out(&ld) : NULL;
+            LaidOut out;
+            if (layout && read_layout(layout, &out) && out.glyph_count == 1)
+                advances[i] = out.glyphs[0].advance;
+        }
+        // Roboto's bold 'a' is a little narrower than its default (0.531 em
+        // against 0.544): it moves, which way is the font's.
+        CHECK(advances[0] > 0.0f && advances[1] > 0.0f && advances[1] != advances[0]);
+        // Pixels.
+        uint32_t glyph = 0;
+        CHECK(aptext_face_find_glyph(plain, 0x61, &glyph) == APRESULT_OK);
+        uint8_t *images[2] = {NULL, NULL};
+        uint32_t sizes[2] = {0, 0};
+        for (int i = 0; i < 2; i++)
+        {
+            APTEXT_GLYPH_GENERATE_DESC gd;
+            memset(&gd, 0, sizeof(gd));
+            gd.base.type = APRI_STRUCT_TYPE_APTEXT_GLYPH_GENERATE_DESC;
+            gd.face = faces[i];
+            gd.glyph = glyph;
+            gd.pixels_per_em = 32.0f;
+            gd.distance_range = 4.0f;
+            APTEXT_GLYPH_IMAGE image;
+            memset(&image, 0, sizeof(image));
+            image.base.type = APRI_STRUCT_TYPE_APTEXT_GLYPH_IMAGE;
+            if (aptext_generate_glyph(&gd, NULL, 0, &image, NULL) == APRESULT_OK)
+            {
+                sizes[i] = image.width * image.height * 4;
+                images[i] = (uint8_t *)malloc(sizes[i]);
+                CHECK(aptext_generate_glyph(&gd, images[i], sizes[i], &image, NULL) == APRESULT_OK);
+            }
+        }
+        CHECK(images[0] && images[1] && (sizes[0] != sizes[1] || memcmp(images[0], images[1], sizes[0]) != 0));
+        free(images[0]);
+        free(images[1]);
+    }
+    else
+    {
+        aptext_face_destroy(plain);
+        aptext_face_destroy(bold);
+    }
+    fd.variation_count = 2; // one axis twice
+    CHECK(aptext_face_create(&fd, &refused, NULL) == APRESULT_INVALID_ARGUMENT && refused == NULL);
+    APTEXT_VARIATION out_of_range = {wght, weight.max_value + 1.0f};
+    APTEXT_VARIATION unknown = {0x7A7A7A7Au, 1.0f};
+    APTEXT_VARIATION nan = {wght, NAN};
+    const APTEXT_VARIATION *bad[3] = {&out_of_range, &unknown, &nan};
+    for (int i = 0; i < 3; i++)
+    {
+        fd.variations = bad[i];
+        fd.variation_count = 1;
+        CHECK(aptext_face_create(&fd, &refused, NULL) == APRESULT_INVALID_ARGUMENT && refused == NULL);
+    }
+    fd.variations = NULL;
+    CHECK(aptext_face_create(&fd, &refused, NULL) == APRESULT_INVALID_ARGUMENT);
+    free(font);
+}
+
+
 static void run(const char *name, void (*test)(void))
 {
     current_test = name;
@@ -3225,6 +3691,9 @@ int main(int argc, char **argv)
         printf(ok ? "aptext_tests: fonts written to %s\n" : "aptext_tests: couldn't write fonts to %s\n", argv[2]);
         return ok ? 0 : 1;
     }
+
+    if (argc == 2)
+        data_dir = argv[1];
 
     // Argument checks.
     RUN(test_face_create_arguments);
@@ -3268,6 +3737,9 @@ int main(int argc, char **argv)
     RUN(test_stroke_face);
     RUN(test_stroke_face_duplicates);
     RUN(test_hershey_face);
+    RUN(test_lff_face);
+    RUN(test_shx_face);
+    RUN(test_variable_face);
 
     // The atlas.
     RUN(test_distance_field);

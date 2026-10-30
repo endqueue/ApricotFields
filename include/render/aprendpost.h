@@ -21,8 +21,8 @@ extern "C" {
  *
  * What is measured is the picture's log-average luminance (Reinhard's), of
  * every texel, or of those between the darkest and brightest shares the
- * desc leaves out (aprend_exposure_desc::low_share and
- * aprend_exposure_desc::high_share): a histogram of 64 bins over the range
+ * desc leaves out (APREND_EXPOSURE_DESC::low_share and
+ * APREND_EXPOSURE_DESC::high_share): a histogram of 64 bins over the range
  * of luminance, as Unreal's eye adaptation measures between its low and
  * high percent, so a bright window or a dark corner taking a few percent of
  * the picture doesn't move the exposure.
@@ -34,7 +34,7 @@ extern "C" {
 /**
  * @brief Configuration descriptor for an exposure. No field has a default.
  */
-typedef struct aprend_exposure_desc {
+typedef struct APREND_EXPOSURE_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_EXPOSURE_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** The luminance the picture's log-average is brought to: 0.18 is middle
@@ -71,21 +71,29 @@ typedef struct aprend_exposure_desc {
 	 * 0.1 and 0.9.
 	 */
 	float high_share;
-} aprend_exposure_desc;
+} APREND_EXPOSURE_DESC;
 
 /**
  * @brief Creates an exposure. Its first AUTO_EXPOSURE takes the exposure it
  * measures at once, with nothing to ease from.
  *
- * @param[in] instance Instance the exposure is of.
- * @param[in] desc     The exposure's configuration. Only read during the
- *                     call.
+ * @param[in]  instance     Instance the exposure is of.
+ * @param[in]  desc         The exposure's configuration. Only read during
+ *                          the call.
+ * @param[out] out_exposure Receives the exposure; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The exposure, or NULL if an argument is NULL, a value is out of
- *         its range (the shares too), or a texture, buffer or set can't be
- *         created (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if an argument is NULL or
+ *         a value is out of its range (the shares too); the struct codes for
+ *         `desc->base`; APRESULT_OUT_OF_MEMORY; or
+ *         APRESULT_APREND_GPU_FAILURE if a texture, buffer or set can't be
+ *         created.
  */
-aprend_exposure aprend_exposure_create(aprend_instance instance, const aprend_exposure_desc *desc);
+APRESULT aprend_exposure_create(
+    aprend_instance instance,
+    const APREND_EXPOSURE_DESC *desc,
+    aprend_exposure *out_exposure,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys an exposure. The GPU doesn't have to be finished with it.

@@ -26,6 +26,12 @@ layout(set = 1, binding = 0) uniform AprendLitMaterial {
     // Each map's own, after uv_transform: rows 2m and 2m + 1 for map m
     // (base color, normal, ORM, emission, as the MAP_ bits number them).
     vec4 map_uv_transform[8];
+    // glTF's KHR_materials_transmission and _volume: x how much light
+    // passes through, 0 to 1; y the index of refraction; z the thickness,
+    // in the scene's units; w the distance light travels before it is
+    // tinted to the attenuation color, 0 for never.
+    vec4 transmission;
+    vec4 attenuation;     // rgb: the color light is tinted to over w's distance
 } u_lit_material;
 layout(set = 1, binding = 1) uniform texture2D base_color_map;
 layout(set = 1, binding = 2) uniform texture2D normal_map;

@@ -63,7 +63,7 @@ typedef struct aprend_render_pass_t *aprend_render_pass;
 
 /**
  * @brief Upper bound on the color targets of a render pass: as many as a
- * pipeline can describe (aprend_graphics_pipeline_desc::color_attachment_count).
+ * pipeline can describe (APREND_GRAPHICS_PIPELINE_DESC::color_attachment_count).
  */
 #define APREND_RENDER_PASS_MAX_COLOR_TARGETS SPUDGPU_MAX_COLOR_ATTACHMENTS
 
@@ -72,7 +72,7 @@ typedef struct aprend_render_pass_t *aprend_render_pass;
  *
  * No field has a default.
  */
-typedef struct aprend_render_pass_desc {
+typedef struct APREND_RENDER_PASS_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
@@ -96,7 +96,7 @@ typedef struct aprend_render_pass_desc {
 	 * the pipeline's `color_attachment_formats` at the same index, and
 	 * `resolve_view` is NULL.
 	 */
-	aprend_color_target _color_targets[APREND_RENDER_PASS_MAX_COLOR_TARGETS];
+	APREND_COLOR_TARGET _color_targets[APREND_RENDER_PASS_MAX_COLOR_TARGETS];
 	/**
 	 * How many color targets: the pipeline's `color_attachment_count`.
 	 */
@@ -106,7 +106,7 @@ typedef struct aprend_render_pass_desc {
 	 * `depth_format` is SPUDGPU_FORMAT_UNKNOWN; otherwise a view of type
 	 * APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL of a 2D texture of that format.
 	 */
-	aprend_depth_target _depth_target;
+	APREND_DEPTH_TARGET _depth_target;
 	/**
 	 * The binding sets the pass always reads: `_binding_sets[N]` is put at
 	 * set slot N as the pass begins. NULL leaves slot N to the caller, who
@@ -124,16 +124,20 @@ typedef struct aprend_render_pass_desc {
 	aprend_gpu_timer _timer;
 	/** The slot of #_timer. Read only with a timer. */
 	uint32_t _timer_slot;
-} aprend_render_pass_desc;
+} APREND_RENDER_PASS_DESC;
 
 /**
  * @brief Creates a render pass.
  *
- * @param[in] instance Instance the pass belongs to.
- * @param[in] desc     Pass configuration. Only read during the call.
+ * @param[in]  instance  Instance the pass belongs to.
+ * @param[in]  desc      Pass configuration. Only read during the call.
+ * @param[out] out_pass  Receives the pass; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The pass, or NULL if @p instance or @p desc is NULL, `_pipeline`
- *         is NULL or of another instance, `_color_target_count` is above
+ * @return APRESULT_OK; APRESULT_OUT_OF_MEMORY; the struct codes for
+ *         `desc->base`; otherwise APRESULT_INVALID_ARGUMENT, if @p instance,
+ *         @p desc or @p out_pass is NULL, `_pipeline` is NULL or of another
+ *         instance, `_color_target_count` is above
  *         APREND_RENDER_PASS_MAX_COLOR_TARGETS or doesn't match the
  *         pipeline's color target count (or, with a framebuffer, its
  *         attachment count), a target has the wrong type, shape or format or a
@@ -147,9 +151,11 @@ typedef struct aprend_render_pass_desc {
  *
  * @see aprend_render_pass_destroy()
  */
-aprend_render_pass aprend_render_pass_create(
+APRESULT aprend_render_pass_create(
     aprend_instance instance,
-    const aprend_render_pass_desc *desc);
+    const APREND_RENDER_PASS_DESC *desc,
+    aprend_render_pass *out_pass,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a render pass. Nothing it names is destroyed.
@@ -176,14 +182,17 @@ void aprend_render_pass_destroy(aprend_render_pass pass);
  *                 `_binding_layout_count`.
  * @param[in] set  The set, of the layout the pipeline declares at @p slot,
  *                 or NULL to leave the slot to the caller.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p pass is NULL, @p slot is not
- *         one the pipeline declares, or @p set is of another layout.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing changed,
+ *         if @p pass is NULL, @p slot is not one the pipeline declares, or
+ *         @p set is of another layout.
  */
-bool aprend_render_pass_set_binding_set(
+APRESULT aprend_render_pass_set_binding_set(
     aprend_render_pass pass,
     uint32_t slot,
-    aprend_binding_set set);
+    aprend_binding_set set,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Gets the pipeline a render pass begins with.
@@ -205,9 +214,10 @@ aprend_graphics_pipeline aprend_render_pass_get_pipeline(aprend_render_pass pass
  * @param[out] out_width  Receives the width. May be NULL.
  * @param[out] out_height Receives the height. May be NULL.
  *
- * @return false, with nothing written, if @p pass is NULL.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p pass is NULL.
  */
-bool aprend_render_pass_get_size(
+APRESULT aprend_render_pass_get_size(
     aprend_render_pass pass,
     uint32_t *out_width,
     uint32_t *out_height);
@@ -222,35 +232,40 @@ typedef struct aprend_compute_pass_t *aprend_compute_pass;
  *
  * No field has a default.
  */
-typedef struct aprend_compute_pass_desc {
+typedef struct APREND_COMPUTE_PASS_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** The pipeline the pass's dispatches run. Not NULL. It must outlive the pass. */
 	aprend_compute_pipeline _pipeline;
 	/**
 	 * The binding sets put at each slot when the pass is set, as
-	 * aprend_render_pass_desc::_binding_sets: NULL leaves a slot to the
+	 * APREND_RENDER_PASS_DESC::_binding_sets: NULL leaves a slot to the
 	 * caller.
 	 */
 	aprend_binding_set _binding_sets[APREND_MAX_BINDING_LAYOUTS];
-} aprend_compute_pass_desc;
+} APREND_COMPUTE_PASS_DESC;
 
 /**
  * @brief Creates a compute pass.
  *
- * @param[in] instance Instance the pass belongs to.
- * @param[in] desc     Pass configuration. Only read during the call.
+ * @param[in]  instance  Instance the pass belongs to.
+ * @param[in]  desc      Pass configuration. Only read during the call.
+ * @param[out] out_pass  Receives the pass; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The pass, or NULL if @p instance or @p desc is NULL, `_pipeline`
- *         is NULL or of another instance, or a binding set is of another
- *         layout than the pipeline's at its slot or is given past the
- *         pipeline's last slot.
+ * @return APRESULT_OK; APRESULT_OUT_OF_MEMORY; the struct codes for
+ *         `desc->base`; or APRESULT_INVALID_ARGUMENT if @p instance,
+ *         @p desc or @p out_pass is NULL, `_pipeline` is NULL or of another
+ *         instance, or a binding set is of another layout than the
+ *         pipeline's at its slot or is given past the pipeline's last slot.
  *
  * @see aprend_compute_pass_destroy()
  */
-aprend_compute_pass aprend_compute_pass_create(
+APRESULT aprend_compute_pass_create(
     aprend_instance instance,
-    const aprend_compute_pass_desc *desc);
+    const APREND_COMPUTE_PASS_DESC *desc,
+    aprend_compute_pass *out_pass,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a compute pass, as aprend_render_pass_destroy() does a
@@ -271,14 +286,16 @@ void aprend_compute_pass_destroy(aprend_compute_pass pass);
  * @param[in] pass Pass to change.
  * @param[in] slot The set slot.
  * @param[in] set  The set, or NULL to leave the slot to the caller.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, under the conditions of
- *         aprend_render_pass_set_binding_set().
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing changed,
+ *         under the conditions of aprend_render_pass_set_binding_set().
  */
-bool aprend_compute_pass_set_binding_set(
+APRESULT aprend_compute_pass_set_binding_set(
     aprend_compute_pass pass,
     uint32_t slot,
-    aprend_binding_set set);
+    aprend_binding_set set,
+    APREND_ERROR *out_error);
 
 #if __cplusplus
 } // Extern "C"

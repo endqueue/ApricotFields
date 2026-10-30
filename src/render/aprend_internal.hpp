@@ -23,6 +23,7 @@
 #include "aprendrendertargets_internal.hpp"
 #include "aprendreflect_internal.hpp"
 #include "aprendtransient_internal.hpp"
+#include "../aprioverlap.hpp"
 
 #include <spudgpu.h>
 
@@ -45,16 +46,41 @@
 #include <unordered_set>
 #include <vector>
 
-/* A caller's based struct, checked as every Aprend call that takes one checks
- * it (apricore.h, "Struct bases"): true if its base is [type] with nothing
- * chained on; otherwise false, after printing why for [who], the call, and
- * [name], the parameter. */
-static inline bool aprend_base_ok(const char *who, const char *name, const APRI_STRUCT_BASE *base, APRI_STRUCT_TYPE type) {
+/* How a call reports (aprendcontext.h, "Results and errors").
+ * Each empties the caller's APREND_ERROR at its start with
+ * aprend_error_clear, so it is empty on success, and fails through
+ * aprend_fail or aprend_fail_spud, which fill it in when the caller gave
+ * one and return the code. Nothing is printed. */
+#if defined(__GNUC__) || defined(__clang__)
+#define APREND_PRINTF_FORMAT(format_index, first_arg) __attribute__((format(printf, format_index, first_arg)))
+#else
+#define APREND_PRINTF_FORMAT(format_index, first_arg)
+#endif
+
+static inline void aprend_error_clear(APREND_ERROR *error) {
+	if (error)
+		error->message[0] = '\0';
+}
+
+/* [result], with [error]'s message made from [format]. */
+APRESULT aprend_fail(APREND_ERROR *error, APRESULT result, const char *format, ...) APREND_PRINTF_FORMAT(3, 4);
+
+/* SpudGPU's [sr] as an APRESULT: the general code that says it where there
+ * is one, APRESULT_APREND_GPU_FAILURE otherwise. */
+APRESULT aprend_result_from_spud(SPUDRESULT sr);
+
+/* A failure SpudGPU reported: its APRESULT, with [error]'s message made from
+ * [format] and ending with SpudGPU's result by name. */
+APRESULT aprend_fail_spud(APREND_ERROR *error, SPUDRESULT sr, const char *format, ...) APREND_PRINTF_FORMAT(3, 4);
+
+/* A caller's based struct, checked as a converted call checks one
+ * (apricore.h, "Struct bases"): APRESULT_OK, or apri_struct_check's code
+ * with [error] naming [name], the parameter. */
+static inline APRESULT aprend_base_check(APREND_ERROR *error, const char *name, const APRI_STRUCT_BASE *base, APRI_STRUCT_TYPE type) {
 	const APRESULT result = apri_struct_check(base, type);
 	if (result == APRESULT_OK)
-		return true;
-	printf("apricot: %s: %s %s\n", who, name, apri_struct_check_message(result));
-	return false;
+		return APRESULT_OK;
+	return aprend_fail(error, result, "%s %s", name, apri_struct_check_message(result));
 }
 
 /* ============================================================
@@ -121,7 +147,7 @@ struct aprend_binding_layout_core;
  * ranges of it handed out, in units of the instance's
  * material_block_alignment. */
 struct aprend_material_arena_buffer {
-	aprend_uniform_buffer buffer{nullptr};
+	aprend_buffer buffer{nullptr};
 	aprend_range_list ranges{};
 	/* Made for one block larger than an arena buffer, and destroyed when that
 	 * block is given back. */
@@ -144,7 +170,7 @@ typedef struct aprend_instance_t {
 	aprend_instance_t() = default;
 	~aprend_instance_t();
 
-	aprend_instance_desc desc{};
+	APREND_INSTANCE_DESC desc{};
 	/* What every recording of one frame index is made into: an allocator,
 	 * and the SpudGPU lists recorded from it. aprend_instance_next_frame
 	 * resets the allocator once it has waited for the frame that last used
@@ -261,6 +287,17 @@ typedef struct aprend_instance_t {
 	};
 	std::vector<release_entry> release_queue{};
 	size_t release_head{0};
+	/* Retires promised and not yet made: one for each a live object will
+	 * make when it is destroyed, taken by its create call with
+	 * aprend_instance_reserve_release. The queue's capacity is kept at
+	 * least its size plus this, so a promised retire never allocates and a
+	 * destroy can't fail: a create that can't have its entries fails
+	 * instead. Under release_mutex. */
+	size_t release_promised{0};
+	/* The command list a compile or submit is running for, for
+	 * aprend_report; NULL otherwise. Only those calls set it, and they hold
+	 * the instance (aprendcontext.h, "Threads"). */
+	aprend_command_list reporting_list{nullptr};
 	/* Every binding layout core alive (aprend_binding_layout_core): what a
 	 * new binding layout looks for one of the same bindings in. Written only
 	 * by the thread using the instance, by creating a layout and by releasing
@@ -278,12 +315,9 @@ typedef struct aprend_instance_t {
 	 * list here is not changed by its own thread until it is taken off, so
 	 * what it uses can be read under release_mutex. Under release_mutex. */
 	std::vector<aprend_command_list> compiled_lists{};
-	/* The thread inside one of the calls APREND_ENTER guards, and how deep
-	 * (a guarded call may make another): Debug builds' check of the rule in
-	 * aprendcontext.h ("Threads"). In every build, so the struct is the same
-	 * in each; only Debug builds read or write them. */
-	std::atomic<std::thread::id> entered_thread{};
-	uint32_t entered_depth{0};
+	/* Debug builds' check of the rule in aprendcontext.h ("Threads"),
+	 * APREND_ENTER's. In every build, so the struct is the same in each. */
+	apri_overlap entered{};
 	/* Guards release_queue, release_head and upload_batch_waiting, and makes
 	 * a new submit_serial and the batch it carried change together for
 	 * aprend_instance_retire; and compiled_lists, with each list's
@@ -294,52 +328,27 @@ typedef struct aprend_instance_t {
 } aprend_instance_t;
 
 /* Debug builds' check of the rule in aprendcontext.h ("Threads"): one
- * thread at a time inside an instance, which may be a different thread from
- * call to call. Each call that meets in state the instance holds (the ones
- * that header lists) opens with APREND_ENTER; a second thread entering while
- * one is inside is a broken rule, which would otherwise be a silent race,
- * and is printed with the call it was in - as Vulkan's validation layer
- * reports an object used by two threads at once. The same thread entering
- * again (a guarded call making another) is not. Nothing is refused: the
- * call goes on, as it would in Release, where the guard is nothing. */
-class aprend_instance_entry {
-  public:
-	aprend_instance_entry(aprend_instance instance, const char *who) {
-#if _DEBUG
-		const std::thread::id me = std::this_thread::get_id();
-		std::thread::id expected{};
-		if (instance->entered_thread.compare_exchange_strong(expected, me)) {
-			instance_                = instance;
-			instance->entered_depth = 1;
-		} else if (expected == me) {
-			instance_ = instance;
-			++instance->entered_depth;
-		} else {
-			printf("aprend: %s: called while another thread is inside the instance; an instance is used by one thread at a time (aprendcontext.h, "
-			       "\"Threads\")\n",
-			       who);
-		}
-#else
-		(void)instance;
-		(void)who;
-#endif
-	}
-	~aprend_instance_entry() {
-#if _DEBUG
-		if (instance_ && --instance_->entered_depth == 0)
-			instance_->entered_thread.store(std::thread::id{});
-#endif
-	}
-	aprend_instance_entry(const aprend_instance_entry &)            = delete;
-	aprend_instance_entry &operator=(const aprend_instance_entry &) = delete;
+ * caller at a time inside an instance, which may be a different thread from
+ * call to call (../aprioverlap.hpp). Every call that takes the instance or
+ * a handle of it opens with APREND_ENTER on the instance, but the ones the
+ * header excepts: the get_ and find calls, the destroys, and the
+ * recordings, which open with APREND_ENTER_LIST on their own list. */
+#define APREND_ENTER(instance, who) APRI_ENTER((instance)->entered, "aprend", who, "instance")
+#define APREND_ENTER_LIST(list, who) APRI_ENTER((list)->entered, "aprend", who, "list")
 
-  private:
-#if _DEBUG
-	/* NULL if this entry found another thread inside. */
-	aprend_instance instance_{nullptr};
-#endif
-};
-#define APREND_ENTER(instance, who) aprend_instance_entry aprend_entry_guard_(instance, who)
+/* How what a compile or a submit reads reports why it fails
+ * (aprendcontext.h, "Results and errors"): the first failure of the call
+ * is kept, with the index of the send it came from in front of its message
+ * ("command 412: BLUR source has nothing in it"), and later ones are not.
+ * During a recording (aprend_command_list_send) it goes to the list, for its
+ * next compile to report. Each returns false, for a `return` in a check. */
+bool aprend_cmd_report(aprend_command_list cmd_list, APRESULT result, const char *format, ...) APREND_PRINTF_FORMAT(3, 4);
+
+/* As aprend_cmd_report, from code that has the instance and not the list:
+ * the list being compiled or submitted on [instance], which one caller at a
+ * time compiles or submits (aprendcontext.h, "Threads"); with none, nothing
+ * is kept. */
+bool aprend_report(aprend_instance instance, APRESULT result, const char *format, ...) APREND_PRINTF_FORMAT(3, 4);
 
 /* Queues [object], a handle of [instance] or something one owns, to be
  * released with [release] once every submission made so far has finished,
@@ -355,16 +364,31 @@ class aprend_instance_entry {
  * layout's pools). Releasing is aprend_instance_collect's, on the thread
  * that is using the instance.
  *
- * Never releases early. With no memory to queue the entry, the object is
- * left unreleased and that is printed: there is no thread here it would be
- * safe to release it on, and a leak under memory exhaustion is the one
- * outcome that can't make things worse.
+ * Never releases early, and never allocates: every retire is reserved
+ * (aprend_instance_reserve_release), its entry's room taken when the object
+ * was made, so a destroy can't fail. A retire nothing reserved is a bug in
+ * Aprend, which the Debug build asserts on.
  *
  * What it can't see is a command list that was compiled against the object
  * and not yet submitted: the serial is taken at retirement, so such a list,
  * submitted afterwards, would run after the object may already be gone. So
  * every destroy call of something a compile records also calls
  * aprend_instance_forget, and such a submission is refused. */
+/* Promises [count] retires to come, from an object being created: grows
+ * the release queue now, so that they never have to. APRESULT_OK, or
+ * APRESULT_OUT_OF_MEMORY with nothing promised, for the create to fail
+ * with. An object that is made and then freed without a retire (a create
+ * failing after this) gives its promise back with
+ * aprend_instance_unreserve_release. Safe from any thread, as a retire is. */
+APRESULT aprend_instance_reserve_release(
+    aprend_instance instance,
+    uint32_t count);
+
+/* Gives back [count] promised retires that will never be made. */
+void aprend_instance_unreserve_release(
+    aprend_instance instance,
+    uint32_t count);
+
 void aprend_instance_retire(
     aprend_instance instance,
     void *object,
@@ -409,7 +433,7 @@ inline void aprend_release_spudgpu_command_allocator(void *object) { spudgpu_des
 #define APREND_SUBMIT_MAX_LISTS 2
 
 /* The one way anything of [instance] reaches a queue. Refuses, with
- * SPUDRESULT_GPU_INVALID_COMMAND_QUEUE and nothing submitted, a [queue] that
+ * APRESULT_INVALID_ARGUMENT and nothing submitted, a [queue] that
  * is not the one the instance's first submission went on, or not the one the
  * waiting upload batch was recorded for. Submits the upload batch, if one is
  * waiting, and then [lists] (at most APREND_SUBMIT_MAX_LISTS, and none only
@@ -417,19 +441,23 @@ inline void aprend_release_spudgpu_command_allocator(void *object) { spudgpu_des
  * it isn't NULL, and signals the instance's frame fence to the next serial,
  * which it records against the current frame index and hands back through
  * [out_serial] (NULL to skip). A failed submission takes no serial, and
- * leaves the batch waiting, closed, for the next. */
-SPUDRESULT aprend_instance_submit(
+ * leaves the batch waiting, closed, for the next. [error] says why it
+ * failed. */
+APRESULT aprend_instance_submit(
     aprend_instance instance,
     spudgpu_command_queue queue,
     spudgpu_command_list *lists,
     uint32_t list_count,
     spudgpu_swap_chain swap_chain,
-    uint64_t *out_serial);
+    uint64_t *out_serial,
+    APREND_ERROR *error);
 /* Blocks until the submission that took [serial], and every one before it,
- * has finished. Serial 0 returns at once. */
+ * has finished, or [timeout_ns] runs out (UINT64_MAX for no limit). Serial
+ * 0 returns at once. */
 SPUDRESULT aprend_instance_wait_serial(
     aprend_instance instance,
-    uint64_t serial);
+    uint64_t serial,
+    uint64_t timeout_ns);
 
 /* A SpudGPU list of the current frame's recordings pool, for one recording
  * to be submitted in this frame. Not handed out again until
@@ -443,22 +471,25 @@ SPUDRESULT aprend_instance_take_command_list(
 
 /* The upload batch, open for recording, for work to go on [queue]: the one
  * waiting, or a new one from the current frame's batches pool. Refuses, with
- * SPUDRESULT_GPU_INVALID_COMMAND_QUEUE, a queue that is not the instance's
- * or not the batch's. A batch left closed by a failed submission is
- * submitted first, and its failure is this call's. What is recorded runs
- * after everything submitted before it and ahead of everything submitted
- * after. */
-SPUDRESULT aprend_instance_open_upload_batch(
+ * APRESULT_INVALID_ARGUMENT, a queue that is not the instance's or not the
+ * batch's. A batch left closed by a failed submission is submitted first,
+ * and its failure is this call's. What is recorded runs after everything
+ * submitted before it and ahead of everything submitted after. [error] says
+ * why it failed. */
+APRESULT aprend_instance_open_upload_batch(
     aprend_instance instance,
     spudgpu_command_queue queue,
-    spudgpu_command_list *out_list);
+    spudgpu_command_list *out_list,
+    APREND_ERROR *error);
 
 /* Submits the upload batch on its own, if one is waiting, and hands back
  * through [out_serial] the serial to wait for to know it has run: the
- * batch's, or with none waiting the last one taken. */
-SPUDRESULT aprend_instance_flush_upload_batch(
+ * batch's, or with none waiting the last one taken. [error] says why it
+ * failed. */
+APRESULT aprend_instance_flush_upload_batch(
     aprend_instance instance,
-    uint64_t *out_serial);
+    uint64_t *out_serial,
+    APREND_ERROR *error);
 
 /* Where the bytes of a vertex, index or storage buffer are kept, chosen from
  * the device's memory model when the buffer is created.
@@ -491,8 +522,12 @@ SPUDRESULT aprend_instance_flush_upload_batch(
  * Every write is flushed (spudgpu_flush_buffer), whichever buffer it lands
  * in.
  *
- * Uniform buffers don't use this: they are small and rewritten every frame,
- * and are UPLOAD memory, mapped for life, on every device. */
+ * A uniform buffer is a store that is never staged: UPLOAD memory, on
+ * every device, since it is small and rewritten every frame. The material
+ * arena's buffers are stores in the device's memory with no mapping, which
+ * only copies Aprend records write.
+ *
+ * A store written directly is mapped once, for its life ([mapped]). */
 struct aprend_buffer_upload {
 	/* Where the bytes are: [staging] for a MANY store, a buffer the upload
 	 * owns for a ONCE store. */
@@ -509,8 +544,11 @@ struct aprend_buffer_store {
 	spudgpu_buffer buffer{nullptr};
 	/* [buffer] is in the device's memory and written through uploads. */
 	bool staged{false};
-	/* APREND_BUFFER_WRITES_ONCE: the buffer's update call refuses. */
+	/* APREND_BUFFER_WRITES_ONCE: aprend_buffer_write refuses. */
 	bool written_once{false};
+	/* [buffer] mapped for the store's life, where it is written directly;
+	 * NULL for a staged store and for one only Aprend's copies write. */
+	void *mapped{nullptr};
 	/* A MANY store's staging buffer; NULL for a ONCE store and for one
 	 * written directly. */
 	spudgpu_buffer staging{nullptr};
@@ -544,7 +582,8 @@ void aprend_buffer_store_destroy(aprend_buffer_store *store);
 /* Copies [size] bytes from [data] to [offset]. The range is the caller's to
  * have checked against the store's size. SPUDRESULT_OUT_OF_MEMORY, with
  * nothing written, if there is no memory to note the write. Doesn't look at
- * [written_once]: that is the update calls' to refuse. */
+ * [written_once]: that is aprend_buffer_write's to refuse. A ONCE store's
+ * write promises the retire of the buffer it stages in. */
 SPUDRESULT aprend_buffer_store_write(
     aprend_buffer_store *store,
     uint64_t offset,
@@ -667,8 +706,29 @@ typedef struct aprend_command_list_t {
 	};
 	APRI_PLAIN_DATA(side_ref);
 	std::vector<side_ref> side_refs{};
-	/* Set by aprend_send_command on a malformed command; fails compile until reset. */
+	/* Set by aprend_command_list_send on a malformed command; fails compile until reset. */
 	bool recording_error{false};
+	/* For each command in [commands], the aprend_command_list_send it came from,
+	 * counted from the last reset: what a compile's message names, since a
+	 * send that stands for others (BEGIN_RENDER_PASS, SET_COMPUTE_PASS,
+	 * DRAW_LIST) records several commands. */
+	std::vector<uint32_t> command_sends{};
+	uint32_t send_count{0};
+	/* How deep aprend_command_list_send is in itself: an expansion sends the
+	 * commands it stands for, which count as the caller's one send. */
+	uint32_t send_depth{0};
+	/* The recording's first failure since the reset, which the next compile
+	 * reports: its code, the send it came from and its message. */
+	APRESULT recording_result{APRESULT_OK};
+	uint32_t recording_send{0};
+	char recording_message[APREND_ERROR_MESSAGE_SIZE]{};
+	/* While a compile or submit of the list runs (aprend_cmd_report): the
+	 * caller's error, the first failure's code, and the send of the command
+	 * being compiled, UINT32_MAX for none. */
+	bool reporting{false};
+	APREND_ERROR *report{nullptr};
+	APRESULT report_result{APRESULT_OK};
+	uint32_t report_send{UINT32_MAX};
 
 	/* The layout transitions of the last compile, one entry for each mip of
 	 * each layer of each texture the list uses. Compiling never touches a
@@ -729,6 +789,9 @@ typedef struct aprend_command_list_t {
 	uint32_t present_image_index{0};
 	/* present_swap_chain's generation at the compile. */
 	uint64_t present_generation{0};
+	/* Debug builds' check of a recording, one caller to a list
+	 * (APREND_ENTER_LIST). */
+	apri_overlap entered{};
 } aprend_command_list_t;
 
 #define APREND_SWAP_CHAIN_NO_IMAGE 0xFFFFFFFFu
@@ -738,7 +801,7 @@ typedef struct aprend_swap_chain_t {
 	aprend_swap_chain_t() = default;
 	~aprend_swap_chain_t();
 	aprend_instance instance{nullptr};
-	aprend_swap_chain_desc desc{};
+	APREND_SWAP_CHAIN_DESC desc{};
 	spudgpu_swap_chain swap_chain{nullptr};
 	/* APREND_SWAP_CHAIN_NO_IMAGE until aprend_swap_chain_acquire. */
 	uint32_t acquired_image{APREND_SWAP_CHAIN_NO_IMAGE};
@@ -752,102 +815,50 @@ typedef struct aprend_swap_chain_t {
 	uint64_t generation{0};
 } aprend_swap_chain_t;
 
-typedef struct aprend_uniform_buffer_t {
-	char *debug_name{nullptr};
-	aprend_uniform_buffer_t() = default;
-	~aprend_uniform_buffer_t();
-	/* For aprend_instance_retire when the handle is destroyed. */
-	aprend_instance instance{nullptr};
-	/* The whole block, bound by binding sets with an offset and range. */
-	spudgpu_buffer buffer{nullptr};
-	/* The block's size in bytes, a multiple of 16. */
-	uint32_t size{0};
-	/* The buffer's own copy of its layout: the uniforms and their names in
-	 * one allocation, NULL with no uniforms. Empty for one of the device's
-	 * memory. */
-	aprend_uniform_layout layout{};
-	/* Where the CPU writes the block: UPLOAD memory mapped for the buffer's
-	 * life (aprend_uniform_buffer_create). NULL for one in the device's own
-	 * memory (aprend_uniform_buffer_create_device, the material arena's),
-	 * which only the GPU's copies write and every update call refuses. */
-	void *mapped{nullptr};
-} aprend_uniform_buffer_t;
-
-typedef struct aprend_vertex_buffer_t {
-	char *debug_name{nullptr};
-	aprend_vertex_buffer_t() = default;
-	~aprend_vertex_buffer_t();
-	/* For aprend_instance_retire when the handle is destroyed. */
-	aprend_instance instance{nullptr};
+/* One copy of a buffer: its store, and the views made of it. */
+struct aprend_buffer_part {
 	aprend_buffer_store store{};
-	/* The buffer's size in bytes. */
-	uint64_t size{0};
-	/* A SpudGPU view of the whole buffer for each stride a pipeline has read
+	/* The index view of an INDEX buffer, at its index stride, or the
+	 * storage view of a STORAGE buffer; NULL for any other. */
+	spudgpu_buffer_view view{nullptr};
+	/* A SpudGPU view of the whole copy for each stride a pipeline has read
 	 * it at, made by the first compile that binds it at that stride
-	 * (aprend_vertex_buffer_view): a SpudGPU vertex buffer view carries its
+	 * (aprend_buffer_vertex_view): a SpudGPU vertex buffer view carries its
 	 * stride (D3D12's does), and the stride is the pipeline's. Usually one.
 	 * Destroyed with the buffer. */
 	struct stride_view {
 		uint32_t stride;
 		spudgpu_buffer_view view;
 	};
-	std::vector<stride_view> views{};
-} aprend_vertex_buffer_t;
+	std::vector<stride_view> vertex_views{};
+};
 
-/* The view of [buffer] at [stride], made the first time it is asked for.
- * On the thread using the instance. SPUDRESULT_OUT_OF_MEMORY, or SpudGPU's
- * failure, with nothing made. */
-SPUDRESULT aprend_vertex_buffer_view(
-    aprend_vertex_buffer buffer,
+typedef struct aprend_buffer_t {
+	char *debug_name{nullptr};
+	aprend_buffer_t() = default;
+	~aprend_buffer_t();
+	/* For aprend_instance_retire when the handle is destroyed. */
+	aprend_instance instance{nullptr};
+	/* The desc it was created with: initial_data NULL, debug_name this
+	 * handle's own copy. */
+	APREND_BUFFER_DESC desc{};
+	/* 1, or frames_in_flight for a buffer of per-frame copies. */
+	uint32_t part_count{0};
+	aprend_buffer_part parts[APREND_MAX_FRAMES_IN_FLIGHT]{};
+} aprend_buffer_t;
+
+/* The copy of [buffer] a list compiled in frame [frame] reads, and the one
+ * a write in that frame writes. */
+static inline aprend_buffer_part *aprend_buffer_part_of(aprend_buffer buffer, uint32_t frame) {
+	return &buffer->parts[buffer->part_count > 1 ? frame : 0];
+}
+
+/* The view of [part] at [stride], made the first time it is asked for.
+ * SPUDRESULT_OUT_OF_MEMORY, or SpudGPU's failure, with nothing made. */
+SPUDRESULT aprend_buffer_vertex_view(
+    aprend_buffer_part *part,
     uint32_t stride,
     spudgpu_buffer_view *out_view);
-
-typedef struct aprend_index_buffer_t {
-	char *debug_name{nullptr};
-	aprend_index_buffer_t() = default;
-	~aprend_index_buffer_t();
-	/* For aprend_instance_retire when the handle is destroyed. */
-	aprend_instance instance{nullptr};
-	aprend_buffer_store store{};
-	spudgpu_buffer_view buffer_view{nullptr};
-	spudgpu_buffer_view_desc buffer_view_desc{{SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC, nullptr}};
-	uint32_t index_count{0};
-	APREND_INDEX_STRIDE index_stride{APREND_INDEX_STRIDE_NONE};
-} aprend_index_buffer_t;
-
-typedef struct aprend_storage_buffer_t {
-	char *debug_name{nullptr};
-	aprend_storage_buffer_t() = default;
-	~aprend_storage_buffer_t();
-	/* For aprend_instance_retire when the handle is destroyed. */
-	aprend_instance instance{nullptr};
-	aprend_buffer_store store{};
-	spudgpu_buffer_view buffer_view{nullptr};
-	spudgpu_buffer_view_desc buffer_view_desc{{SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC, nullptr}};
-	uint64_t size{0};
-	APREND_STORAGE_BUFFER_USAGE usage{APREND_STORAGE_BUFFER_USAGE_NONE};
-} aprend_storage_buffer_t;
-
-/* One uniform buffer for each frame in flight, all of one layout.
- * buffers[instance->frame_index] is the current one. */
-typedef struct aprend_uniform_buffer_set_t {
-	char *debug_name{nullptr};
-	aprend_uniform_buffer_set_t() = default;
-	~aprend_uniform_buffer_set_t();
-	aprend_instance instance{nullptr};
-	aprend_uniform_buffer buffers[APREND_MAX_FRAMES_IN_FLIGHT]{};
-	uint32_t buffer_count{0};
-} aprend_uniform_buffer_set_t;
-
-/* The same for storage buffers, all of one size. */
-typedef struct aprend_storage_buffer_set_t {
-	char *debug_name{nullptr};
-	aprend_storage_buffer_set_t() = default;
-	~aprend_storage_buffer_set_t();
-	aprend_instance instance{nullptr};
-	aprend_storage_buffer buffers[APREND_MAX_FRAMES_IN_FLIGHT]{};
-	uint32_t buffer_count{0};
-} aprend_storage_buffer_set_t;
 
 typedef struct aprend_shader_t {
 	char *debug_name{nullptr};
@@ -894,7 +905,7 @@ inline bool aprend_storage_writes_hold(const std::vector<aprend_storage_write> &
 	return false;
 }
 
-/* False, printed, if a texture view [set] holds is not what [expected]
+/* False, reported, if a texture view [set] holds is not what [expected]
  * declares at its binding, for a pipeline that has [set] at [slot]: another
  * shape; a stencil read as anything but an unsigned integer, or a depth read
  * as one; a color format whose kind of number (float, normalized or not,
@@ -911,7 +922,7 @@ typedef struct aprend_graphics_pipeline_t {
 	char *debug_name{nullptr};
 	aprend_graphics_pipeline_t() = default;
 	~aprend_graphics_pipeline_t();
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	aprend_instance instance{nullptr};
 	spudgpu_shader_pipeline pipeline{nullptr};
 	/* One allocation holding the vertex entry point's name and then the
@@ -942,7 +953,7 @@ typedef struct aprend_compute_pipeline_t {
 	char *debug_name{nullptr};
 	aprend_compute_pipeline_t() = default;
 	~aprend_compute_pipeline_t();
-	aprend_compute_pipeline_desc desc{};
+	APREND_COMPUTE_PIPELINE_DESC desc{};
 	aprend_instance instance{nullptr};
 	spudgpu_compute_pipeline pipeline{nullptr};
 	/* The pipeline's copy of the entry point's name; desc's pointer points
@@ -971,7 +982,7 @@ typedef struct aprend_compute_pipeline_t {
 struct aprend_binding_layout_core {
 	aprend_instance instance;
 	/* Sorted by _binding; _name is NULL in every one. */
-	aprend_binding_desc bindings[APREND_MAX_BINDINGS_PER_LAYOUT];
+	APREND_BINDING_DESC bindings[APREND_MAX_BINDINGS_PER_LAYOUT];
 	uint32_t binding_count;
 	spudgpu_descriptor_set_layout layout;
 	/* The pools this core's sets come from, each sized for
@@ -1001,7 +1012,7 @@ typedef struct aprend_binding_layout_t {
 	aprend_instance instance{nullptr};
 	/* The bindings as the caller or the shaders gave them, in that order,
 	 * each _name pointing at names[i]. The core has the same ones sorted. */
-	aprend_binding_desc bindings[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	APREND_BINDING_DESC bindings[APREND_MAX_BINDINGS_PER_LAYOUT]{};
 	uint32_t binding_count{0};
 	/* Every binding's _count added up: the entries one set takes. */
 	uint32_t descriptor_count{0};
@@ -1014,7 +1025,7 @@ typedef struct aprend_binding_layout_t {
 	std::string names[APREND_MAX_BINDINGS_PER_LAYOUT]{};
 	/* A layout made from shaders: each buffer binding's block, parallel to
 	 * bindings. Its members are in [members], and the ones with a type, as
-	 * aprend_uniform, in [uniforms]; the names of both are in [strings]. */
+	 * APREND_UNIFORM, in [uniforms]; the names of both are in [strings]. */
 	struct block_info {
 		bool known;
 		const char *block_name;
@@ -1025,8 +1036,8 @@ typedef struct aprend_binding_layout_t {
 		uint32_t uniform_count;
 	};
 	block_info blocks[APREND_MAX_BINDINGS_PER_LAYOUT]{};
-	std::vector<aprend_shader_member> members{};
-	std::vector<aprend_uniform> uniforms{};
+	std::vector<APREND_SHADER_MEMBER> members{};
+	std::vector<APREND_UNIFORM> uniforms{};
 	std::deque<std::string> strings{};
 } aprend_binding_layout_t;
 
@@ -1052,7 +1063,7 @@ typedef struct aprend_binding_set_t {
 	 * element of every binding: aprend_binding_set_update replaces some and
 	 * builds the set again from all of them. The handles in it are the
 	 * caller's. */
-	aprend_binding_set_entry *entries{nullptr};
+	APREND_BINDING_SET_ENTRY *entries{nullptr};
 	uint32_t entry_count{0};
 	/* Every texture view the set holds and the layout its slot reads the
 	 * texture in, for a command list to move the texture there before a pass
@@ -1090,13 +1101,13 @@ struct aprend_material_slot {
 	const char *name{nullptr};
 	const char *block_name{nullptr};
 	/* The layout's binding: number, type and count. */
-	aprend_binding_desc binding{};
+	APREND_BINDING_DESC binding{};
 	/* Where the binding's elements start in aprend_material_t::entries. */
 	uint32_t first_entry{0};
 	/* An owned block: its members (the layout's), and its range of the
 	 * instance's material arena, [offset] bytes into [arena]'s buffer. NULL
 	 * and 0 for any other binding. */
-	const aprend_shader_member *members{nullptr};
+	const APREND_SHADER_MEMBER *members{nullptr};
 	uint32_t member_count{0};
 	aprend_material_arena_buffer *arena{nullptr};
 	uint32_t offset{0};
@@ -1135,7 +1146,7 @@ typedef struct aprend_material_t {
 	 * set is built from: _binding, _array_element and _type are filled at
 	 * creation, the resource as the caller sets it. An owned block's entry
 	 * holds its buffer set from the start. */
-	aprend_binding_set_entry *entries{nullptr};
+	APREND_BINDING_SET_ENTRY *entries{nullptr};
 	/* Parallel to entries: whether the element has its view (or buffer)
 	 * and whether it has its sampler, as its type needs. */
 	bool *has_resource{nullptr};
@@ -1152,23 +1163,28 @@ typedef struct aprend_material_t {
 } aprend_material_t;
 
 /* For a compile: builds [material]'s binding set if it has none, or again if
- * a resource was set since. False, printed, if the material is incomplete
+ * a resource was set since. False, reported, if the material is incomplete
  * or the set can't be built; the material is left as it was. */
 bool aprend_material_prepare(aprend_material material);
 /* For a submission: writes each dirty block of [material] into a span of
  * the current frame's transient memory and adds the copy from it into the
  * block's range to [copies]. The submission clears each block's dirty flag
- * once it has gone in (aprend_upload_copy::dirty). False, printed, if the
+ * once it has gone in (aprend_upload_copy::dirty). False, reported, if the
  * transient memory can't be taken; what was added stays, and is only
  * recorded if the caller goes on. Throws std::bad_alloc from [copies]. */
 bool aprend_material_stage_uploads(aprend_material material, std::vector<aprend_upload_copy> &copies);
 /* From the instance's destructor, once nothing is left on the release
  * queue: destroys every buffer of the material arena. */
 void aprend_material_arena_destroy(aprend_instance instance);
-/* A uniform buffer in the device's own memory, never mapped, written only
- * by copies: what the material arena's buffers are. NULL, printed, if the
- * device refuses it. */
-aprend_uniform_buffer aprend_uniform_buffer_create_device(aprend_instance instance, uint32_t size);
+/* A uniform buffer of [size] bytes in the device's own memory, never
+ * mapped, written only by copies Aprend records: what the material arena's
+ * buffers are. aprend_buffer_write refuses it. Promises no retire: the
+ * arena releases it itself (aprend_release_handle), once the GPU is done. */
+APRESULT aprend_buffer_create_device_uniform(
+    aprend_instance instance,
+    uint32_t size,
+    aprend_buffer *out_buffer,
+    APREND_ERROR *out_error);
 
 typedef struct aprend_render_pass_t {
 	char *debug_name{nullptr};
@@ -1176,7 +1192,7 @@ typedef struct aprend_render_pass_t {
 	~aprend_render_pass_t() = default;
 	aprend_instance instance{nullptr};
 	/* As the caller gave it, checked at creation. */
-	aprend_render_pass_desc desc{};
+	APREND_RENDER_PASS_DESC desc{};
 } aprend_render_pass_t;
 
 typedef struct aprend_compute_pass_t {
@@ -1184,10 +1200,10 @@ typedef struct aprend_compute_pass_t {
 	aprend_compute_pass_t() = default;
 	~aprend_compute_pass_t() = default;
 	aprend_instance instance{nullptr};
-	aprend_compute_pass_desc desc{};
+	APREND_COMPUTE_PASS_DESC desc{};
 } aprend_compute_pass_t;
 
-/* What aprend_send_command records for BEGIN_RENDER_PASS, SET_COMPUTE_PASS
+/* What aprend_command_list_send records for BEGIN_RENDER_PASS, SET_COMPUTE_PASS
  * and DRAW_LIST: each sends the commands it stands for into [cmd_list] and
  * returns false, with a message, for one that can't be expanded. */
 bool aprend_render_pass_expand(aprend_command_list cmd_list, aprend_render_pass pass);
@@ -1199,12 +1215,12 @@ typedef struct aprend_draw_list_t {
 	aprend_draw_list_t() = default;
 	~aprend_draw_list_t() = default;
 	aprend_instance instance{nullptr};
-	aprend_draw_list_desc desc{};
+	APREND_DRAW_LIST_DESC desc{};
 	/* One for each aprend_draw_list_add since the reset. The mesh is stored
 	 * with every slot past _vertex_buffer_count zeroed, so two meshes are the
 	 * same mesh exactly when their bytes are. */
 	struct draw {
-		aprend_draw_mesh mesh;
+		APREND_DRAW_MESH mesh;
 		aprend_material material;
 		uint32_t instance_count;
 		/* Where its instances start in instance_bytes, in instances. */
@@ -1259,16 +1275,19 @@ typedef struct aprend_draw_list_t {
 	apri_hash_index first_material{};
 	apri_hash_index first_vertex_buffers{};
 	apri_hash_index first_index_buffer{};
-	aprend_transient_span span{};
+	APREND_TRANSIENT_SPAN span{};
 	/* The list was built and nothing was added or reset since. */
 	bool built{false};
+	/* Debug builds' check of a recording, one caller to a list
+	 * (APREND_ENTER_LIST). */
+	apri_overlap entered{};
 } aprend_draw_list_t;
 
 /* The set of Aprend's bloom layout that reads [view] through the linear
  * sampler, kept by the view (aprend_texture_view_t::bloom_set) from the
  * first call and released with it. The bloom layout must exist
  * (aprend_builtin_bloom_pipeline has been asked for a pipeline). NULL,
- * printed, if the set can't be made. */
+ * reported, if the set can't be made. */
 aprend_binding_set aprend_texture_view_bloom_set(aprend_texture_view view);
 
 /* Whether a bloom can render onto targets of [format]: the formats

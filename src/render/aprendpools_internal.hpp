@@ -8,7 +8,7 @@
  * two pools are one thing over two kinds of buffer, so both handles hold an
  * aprend_pool_core and aprendpools.cpp is written against that.
  *
- * A block is an ordinary aprend_vertex_buffer or aprend_index_buffer: a
+ * A block is an ordinary aprend_buffer, of VERTEX or INDEX usage: a
  * command list binds it, finds its staged writes and orders them as it does
  * any other, and nothing in aprendcommands.cpp knows a pool exists. */
 
@@ -21,11 +21,11 @@
 #include <vector>
 
 struct aprend_pool_block {
-	/* An aprend_vertex_buffer or an aprend_index_buffer, by the pool's kind.
+	/* A VERTEX or INDEX buffer, by the pool's kind, written once a range.
 	 * NULL in a slot that holds no block: slots are never removed, so the
 	 * slot number a range carries stays good, and an empty one is the first
 	 * to be filled. */
-	void *buffer{nullptr};
+	aprend_buffer buffer{nullptr};
 	/* Which of the block's elements are free. A freed range is not among
 	 * them until the GPU has finished with it (aprend_pool_allocation). */
 	aprend_range_list ranges{};
@@ -70,6 +70,9 @@ APRI_PLAIN_DATA(aprend_pool_allocation);
 
 struct aprend_pool_core {
 	aprend_instance instance{nullptr};
+	/* The pool's own copy of its desc's debug_name, which its blocks are
+	 * named after; NULL for none. */
+	char *name{nullptr};
 	/* An index pool; a vertex pool otherwise. */
 	bool is_index{false};
 	/* An index pool's index size. */

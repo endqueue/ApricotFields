@@ -5,6 +5,7 @@
 // compiles and links as one.
 
 #include "apricore.h"
+#include "archive/aparchive.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,9 +55,30 @@ static void test_version(void)
     CHECK(APRICOTFIELDS_MAKE_VERSION(0, 1023, 4095) < APRICOTFIELDS_MAKE_VERSION(1, 0, 0));
 }
 
+// Debug names on a handle (any module's: an ApArchive codec table here):
+// stored, read back, replaced, removed; NULL objects accepted.
+static void test_debug_names(void)
+{
+    current_test = "test_debug_names";
+    aparchive_codecs codecs = NULL;
+    CHECK(aparchive_codecs_create(&codecs) == APRESULT_OK);
+    CHECK(apri_debug_name_get(codecs) == NULL);
+    static const char first[] = "codec table";
+    apri_debug_name_set(codecs, first);
+    CHECK(apri_debug_name_get(codecs) == first); // the pointer itself, not a copy
+    APRI_SET_DEBUG_NAME(codecs, "another");
+    CHECK(strcmp(APRI_GET_DEBUG_NAME(codecs), "another") == 0);
+    apri_debug_name_set(codecs, NULL);
+    CHECK(apri_debug_name_get(codecs) == NULL);
+    apri_debug_name_set(NULL, first);
+    CHECK(apri_debug_name_get(NULL) == NULL);
+    aparchive_codecs_destroy(codecs);
+}
+
 int main(void)
 {
     test_version();
+    test_debug_names();
     if (failures)
     {
         printf("%d failure(s)\n", failures);

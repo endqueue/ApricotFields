@@ -1,0 +1,40 @@
+// The batcher's push constants, set 0 and kinds (aprendbatch.h), shared by
+// its vertex shader and its four fragment shaders. aprendbatch.cpp's
+// aprend_batch_push and aprend_batch_record mirror them.
+
+layout(push_constant) uniform AprendBatchPush {
+    mat4 view_projection; // world space only
+    vec4 viewport;        // xy: the target's size in pixels; zw: their reciprocals
+    vec4 params;          // x: 1 screen space, 2 world; y: the atlas's distance range
+} u_batch;
+
+const uint BATCH_QUAD   = 0u;
+const uint BATCH_CIRCLE = 1u;
+const uint BATCH_LINE   = 2u;
+const uint BATCH_GLYPH  = 3u;
+
+// A line's flags (record r3.w), above its kind's two bits.
+const uint LINE_HAS_PREV  = 4u;
+const uint LINE_HAS_NEXT  = 8u;
+const uint LINE_CAP_SHIFT = 4u;  // 2 bits: 1 butt, 2 square, 3 round
+const uint LINE_JOIN_SHIFT = 6u; // 2 bits: 1 mitre, 2 bevel, 3 round
+const uint QUAD_TEXTURED  = 4u;
+
+// Where [p] lands on the screen: its clip position.
+vec4 batch_clip(vec3 p) {
+    if (u_batch.params.x > 1.5)
+        return u_batch.view_projection * vec4(p, 1.0);
+    // Pixels, y down, to SpudGPU's clip space (+Y down the target).
+    return vec4(p.xy * u_batch.viewport.zw * 2.0 - 1.0, 0.0, 1.0);
+}
+
+// A clip position's pixel.
+vec2 batch_pixel(vec4 clip) {
+    return (clip.xy / clip.w * 0.5 + 0.5) * u_batch.viewport.xy;
+}
+
+// Premultiplied, as the pipelines blend (one, one minus source alpha).
+vec4 batch_premultiply(vec4 c, float coverage) {
+    float a = clamp(c.a, 0.0, 1.0) * clamp(coverage, 0.0, 1.0);
+    return vec4(max(c.rgb, vec3(0.0)) * a, a);
+}

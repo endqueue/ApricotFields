@@ -37,35 +37,49 @@ static SPUDRESULT aprend_swap_chain_create_native(aprend_swap_chain_t *sc) {
 
 extern "C" {
 
-aprend_swap_chain aprend_swap_chain_create(
+APRESULT aprend_swap_chain_create(
 	aprend_instance instance,
-	const aprend_swap_chain_desc *desc) {
-	if (!instance || !desc)
-		return nullptr;
-	if (!aprend_base_ok("aprend_swap_chain_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC))
-		return nullptr;
-	if (!desc->surface || !desc->queue || !desc->width || !desc->height)
-		return nullptr;
-	if (!(instance->features & SPUDGPU_FEATURE_PRESENT)) {
-		printf("apricot: aprend_swap_chain_create: the device was created without SPUDGPU_FEATURE_PRESENT\n");
-		return nullptr;
-	}
+	const APREND_SWAP_CHAIN_DESC *desc,
+	aprend_swap_chain *out_swap_chain,
+	APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_swap_chain)
+		*out_swap_chain = nullptr;
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_swap_chain_create");
+	if (!desc)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
+	if (const APRESULT base = aprend_base_check(out_error, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC))
+		return base;
+	if (!desc->surface)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "surface is NULL");
+	if (!desc->queue)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "queue is NULL");
+	if (desc->width == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "width is 0");
+	if (desc->height == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "height is 0");
+	if (!(instance->features & SPUDGPU_FEATURE_PRESENT))
+		return aprend_fail(out_error, APRESULT_UNSUPPORTED, "the device was created without SPUDGPU_FEATURE_PRESENT");
+	if (!out_swap_chain)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_swap_chain is NULL");
 
 	APREND_MALLOC__T(result, aprend_swap_chain_t);
 	if (!result)
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the swap chain");
 	APREND_CONSTRUCT__T(result, aprend_swap_chain_t);
 	result->instance = instance;
 	result->desc     = *desc;
 
 	SPUDRESULT sr = aprend_swap_chain_create_native(result);
 	if (SPUDFAIL(sr)) {
-		printf("apricot: aprend_swap_chain_create failed: %s\n", spudresult_str(sr));
 		result->swap_chain = nullptr;
 		APREND_DESTRUCT__T(result, aprend_swap_chain_t);
-		return nullptr;
+		return aprend_fail_spud(out_error, sr, "creating the swap chain failed");
 	}
-	return result;
+	*out_swap_chain = result;
+	return APRESULT_OK;
 }
 void aprend_swap_chain_destroy(aprend_swap_chain swap_chain) {
 	if (!swap_chain)
@@ -74,14 +88,21 @@ void aprend_swap_chain_destroy(aprend_swap_chain swap_chain) {
 	aprend_instance_forget(swap_chain->instance, swap_chain);
 	APREND_DESTRUCT__T(swap_chain, aprend_swap_chain_t);
 }
-bool aprend_swap_chain_resize(
+APRESULT aprend_swap_chain_resize(
 	aprend_swap_chain swap_chain,
 	uint32_t width,
-	uint32_t height) {
-	if (!swap_chain || !width || !height)
-		return false;
+	uint32_t height,
+	APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!swap_chain)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is NULL");
+	APREND_ENTER(swap_chain->instance, "aprend_swap_chain_resize");
+	if (width == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "width is 0");
+	if (height == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "height is 0");
 	if (swap_chain->swap_chain && width == swap_chain->desc.width && height == swap_chain->desc.height)
-		return true;
+		return APRESULT_OK;
 
 	if (swap_chain->swap_chain) {
 		spudgpu_queue_wait_idle(swap_chain->desc.queue);
@@ -95,80 +116,82 @@ bool aprend_swap_chain_resize(
 
 	SPUDRESULT sr = aprend_swap_chain_create_native(swap_chain);
 	if (SPUDFAIL(sr)) {
-		printf("apricot: aprend_swap_chain_resize to %ux%u failed: %s\n", width, height, spudresult_str(sr));
 		swap_chain->swap_chain = nullptr;
-		return false;
+		return aprend_fail_spud(out_error, sr, "creating the swap chain at %ux%u failed", width, height);
 	}
-	return true;
+	return APRESULT_OK;
 }
-bool aprend_swap_chain_get_desc(
+APRESULT aprend_swap_chain_get_desc(
 	aprend_swap_chain swap_chain,
-	aprend_swap_chain_desc *out_desc) {
-	if (!swap_chain || !out_desc)
-		return false;
-	*out_desc      = swap_chain->desc;
+	APREND_SWAP_CHAIN_DESC *out_desc) {
+	if (!swap_chain)
+		return APRESULT_INVALID_ARGUMENT;
+	if (!out_desc)
+		return APRESULT_INVALID_ARGUMENT;
+	*out_desc           = swap_chain->desc;
 	out_desc->base.type = APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC;
 	out_desc->base.next = nullptr;
-	return true;
+	return APRESULT_OK;
 }
 
-bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain) {
+APRESULT aprend_swap_chain_acquire(aprend_swap_chain swap_chain, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
 	if (!swap_chain)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is NULL");
+	APREND_ENTER(swap_chain->instance, "aprend_swap_chain_acquire");
 	if (!swap_chain->swap_chain)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the swap chain has no back buffers since a resize failed");
 	if (swap_chain->acquired_image != APREND_SWAP_CHAIN_NO_IMAGE) {
-		if (swap_chain->submitted) {
-			printf("aprend: aprend_swap_chain_acquire before presenting the submitted back buffer\n");
-			return false;
-		}
+		if (swap_chain->submitted)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the submitted back buffer has not been presented yet");
 		// Acquired but never submitted (e.g. that frame's list failed to
 		// compile): it's still ours to use, so keep it.
-		return true;
+		return APRESULT_OK;
 	}
 	const uint32_t image = spudgpu_swap_chain_acquire_next_image(swap_chain->swap_chain);
 	// SpudGPU's acquire hands back UINT32_MAX when no image could be had.
-	if (image == SPUD_UINT32_MAX) {
-		printf("aprend: aprend_swap_chain_acquire: SpudGPU acquired no back buffer\n");
-		return false;
-	}
+	if (image == SPUD_UINT32_MAX)
+		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "SpudGPU acquired no back buffer");
 	swap_chain->acquired_image = image;
 	swap_chain->submitted      = false;
-	return true;
+	return APRESULT_OK;
 }
-bool aprend_swap_chain_get_back_buffer_size(
+APRESULT aprend_swap_chain_get_back_buffer_size(
 	aprend_swap_chain swap_chain,
 	uint32_t *out_width,
 	uint32_t *out_height) {
 	if (!swap_chain)
-		return false;
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_width)
-		return false;
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_height)
-		return false;
+		return APRESULT_INVALID_ARGUMENT;
 	if (!swap_chain->swap_chain)
-		return false;
+		return APRESULT_INVALID_ARGUMENT;
 	spudgpu_swap_chain_desc actual{};
 	actual.base.type = SPUD_STRUCT_TYPE_GPU_SWAP_CHAIN_DESC;
-	if (SPUDFAIL(spudgpu_get_swap_chain_desc(swap_chain->swap_chain, &actual)))
-		return false;
+	const SPUDRESULT sr = spudgpu_get_swap_chain_desc(swap_chain->swap_chain, &actual);
+	if (SPUDFAIL(sr))
+		return aprend_result_from_spud(sr);
 	*out_width  = actual.width;
 	*out_height = actual.height;
-	return true;
+	return APRESULT_OK;
 }
-bool aprend_swap_chain_present(aprend_swap_chain swap_chain) {
+APRESULT aprend_swap_chain_present(aprend_swap_chain swap_chain, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
 	if (!swap_chain)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is NULL");
+	APREND_ENTER(swap_chain->instance, "aprend_swap_chain_present");
 	if (!swap_chain->swap_chain)
-		return false;
-	if (swap_chain->acquired_image == APREND_SWAP_CHAIN_NO_IMAGE || !swap_chain->submitted) {
-		printf("aprend: aprend_swap_chain_present without a submitted list presenting into the acquired back buffer\n");
-		return false;
-	}
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the swap chain has no back buffers since a resize failed");
+	if (swap_chain->acquired_image == APREND_SWAP_CHAIN_NO_IMAGE)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "no back buffer is acquired");
+	if (!swap_chain->submitted)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "no list presenting into the acquired back buffer has been submitted");
 	spudgpu_swap_chain_present(swap_chain->swap_chain);
 	swap_chain->acquired_image = APREND_SWAP_CHAIN_NO_IMAGE;
 	swap_chain->submitted      = false;
-	return true;
+	return APRESULT_OK;
 }
 
 } // extern "C"

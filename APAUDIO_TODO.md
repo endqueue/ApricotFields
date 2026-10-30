@@ -5,7 +5,7 @@ audio framework (FMOD, Wwise, miniaudio, XAudio2, AVAudioEngine). ApAudio is in 
 build (`CMakeLists.txt`, with headless tests in `tests/apaudio_tests.c`), and
 `src/audio/apaudio.cpp` implements the whole header: the "For the implementation"
 notes below describe what it does, except where it says otherwise at the top of
-that file. `apricotfields.h` doesn't include it yet.
+that file. It is included on its own: `aprend.h` is Aprend's umbrella only.
 
 Items 1-4, the design bugs that were cheap to fix before implementing and
 expensive after, are fixed in the header, and so are items 5, 6 and 11 (6 and 11 as
@@ -17,9 +17,19 @@ Cues and sound banks - names over the mixer, defined by a manifest and its WAVs 
 `include/audio/apaudiocues.h` (`src/audio/apaudiocues.cpp`), general purpose so any
 application has them. Its only test is `test_cues_clear_banks` in
 `tests/apaudio_tests.c`, which loads banks from memory and clears them
-(`apaudio_cues_clear_banks()`); the manifest's rules, playing, sustained playings
-and ducking are untested here. That call and its test are compiled and pass on
+(`apaudio_cues_clear_banks()`); since 2026-10-30 `test_cues_playing` covers
+playing, sustained playings, exclusive starts, enabling, muting, the
+playing limit, the sample rate and ZIP banks; the manifest's rules and
+ducking's levels are still untested here. That call and its test are compiled and pass on
 macOS (2026-10-22).
+
+**What has run where (2026-10-30):** the dither, the limiter, collecting,
+the folded flag and the three decoders build and pass `apaudio_tests` on
+macOS (Apple M5 Pro, Debug) plain, under ASan and under TSan, and
+`apaudio_fuzz` ran there (below, item 15). A caller's audio tests pass
+over it. **Windows and Linux have built none of it**: there, libopus
+through its own CMake under MSVC and GCC, libogg's `config_types.h` as
+written here, `apaudio_tests` and the fuzz target's replay.
 
 ## Wrong things: design bugs in the draft
 
@@ -173,7 +183,7 @@ was also a weak policy.
   audio thread through a lock-free double buffer. The fast path uses the scores
   from the last update.
 
-### 7. The integer output path is crude
+### 7. The integer output path is crude - fixed
 
 Integer formats are hard-clipped with no limiter and no dither. A dozen overlapping
 clicks can easily sum past 1.0.
@@ -184,8 +194,25 @@ clicks can easily sum past 1.0.
   output needs none); a lookahead limiter as an explicit field of the mixer's
   desc with no default, on or off by the caller's choice, since it changes the
   sound. As FMOD and Wwise.
+- **Built 2026-10-30.** 16-bit output adds two uniform draws of half a
+  bit each (a mixer-owned xorshift on the audio thread) before rounding;
+  24- and 32-bit output aren't dithered. `APAUDIO_MIXER_DESC::limiter`
+  (`APAUDIO_LIMITER_OFF` or `_ON`; 0 refused) with
+  `limiter_lookahead_us` (1 to 100,000), `limiter_release_us` and
+  `limiter_ceiling` (0 to 1], read only with it on. The limiter takes
+  each frame's gain need (ceiling over its loudest channel), a sliding
+  minimum over the lookahead, then a box average over the lookahead
+  again - smooth, and at or below every need it passes, so nothing goes
+  over the ceiling - and lets the gain back up no faster than the
+  release; the mix comes out a lookahead late. Its buffers are made with
+  the format's (create, `apaudio_mixer_set_format`): nothing allocates or
+  locks on the audio thread. Tested (`test_dither`, `test_limiter`):
+  silence dithers to a bit either side, a quarter-bit level averages back
+  out of the dither, a quiet sound passes untouched a lookahead late, a
+  mix of 2 never passes a 0.9 ceiling and settles on it, the same mix
+  clips with the limiter off, and the refusals.
 
-### 8. Folding rear sounds to the front is misleading on stereo
+### 8. Folding rear sounds to the front is misleading on stereo - the flag built
 
 On a stereo layout a sound behind the listener is mirrored to the front, so it
 sounds like one in front. For an accessibility use, that's actively wrong.
@@ -194,6 +221,12 @@ sounds like one in front. For an accessibility use, that's actively wrong.
   least a flag saying the direction was folded.
 - **Decided 2026-10-28 with the user (card A26):** the flag now, on the voice, saying its direction was
   folded from behind; the low-pass cue once item 12's per-voice filter exists.
+- **Flag built 2026-10-30:** `apaudio_voice_is_folded(mixer, voice)`
+  ("any" role), what the last render that panned the voice found: the
+  render stores the voice's ID in an atomic when a ring it pans on has the
+  rear gap and the direction lies in it. Tested (`test_folded`): behind on
+  stereo folded, ahead and directionless not, a turn to face it clears
+  it, behind on 5.1 not. The low-pass cue waits for item 12.
 
 ### 9. Smaller problems
 
@@ -201,7 +234,11 @@ sounds like one in front. For an accessibility use, that's actively wrong.
   hold it indefinitely. An explicit `apaudio_mixer_collect()` is clearer.
   **Decided 2026-10-28 with the user (card A26):** the explicit `apaudio_mixer_collect()`, called by the
   owner from its update (the root `CLAUDE.md`'s "Threading": nothing behind the
-  caller's back).
+  caller's back). **Built 2026-10-30:** `apaudio_mixer_collect()` (control);
+  the update, `apaudio_mixer_set_format()` and `apaudio_sound_destroy()`
+  no longer free anything, and `apaudio_sound_create()` collects only when
+  it finds every slot taken. Tested (`test_collect`); ASan and leaks see
+  the rest. A caller's audio update calls it after the mixer's.
 - **A play that ends before sounding is invisible to the caller.** A play dropped
   by its group's `REJECT_NEW` or `retrigger_us`, or killed for lack of a real slot,
   still got a voice ID from `apaudio_play`, and the caller can't find out. Item 13's
@@ -238,7 +275,7 @@ part of this: whether a voice has ended. Why it ended, and events, are still mis
 
 No peak levels, active voice count, audio-thread CPU time or glitch counts.
 
-### 15. Streaming and compressed formats
+### 15. Streaming and compressed formats - the decoders built
 
 Sounds are whole, in memory, and WAV only. Fine for clicks, not for anything longer.
 Needs streamed voices and FLAC, Opus and Vorbis decoders.
@@ -246,6 +283,51 @@ Needs streamed voices and FLAC, Opus and Vorbis decoders.
 **Decided 2026-10-28 with the user (card A26):** dr_flac (FLAC), libopus with opusfile (Opus), stb_vorbis
 (Ogg Vorbis), all small and permissively licensed, vendored in `../.deps/`
 and linked privately. No MP3: Opus does more at the sizes that matter.
+
+**Decoders built 2026-10-30:** `apaudio_flac_decode`, `apaudio_vorbis_decode`
+and `apaudio_opus_decode`, each a whole file in memory to an `APAUDIO_PCM`
+as the WAV decode is, with a `max_frames` the caller sets
+(`APRESULT_LIMIT` past it: silence compresses to nothing). Pinned and
+fetched when `../.deps/` has no copy: dr_libs `flac-0.13.3`, stb at
+`003501f`, libogg `v1.3.6`, libopus `v1.5.2` (its own CMake, float,
+static), opusfile `v0.12` (no HTTP); each its own static library, warnings
+off, linked PRIVATE (`CMakeLists.txt`, "ApAudio's decoders"). No room is
+sized from a length a file states past what its bytes could decode to
+(4,096 frames a byte for Vorbis, 5,760 for Opus, 65,536 for FLAC); it grows
+as frames decode. dr_flac and stb_vorbis are read as they are and written
+into the build directory changed, as Hosek and Wilkie's data is: dr_flac,
+without SIMD, never writes its CPU capability flags; stb_vorbis's CRC table
+is constants (`src/audio/apaudio_vorbis_crc.inc`) and its other tables
+`const`, so decodes on many threads write no shared memory. stb_vorbis gets
+a 2 MiB arena for its state, and five fixes for what `apaudio_fuzz` found
+(below). Opus comes back at 48 kHz always. Tested (`test_decoders`,
+`tests/data/apaudio/`, a 0.1 s two-tone stereo file made with ffmpeg as
+WAV, FLAC, Vorbis and Opus): FLAC equal to the WAV sample for sample,
+Vorbis and Opus the WAV's length, channels, rate and energy within a
+tenth, each refusing the others' files, garbage, empty input, NULLs, a
+`max_frames` of 0, and too few frames, a truncated file decoding or
+refused, never past its end.
+
+`apaudio_fuzz` (`tests/fuzz/`, new; the first byte picks the decoder, the
+seeds are the four test files) found, in its first hour on macOS:
+- stb_vorbis: a vendor or comment length past 2^31 read as negative, so
+  `len + 1` wrapped and its setup allocators returned memory outside their
+  buffer (a heap use-after-free with the arena, a write before the buffer
+  without it); a comment list whose allocation failed read as NULL while
+  tearing down; a codebook of dimension 0 dividing by it. Fixed in the
+  rewrite: lengths below 0 refused, the allocators refuse sizes below 0 or
+  that would wrap, the teardown checks the list, a zero dimension is an
+  invalid setup. Its signed shifts, wrapping sums and out-of-range float
+  casts - undefined in C, harmless on every compiler here - are left to
+  ASan: UBSan's checks for those three are off for it alone.
+- ApricotFields' own: the Vorbis room sized from a stated length of 33 GB,
+  and a FLAC message read after its decoder was closed. Fixed.
+After the fixes, a last 15-minute run from the corpus (1,135,369 inputs,
+Debug, ASan and UBSan) found nothing. Not run on Windows or Linux.
+Each input is kept in `tests/fuzz/regressions/apaudio_fuzz/` and replayed
+by every build. Not done: streamed voices (decoding into a ring the owner's
+update fills, so the audio thread never decodes or allocates) - a design
+of its own, next.
 
 ### 16. Spatial audio beyond angles at play time
 

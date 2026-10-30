@@ -1,6 +1,7 @@
 /*
  * Built in src/audio/apaudio.cpp, with headless tests in
- * tests/apaudio_tests.c. apricotfields.h doesn't include it yet.
+ * tests/apaudio_tests.c. It is not part of
+ * aprend.h, which is Aprend's alone.
  */
 
 #ifndef APAUDIO_H
@@ -217,15 +218,25 @@ typedef struct APAUDIO_FORMAT {
  * ApricotFields was built with.
  *
  * @param[in] format The format, e.g. a stream's granted
- *                   SPUDAUDIO_STREAM_CONFIG `format`. Not NULL.
+ *                   SPUDAUDIO_STREAM_CONFIG `format`.
  *
  * @return @p format as an APAUDIO_FORMAT. It points into @p format's
  *         `positions`: keep @p format alive until the call taking the
- *         result returns.
+ *         result returns. A NULL @p format gives a zeroed one, which every
+ *         call taking a format refuses.
  */
 static inline APAUDIO_FORMAT apaudio_format_from_spudaudio(const SPUDAUDIO_FORMAT *format)
 {
 	APAUDIO_FORMAT result;
+	if (!format)
+	{
+		result.sample_format = (SPUDAUDIO_SAMPLE_FORMAT)0;
+		result.sample_rate = 0;
+		result.channel_count = 0;
+		result.interleaved = false;
+		result.positions = 0;
+		return result;
+	}
 	result.sample_format = format->sample_format;
 	result.sample_rate = format->sample_rate;
 	result.channel_count = format->channel_count;
@@ -295,7 +306,34 @@ enum {
 };
 
 /**
+ * @brief Whether a mixer's output goes through its lookahead limiter.
+ *
+ * The limiter keeps every output sample within the desc's
+ * `limiter_ceiling`: it delays the mix by `limiter_lookahead_us`, sees a
+ * peak coming, and lowers the gain smoothly over that time so the peak
+ * arrives at the ceiling, then lets it back up over `limiter_release_us`.
+ * It changes the sound - a loud moment is quieter, and everything is that
+ * much later - so it is the caller's choice, with no default. Without it,
+ * a mix past full scale is clipped.
+ */
+typedef uint32_t APAUDIO_LIMITER;
+enum {
+	/** Rejected (zeroed descs choose nothing). */
+	APAUDIO_LIMITER_UNSPECIFIED = 0,
+	/** No limiter: integer output is clipped at full scale. */
+	APAUDIO_LIMITER_OFF = 1,
+	/** The lookahead limiter, as the desc's `limiter_` fields set it. */
+	APAUDIO_LIMITER_ON = 2,
+};
+
+/**
  * @brief Configuration descriptor for a mixer.
+ *
+ * Integer output: 16-bit output is dithered (TPDF, one least significant
+ * bit), always, so quiet sounds fade into noise rather than distortion;
+ * 24- and 32-bit output isn't, its rounding being below any converter's
+ * noise. Float output is written as mixed. Past full scale, integer output
+ * is clipped unless the limiter keeps it below.
  */
 typedef struct APAUDIO_MIXER_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC, and its chain (apricore.h, "Struct bases"). */
@@ -357,6 +395,24 @@ typedef struct APAUDIO_MIXER_DESC {
 	 * Finite, >= 0.
 	 */
 	float gain;
+	/** OFF or ON; there is no default. @see APAUDIO_LIMITER */
+	APAUDIO_LIMITER limiter;
+	/**
+	 * With the limiter on: how far ahead it looks, and so how much later
+	 * everything sounds, in microseconds. Not 0; at most 100,000 (0.1 s).
+	 * 1,000 to 5,000 is usual. Not read with it off.
+	 */
+	uint32_t limiter_lookahead_us;
+	/**
+	 * With the limiter on: how long the gain takes to come back from a
+	 * full reduction, in microseconds. Not 0. Not read with it off.
+	 */
+	uint32_t limiter_release_us;
+	/**
+	 * With the limiter on: the most any output sample reaches, linear, in
+	 * (0, 1]; 1 is full scale. Not read with it off.
+	 */
+	float limiter_ceiling;
 } APAUDIO_MIXER_DESC;
 
 /**
@@ -417,18 +473,33 @@ APRESULT apaudio_mixer_set_format(
 
 /**
  * @brief Ranks every voice and decides which are real (this file's
- * "Prioritization"), applies concurrency groups' limits, starts and ends
- * triggered modifiers (ducking), and frees the memory of destroyed sounds
- * the audio thread has let go of.
+ * "Prioritization"), applies concurrency groups' limits, and starts and
+ * ends triggered modifiers (ducking).
  *
  * Thread: control. Call it once a frame - a main loop, a render loop.
  * Without it, new plays still start at once (the render's fast path), but
- * virtual voices never come back and destroyed sounds' memory waits for the
- * next control call. Never blocks on the audio thread.
+ * virtual voices never come back. Never blocks on the audio thread. It
+ * frees nothing: apaudio_mixer_collect() does.
  *
  * @param[in] mixer Mixer to update.
  */
 void apaudio_mixer_update(apaudio_mixer mixer);
+
+/**
+ * @brief Frees the memory of destroyed sounds the audio thread has let go
+ * of.
+ *
+ * A destroyed sound's samples stay until a render that began after its
+ * destroy has finished, since a render may be reading them; this frees
+ * those that have, and nothing else does but apaudio_sound_create() when it
+ * finds every sound slot taken, and the mixer's destroy. Call it from the
+ * same loop as apaudio_mixer_update(), or whenever memory matters.
+ *
+ * Thread: control. Never blocks on the audio thread.
+ *
+ * @param[in] mixer Mixer to collect. NULL is accepted and does nothing.
+ */
+void apaudio_mixer_collect(apaudio_mixer mixer);
 
 /* ---- Rendering ------------------------------------------------------- */
 
@@ -947,7 +1018,8 @@ typedef uint64_t APAUDIO_VOICE;
  * speakers (constant power; on stereo that's ordinary stereo panning). LFE,
  * NA and AUX channels get none of it. A layout without height speakers
  * ignores `elevation`; one without rear speakers (stereo) folds sounds
- * behind to the front, mirrored, since it can't place them behind.
+ * behind to the front, mirrored, since it can't place them behind
+ * (apaudio_voice_is_folded() says when it has).
  */
 /* Frozen: a value. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_DIRECTION {
@@ -1075,6 +1147,27 @@ bool apaudio_voice_is_live(
     APAUDIO_VOICE voice);
 
 /**
+ * @brief Whether a voice's direction was folded from behind: on a layout
+ * with no speakers behind the listener (stereo), a sound from behind is
+ * played mirrored to the front, which sounds like one in front.
+ *
+ * Thread: any. What the last render that panned the voice found: a voice
+ * not yet rendered, or with no direction, isn't folded. A caller for whom
+ * "in front" and "behind" must not be confused (an accessibility use) can
+ * tell its user so another way. A filter that makes behind sound behind
+ * waits for per-voice effects (APAUDIO_TODO.md, items 8 and 12).
+ *
+ * @param[in] mixer Mixer it belongs to.
+ * @param[in] voice Voice to check.
+ *
+ * @return true if the voice's direction is folded; false if it isn't, or
+ *         for a finished, unknown or 0 voice, or a null @p mixer.
+ */
+bool apaudio_voice_is_folded(
+    apaudio_mixer mixer,
+    APAUDIO_VOICE voice);
+
+/**
  * @brief Changes a voice's gain as it plays.
  *
  * The rules are in this file's "Changing a voice".
@@ -1125,7 +1218,7 @@ APRESULT apaudio_voice_set_rate(
     APAUDIO_VOICE voice,
     float rate);
 
-/* ---- WAV ------------------------------------------------------------- */
+/* ---- Decoding -------------------------------------------------------- */
 
 /**
  * @brief Decoded samples, as APAUDIO_SOUND_DESC takes them.
@@ -1166,7 +1259,89 @@ APRESULT apaudio_wav_decode(
     APAUDIO_PCM *out_pcm,
     APAUDIO_ERROR *error);
 /**
- * @brief Frees what apaudio_wav_decode() decoded, and zeroes @p pcm.
+ * @brief Decodes a FLAC file held in memory (dr_flac).
+ *
+ * Thread: any (it touches no mixer). Any bit depth and channel count FLAC
+ * has; Ogg-wrapped FLAC isn't read.
+ *
+ * @param[in]  data    The file's bytes. May be NULL only if @p size is 0.
+ * @param[in]  size    How many bytes @p data holds.
+ * @param[in]  max_frames The most frames the caller takes: a file can
+ *                     decode to far more than its bytes suggest (silence
+ *                     compresses to almost nothing). Not 0.
+ * @param[out] out_pcm The decoded samples, to free with apaudio_pcm_free();
+ *                     zeroed on failure.
+ * @param[out] error   Why it failed, if it did. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p out_pcm is NULL,
+ *         @p data is NULL with a size, or @p max_frames is 0;
+ *         APRESULT_CORRUPT_DATA for bytes that aren't a FLAC file it can
+ *         decode, an empty one included; APRESULT_LIMIT for a file that
+ *         decodes to more than @p max_frames; APRESULT_OUT_OF_MEMORY.
+ */
+APRESULT apaudio_flac_decode(
+    const void *data,
+    uint64_t size,
+    uint64_t max_frames,
+    APAUDIO_PCM *out_pcm,
+    APAUDIO_ERROR *error);
+
+/**
+ * @brief Decodes an Ogg Vorbis file held in memory (stb_vorbis).
+ *
+ * Thread: any (it touches no mixer). Every logical stream after the first
+ * is ignored. The decoder's own state lives in 2 MiB set aside for each
+ * call, whatever the file asks for: ordinary files need a fraction of it.
+ *
+ * @param[in]  data    The file's bytes. May be NULL only if @p size is 0.
+ * @param[in]  size    How many bytes @p data holds.
+ * @param[in]  max_frames The most frames the caller takes: a file can
+ *                     decode to far more than its bytes suggest (silence
+ *                     compresses to almost nothing). Not 0.
+ * @param[out] out_pcm The decoded samples, to free with apaudio_pcm_free();
+ *                     zeroed on failure.
+ * @param[out] error   Why it failed, if it did. May be NULL.
+ *
+ * @return As apaudio_flac_decode(), for an Ogg Vorbis file; also
+ *         APRESULT_LIMIT for a file of 2 GiB or more, or one whose setup
+ *         needs more than the decoder's 2 MiB.
+ */
+APRESULT apaudio_vorbis_decode(
+    const void *data,
+    uint64_t size,
+    uint64_t max_frames,
+    APAUDIO_PCM *out_pcm,
+    APAUDIO_ERROR *error);
+
+/**
+ * @brief Decodes an Ogg Opus file held in memory (libopus and opusfile).
+ *
+ * Thread: any (it touches no mixer). Opus decodes at 48,000 frames a
+ * second whatever rate the file was made from, and the samples come back
+ * at 48,000: the mixer resamples a sound to its own rate. The file's
+ * output gain is applied; its pre-skip is dropped.
+ *
+ * @param[in]  data    The file's bytes. May be NULL only if @p size is 0.
+ * @param[in]  size    How many bytes @p data holds.
+ * @param[in]  max_frames The most frames the caller takes: a file can
+ *                     decode to far more than its bytes suggest (silence
+ *                     compresses to almost nothing). Not 0.
+ * @param[out] out_pcm The decoded samples, to free with apaudio_pcm_free();
+ *                     zeroed on failure.
+ * @param[out] error   Why it failed, if it did. May be NULL.
+ *
+ * @return As apaudio_flac_decode(), for an Ogg Opus file.
+ */
+APRESULT apaudio_opus_decode(
+    const void *data,
+    uint64_t size,
+    uint64_t max_frames,
+    APAUDIO_PCM *out_pcm,
+    APAUDIO_ERROR *error);
+
+/**
+ * @brief Frees what a decode call decoded (apaudio_wav_decode() and the
+ * others), and zeroes @p pcm.
  *
  * @param[in,out] pcm Samples to free. NULL is accepted and does nothing.
  */

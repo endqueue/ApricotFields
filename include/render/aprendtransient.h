@@ -39,17 +39,17 @@ extern "C" {
  * The memory is the CPU's to write and never to read: reading `data` back is
  * outside the contract and slow where it works. It is not zeroed.
  *
- * What it is not for: data kept from frame to frame (a vertex buffer or a
- * pool, aprendbuffers.h), and uniform or storage data, which a binding set
- * reads through a buffer or a buffer set.
+ * What it is not for: data kept from frame to frame (a buffer or a pool,
+ * aprendbuffers.h), and uniform or storage data, which a binding set reads
+ * through a buffer, one of per-frame copies where it changes each frame.
  *
  * An instance has transient memory only if it was created with
- * aprend_instance_desc::transient_chunk_size above 0.
+ * APREND_INSTANCE_DESC::transient_chunk_size above 0.
  *
  * Aprend takes spans of it as well: a submission copies a material's
  * changed uniform blocks through it (aprendmaterial.h). They count in
  * aprend_transient_get_frame_usage() and against
- * aprend_instance_desc::transient_memory_limit.
+ * APREND_INSTANCE_DESC::transient_memory_limit.
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"). aprend_transient_allocate()
@@ -65,7 +65,7 @@ extern "C" {
  * There is nothing to destroy.
  */
 /* Frozen: a value, held by value in APREND_COMMAND. It never changes; a new need gets a new type. */
-typedef struct aprend_transient_span {
+typedef struct APREND_TRANSIENT_SPAN {
 	/**
 	 * Where the caller writes its vertices or indices. #size bytes, at an
 	 * address that is a multiple of the alignment asked for. Written, never
@@ -82,7 +82,7 @@ typedef struct aprend_transient_span {
 	uint64_t _epoch;
 	/** Aprend's, as #_chunk. */
 	uint32_t _frame;
-} aprend_transient_span;
+} APREND_TRANSIENT_SPAN;
 
 /**
  * @brief Takes @p size bytes of transient memory for the current frame.
@@ -93,23 +93,27 @@ typedef struct aprend_transient_span {
  *                       two, not 0. For an index span, at least the size of
  *                       one index. For a vertex span, 4 suits every format.
  * @param[out] out_span  Receives the span. Zeroed on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false if @p instance or @p out_span is NULL, @p size is 0,
- *         @p alignment is 0 or not a power of two, the instance was created
- *         with no transient memory, the device refuses more memory, or
- *         aprend_instance_desc::transient_memory_limit would be passed.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_span is NULL, @p size is 0, or @p alignment is 0 or not a
+ *         power of two; APRESULT_LIMIT if the instance was created with no
+ *         transient memory or APREND_INSTANCE_DESC::transient_memory_limit
+ *         would be passed; APRESULT_OUT_OF_MEMORY; or the code for
+ *         SpudGPU's result if the device refuses more memory.
  */
-bool aprend_transient_allocate(
+APRESULT aprend_transient_allocate(
     aprend_instance instance,
     uint64_t size,
     uint64_t alignment,
-    aprend_transient_span *out_span);
+    APREND_TRANSIENT_SPAN *out_span,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Bytes of transient memory taken in the current frame so far,
  * padding for alignment included.
  *
- * For sizing aprend_instance_desc::transient_chunk_size.
+ * For sizing APREND_INSTANCE_DESC::transient_chunk_size.
  *
  * @param[in] instance Instance to read.
  *

@@ -17,6 +17,13 @@ and triangulation).
   `apmath_poly_offset_edges` and its tests, added after, likewise build and
   pass (reported 2026-10-15). `apmath_poly_skeleton` and its tests were added
   after that.
+- **2026-10-30, macOS (Apple M5 Pro), Debug and Release:** the polygon
+  work of card A21 and the autonomous list (below): `apmathpoly_tests`
+  with its new skeleton, location and round-join tests, and
+  `apmathpoly_bits_tests`, whose hashes Debug and Release both match;
+  plain and under ASan. A caller's model tests (its roofs use the offset
+  and the skeleton) pass over it. **Windows and Linux never built**: the
+  bits test is the one to run there first.
 - **2026-10-17, macOS (Apple M5 Pro), Debug and Release:** all nine of
   ApricotFields' headless tests pass, `apmathpoly_tests` and the skeleton's
   among them, and a caller's model tests (its roofs use the offset) pass over
@@ -30,10 +37,14 @@ and triangulation).
 
 - [ ] **Build and run the tests** on Windows (MSVC: the 128-bit products are
       written out for it, and `/fp:contract` must stay off) and Linux.
-- [ ] **Same bits everywhere.** A test that runs a fixed set of booleans and
-      triangulations and compares a hash of every output array against a value
-      recorded once - then the same value on all three platforms. That is the
-      claim the header makes, and nothing checks it yet.
+- [x] **Same bits everywhere** (2026-10-30): `tests/apmathpoly_bits_tests.c`
+      runs a fixed set of booleans (every operation and fill), point
+      locations, triangulations, offsets (mitred and round, out and in, a
+      hole) and skeletons (a hole, mixed weights, a merge on one line), and
+      compares an FNV-1a hash of every output with the 107 values recorded
+      on macOS (`tests/data/apmathpoly/bits.inc`), which Debug and Release
+      both give. `--print` writes them out. Left: the same values on
+      Windows and Linux.
 - [ ] **Clipper2 under this repo's warnings.** Its sources are built with this
       repo's flags, not its own `-Werror`; they build with C++26 on the one
       platform reported, so check GCC and MSVC.
@@ -83,26 +94,54 @@ and these are the cases it meets least gracefully - none breaks it, but each is
 where a result could be less than exact. A test for each, from real footprints,
 before relying on them:
 
-- [ ] Several reflex corners reaching one edge at once, or one reaching a
+- [x] Several reflex corners reaching one edge at once, or one reaching a
       vertex exactly (a "vertex event"): handled as a split at the edge's end,
-      then a collapse of the empty edge that leaves.
-- [ ] Two edges that come to follow each other on one line mid-way with
+      then a collapse of the empty edge that leaves. Tested 2026-10-30
+      (`test_skeleton_degenerate`): a comb whose two notches reach the
+      bottom at once, a chevron whose notch reaches the opposite tip, a
+      plus whose four reflex corners meet in the middle, an octagon closing
+      at one point; every face closes and they cover the polygon.
+- [x] Two edges that come to follow each other on one line mid-way with
       different weights: the faster leads, which is a guess, not a rule.
       **Decided 2026-10-28 with the user (card A21): the rule.** The
       larger weight (the faster edge) wins the shared line; on equal
       weights, the edge earlier in the input. Written in the header and
       tested with a footprint that reaches it, so every platform builds
-      the same skeleton.
-- [ ] A face walk through a node with more than two traces meeting in one
-      face: the first unused trace is taken.
+      the same skeleton. **Built 2026-10-30** (`merge_on_line`): the
+      loser's face is closed along the line from the event to its other
+      end, whose vertex goes on beside the winner. Tested
+      (`test_skeleton_on_one_line`) with a step whose low edge at weight 2
+      catches the high one at 1, and a bump whose halves meet at equal
+      weight; before the rule both footprints failed outright ("never
+      closes").
+- [x] A face walk through a node with more than two traces meeting in one
+      face: the first unused trace is taken. Since 2026-10-30 the walk takes
+      the trace that turns most to the right (the face is on its left),
+      ordered by a pseudo-angle from a division, not `atan2`, so it is the
+      same everywhere; the plus and the octagon reach it.
 
 ### Not built
 
-- [ ] **Round joins** for offsets. `apmath_poly_offset_edges` mitres and
-      bevels only; a round corner is a tessellated arc, which is a caller's
-      tolerance to choose.
-- [ ] **Skeletons of polygons with holes.** `apmath_poly_skeleton` takes one
-      ring (`APRESULT_UNSUPPORTED` otherwise); the wavefront of a hole is the
-      same simulation with more loops, and splits between loops.
-- [ ] **Point in polygon** for a set (winding number under a fill rule) as a
-      call. The validity check has an exact one inside it.
+- [x] **Round joins** for offsets (2026-10-30): `APMATH_POLY_OFFSET_DESC`'s
+      `join` (`APMATH_POLY_JOIN_MITER`, 0, as before, or `_ROUND`) and
+      `arc_tolerance`. A corner the move opens is an arc about the original
+      corner, the radius going from one edge's distance to the other's,
+      halved in angle as often as the tolerance needs with arithmetic and
+      square roots only (the same on every platform); a corner the move
+      closes is mitred either way, and which edges go is still worked out
+      from mitred corners. Tested (`test_offset_round`): every point of a
+      square grown by 1000 within a unit of 1000 from it, its area that of
+      the rounded square less the chords, finer tolerances giving more
+      points, an inward move identical to the mitred one, a hole, uneven
+      distances, and the refusals.
+- [x] **Skeletons of polygons with holes** (2026-10-30): the set is polygons
+      with holes; each ring is a loop of the wavefront, and a reflex corner
+      may reach an edge of any loop, which splits its own loop or joins two.
+      Tested (`test_skeleton_holes`): a centred hole (every face a
+      trapezoid), one off to a side, and two holes, the faces covering the
+      polygon round them.
+- [x] **Point in polygon** (2026-10-30): `apmath_poly_locate_point(set,
+      fill, point)` gives inside, outside or on an edge, from an exact
+      winding number over any rings. Tested against a slow angle sum in
+      doubles at 8,000 random points of random crossing rings, under every
+      fill rule, and on edges, corners and level with a vertex.

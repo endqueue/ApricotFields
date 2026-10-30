@@ -16,7 +16,7 @@
  * The rule is in aprendcontext.h ("Threads"). What is particular to a
  * command list:
  *
- * - aprend_send_command() and aprend_command_list_reset() write the list and
+ * - aprend_command_list_send() and aprend_command_list_reset() write the list and
  *   nothing else, so different lists may be recorded at once, one caller to
  *   a list, overlapping other calls on the instance (both are marked). What
  *   the commands name must not be destroyed meanwhile.
@@ -36,14 +36,8 @@
 extern "C" {
 #endif // __cplusplus
 
-/** Opaque handle to a vertex buffer (aprendbuffers.h). */
-typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
-/** Opaque handle to an index buffer (aprendbuffers.h). */
-typedef struct aprend_index_buffer_t *aprend_index_buffer;
-/** Opaque handle to a storage buffer (aprendbuffers.h). */
-typedef struct aprend_storage_buffer_t *aprend_storage_buffer;
-/** Opaque handle to a set of storage buffers (aprendbuffers.h). */
-typedef struct aprend_storage_buffer_set_t *aprend_storage_buffer_set;
+/** Opaque handle to a buffer (aprendbuffers.h). */
+typedef struct aprend_buffer_t *aprend_buffer;
 /** Opaque handle to a graphics pipeline (aprendpipeline.h). */
 typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
 /** Opaque handle to a compute pipeline (aprendpipeline.h). */
@@ -183,7 +177,7 @@ enum {
 /**
  * @brief Upper bound on color targets in one BEGIN_RENDERING pass.
  *
- * aprend_color_target and aprend_depth_target (aprendimages.h) describe how
+ * APREND_COLOR_TARGET and APREND_DEPTH_TARGET (aprendimages.h) describe how
  * one pass uses each attachment view. Zero-initialized ops mean LOAD and
  * STORE.
  */
@@ -276,7 +270,7 @@ enum {
 	 * array views of the same number of layers, which makes it a layered
 	 * pass: every layer is rendered to, cleared and stored together, and the
 	 * pass's vertex or mesh shader writes the layer each primitive is drawn
-	 * to (aprend_texture_view_desc, aprendimages.h). Mixing the two shapes
+	 * to (APREND_TEXTURE_VIEW_DESC, aprendimages.h). Mixing the two shapes
 	 * or two layer counts in one pass fails the compile.
 	 */
 	APREND_COMMAND_BEGIN_RENDERING        = 10,
@@ -375,16 +369,15 @@ enum {
 	 */
 	APREND_COMMAND_DISPATCH               = 16,
 	/**
-	 * Draws whose arguments the GPU reads from a storage buffer created
-	 * with APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS (aprendbuffers.h):
+	 * Draws whose arguments the GPU reads from `_buffer`, a buffer created
+	 * with APREND_BUFFER_USAGE_INDIRECT_ARGUMENTS (aprendbuffers.h):
 	 * `_draw_count` draws, the first from the entry at byte `_offset` of the
-	 * buffer and each next one `_stride` bytes on. The buffer is `_buffer`,
-	 * or the current frame's copy of `_set`; exactly one of the two is
-	 * given. A compute shader may have written the entries through a
-	 * storage slot earlier in the list, or the CPU with
-	 * aprend_storage_buffer_update(). Before the pass the buffer is moved
-	 * from the state a storage slot uses it in to the one a draw reads it
-	 * in, and back before the next dispatch or pass that has it in a binding
+	 * buffer and each next one `_stride` bytes on; of a buffer of per-frame
+	 * copies, the copy of the frame the list is compiled in. A compute
+	 * shader may have written the entries through a storage slot earlier in
+	 * the list, or the CPU with aprend_buffer_write(). Before the pass a
+	 * buffer that is also APREND_BUFFER_USAGE_STORAGE is moved from the
+	 * state a storage slot uses it in to the one a draw reads it in, and back before the next dispatch or pass that has it in a binding
 	 * set; it can't be both an argument buffer and in a binding set of one
 	 * pass. An entry is a spudgpu_draw_indirect_args (spudgpu.h).
 	 * `_draw_count` is not 0, `_offset` and `_stride` are multiples of 4,
@@ -401,7 +394,7 @@ enum {
 	APREND_COMMAND_DRAW_INDEXED_INDIRECT  = 18,
 	/**
 	 * Runs the set mesh shader pipeline
-	 * (aprend_graphics_pipeline_desc::mesh_shader) over `_group_count_x` by
+	 * (APREND_GRAPHICS_PIPELINE_DESC::mesh_shader) over `_group_count_x` by
 	 * `_y` by `_z` workgroups, none of them 0. It is that pipeline's draw:
 	 * inside a pass, with the pipeline set and its binding sets in place.
 	 * The draw commands above are refused with a mesh shader pipeline, and
@@ -626,7 +619,7 @@ enum {
 	 * LIT_ENVIRONMENT's picture is. The sun's disc is not drawn here: the
 	 * sun is the scene's own light (aprend_lit_scene_set_sun()), and a disc
 	 * would only be blurred into the rougher mips; the sky shader draws it
-	 * (aprend_lit_sun::disc_angle). Hosek and Wilkie's model is defined for
+	 * (APREND_LIT_SUN::disc_angle). Hosek and Wilkie's model is defined for
 	 * a sun at or above the horizon, and one below is taken at it.
 	 *
 	 * Hosek and Wilkie's model is cooked on the CPU at the compile, from
@@ -796,6 +789,38 @@ enum {
 	 * the binding set slots are not touched.
 	 */
 	APREND_COMMAND_LIT_CULL_LIGHTS             = 38,
+	/**
+	 * Copies the opaque picture into a mipped texture for surfaces with
+	 * transmission to show through (aprendlit.h,
+	 * aprend_lit_scene_set_scene_color()), outside a pass, recorded
+	 * between the opaque draws and the transmitting ones: `_source`
+	 * stretched onto `_target`'s level as DRAW_TEXTURE does (linear
+	 * filtering), then every level below made from it as GENERATE_MIPS
+	 * does (linear), the rougher surfaces reading the blurrier levels.
+	 * Unreal's scene color and Godot's screen texture are the same copy.
+	 *
+	 * `_source` is a SHADER_RESOURCE 2D view of one mip of color: what the
+	 * opaque surfaces were drawn into. `_target` is a RENDER_TARGET 2D view
+	 * of a level of a texture made for mips, in a format a shader writes
+	 * floats to; any size, the view's target size usually, or half of it.
+	 * Every level it fills is left in SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY.
+	 * It binds pipelines and sets of its own, as DRAW_TEXTURE and
+	 * GENERATE_MIPS do.
+	 */
+	APREND_COMMAND_COPY_SCENE_COLOR            = 39,
+	/**
+	 * Draws `_batch`'s shapes (aprendbatch.h) in the order they were added,
+	 * inside a pass whose color target is of the batch's color format and
+	 * whose depth is of its depth format: an instanced draw a run of one
+	 * kind. The batch was begun in the frame the list is compiled in; one
+	 * begun with no shapes draws nothing.
+	 *
+	 * It stands for the commands it sends (aprend_command_list_send()
+	 * expands it there): it sets a pipeline, binding set slot 0, the push
+	 * constants and vertex buffer slot 0, which are the caller's to set
+	 * again after it.
+	 */
+	APREND_COMMAND_DRAW_BATCH                  = 40,
 };
 
 /**
@@ -804,7 +829,7 @@ enum {
  * Every array a command points at (`_vertex_buffers`, `_viewports`,
  * `_scissor_rects`, `_color_targets`, the `_data` of PUSH_CONSTANTS, the
  * `_label` of BEGIN_LABEL) is
- * copied into the command list by aprend_send_command(), so the caller's
+ * copied into the command list by aprend_command_list_send(), so the caller's
  * array only has to live for that call. What the entries refer to - buffers,
  * views - must stay alive until the list's submission has completed.
  */
@@ -815,7 +840,7 @@ typedef struct APREND_COMMAND {
 	union {
 		struct {
 			/** The buffers, `_vertex_buffer_count` of them; copied at the send. */
-			aprend_vertex_buffer *_vertex_buffers;
+			aprend_buffer *_vertex_buffers;
 			/** How many buffers `_vertex_buffers` holds. */
 			uint32_t _vertex_buffer_count;
 			/** The slot the first buffer goes in; the rest follow it. */
@@ -823,7 +848,7 @@ typedef struct APREND_COMMAND {
 		} _set_vertex_buffers; /**< APREND_COMMAND_SET_VERTEX_BUFFERS. */
 		struct {
 			/** The index buffer. */
-			aprend_index_buffer _index_buffer;
+			aprend_buffer _index_buffer;
 		} _set_index_buffer; /**< APREND_COMMAND_SET_INDEX_BUFFER. */
 		struct {
 			/** The graphics pipeline. */
@@ -883,11 +908,11 @@ typedef struct APREND_COMMAND {
 		} _set_scissor_rects; /**< APREND_COMMAND_SET_SCISSOR_RECTS. */
 		struct {
 			/** The color targets, `_color_target_count` of them; copied at the send. */
-			const aprend_color_target *_color_targets;
+			const APREND_COLOR_TARGET *_color_targets;
 			/** How many color targets `_color_targets` holds, at most APREND_MAX_COLOR_TARGETS. */
 			uint32_t _color_target_count;
 			/** The depth target. */
-			aprend_depth_target _depth_target;
+			APREND_DEPTH_TARGET _depth_target;
 			/** The render area's left edge. */
 			int32_t _x;
 			/** The render area's top edge. */
@@ -946,16 +971,14 @@ typedef struct APREND_COMMAND {
 			uint32_t _group_count_z;
 		} _dispatch; /**< APREND_COMMAND_DISPATCH. */
 		struct {
-			/** The argument buffer, or NULL with `_set`. */
-			aprend_storage_buffer _buffer;
+			/** The argument buffer. */
+			aprend_buffer _buffer;
 			/** The byte the first entry starts at, a multiple of 4. */
 			uint64_t _offset;
 			/** How many draws, not 0. */
 			uint32_t _draw_count;
 			/** Bytes from one entry to the next, a multiple of 4, at least an entry. */
 			uint32_t _stride;
-			/** A storage buffer set in place of `_buffer`. */
-			aprend_storage_buffer_set _set;
 		} _draw_indirect; /**< APREND_COMMAND_DRAW_INDIRECT and APREND_COMMAND_DRAW_INDEXED_INDIRECT. */
 		struct {
 			/** Workgroups along x, not 0. */
@@ -967,13 +990,13 @@ typedef struct APREND_COMMAND {
 		} _dispatch_mesh; /**< APREND_COMMAND_DISPATCH_MESH. */
 		struct {
 			/** The span, taken in the frame the list is compiled in. */
-			aprend_transient_span _span;
+			APREND_TRANSIENT_SPAN _span;
 			/** The vertex buffer slot. */
 			uint32_t _slot;
 		} _set_transient_vertex_buffer; /**< APREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER. */
 		struct {
 			/** The span, taken in the frame the list is compiled in. */
-			aprend_transient_span _span;
+			APREND_TRANSIENT_SPAN _span;
 			/** The size of one index: 2 or 4. */
 			uint32_t _index_size;
 		} _set_transient_index_buffer; /**< APREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER. */
@@ -1133,6 +1156,16 @@ typedef struct APREND_COMMAND {
 			/** SPUDGPU_FILTER_LINEAR or SPUDGPU_FILTER_NEAREST. */
 			SPUDGPU_FILTER _filter;
 		} _generate_mips; /**< APREND_COMMAND_GENERATE_MIPS. */
+		struct {
+			/** The opaque picture. */
+			aprend_texture_view _source;
+			/** The level filled; those below are made from it. */
+			aprend_texture_view _target;
+		} _copy_scene_color; /**< APREND_COMMAND_COPY_SCENE_COLOR. */
+		struct {
+			/** The batch, begun this frame. */
+			struct aprend_batch_t *_batch;
+		} _draw_batch; /**< APREND_COMMAND_DRAW_BATCH. */
 		/**
 		 * Never read. Fixes `_params` at 120 bytes, so the command's size
 		 * stays 128 as commands are added: a new command's parameters fit
@@ -1150,16 +1183,20 @@ typedef struct aprend_command_list_t *aprend_command_list;
 /**
  * @brief Creates an empty command list.
  *
- * @param[in] instance Instance the list records, compiles and submits
- *                     through.
+ * It holds no SpudGPU list of its own: each compile records into one of
+ * the instance's for the frame (aprendcontext.h).
  *
- * @return The list, or NULL if @p instance is NULL or there is no memory
- *         for it. It holds no SpudGPU list of its own: each compile records
- *         into one of the instance's for the frame (aprendcontext.h).
+ * @param[in]  instance  Instance the list records, compiles and submits
+ *                       through.
+ * @param[out] out_list  Receives the list; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_list is NULL; or APRESULT_OUT_OF_MEMORY.
  *
  * @see aprend_command_list_destroy()
  */
-aprend_command_list aprend_command_list_create(aprend_instance instance);
+APRESULT aprend_command_list_create(aprend_instance instance, aprend_command_list *out_list, APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a command list.
@@ -1196,15 +1233,18 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   targets;
  * - a NULL array with a nonzero count in BEGIN_RENDERING,
  *   SET_VERTEX_BUFFERS, SET_VIEWPORTS or SET_SCISSOR_RECTS;
- * - a NULL entry in `_vertex_buffers`;
+ * - a NULL entry in `_vertex_buffers`, one of another instance, or one
+ *   created without APREND_BUFFER_USAGE_VERTEX;
+ * - a SET_INDEX_BUFFER with a NULL buffer, one of another instance, or one
+ *   created without APREND_BUFFER_USAGE_INDEX;
  * - a SET_VERTEX_BUFFERS that runs past slot
  *   APREND_MAX_VERTEX_BINDINGS - 1;
  * - a PUSH_CONSTANTS with NULL `_data`, a `_size` of 0, or an `_offset` or
  *   `_size` that is not a multiple of 4;
  * - a DISPATCH or DISPATCH_MESH with a group count of 0;
- * - a DRAW_INDIRECT or DRAW_INDEXED_INDIRECT with neither or both of
- *   `_buffer` and `_set`, a `_set` of another instance, a buffer created
- *   without APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS, a `_draw_count`
+ * - a DRAW_INDIRECT or DRAW_INDEXED_INDIRECT with a NULL `_buffer`, one of
+ *   another instance, or one created without
+ *   APREND_BUFFER_USAGE_INDIRECT_ARGUMENTS, a `_draw_count`
  *   of 0, an `_offset` or `_stride` that is not a multiple of 4, a
  *   `_stride` smaller than one entry, or entries that run past the end of
  *   the buffer;
@@ -1277,7 +1317,14 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   value that is not finite, a negative red, green or blue or an alpha
  *   outside 0 to 1, or a `_width` that is not above 0 or not a number;
  * - a LIT_CULL_LIGHTS with a NULL scene or depth, one of another instance,
- *   or a depth that is not a SHADER_RESOURCE 2D view of depth.
+ *   or a depth that is not a SHADER_RESOURCE 2D view of depth;
+ * - a DRAW_BATCH with a NULL batch, one of another instance, or one not
+ *   begun;
+ * - a COPY_SCENE_COLOR with a NULL source or target, one of another
+ *   instance, a source that is not a SHADER_RESOURCE 2D view of one mip of
+ *   color, a target that is not a RENDER_TARGET 2D view of one mip in a
+ *   format a shader writes floats to, a source and target that share a mip
+ *   of a layer, or a target whose texture GENERATE_MIPS refuses.
  *
  * BEGIN_RENDER_PASS, SET_COMPUTE_PASS and DRAW_LIST are expanded here into
  * the commands they stand for, read from the pass or list as it is now (see
@@ -1293,7 +1340,7 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *                     nothing.
  * @param[in] cmd      The command. Copied, with every array it points at.
  */
-void aprend_send_command(
+void aprend_command_list_send(
     aprend_command_list cmd_list,
     APREND_COMMAND cmd);
 
@@ -1312,9 +1359,24 @@ void aprend_send_command(
  * tracked layout, so a list that's compiled but never submitted (or fails
  * to compile) leaves nothing out of sync.
  *
- * @param[in] cmd_list List to compile.
+ * A command refused when it was sent (aprend_command_list_send() keeps no
+ * result of its own) fails the compile, reported here. Every failure's
+ * message starts with the index of the send it is about, counted from the
+ * last aprend_command_list_reset() from 0, the commands a BEGIN_RENDER_PASS,
+ * SET_COMPUTE_PASS or DRAW_LIST stands for counting as that one send:
+ * "command 412: BLUR source has nothing in it". A failure at the end of the
+ * list (a pass left open) names no command.
  *
- * @return false, without a submittable result, if a malformed command was
+ * @param[in]  cmd_list  List to compile.
+ * @param[out] out_error Why it failed, when it did, naming the command. May
+ *                       be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p cmd_list is NULL;
+ *         otherwise the code of the first failure the compile meets
+ *         (APRESULT_INVALID_ARGUMENT for a command that breaks a rule,
+ *         APRESULT_OUT_OF_MEMORY, APRESULT_UNSUPPORTED, or the code for
+ *         SpudGPU's result where something Aprend makes for a command can't
+ *         be), without a submittable result, if a malformed command was
  *         sent or the pass scope is violated: a draw outside any pass, a
  *         nested BEGIN_RENDERING, END_RENDERING with no open
  *         BEGIN_RENDERING, or a BEGIN_RENDERING left open at the end of the
@@ -1375,6 +1437,8 @@ void aprend_send_command(
  *         - a LIT_CULL_LIGHTS inside a pass, whose depth has nothing in
  *           it, whose scene's view has no target size or one other than
  *           the depth's size, or whose pipeline or sets can't be made;
+ *         - a COPY_SCENE_COLOR inside a pass, or whose views, sets or
+ *           pipelines can't be made;
  *         - a GENERATE_MIPS inside a pass, or whose base level has nothing
  *           in some layer: written neither by anything submitted before nor
  *           earlier in the list; or whose views, sets or pipeline can't be
@@ -1388,7 +1452,7 @@ void aprend_send_command(
  *         the list, and it is done whether or not the rest of the compile
  *         succeeds.
  */
-bool aprend_command_list_compile(aprend_command_list cmd_list);
+APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR *out_error);
 
 /**
  * @brief Submits the last successful compile of a command list and commits
@@ -1435,21 +1499,25 @@ bool aprend_command_list_compile(aprend_command_list cmd_list);
  * acquired one of the same back buffers (no resize since); follow it with
  * aprend_swap_chain_present().
  *
- * @param[in] cmd_list List to submit.
- * @param[in] queue    Queue to submit on: the instance's one queue.
+ * @param[in]  cmd_list  List to submit.
+ * @param[in]  queue     Queue to submit on: the instance's one queue.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false without submitting if the list hasn't compiled
- *         successfully since it was last submitted, if @p queue is not the queue the instance already
- *         submits on, if a texture it uses has changed layout since it was
- *         compiled (another list touching the same texture was submitted in
- *         between), if aprend_instance_next_frame() has moved the frame
- *         on since it was compiled, or if something it uses was destroyed
- *         or resized since it was compiled (above). In the last three cases,
- *         recompile it and submit again. false too if transient memory can't be taken for a
- *         material's block, or a SpudGPU list for the list's buffer copies
- *         can't be made.
+ * @return APRESULT_OK; without submitting, APRESULT_INVALID_ARGUMENT if
+ *         @p cmd_list or @p queue is NULL, the list hasn't compiled
+ *         successfully since it was last submitted, or @p queue is not the
+ *         queue the instance already submits on (or the swap chain's, for
+ *         a list that presents); APRESULT_APREND_STALE if a texture it uses
+ *         has changed layout since it was compiled (another list touching
+ *         the same texture was submitted in between),
+ *         aprend_instance_next_frame() has moved the frame on since it was
+ *         compiled, or something it uses was destroyed or resized since it
+ *         was compiled (above): compile it again and submit that;
+ *         APRESULT_OUT_OF_MEMORY; or another code if transient memory can't
+ *         be taken for a material's block, or a SpudGPU list for the list's
+ *         buffer copies can't be made, or the submission itself fails.
  */
-bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_queue queue);
+APRESULT aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_queue queue, APREND_ERROR *out_error);
 
 #if __cplusplus
 } // Extern "C"

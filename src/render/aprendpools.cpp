@@ -4,8 +4,8 @@
 
 #include <spudgpu.h>
 
+#include <assert.h>
 #include <new>
-#include <stdio.h>
 #include <stdlib.h>
 
 // Vertex and index pools (render/aprendbuffers.h). Both are an
@@ -15,42 +15,30 @@
 
 static const char *aprend_pool_element_name(const aprend_pool_core *core) { return core->is_index ? "indices" : "vertices"; }
 
-// A block's buffer of [count] elements, unwritten. NULL if the device
-// refuses it. Written once a range, by the pool alone: a ONCE store stages
-// each range in a buffer of its own and keeps no staging copy of the block,
-// and refuses the caller's update calls.
-static void *aprend_pool_buffer_create(aprend_pool_core *core, uint32_t count) {
-	if (core->is_index)
-		return aprend_index_buffer_create(core->instance, core->index_stride, count, APREND_BUFFER_WRITES_ONCE, nullptr);
-	return aprend_vertex_buffer_create(core->instance, (uint64_t)count * core->element_size, APREND_BUFFER_WRITES_ONCE, nullptr);
+// A block's buffer of [count] elements, unwritten, named after the pool.
+// Written once a range, by the pool alone: a ONCE buffer stages each range
+// in a buffer of its own, keeps no staging copy of the block, and refuses
+// the caller's writes.
+static APRESULT aprend_pool_buffer_create(aprend_pool_core *core, uint32_t count, aprend_buffer *out_buffer, APREND_ERROR *out_error) {
+	APREND_BUFFER_DESC desc{};
+	desc.base         = apri_struct_base(APRI_STRUCT_TYPE_APREND_BUFFER_DESC);
+	desc.size         = (uint64_t)count * core->element_size;
+	desc.usage        = core->is_index ? APREND_BUFFER_USAGE_INDEX : APREND_BUFFER_USAGE_VERTEX;
+	desc.writes       = APREND_BUFFER_WRITES_ONCE;
+	desc.index_stride = core->index_stride;
+	desc.debug_name   = core->name;
+	return aprend_buffer_create(core->instance, &desc, out_buffer, out_error);
 }
 
-// Released once the GPU has finished everything submitted so far, as any
-// buffer is.
-static void aprend_pool_buffer_destroy(aprend_pool_core *core, void *buffer) {
-	if (core->is_index)
-		aprend_index_buffer_destroy((aprend_index_buffer)buffer);
-	else
-		aprend_vertex_buffer_destroy((aprend_vertex_buffer)buffer);
-}
-
-static aprend_buffer_store *aprend_pool_buffer_store(aprend_pool_core *core, void *buffer) {
-	if (core->is_index)
-		return &((aprend_index_buffer)buffer)->store;
-	return &((aprend_vertex_buffer)buffer)->store;
-}
-
-// Makes a block of [count] elements, all free, in the first empty slot.
-// Returns the slot, or UINT32_MAX with nothing made if the pool's limit
-// doesn't allow it or the device refuses the buffer. Throws std::bad_alloc,
-// with nothing made.
-static uint32_t aprend_pool_add_block(aprend_pool_core *core, uint32_t count, bool dedicated, const char *who) {
+// Makes a block of [count] elements, all free, in the first empty slot, and
+// hands its slot back through [out_slot]. APRESULT_LIMIT with nothing made
+// if the pool's limit doesn't allow it, or the buffer's failure. Throws
+// std::bad_alloc, with nothing made.
+static APRESULT aprend_pool_add_block(aprend_pool_core *core, uint32_t count, bool dedicated, uint32_t *out_slot, APREND_ERROR *out_error) {
 	const uint64_t bytes = (uint64_t)count * core->element_size;
 	// block_bytes never passes the limit, so the subtraction can't wrap.
-	if (core->memory_limit != 0 && bytes > core->memory_limit - core->block_bytes) {
-		printf("apricot: %s: a block of %llu bytes more would pass the pool's memory_limit\n", who, (unsigned long long)bytes);
-		return UINT32_MAX;
-	}
+	if (core->memory_limit != 0 && bytes > core->memory_limit - core->block_bytes)
+		return aprend_fail(out_error, APRESULT_LIMIT, "a block of %llu bytes more would pass the pool's memory_limit", (unsigned long long)bytes);
 
 	// The slot and its list first: with no memory for either there is no
 	// buffer to undo.
@@ -68,15 +56,15 @@ static uint32_t aprend_pool_add_block(aprend_pool_core *core, uint32_t count, bo
 	aprend_pool_block &block = core->blocks[slot];
 	block.ranges.reset(count);
 
-	block.buffer = aprend_pool_buffer_create(core, count);
-	if (!block.buffer) {
-		printf("apricot: %s: a block of %u %s can't be created\n", who, count, aprend_pool_element_name(core));
+	const APRESULT ar = aprend_pool_buffer_create(core, count, &block.buffer, out_error);
+	if (ar != APRESULT_OK) {
 		block.ranges.reset(0);
-		return UINT32_MAX;
+		return ar;
 	}
 	block.dedicated = dedicated;
 	core->block_bytes += bytes;
-	return slot;
+	*out_slot = slot;
+	return APRESULT_OK;
 }
 
 // Destroys the block in [slot] and leaves the slot empty. Nothing of it is
@@ -84,7 +72,9 @@ static uint32_t aprend_pool_add_block(aprend_pool_core *core, uint32_t count, bo
 static void aprend_pool_remove_block(aprend_pool_core *core, uint32_t slot) {
 	aprend_pool_block &block = core->blocks[slot];
 	core->block_bytes -= (uint64_t)block.ranges.size * core->element_size;
-	aprend_pool_buffer_destroy(core, block.buffer);
+	// Released once the GPU has finished everything submitted so far, as
+	// any buffer is.
+	aprend_buffer_destroy(block.buffer);
 	block.buffer    = nullptr;
 	block.dedicated = false;
 	block.ranges.reset(0);
@@ -145,12 +135,10 @@ static void aprend_pool_reclaim(aprend_pool_core *core) {
 		if (core->pending_first == APREND_POOL_NO_ALLOCATION)
 			core->pending_last = APREND_POOL_NO_ALLOCATION;
 		// An entry is a range's elements for as long as it is LIVE or
-		// FREED, so they can't have been free. Checked all the same: a
-		// range list out of step with the entries would hand one range's
-		// elements to another.
-		if (!given)
-			printf("apricot: a pool's free list already held a freed range: %u elements at %u\n", allocation.count, allocation.offset);
-		else
+		// FREED, so they can't have been free: a range list out of step
+		// with the entries would hand one range's elements to another.
+		assert(given);
+		if (given)
 			core->used_bytes -= (uint64_t)allocation.count * core->element_size;
 		if (block.dedicated)
 			aprend_pool_remove_block(core, allocation.block);
@@ -159,22 +147,23 @@ static void aprend_pool_reclaim(aprend_pool_core *core) {
 }
 
 // Takes [count] elements from a block that has them, or from a new one.
-// False, with nothing taken, if a block is needed and can't be made. Throws
-// std::bad_alloc, with nothing taken.
-static bool aprend_pool_take_elements(
+// The block's failure, with nothing taken, if a block is needed and can't
+// be made. Throws std::bad_alloc, with nothing taken.
+static APRESULT aprend_pool_take_elements(
     aprend_pool_core *core,
     uint32_t count,
-    const char *who,
     uint32_t *out_slot,
-    uint32_t *out_offset) {
+    uint32_t *out_offset,
+    APREND_ERROR *out_error) {
+	uint32_t slot = UINT32_MAX;
 	if (count > core->block_element_count) {
 		// Longer than a block: a block of its own, exactly that long.
-		const uint32_t slot = aprend_pool_add_block(core, count, true, who);
-		if (slot == UINT32_MAX)
-			return false;
+		const APRESULT ar = aprend_pool_add_block(core, count, true, &slot, out_error);
+		if (ar != APRESULT_OK)
+			return ar;
 		core->blocks[slot].ranges.take(count, out_offset);
 		*out_slot = slot;
-		return true;
+		return APRESULT_OK;
 	}
 	for (uint32_t i = 0; i < (uint32_t)core->blocks.size(); ++i) {
 		aprend_pool_block &block = core->blocks[i];
@@ -185,44 +174,44 @@ static bool aprend_pool_take_elements(
 		if (!block.ranges.take(count, out_offset))
 			continue;
 		*out_slot = i;
-		return true;
+		return APRESULT_OK;
 	}
-	const uint32_t slot = aprend_pool_add_block(core, core->block_element_count, false, who);
-	if (slot == UINT32_MAX)
-		return false;
+	const APRESULT ar = aprend_pool_add_block(core, core->block_element_count, false, &slot, out_error);
+	if (ar != APRESULT_OK)
+		return ar;
 	core->blocks[slot].ranges.take(count, out_offset);
 	*out_slot = slot;
-	return true;
+	return APRESULT_OK;
 }
 
 // Takes [count] elements, writes [data] into them and makes them a range:
-// entry [out_id], of generation [out_generation]. False with nothing taken
-// on any failure. Throws std::bad_alloc, with nothing taken.
-static bool aprend_pool_allocate(
+// entry [out_id], of generation [out_generation]. The failure, with nothing
+// taken, otherwise. Throws std::bad_alloc, with nothing taken.
+static APRESULT aprend_pool_allocate(
     aprend_pool_core *core,
     uint32_t count,
     const void *data,
-    const char *who,
-    void **out_buffer,
+    aprend_buffer *out_buffer,
     uint32_t *out_offset,
     uint32_t *out_id,
-    uint32_t *out_generation) {
+    uint32_t *out_generation,
+    APREND_ERROR *out_error) {
 	aprend_pool_reclaim(core);
 
 	// The entry first: with no memory for it, no elements have been taken.
 	const uint32_t id = aprend_pool_allocation_take(core);
 	uint32_t slot     = UINT32_MAX;
 	uint32_t offset   = 0;
-	bool taken        = false;
+	APRESULT ar       = APRESULT_OK;
 	try {
-		taken = aprend_pool_take_elements(core, count, who, &slot, &offset);
+		ar = aprend_pool_take_elements(core, count, &slot, &offset, out_error);
 	} catch (const std::bad_alloc &) {
 		aprend_pool_allocation_release(core, id);
 		throw;
 	}
-	if (!taken) {
+	if (ar != APRESULT_OK) {
 		aprend_pool_allocation_release(core, id);
-		return false;
+		return ar;
 	}
 
 	// Nothing submitted reads these elements: they were free, which a freed
@@ -232,22 +221,22 @@ static bool aprend_pool_allocate(
 	aprend_pool_block &block   = core->blocks[slot];
 	const uint64_t byte_offset = (uint64_t)offset * core->element_size;
 	const uint64_t byte_size   = (uint64_t)count * core->element_size;
-	SPUDRESULT sr = aprend_buffer_store_write(aprend_pool_buffer_store(core, block.buffer), byte_offset, byte_size, data);
+	SPUDRESULT sr = aprend_buffer_store_write(&block.buffer->parts[0].store, byte_offset, byte_size, data);
 	if (SPUDFAIL(sr)) {
-		printf("apricot: %s: writing %u %s failed: %s\n", who, count, aprend_pool_element_name(core), spudresult_str(sr));
 		aprend_pool_allocation_release(core, id);
+		ar = aprend_fail_spud(out_error, sr, "writing %u %s failed", count, aprend_pool_element_name(core));
 		if (block.dedicated) {
 			aprend_pool_remove_block(core, slot);
-			return false;
+			return ar;
 		}
 		try {
 			block.ranges.give(offset, count);
 		} catch (const std::bad_alloc &) {
 			// The elements stay taken and are never handed out: lost to the
-			// pool, and nothing reads them.
-			printf("apricot: %s: out of memory giving the range back: %u %s of the pool are lost\n", who, count, aprend_pool_element_name(core));
+			// pool, and nothing reads them. The write's failure is what the
+			// caller hears of.
 		}
-		return false;
+		return ar;
 	}
 
 	aprend_pool_allocation &allocation = core->allocations[id];
@@ -261,55 +250,42 @@ static bool aprend_pool_allocate(
 	*out_offset     = offset;
 	*out_id         = id;
 	*out_generation = allocation.generation;
-	return true;
+	return APRESULT_OK;
 }
 
 // Marks the range of entry [id] freed, to be taken back once the GPU has
 // finished with it. [generation], [buffer], [offset] and [count] are what
 // the caller's copy of the range says, and all of it has to be what the
 // entry says: a copy of a range freed earlier, a range of another pool and a
-// range that was never one are each refused. [who] names the call, for the
-// messages. Needs no memory.
-static void aprend_pool_free(
+// range that was never one are each refused. Needs no memory.
+static APRESULT aprend_pool_free(
     aprend_pool_core *core,
     uint32_t id,
     uint32_t generation,
-    void *buffer,
+    aprend_buffer buffer,
     uint32_t offset,
     uint32_t count,
-    const char *who) {
-	if (id >= core->allocations.size()) {
-		printf("apricot: %s: the range is not one of this pool\n", who);
-		return;
-	}
+    APREND_ERROR *out_error) {
+	if (id >= core->allocations.size())
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the range is not one of this pool");
 	aprend_pool_allocation &allocation = core->allocations[id];
-	if (allocation.generation != generation) {
-		// The entry has been a later range since, or the range is no
-		// range (generation 0).
-		printf("apricot: %s: the range is not allocated: it was freed before, or is not one of this pool\n", who);
-		return;
-	}
+	// The entry has been a later range since, or the range is no range
+	// (generation 0).
+	if (allocation.generation != generation)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the range is not allocated: it was freed before, or is not one of this pool");
 	// Freed and waiting for the GPU, or taken back since and its entry not
 	// yet used again.
-	if (allocation.state != aprend_pool_allocation::LIVE) {
-		printf("apricot: %s: the range was freed already\n", who);
-		return;
-	}
+	if (allocation.state != aprend_pool_allocation::LIVE)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the range was freed already");
 	// Two pools number their entries alike, so a range of another pool can
 	// match an entry here by id and generation. Its block's buffer is its
 	// own pool's, which no block of this one is.
-	if (core->blocks[allocation.block].buffer != buffer) {
-		printf("apricot: %s: the range is not one of this pool\n", who);
-		return;
-	}
-	if (allocation.offset != offset) {
-		printf("apricot: %s: the range's start is not the one it was allocated with\n", who);
-		return;
-	}
-	if (allocation.count != count) {
-		printf("apricot: %s: the range's length is not the one it was allocated with\n", who);
-		return;
-	}
+	if (core->blocks[allocation.block].buffer != buffer)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the range is not one of this pool");
+	if (allocation.offset != offset)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the range's start is not the one it was allocated with");
+	if (allocation.count != count)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the range's length is not the one it was allocated with");
 
 	allocation.state  = aprend_pool_allocation::FREED;
 	allocation.serial = core->instance->submit_serial.load();
@@ -319,6 +295,7 @@ static void aprend_pool_free(
 	else
 		core->allocations[core->pending_last].next = id;
 	core->pending_last = id;
+	return APRESULT_OK;
 }
 
 // Destroys every ordinary block all of whose elements are free.
@@ -349,51 +326,70 @@ static void aprend_pool_destroy_blocks(aprend_pool_core *core) {
 	core->used_bytes    = 0;
 }
 
-aprend_vertex_pool_t::~aprend_vertex_pool_t() { aprend_pool_destroy_blocks(&this->core); }
+aprend_vertex_pool_t::~aprend_vertex_pool_t() {
+	aprend_pool_destroy_blocks(&this->core);
+	free(this->core.name);
+}
 
-aprend_index_pool_t::~aprend_index_pool_t() { aprend_pool_destroy_blocks(&this->core); }
+aprend_index_pool_t::~aprend_index_pool_t() {
+	aprend_pool_destroy_blocks(&this->core);
+	free(this->core.name);
+}
+
+// Copies [name] into [core] and points the handle's debug name at it.
+// False if there is no memory for it; a NULL name is no name.
+static bool aprend_pool_name(aprend_pool_core *core, char **debug_name, const char *name) {
+	if (!name)
+		return true;
+	const size_t length = strlen(name) + 1;
+	core->name          = (char *)malloc(length);
+	if (!core->name)
+		return false;
+	memcpy(core->name, name, length);
+	*debug_name = core->name;
+	return true;
+}
 
 extern "C" {
 
-aprend_vertex_pool aprend_vertex_pool_create(aprend_instance instance, const aprend_vertex_pool_desc *desc) {
-	static const char who[] = "aprend_vertex_pool_create";
-	if (!instance) {
-		printf("apricot: %s: instance is NULL\n", who);
-		return nullptr;
-	}
-	if (!desc) {
-		printf("apricot: %s: desc is NULL\n", who);
-		return nullptr;
-	}
-	if (!aprend_base_ok(who, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC))
-		return nullptr;
-	if (desc->vertex_stride == 0) {
-		printf("apricot: %s: vertex_stride is 0\n", who);
-		return nullptr;
-	}
-	if (desc->block_vertex_count == 0) {
-		printf("apricot: %s: block_vertex_count is 0\n", who);
-		return nullptr;
-	}
+APRESULT aprend_vertex_pool_create(aprend_instance instance, const APREND_VERTEX_POOL_DESC *desc, aprend_vertex_pool *out_pool, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_pool)
+		*out_pool = nullptr;
+	if (!instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_vertex_pool_create");
+	if (!desc)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
+	const APRESULT ar = aprend_base_check(out_error, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC);
+	if (ar != APRESULT_OK)
+		return ar;
+	if (!out_pool)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_pool is NULL");
+	if (desc->vertex_stride == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "vertex_stride is 0");
+	if (desc->block_vertex_count == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "block_vertex_count is 0");
 	const uint64_t block_bytes = (uint64_t)desc->block_vertex_count * desc->vertex_stride;
-	if (desc->memory_limit != 0 && desc->memory_limit < block_bytes) {
-		printf("apricot: %s: memory_limit is below one block's %llu bytes\n", who, (unsigned long long)block_bytes);
-		return nullptr;
-	}
+	if (desc->memory_limit != 0 && desc->memory_limit < block_bytes)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "memory_limit is below one block's %llu bytes", (unsigned long long)block_bytes);
 
 	aprend_vertex_pool_t *result = (aprend_vertex_pool_t *)malloc(sizeof(aprend_vertex_pool_t));
-	if (!result) {
-		printf("apricot: %s: out of memory\n", who);
-		return nullptr;
-	}
+	if (!result)
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the pool");
 	result = new (result) aprend_vertex_pool_t();
+	if (!aprend_pool_name(&result->core, &result->debug_name, desc->debug_name)) {
+		APREND_DESTRUCT__T(result, aprend_vertex_pool_t);
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the pool's name");
+	}
 
 	result->core.instance            = instance;
 	result->core.is_index            = false;
 	result->core.element_size        = desc->vertex_stride;
 	result->core.block_element_count = desc->block_vertex_count;
 	result->core.memory_limit        = desc->memory_limit;
-	return result;
+	*out_pool                        = result;
+	return APRESULT_OK;
 }
 
 void aprend_vertex_pool_destroy(aprend_vertex_pool pool) {
@@ -405,89 +401,97 @@ void aprend_vertex_pool_destroy(aprend_vertex_pool pool) {
 	free(pool);
 }
 
-bool aprend_vertex_pool_allocate(aprend_vertex_pool pool, uint32_t vertex_count, const void *data, aprend_vertex_range *out_range) {
-	if (!out_range)
-		return false;
-	*out_range = {};
+APRESULT aprend_vertex_pool_allocate(aprend_vertex_pool pool, uint32_t vertex_count, const void *data, APREND_VERTEX_RANGE *out_range, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_range)
+		*out_range = {};
 	if (!pool)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	APREND_ENTER(pool->core.instance, "aprend_vertex_pool_allocate");
 	if (vertex_count == 0)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "vertex_count is 0");
 	if (!data)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "data is NULL");
+	if (!out_range)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_range is NULL");
 
-	void *buffer        = nullptr;
-	uint32_t offset     = 0;
-	uint32_t id         = 0;
-	uint32_t generation = 0;
+	aprend_buffer buffer = nullptr;
+	uint32_t offset      = 0;
+	uint32_t id          = 0;
+	uint32_t generation  = 0;
 	try {
-		if (!aprend_pool_allocate(&pool->core, vertex_count, data, "aprend_vertex_pool_allocate", &buffer, &offset, &id, &generation))
-			return false;
+		const APRESULT ar = aprend_pool_allocate(&pool->core, vertex_count, data, &buffer, &offset, &id, &generation, out_error);
+		if (ar != APRESULT_OK)
+			return ar;
 	} catch (const std::bad_alloc &) {
-		printf("apricot: aprend_vertex_pool_allocate: out of memory\n");
-		return false;
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the range");
 	}
-	out_range->buffer       = (aprend_vertex_buffer)buffer;
+	out_range->buffer       = buffer;
 	out_range->first_vertex = offset;
 	out_range->vertex_count = vertex_count;
 	out_range->_id          = id;
 	out_range->_generation  = generation;
-	return true;
+	return APRESULT_OK;
 }
 
-void aprend_vertex_pool_free(aprend_vertex_pool pool, const aprend_vertex_range *range) {
+APRESULT aprend_vertex_pool_free(aprend_vertex_pool pool, const APREND_VERTEX_RANGE *range, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
 	if (!pool)
-		return;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	APREND_ENTER(pool->core.instance, "aprend_vertex_pool_free");
 	if (!range)
-		return;
-	aprend_pool_free(&pool->core, range->_id, range->_generation, range->buffer, range->first_vertex, range->vertex_count, "aprend_vertex_pool_free");
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "range is NULL");
+	return aprend_pool_free(&pool->core, range->_id, range->_generation, range->buffer, range->first_vertex, range->vertex_count, out_error);
 }
 
 void aprend_vertex_pool_trim(aprend_vertex_pool pool) {
 	if (!pool)
 		return;
+	APREND_ENTER(pool->core.instance, "aprend_vertex_pool_trim");
 	aprend_pool_trim(&pool->core);
 }
 
-void aprend_vertex_pool_get_usage(aprend_vertex_pool pool, uint64_t *out_used_bytes, uint64_t *out_block_bytes) {
-	if (out_used_bytes)
-		*out_used_bytes = 0;
-	if (out_block_bytes)
-		*out_block_bytes = 0;
+APRESULT aprend_vertex_pool_get_usage(aprend_vertex_pool pool, uint64_t *out_used_bytes, uint64_t *out_block_bytes) {
 	if (!pool)
-		return;
+		return APRESULT_INVALID_ARGUMENT;
 	aprend_pool_reclaim(&pool->core);
 	if (out_used_bytes)
 		*out_used_bytes = pool->core.used_bytes;
 	if (out_block_bytes)
 		*out_block_bytes = pool->core.block_bytes;
+	return APRESULT_OK;
 }
 
-aprend_index_pool aprend_index_pool_create(aprend_instance instance, const aprend_index_pool_desc *desc) {
+APRESULT aprend_index_pool_create(aprend_instance instance, const APREND_INDEX_POOL_DESC *desc, aprend_index_pool *out_pool, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_pool)
+		*out_pool = nullptr;
 	if (!instance)
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	APREND_ENTER(instance, "aprend_index_pool_create");
 	if (!desc)
-		return nullptr;
-	if (!aprend_base_ok("aprend_index_pool_create", "desc", &desc->base, APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC))
-		return nullptr;
-	if (desc->stride != APREND_INDEX_STRIDE_UINT16 && desc->stride != APREND_INDEX_STRIDE_UINT32) {
-		printf("apricot: aprend_index_pool_create: stride is not UINT16 or UINT32\n");
-		return nullptr;
-	}
-	if (desc->block_index_count == 0) {
-		printf("apricot: aprend_index_pool_create: block_index_count is 0\n");
-		return nullptr;
-	}
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
+	const APRESULT ar = aprend_base_check(out_error, "desc", &desc->base, APRI_STRUCT_TYPE_APREND_INDEX_POOL_DESC);
+	if (ar != APRESULT_OK)
+		return ar;
+	if (!out_pool)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_pool is NULL");
+	if (desc->stride != APREND_INDEX_STRIDE_UINT16 && desc->stride != APREND_INDEX_STRIDE_UINT32)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "stride %u is not UINT16 or UINT32", (unsigned)desc->stride);
+	if (desc->block_index_count == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "block_index_count is 0");
 	const uint64_t block_bytes = (uint64_t)desc->block_index_count * (uint64_t)desc->stride;
-	if (desc->memory_limit != 0 && desc->memory_limit < block_bytes) {
-		printf("apricot: aprend_index_pool_create: memory_limit is below one block's %llu bytes\n", (unsigned long long)block_bytes);
-		return nullptr;
-	}
+	if (desc->memory_limit != 0 && desc->memory_limit < block_bytes)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "memory_limit is below one block's %llu bytes", (unsigned long long)block_bytes);
 
 	aprend_index_pool_t *result = (aprend_index_pool_t *)malloc(sizeof(aprend_index_pool_t));
 	if (!result)
-		return nullptr;
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the pool");
 	result = new (result) aprend_index_pool_t();
+	if (!aprend_pool_name(&result->core, &result->debug_name, desc->debug_name)) {
+		APREND_DESTRUCT__T(result, aprend_index_pool_t);
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the pool's name");
+	}
 
 	result->core.instance            = instance;
 	result->core.is_index            = true;
@@ -495,7 +499,8 @@ aprend_index_pool aprend_index_pool_create(aprend_instance instance, const apren
 	result->core.element_size        = (uint32_t)desc->stride;
 	result->core.block_element_count = desc->block_index_count;
 	result->core.memory_limit        = desc->memory_limit;
-	return result;
+	*out_pool                        = result;
+	return APRESULT_OK;
 }
 
 void aprend_index_pool_destroy(aprend_index_pool pool) {
@@ -506,61 +511,64 @@ void aprend_index_pool_destroy(aprend_index_pool pool) {
 	free(pool);
 }
 
-bool aprend_index_pool_allocate(aprend_index_pool pool, uint32_t index_count, const void *data, aprend_index_range *out_range) {
-	if (!out_range)
-		return false;
-	*out_range = {};
+APRESULT aprend_index_pool_allocate(aprend_index_pool pool, uint32_t index_count, const void *data, APREND_INDEX_RANGE *out_range, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_range)
+		*out_range = {};
 	if (!pool)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	APREND_ENTER(pool->core.instance, "aprend_index_pool_allocate");
 	if (index_count == 0)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "index_count is 0");
 	if (!data)
-		return false;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "data is NULL");
+	if (!out_range)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_range is NULL");
 
-	void *buffer        = nullptr;
-	uint32_t offset     = 0;
-	uint32_t id         = 0;
-	uint32_t generation = 0;
+	aprend_buffer buffer = nullptr;
+	uint32_t offset      = 0;
+	uint32_t id          = 0;
+	uint32_t generation  = 0;
 	try {
-		if (!aprend_pool_allocate(&pool->core, index_count, data, "aprend_index_pool_allocate", &buffer, &offset, &id, &generation))
-			return false;
+		const APRESULT ar = aprend_pool_allocate(&pool->core, index_count, data, &buffer, &offset, &id, &generation, out_error);
+		if (ar != APRESULT_OK)
+			return ar;
 	} catch (const std::bad_alloc &) {
-		printf("apricot: aprend_index_pool_allocate: out of memory\n");
-		return false;
+		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the range");
 	}
-	out_range->buffer      = (aprend_index_buffer)buffer;
+	out_range->buffer      = buffer;
 	out_range->first_index = offset;
 	out_range->index_count = index_count;
 	out_range->_id         = id;
 	out_range->_generation = generation;
-	return true;
+	return APRESULT_OK;
 }
 
-void aprend_index_pool_free(aprend_index_pool pool, const aprend_index_range *range) {
+APRESULT aprend_index_pool_free(aprend_index_pool pool, const APREND_INDEX_RANGE *range, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
 	if (!pool)
-		return;
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	APREND_ENTER(pool->core.instance, "aprend_index_pool_free");
 	if (!range)
-		return;
-	aprend_pool_free(&pool->core, range->_id, range->_generation, range->buffer, range->first_index, range->index_count, "aprend_index_pool_free");
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "range is NULL");
+	return aprend_pool_free(&pool->core, range->_id, range->_generation, range->buffer, range->first_index, range->index_count, out_error);
 }
 
 void aprend_index_pool_trim(aprend_index_pool pool) {
 	if (!pool)
 		return;
+	APREND_ENTER(pool->core.instance, "aprend_index_pool_trim");
 	aprend_pool_trim(&pool->core);
 }
 
-void aprend_index_pool_get_usage(aprend_index_pool pool, uint64_t *out_used_bytes, uint64_t *out_block_bytes) {
-	if (out_used_bytes)
-		*out_used_bytes = 0;
-	if (out_block_bytes)
-		*out_block_bytes = 0;
+APRESULT aprend_index_pool_get_usage(aprend_index_pool pool, uint64_t *out_used_bytes, uint64_t *out_block_bytes) {
 	if (!pool)
-		return;
+		return APRESULT_INVALID_ARGUMENT;
 	aprend_pool_reclaim(&pool->core);
 	if (out_used_bytes)
 		*out_used_bytes = pool->core.used_bytes;
 	if (out_block_bytes)
 		*out_block_bytes = pool->core.block_bytes;
+	return APRESULT_OK;
 }
 }

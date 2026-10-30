@@ -1,0 +1,19 @@
+// What aprend_batch.vert hands each of the batcher's fragment shaders, and
+// their set 0: the frame's texture, its atlas and one sampler.
+
+layout(location = 0) in vec2 in_local;
+layout(location = 1) noperspective in vec2 in_pixel;
+layout(location = 2) flat in vec4 in_color;
+layout(location = 3) flat in vec4 in_a;
+layout(location = 4) flat in vec4 in_b;
+layout(location = 5) flat in vec4 in_c;
+layout(location = 6) flat in vec4 in_d0;
+layout(location = 7) flat in vec4 in_d1;
+layout(location = 8) flat in uvec2 in_flags;
+layout(location = 9) flat in float in_extra;
+
+layout(set = 0, binding = 0) uniform texture2D batch_texture;
+layout(set = 0, binding = 1) uniform texture2DArray batch_atlas;
+layout(set = 0, binding = 2) uniform sampler batch_sampler;
+
+layout(location = 0) out vec4 out_color;

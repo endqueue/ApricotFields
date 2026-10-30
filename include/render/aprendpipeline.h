@@ -49,10 +49,10 @@ extern "C" {
  * in GLSL.
  *
  * N is not stated here. It is the index a pipeline puts the layout at, in
- * aprend_graphics_pipeline_desc::_binding_layouts.
+ * APREND_GRAPHICS_PIPELINE_DESC::_binding_layouts.
  */
 /* Frozen: an array element of a binding layout. It never changes; a new need gets a new type. */
-typedef struct aprend_binding_desc {
+typedef struct APREND_BINDING_DESC {
 	/** Slot index, `binding = ...` in GLSL. Unique within a layout. */
 	uint32_t _binding;
 	/** What the slot holds. */
@@ -73,7 +73,7 @@ typedef struct aprend_binding_desc {
 	 * shader's variable name. May be NULL. Copied.
 	 */
 	const char *_name;
-} aprend_binding_desc;
+} APREND_BINDING_DESC;
 
 /**
  * @brief Opaque handle to the slots of one descriptor set.
@@ -114,20 +114,26 @@ typedef struct aprend_binding_layout_t *aprend_binding_layout;
  * @param[in] bindings      The slots, in any order.
  * @param[in] binding_count Number of elements in @p bindings. From 1 to
  *                          APREND_MAX_BINDINGS_PER_LAYOUT.
+ * @param[out] out_layout   Receives the layout; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The layout, or NULL if @p instance or @p bindings is NULL,
- *         @p binding_count is 0 or above APREND_MAX_BINDINGS_PER_LAYOUT, two
- *         entries share a `_binding`, an entry has a `_count` of 0, no
- *         `_stages`, or a `_type` that is not a SPUDGPU_DESCRIPTOR_TYPE, or
- *         the layout can't be created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance,
+ *         @p bindings or @p out_layout is NULL, @p binding_count is 0 or
+ *         above APREND_MAX_BINDINGS_PER_LAYOUT, two entries share a
+ *         `_binding`, or an entry has a `_count` of 0, no `_stages`, or a
+ *         `_type` that is not a SPUDGPU_DESCRIPTOR_TYPE;
+ *         APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's result if the
+ *         layout can't be created.
  *
  * @see aprend_binding_layout_destroy()
  * @see aprend_binding_set_create()
  */
-aprend_binding_layout aprend_binding_layout_create(
+APRESULT aprend_binding_layout_create(
     aprend_instance instance,
-    const aprend_binding_desc *bindings,
-    uint32_t binding_count);
+    const APREND_BINDING_DESC *bindings,
+    uint32_t binding_count,
+    aprend_binding_layout *out_layout,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Creates the binding layout of one set from what shaders declare
@@ -162,21 +168,26 @@ aprend_binding_layout aprend_binding_layout_create(
  *                         keep them.
  * @param[in] shader_count Number of elements in @p shaders. Not 0.
  * @param[in] set          The descriptor set: `set = ...` in GLSL.
+ * @param[out] out_layout  Receives the layout; NULL on failure.
+ * @param[out] out_error   Why it failed, when it did. May be NULL.
  *
- * @return The layout, or NULL if an argument is NULL or 0, a shader is of
- *         another instance, no shader uses a binding of @p set, two shaders
- *         declare one binding with different types, or one block with
- *         members that differ (not one the start of the other), a set has more than
- *         APREND_MAX_BINDINGS_PER_LAYOUT bindings, or the layout can't be
- *         created. Each is printed.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if an argument is NULL or
+ *         0, a shader is of another instance, no shader uses a binding of
+ *         @p set, two shaders declare one binding with different types, or
+ *         one block with members that differ (not one the start of the
+ *         other); APRESULT_LIMIT if the set has more than
+ *         APREND_MAX_BINDINGS_PER_LAYOUT bindings; APRESULT_OUT_OF_MEMORY;
+ *         or the code for SpudGPU's result if the layout can't be created.
  *
  * @see aprend_binding_layout_destroy()
  */
-aprend_binding_layout aprend_binding_layout_create_from_shaders(
+APRESULT aprend_binding_layout_create_from_shaders(
     aprend_instance instance,
     const aprend_shader *shaders,
     uint32_t shader_count,
-    uint32_t set);
+    uint32_t set,
+    aprend_binding_layout *out_layout,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Finds one of a layout's bindings by name.
@@ -191,14 +202,15 @@ aprend_binding_layout aprend_binding_layout_create_from_shaders(
  *                         layout's copy, valid as long as the layout. May be
  *                         NULL.
  *
- * @return false, with nothing written, if an argument but the out ones is
- *         NULL or no binding has that name.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT, with nothing written, if
+ *         @p layout or @p name is NULL; APRESULT_NOT_FOUND, with nothing
+ *         written, if no binding has that name.
  */
-bool aprend_binding_layout_find(
+APRESULT aprend_binding_layout_find(
     aprend_binding_layout layout,
     const char *name,
     uint32_t *out_binding,
-    aprend_binding_desc *out_desc);
+    APREND_BINDING_DESC *out_desc);
 
 /**
  * @brief Gets one of a layout's bindings by its place in the layout.
@@ -208,13 +220,13 @@ bool aprend_binding_layout_find(
  * @param[out] out_desc Receives the binding's desc, with its name as
  *                      aprend_binding_layout_find() gives it.
  *
- * @return false, with nothing written, if @p layout or @p out_desc is NULL
- *         or @p index is out of range.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p layout or @p out_desc is NULL or @p index is out of range.
  */
-bool aprend_binding_layout_get_binding(
+APRESULT aprend_binding_layout_get_binding(
     aprend_binding_layout layout,
     uint32_t index,
-    aprend_binding_desc *out_desc);
+    APREND_BINDING_DESC *out_desc);
 
 /**
  * @brief Gets how many bindings a layout has.
@@ -238,21 +250,22 @@ uint32_t aprend_binding_layout_get_binding_count(aprend_binding_layout layout);
  *                              valid as long as it. May be NULL.
  * @param[out] out_member_count Receives how many. May be NULL.
  *
- * @return false, with nothing written, if @p layout is NULL, it has no such
- *         binding, or the binding has no block it knows: not a buffer, or a
- *         layout written by hand.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT, with nothing written, if
+ *         @p layout is NULL; APRESULT_NOT_FOUND, with nothing written, if it
+ *         has no such binding, or the binding has no block it knows: not a
+ *         buffer, or a layout written by hand.
  */
-bool aprend_binding_layout_get_block(
+APRESULT aprend_binding_layout_get_block(
     aprend_binding_layout layout,
     uint32_t binding,
     uint32_t *out_size,
-    const aprend_shader_member **out_members,
+    const APREND_SHADER_MEMBER **out_members,
     uint32_t *out_member_count);
 
 /**
  * @brief Gets the uniform layout of a uniform buffer binding of a layout
- * made from shaders, for aprend_uniform_buffer_create() and
- * aprend_uniform_buffer_set_create() (aprendbuffers.h).
+ * made from shaders, for aprend_uniform_layout_get_size() and
+ * aprend_buffer_write_uniform() (aprendbuffers.h).
  *
  * Every member with an APREND_UNIFORM_TYPE is a uniform, named by its path
  * (`color`, `lights[2].position`), at its offset, with its array's element
@@ -265,14 +278,15 @@ bool aprend_binding_layout_get_block(
  * @param[out] out     Receives the layout. Its `uniforms` and their names
  *                     are the layout's, valid as long as it.
  *
- * @return false, with nothing written, if @p layout or @p out is NULL, it
- *         has no such binding, the binding is not a uniform buffer, or the
- *         layout was written by hand.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT, with nothing written, if
+ *         @p layout or @p out is NULL; APRESULT_NOT_FOUND, with nothing
+ *         written, if it has no such binding, the binding is not a uniform
+ *         buffer, or the layout was written by hand.
  */
-bool aprend_binding_layout_get_uniform_layout(
+APRESULT aprend_binding_layout_get_uniform_layout(
     aprend_binding_layout layout,
     uint32_t binding,
-    aprend_uniform_layout *out);
+    APREND_UNIFORM_LAYOUT *out);
 
 /**
  * @brief Destroys a binding layout. The SpudGPU layout and descriptor pools
@@ -348,11 +362,11 @@ uint32_t aprend_vertex_element_type_get_size(APREND_VERTEX_ELEMENT_TYPE type);
 /**
  * @brief One element of a vertex layout: one attribute of a vertex.
  */
-/* Frozen: an array element of aprend_vertex_layout. It never changes; a new need gets a new type. */
-typedef struct aprend_vertex_element {
+/* Frozen: an array element of APREND_VERTEX_LAYOUT. It never changes; a new need gets a new type. */
+typedef struct APREND_VERTEX_ELEMENT {
 	/**
 	 * The element's name, for a pipeline that meets the shader's inputs by
-	 * name (aprend_graphics_pipeline_desc::_vertex_inputs_by_name). May be
+	 * name (APREND_GRAPHICS_PIPELINE_DESC::_vertex_inputs_by_name). May be
 	 * NULL otherwise. Copied by the pipeline.
 	 */
 	const char *name;
@@ -363,7 +377,7 @@ typedef struct aprend_vertex_element {
 	 * and the element ends inside the layout's `stride`.
 	 */
 	uint32_t offset;
-} aprend_vertex_element;
+} APREND_VERTEX_ELEMENT;
 
 /**
  * @brief How a pipeline reads one vertex of a vertex buffer slot.
@@ -373,12 +387,12 @@ typedef struct aprend_vertex_element {
  * layouts, a depth pass reading only the positions of vertices a main pass
  * reads whole, say: the same `stride`, fewer elements.
  */
-/* Frozen: held by value in aprend_vertex_binding_desc. It never changes; a new need gets a new type. */
-typedef struct aprend_vertex_layout {
+/* Frozen: held by value in APREND_VERTEX_BINDING_DESC. It never changes; a new need gets a new type. */
+typedef struct APREND_VERTEX_LAYOUT {
 	/** How many elements. Not 0. */
 	uint32_t count;
-	/** The elements, #count of them. */
-	aprend_vertex_element *elements;
+	/** The elements, #count of them. Only read. */
+	const APREND_VERTEX_ELEMENT *elements;
 	/**
 	 * The distance in bytes from one vertex to the next. Not 0, a multiple
 	 * of 4, and no less than where the furthest element ends: bytes past it
@@ -386,7 +400,7 @@ typedef struct aprend_vertex_layout {
 	 * have.
 	 */
 	uint32_t stride;
-} aprend_vertex_layout;
+} APREND_VERTEX_LAYOUT;
 
 /**
  * @brief Finds an element of a layout by name.
@@ -399,21 +413,21 @@ typedef struct aprend_vertex_layout {
  *         @p name is NULL.
  */
 uint32_t aprend_vertex_layout_get_element_index(
-    const aprend_vertex_layout *layout,
+    const APREND_VERTEX_LAYOUT *layout,
     const char *name);
 
 /**
  * @brief The attributes a pipeline reads from one vertex buffer slot, and how
  * often it steps to the next element of that buffer.
  */
-/* Frozen: an array element of aprend_graphics_pipeline_desc. It never changes; a new need gets a new type. */
-typedef struct aprend_vertex_binding_desc {
+/* Frozen: an array element of APREND_GRAPHICS_PIPELINE_DESC. It never changes; a new need gets a new type. */
+typedef struct APREND_VERTEX_BINDING_DESC {
 	/**
 	 * The attributes, with their offsets inside one vertex, and the stride.
 	 * Copied by the pipeline, names included:
 	 * aprend_graphics_pipeline_get_desc() hands back the pipeline's copy.
 	 */
-	aprend_vertex_layout _layout;
+	APREND_VERTEX_LAYOUT _layout;
 	/**
 	 * false to step once per vertex, true to step once per instance: every
 	 * vertex of one instance reads the same element, and the element is
@@ -421,14 +435,14 @@ typedef struct aprend_vertex_binding_desc {
 	 * APREND_COMMAND_DRAW_INSTANCED_INDEXED, from `_start_instance_location`).
 	 */
 	bool _per_instance;
-} aprend_vertex_binding_desc;
+} APREND_VERTEX_BINDING_DESC;
 
 /**
  * @brief Configuration descriptor for a graphics pipeline.
  *
  * No field has a default.
  */
-typedef struct aprend_graphics_pipeline_desc {
+typedef struct APREND_GRAPHICS_PIPELINE_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** A name for diagnostics. May be NULL. */
@@ -443,7 +457,7 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * on from where binding 0's end, and so on. At most
 	 * SPUDGPU_MAX_VERTEX_ATTRIBUTES elements in all.
 	 */
-	aprend_vertex_binding_desc _vertex_bindings[APREND_MAX_VERTEX_BINDINGS];
+	APREND_VERTEX_BINDING_DESC _vertex_bindings[APREND_MAX_VERTEX_BINDINGS];
 	/**
 	 * How many vertex buffer slots the pipeline reads. At most
 	 * APREND_MAX_VERTEX_BINDINGS; 0 is a pipeline with no vertex input.
@@ -601,7 +615,7 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * named as the input. Every element then has a name.
 	 */
 	bool _vertex_inputs_by_name;
-} aprend_graphics_pipeline_desc;
+} APREND_GRAPHICS_PIPELINE_DESC;
 
 /**
  * @brief Opaque handle to a graphics pipeline.
@@ -610,7 +624,7 @@ typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
 
 /**
  * @name Blend presets
- * For an entry of aprend_graphics_pipeline_desc::_blends.
+ * For an entry of APREND_GRAPHICS_PIPELINE_DESC::_blends.
  *
  * Premultiplied is the convention to prefer: the fragment shader outputs
  * color already multiplied by its alpha, which composites correctly over
@@ -645,9 +659,17 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  * @brief Creates a graphics pipeline.
  *
  * @param[in] instance Instance whose device the pipeline is created on.
- * @param[in] desc     Pipeline configuration. Only read during the call.
+ * @param[in]  desc         Pipeline configuration. Only read during the
+ *                          call.
+ * @param[out] out_pipeline Receives the pipeline; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did, naming the field or
+ *                          the shader's declaration. May be NULL.
  *
- * @return The pipeline, or NULL if @p instance or @p desc is NULL, `fragment_shader` is
+ * @return APRESULT_OK; APRESULT_UNSUPPORTED where a feature the desc needs
+ *         is missing (named below); APRESULT_OUT_OF_MEMORY; the struct codes
+ *         for `desc->base`; the code for SpudGPU's result if the pipeline
+ *         can't be created; otherwise APRESULT_INVALID_ARGUMENT, if
+ *         @p instance, @p desc or @p out_pipeline is NULL, `fragment_shader` is
  *         NULL, neither or both of `vertex_shader` and `mesh_shader` are
  *         given, a shader was created for another stage than the one it is
  *         given as, a mesh shader comes with vertex bindings or on a device
@@ -672,10 +694,10 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
  *         counted entry of `_binding_layouts` is NULL or belongs to another
  *         instance, a shader is of another instance, the shaders don't match
- *         the desc (below), or the pipeline can't be created.
+ *         the desc (below).
  *
- * Checked against each shader's reflection (aprendshader.h), with each
- * failure printed:
+ * Checked against each shader's reflection (aprendshader.h), each failure
+ * named in @p out_error:
  *
  * - The entry point named is the SPIR-V's entry point for the stage.
  * - Every binding a shader uses is declared by the binding layout at its
@@ -691,7 +713,11 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  *
  * @see aprend_graphics_pipeline_destroy()
  */
-aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instance, const aprend_graphics_pipeline_desc *desc);
+APRESULT aprend_graphics_pipeline_create(
+    aprend_instance instance,
+    const APREND_GRAPHICS_PIPELINE_DESC *desc,
+    aprend_graphics_pipeline *out_pipeline,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a graphics pipeline.
@@ -711,26 +737,31 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instanc
 void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p);
 
 /**
- * @brief Reads the descriptor a pipeline was created with.
+ * @brief Reads the descriptor a pipeline was created with: as it was passed
+ * to aprend_graphics_pipeline_create(), pointers included, except that the
+ * vertex layouts' elements and their names, and the entry point names, are
+ * the pipeline's own copies, valid until it is destroyed, and the one of
+ * `_vertex_entry_point` and `_mesh_entry_point` the pipeline doesn't use is
+ * NULL.
  *
- * @param[in] p Pipeline to read.
+ * The whole struct is written, `base` included.
  *
- * @return The descriptor as it was passed to
- *         aprend_graphics_pipeline_create(), pointers included, except that
- *         the vertex layouts' elements and their names, and the entry point
- *         names, are the pipeline's own copies, valid until it is
- *         destroyed, and the one of `_vertex_entry_point` and
- *         `_mesh_entry_point` the pipeline doesn't use is NULL; zeroed if
- *         @p p is NULL.
+ * @param[in]  p        Pipeline to read.
+ * @param[out] out_desc Receives the descriptor.
+ *
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p p or @p out_desc is NULL.
  */
-aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p);
+APRESULT aprend_graphics_pipeline_get_desc(
+    aprend_graphics_pipeline p,
+    APREND_GRAPHICS_PIPELINE_DESC *out_desc);
 
 /**
  * @brief Configuration descriptor for a compute pipeline.
  *
  * No field has a default.
  */
-typedef struct aprend_compute_pipeline_desc {
+typedef struct APREND_COMPUTE_PIPELINE_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** A name for diagnostics. May be NULL. */
@@ -771,7 +802,7 @@ typedef struct aprend_compute_pipeline_desc {
 	 * 0 is a pipeline with no push constants.
 	 */
 	uint32_t _push_constant_range_count;
-} aprend_compute_pipeline_desc;
+} APREND_COMPUTE_PIPELINE_DESC;
 
 /**
  * @brief Opaque handle to a compute pipeline.
@@ -785,9 +816,15 @@ typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
  * @brief Creates a compute pipeline.
  *
  * @param[in] instance Instance whose device the pipeline is created on.
- * @param[in] desc     Pipeline configuration. Only read during the call.
+ * @param[in]  desc         Pipeline configuration. Only read during the
+ *                          call.
+ * @param[out] out_pipeline Receives the pipeline; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The pipeline, or NULL if @p instance or @p desc is NULL, `compute_shader` is
+ * @return APRESULT_OK; APRESULT_OUT_OF_MEMORY; the struct codes for
+ *         `desc->base`; the code for SpudGPU's result if the pipeline can't
+ *         be created; otherwise APRESULT_INVALID_ARGUMENT, if @p instance,
+ *         @p desc or @p out_pipeline is NULL, `compute_shader` is
  *         NULL, belongs to another instance or was not created for the
  *         compute stage, `_entry_point` is NULL or an empty string,
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
@@ -797,11 +834,15 @@ typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
  *         a stage other than compute alone, a size of 0, or an offset or size
  *         that is not a multiple of 4, the shader doesn't match the desc as
  *         aprend_graphics_pipeline_create() checks (entry point, bindings,
- *         push constants), or the pipeline can't be created.
+ *         push constants).
  *
  * @see aprend_compute_pipeline_destroy()
  */
-aprend_compute_pipeline aprend_compute_pipeline_create(aprend_instance instance, const aprend_compute_pipeline_desc *desc);
+APRESULT aprend_compute_pipeline_create(
+    aprend_instance instance,
+    const APREND_COMPUTE_PIPELINE_DESC *desc,
+    aprend_compute_pipeline *out_pipeline,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a compute pipeline.
@@ -821,16 +862,22 @@ aprend_compute_pipeline aprend_compute_pipeline_create(aprend_instance instance,
 void aprend_compute_pipeline_destroy(aprend_compute_pipeline p);
 
 /**
- * @brief Reads the descriptor a compute pipeline was created with.
+ * @brief Reads the descriptor a compute pipeline was created with: as it
+ * was passed to aprend_compute_pipeline_create(), pointers included, except
+ * that the entry point name is the pipeline's own copy and is valid until
+ * it is destroyed.
  *
- * @param[in] p Pipeline to read.
+ * The whole struct is written, `base` included.
  *
- * @return The descriptor as it was passed to
- *         aprend_compute_pipeline_create(), pointers included, except that
- *         the entry point name is the pipeline's own copy and is valid until
- *         it is destroyed; zeroed if @p p is NULL.
+ * @param[in]  p        Pipeline to read.
+ * @param[out] out_desc Receives the descriptor.
+ *
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p p or @p out_desc is NULL.
  */
-aprend_compute_pipeline_desc aprend_compute_pipeline_get_desc(aprend_compute_pipeline p);
+APRESULT aprend_compute_pipeline_get_desc(
+    aprend_compute_pipeline p,
+    APREND_COMPUTE_PIPELINE_DESC *out_desc);
 
 /**
  * @brief Opaque handle to the resources filling one aprend_binding_layout's
@@ -862,8 +909,8 @@ typedef struct aprend_binding_set_t *aprend_binding_set;
  * A member of `_image` the type doesn't read is ignored.
  */
 /* Frozen: an array element of a binding set. It never changes; a new need gets a new type. */
-typedef struct aprend_binding_set_entry {
-	/** The slot, as aprend_binding_desc::_binding. */
+typedef struct APREND_BINDING_SET_ENTRY {
+	/** The slot, as APREND_BINDING_DESC::_binding. */
 	uint32_t _binding;
 	/** Index into the binding's array; 0 where its `_count` is 1. */
 	uint32_t _array_element;
@@ -871,8 +918,12 @@ typedef struct aprend_binding_set_entry {
 	SPUDGPU_DESCRIPTOR_TYPE _type;
 	union {
 		struct {
-			/** A single buffer. Exactly one of this and `_set` is given. */
-			aprend_uniform_buffer _buffer;
+			/**
+			 * The buffer, of #APREND_BUFFER_USAGE_UNIFORM (aprendbuffers.h).
+			 * One of per-frame copies is read in the copy of the frame a
+			 * command list is compiled in.
+			 */
+			aprend_buffer _buffer;
 			/**
 			 * First byte of the buffer the slot sees. Inside the buffer, and
 			 * a multiple of the device's
@@ -885,16 +936,13 @@ typedef struct aprend_binding_set_entry {
 			 * of the buffer.
 			 */
 			uint64_t _range;
-			/**
-			 * A buffer set (aprendbuffers.h), in place of `_buffer`: the
-			 * slot sees the copy of the frame a command list is compiled
-			 * in. `_offset` and `_range` apply to every copy.
-			 */
-			aprend_uniform_buffer_set _set;
 		} _uniform; /**< For SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER. */
 		struct {
-			/** A single buffer. Exactly one of this and `_set` is given. */
-			aprend_storage_buffer _buffer;
+			/**
+			 * The buffer, of #APREND_BUFFER_USAGE_STORAGE, its copies read
+			 * as `_uniform._buffer`'s are.
+			 */
+			aprend_buffer _buffer;
 			/**
 			 * First byte of the buffer the slot sees. Inside the buffer, and
 			 * a multiple of the device's
@@ -907,8 +955,6 @@ typedef struct aprend_binding_set_entry {
 			 * of the buffer.
 			 */
 			uint64_t _range;
-			/** A buffer set in place of `_buffer`, as `_uniform._set`. */
-			aprend_storage_buffer_set _set;
 		} _storage; /**< For SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER. */
 		struct {
 			/**
@@ -923,7 +969,7 @@ typedef struct aprend_binding_set_entry {
 			aprend_sampler _sampler;
 		} _image; /**< For the image and sampler types. */
 	} _resource; /**< The resource. Only the member #_type names is read. */
-} aprend_binding_set_entry;
+} APREND_BINDING_SET_ENTRY;
 
 /**
  * @brief Creates a binding set from a layout.
@@ -934,9 +980,9 @@ typedef struct aprend_binding_set_entry {
  * A layout's sets share descriptor pools the layout owns, and a destroyed
  * set's place is reused by the next one created.
  *
- * A set with a buffer set in any entry keeps one descriptor set for each
- * frame in flight, and a command list binds the one of the frame it is
- * compiled in: such a list is submitted in that frame, and compiled again in
+ * A set with a buffer of per-frame copies in any entry keeps one descriptor
+ * set for each frame in flight, and a command list binds the one of the
+ * frame it is compiled in: such a list is submitted in that frame, and compiled again in
  * the next (aprend_command_list_submit() refuses it otherwise). A set of
  * single buffers, textures and samplers alone has no such limit.
  *
@@ -947,22 +993,30 @@ typedef struct aprend_binding_set_entry {
  * @param[in] entries     One entry for every array element of every binding
  *                        of @p layout, each exactly once, and nothing else.
  * @param[in] entry_count Number of elements in @p entries.
+ * @param[out] out_set    Receives the set; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did, naming the entry. May
+ *                        be NULL.
  *
- * @return The set, or NULL if @p layout or @p entries is NULL, the entries
+ * @return APRESULT_OK; APRESULT_OUT_OF_MEMORY; the code for SpudGPU's result
+ *         if the set can't be allocated; otherwise
+ *         APRESULT_INVALID_ARGUMENT, if @p layout, @p entries or @p out_set
+ *         is NULL, the entries
  *         don't fill the layout exactly, an entry's `_type` is not the
- *         layout's, a handle its `_type` reads is NULL, a buffer entry gives
- *         both `_buffer` and `_set` or a `_set` of another instance, a view
+ *         layout's, a handle its `_type` reads is NULL, a buffer is of
+ *         another instance or lacks the usage its slot needs
+ *         (#APREND_BUFFER_USAGE_UNIFORM or _STORAGE), a view
  *         is of the wrong type for its slot, a buffer's `_offset` is not a
  *         multiple of the device's offset alignment for its type or its
- *         `_offset` and `_range` run past its end, or the set can't be
- *         allocated.
+ *         `_offset` and `_range` run past its end.
  *
  * @see aprend_binding_set_destroy()
  */
-aprend_binding_set aprend_binding_set_create(
+APRESULT aprend_binding_set_create(
     aprend_binding_layout layout,
-    const aprend_binding_set_entry *entries,
-    uint32_t entry_count);
+    const APREND_BINDING_SET_ENTRY *entries,
+    uint32_t entry_count,
+    aprend_binding_set *out_set,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Points some of a binding set's slots at other resources.
@@ -976,7 +1030,7 @@ aprend_binding_set aprend_binding_set_create(
  * back to the layout when that work has finished (aprendcontext.h,
  * "Destroying"). So an update costs what creating a set does, and is for a
  * slot that changes now and then, not for data that changes every frame,
- * which is a buffer set's job (aprendbuffers.h).
+ * which is the job of a buffer of per-frame copies (aprendbuffers.h).
  *
  * @warning A command list compiled before the update and not yet submitted
  * would bind the old descriptor sets, which may be gone by the time it
@@ -993,17 +1047,21 @@ aprend_binding_set aprend_binding_set_create(
  *                        read during the call.
  * @param[in] entry_count Number of elements in @p entries. From 1 to the
  *                        number of array elements the layout declares.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return false, leaving @p set as it was, if @p set or @p entries is NULL,
+ * @return APRESULT_OK; on failure, leaving @p set as it was,
+ *         APRESULT_INVALID_ARGUMENT if @p set or @p entries is NULL,
  *         @p entry_count is 0 or more than the set has elements, an entry
  *         names an element the layout doesn't declare or one another entry
- *         names, fails any check aprend_binding_set_create() makes of an
- *         entry, or the new descriptor sets can't be allocated.
+ *         names, or fails any check aprend_binding_set_create() makes of an
+ *         entry; APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's result if
+ *         the new descriptor sets can't be allocated.
  */
-bool aprend_binding_set_update(
+APRESULT aprend_binding_set_update(
     aprend_binding_set set,
-    const aprend_binding_set_entry *entries,
-    uint32_t entry_count);
+    const APREND_BINDING_SET_ENTRY *entries,
+    uint32_t entry_count,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a binding set.

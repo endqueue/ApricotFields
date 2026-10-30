@@ -116,17 +116,17 @@ struct aprend_bloom_params {
 	float lens_dirt_intensity;
 };
 
-/* The full-target vertex shader, made if it doesn't exist. NULL, printed,
+/* The full-target vertex shader, made if it doesn't exist. NULL, reported,
  * if it can't be. */
 aprend_shader aprend_builtin_fullscreen_vert(aprend_instance instance);
 
 /* The bloom pipeline of [stage] rendering to [format], made if it doesn't
  * exist, with the bloom shaders and layout. The upsample and composite
- * stages blend additively. NULL, printed, if it can't be made. */
+ * stages blend additively. NULL, reported, if it can't be made. */
 aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance, uint32_t stage, SPUDGPU_FORMAT format);
 /* The bloom shaders and layout, made if they aren't: what
  * aprend_builtin_bloom_pipeline() and aprend_texture_view_bloom_set() need.
- * False, printed, if one can't be. */
+ * False, reported, if one can't be. */
 bool aprend_builtin_bloom_prepare(aprend_instance instance);
 /* The bloom layout; made by aprend_builtin_bloom_prepare, NULL before it. */
 aprend_binding_layout aprend_builtin_bloom_layout(aprend_instance instance);
@@ -142,7 +142,7 @@ struct aprend_blur_params {
 };
 
 /* The blur pipeline rendering to [format], made if it doesn't exist, with
- * its shader and the bloom layout it reads through. NULL, printed, if it
+ * its shader and the bloom layout it reads through. NULL, reported, if it
  * can't be made. */
 aprend_graphics_pipeline aprend_builtin_blur_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
 
@@ -167,7 +167,7 @@ struct aprend_outline_params {
 
 /* The outline pipeline rendering to [format], blending premultiplied over
  * the target if [blend] (the composite), made if it doesn't exist, with its
- * shader and the bloom layout it reads through. NULL, printed, if it can't
+ * shader and the bloom layout it reads through. NULL, reported, if it can't
  * be made. */
 aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instance, SPUDGPU_FORMAT format, bool blend);
 
@@ -189,13 +189,13 @@ struct aprend_present_params {
 };
 
 /* The present pipeline rendering to [format], made if it doesn't exist, with
- * its shaders and layout. NULL, printed, if it can't be made. */
+ * its shaders and layout. NULL, reported, if it can't be made. */
 aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
 /* The set of the present layout that reads [view] through the downsample
  * sampler of [filter] (clamped to the edge), kept by the view
  * (aprend_texture_view_t::present_sets) from the first call and released
  * with it. aprend_builtin_present_pipeline has made the layout. NULL,
- * printed, if the set can't be made. */
+ * reported, if the set can't be made. */
 aprend_binding_set aprend_texture_view_present_set(aprend_texture_view view, SPUDGPU_FILTER filter);
 
 /* The push constants of Aprend's downsample shader: [mode][0] is 1 for an
@@ -206,13 +206,13 @@ struct aprend_downsample_params {
 };
 
 /* The downsample pipeline rendering to [format], made if it doesn't exist,
- * with its shaders and layout. NULL, printed, if one can't be made. */
+ * with its shaders and layout. NULL, reported, if one can't be made. */
 aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
 /* The downsample layout; made by aprend_builtin_downsample_pipeline, NULL
  * before it. */
 aprend_binding_layout aprend_builtin_downsample_layout(aprend_instance instance);
 /* The downsample sampler for [filter], made if it doesn't exist; bloom
- * reads through the linear one. NULL, printed, if [filter] is not a
+ * reads through the linear one. NULL, reported, if [filter] is not a
  * SPUDGPU_FILTER or it can't be made. */
 aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDGPU_FILTER filter);
 

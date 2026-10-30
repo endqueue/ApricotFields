@@ -36,40 +36,51 @@ static const uint32_t s_outline_frag_spv[] =
 #include "aprend_outline.frag.spv.inc"
     ;
 
-extern "C" aprend_shader aprend_get_fullscreen_vertex_shader(aprend_instance instance) {
+extern "C" APRESULT aprend_get_fullscreen_vertex_shader(aprend_instance instance, aprend_shader *out_shader, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (out_shader)
+		*out_shader = nullptr;
 	if (!instance)
-		return nullptr;
-	return aprend_builtin_fullscreen_vert(instance);
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (!out_shader)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
+	aprend_builtins &builtins = instance->builtins;
+	if (!builtins.fullscreen_vert)
+		if (const APRESULT result = aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX,
+		                                                       &builtins.fullscreen_vert, out_error))
+			return result;
+	*out_shader = builtins.fullscreen_vert;
+	return APRESULT_OK;
 }
 
 aprend_shader aprend_builtin_fullscreen_vert(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
 	if (!builtins.fullscreen_vert) {
-		builtins.fullscreen_vert = aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX);
+		(void)aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX, &builtins.fullscreen_vert, nullptr);
 		if (!builtins.fullscreen_vert)
-			printf("apricot: Aprend's full-target vertex shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's full-target vertex shader can't be created");
 	}
 	return builtins.fullscreen_vert;
 }
 
 // The shaders and layout of the downsample pipelines, made together the
-// first time a pipeline is asked for. False, printed, if any can't be;
+// first time a pipeline is asked for. False, reported, if any can't be;
 // what was made is kept for the next try.
 static bool aprend_builtin_downsample_prepare(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
 	if (!aprend_builtin_fullscreen_vert(instance))
 		return false;
 	if (!builtins.downsample_frag) {
-		builtins.downsample_frag = aprend_shader_create_spirv(instance, s_downsample_frag_spv, sizeof(s_downsample_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, s_downsample_frag_spv, sizeof(s_downsample_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.downsample_frag, nullptr);
 		if (!builtins.downsample_frag) {
-			printf("apricot: Aprend's downsample shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's downsample shader can't be created");
 			return false;
 		}
 	}
 	if (!builtins.downsample_layout) {
-		builtins.downsample_layout = aprend_binding_layout_create_from_shaders(instance, &builtins.downsample_frag, 1, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, &builtins.downsample_frag, 1, 0, &builtins.downsample_layout, nullptr);
 		if (!builtins.downsample_layout) {
-			printf("apricot: the binding layout of Aprend's downsample shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's downsample shader can't be created");
 			return false;
 		}
 	}
@@ -108,7 +119,7 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 	if (!aprend_builtin_downsample_prepare(instance))
 		return nullptr;
 
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend downsample";
 	desc._vertex_binding_count        = 0;
@@ -132,16 +143,17 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 	desc._push_constant_ranges[0].size        = sizeof(aprend_downsample_params);
 	desc._push_constant_range_count           = 1;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	aprend_graphics_pipeline pipeline = nullptr;
+	(void)aprend_graphics_pipeline_create(instance, &desc, &pipeline, nullptr);
 	if (!pipeline) {
-		printf("apricot: Aprend's downsample pipeline can't be created for format %d\n", (int)format);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's downsample pipeline can't be created for format %d", (int)format);
 		return nullptr;
 	}
 	try {
 		builtins.downsample_pipelines.push_back({format, pipeline});
 	} catch (...) {
 		aprend_graphics_pipeline_destroy(pipeline);
-		printf("apricot: no memory to keep Aprend's downsample pipeline\n");
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "no memory to keep Aprend's downsample pipeline");
 		return nullptr;
 	}
 	return pipeline;
@@ -167,16 +179,16 @@ bool aprend_builtin_bloom_prepare(aprend_instance instance) {
 	for (uint32_t stage = 0; stage < 4; ++stage) {
 		if (builtins.bloom_frags[stage])
 			continue;
-		builtins.bloom_frags[stage] = aprend_shader_create_spirv(instance, spirv[stage].code, spirv[stage].size, SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, spirv[stage].code, spirv[stage].size, SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.bloom_frags[stage], nullptr);
 		if (!builtins.bloom_frags[stage]) {
-			printf("apricot: Aprend's bloom shader for stage %u can't be created\n", stage);
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's bloom shader for stage %u can't be created", stage);
 			return false;
 		}
 	}
 	if (!builtins.bloom_layout) {
-		builtins.bloom_layout = aprend_binding_layout_create_from_shaders(instance, builtins.bloom_frags, 4, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, builtins.bloom_frags, 4, 0, &builtins.bloom_layout, nullptr);
 		if (!builtins.bloom_layout) {
-			printf("apricot: the binding layout of Aprend's bloom shaders can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's bloom shaders can't be created");
 			return false;
 		}
 	}
@@ -191,7 +203,7 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 	if (!aprend_builtin_bloom_prepare(instance))
 		return nullptr;
 
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend bloom";
 	desc._vertex_binding_count       = 0;
@@ -225,16 +237,17 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 	desc._push_constant_ranges[0].size         = sizeof(aprend_bloom_params);
 	desc._push_constant_range_count            = 1;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	aprend_graphics_pipeline pipeline = nullptr;
+	(void)aprend_graphics_pipeline_create(instance, &desc, &pipeline, nullptr);
 	if (!pipeline) {
-		printf("apricot: Aprend's bloom pipeline for stage %u can't be created for format %d\n", stage, (int)format);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's bloom pipeline for stage %u can't be created for format %d", stage, (int)format);
 		return nullptr;
 	}
 	try {
 		builtins.bloom_pipelines.push_back({stage, format, pipeline});
 	} catch (...) {
 		aprend_graphics_pipeline_destroy(pipeline);
-		printf("apricot: no memory to keep Aprend's bloom pipeline\n");
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "no memory to keep Aprend's bloom pipeline");
 		return nullptr;
 	}
 	return pipeline;
@@ -251,14 +264,14 @@ aprend_graphics_pipeline aprend_builtin_blur_pipeline(aprend_instance instance, 
 	if (!aprend_builtin_bloom_prepare(instance))
 		return nullptr;
 	if (!builtins.blur_frag) {
-		builtins.blur_frag = aprend_shader_create_spirv(instance, s_blur_frag_spv, sizeof(s_blur_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, s_blur_frag_spv, sizeof(s_blur_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.blur_frag, nullptr);
 		if (!builtins.blur_frag) {
-			printf("apricot: Aprend's blur shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's blur shader can't be created");
 			return nullptr;
 		}
 	}
 
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend blur";
 	desc._vertex_binding_count                = 0;
@@ -282,16 +295,17 @@ aprend_graphics_pipeline aprend_builtin_blur_pipeline(aprend_instance instance, 
 	desc._push_constant_ranges[0].size        = sizeof(aprend_blur_params);
 	desc._push_constant_range_count           = 1;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	aprend_graphics_pipeline pipeline = nullptr;
+	(void)aprend_graphics_pipeline_create(instance, &desc, &pipeline, nullptr);
 	if (!pipeline) {
-		printf("apricot: Aprend's blur pipeline can't be created for format %d\n", (int)format);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's blur pipeline can't be created for format %d", (int)format);
 		return nullptr;
 	}
 	try {
 		builtins.blur_pipelines.push_back({format, pipeline});
 	} catch (...) {
 		aprend_graphics_pipeline_destroy(pipeline);
-		printf("apricot: no memory to keep Aprend's blur pipeline\n");
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "no memory to keep Aprend's blur pipeline");
 		return nullptr;
 	}
 	return pipeline;
@@ -306,14 +320,14 @@ aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instanc
 	if (!aprend_builtin_bloom_prepare(instance))
 		return nullptr;
 	if (!builtins.outline_frag) {
-		builtins.outline_frag = aprend_shader_create_spirv(instance, s_outline_frag_spv, sizeof(s_outline_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, s_outline_frag_spv, sizeof(s_outline_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.outline_frag, nullptr);
 		if (!builtins.outline_frag) {
-			printf("apricot: Aprend's outline shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's outline shader can't be created");
 			return nullptr;
 		}
 	}
 
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend outline";
 	desc._vertex_binding_count                = 0;
@@ -340,16 +354,17 @@ aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instanc
 	desc._push_constant_ranges[0].size        = sizeof(aprend_outline_params);
 	desc._push_constant_range_count           = 1;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	aprend_graphics_pipeline pipeline = nullptr;
+	(void)aprend_graphics_pipeline_create(instance, &desc, &pipeline, nullptr);
 	if (!pipeline) {
-		printf("apricot: Aprend's outline pipeline can't be created for format %d\n", (int)format);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's outline pipeline can't be created for format %d", (int)format);
 		return nullptr;
 	}
 	try {
 		builtins.outline_pipelines.push_back({format, blend, pipeline});
 	} catch (...) {
 		aprend_graphics_pipeline_destroy(pipeline);
-		printf("apricot: no memory to keep Aprend's outline pipeline\n");
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "no memory to keep Aprend's outline pipeline");
 		return nullptr;
 	}
 	return pipeline;
@@ -363,21 +378,21 @@ aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instanc
 	if (!aprend_builtin_fullscreen_vert(instance))
 		return nullptr;
 	if (!builtins.present_frag) {
-		builtins.present_frag = aprend_shader_create_spirv(instance, s_present_frag_spv, sizeof(s_present_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT);
+		(void)aprend_shader_create_spirv(instance, s_present_frag_spv, sizeof(s_present_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.present_frag, nullptr);
 		if (!builtins.present_frag) {
-			printf("apricot: Aprend's present shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's present shader can't be created");
 			return nullptr;
 		}
 	}
 	if (!builtins.present_layout) {
-		builtins.present_layout = aprend_binding_layout_create_from_shaders(instance, &builtins.present_frag, 1, 0);
+		(void)aprend_binding_layout_create_from_shaders(instance, &builtins.present_frag, 1, 0, &builtins.present_layout, nullptr);
 		if (!builtins.present_layout) {
-			printf("apricot: the binding layout of Aprend's present shader can't be created\n");
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's present shader can't be created");
 			return nullptr;
 		}
 	}
 
-	aprend_graphics_pipeline_desc desc{};
+	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = "aprend present";
 	desc._vertex_binding_count               = 0;
@@ -401,16 +416,17 @@ aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instanc
 	desc._push_constant_ranges[0].size        = sizeof(aprend_present_params);
 	desc._push_constant_range_count           = 1;
 
-	aprend_graphics_pipeline pipeline = aprend_graphics_pipeline_create(instance, &desc);
+	aprend_graphics_pipeline pipeline = nullptr;
+	(void)aprend_graphics_pipeline_create(instance, &desc, &pipeline, nullptr);
 	if (!pipeline) {
-		printf("apricot: Aprend's present pipeline can't be created for format %d\n", (int)format);
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's present pipeline can't be created for format %d", (int)format);
 		return nullptr;
 	}
 	try {
 		builtins.present_pipelines.push_back({format, pipeline});
 	} catch (...) {
 		aprend_graphics_pipeline_destroy(pipeline);
-		printf("apricot: no memory to keep Aprend's present pipeline\n");
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "no memory to keep Aprend's present pipeline");
 		return nullptr;
 	}
 	return pipeline;
@@ -423,29 +439,29 @@ aprend_binding_set aprend_texture_view_present_set(aprend_texture_view view, SPU
 	aprend_binding_set &set = view->present_sets[filter];
 	if (set)
 		return set;
-	aprend_binding_set_entry entries[2]{};
+	APREND_BINDING_SET_ENTRY entries[2]{};
 	entries[0]._binding                  = 0;
 	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	entries[0]._resource._image._view    = view;
 	entries[1]._binding                  = 1;
 	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
 	entries[1]._resource._image._sampler = sampler;
-	set                                  = aprend_binding_set_create(view->instance->builtins.present_layout, entries, 2);
+	(void)aprend_binding_set_create(view->instance->builtins.present_layout, entries, 2, &set, nullptr);
 	if (!set)
-		printf("apricot: present: the binding set that reads a view can't be created\n");
+		aprend_report(view->instance, APRESULT_APREND_GPU_FAILURE, "present: the binding set that reads a view can't be created");
 	return set;
 }
 
 aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDGPU_FILTER filter) {
 	if (filter != SPUDGPU_FILTER_NEAREST && filter != SPUDGPU_FILTER_LINEAR) {
-		printf("apricot: %d is not a SPUDGPU_FILTER\n", (int)filter);
+		aprend_report(instance, APRESULT_INVALID_ARGUMENT, "%d is not a SPUDGPU_FILTER", (int)filter);
 		return nullptr;
 	}
 	aprend_sampler &sampler = instance->builtins.downsample_samplers[filter];
 	if (sampler)
 		return sampler;
 
-	aprend_sampler_desc desc{};
+	APREND_SAMPLER_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_SAMPLER_DESC);
 	desc.mag_filter     = filter;
 	desc.min_filter     = filter;
@@ -459,9 +475,9 @@ aprend_sampler aprend_builtin_downsample_sampler(aprend_instance instance, SPUDG
 	desc.max_lod        = 0.0f;
 	desc.max_anisotropy = 1.0f;
 	desc.debug_name = "aprend downsample";
-	sampler = aprend_sampler_create(instance, &desc);
+	(void)aprend_sampler_create(instance, &desc, &sampler, nullptr);
 	if (!sampler)
-		printf("apricot: Aprend's downsample sampler can't be created\n");
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's downsample sampler can't be created");
 	return sampler;
 }
 
@@ -471,16 +487,16 @@ aprend_binding_set aprend_texture_view_bloom_set(aprend_texture_view view) {
 	aprend_sampler sampler = aprend_builtin_downsample_sampler(view->instance, SPUDGPU_FILTER_LINEAR);
 	if (!sampler)
 		return nullptr;
-	aprend_binding_set_entry entries[2]{};
+	APREND_BINDING_SET_ENTRY entries[2]{};
 	entries[0]._binding                  = 0;
 	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	entries[0]._resource._image._view    = view;
 	entries[1]._binding                  = 1;
 	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
 	entries[1]._resource._image._sampler = sampler;
-	view->bloom_set                      = aprend_binding_set_create(aprend_builtin_bloom_layout(view->instance), entries, 2);
+	(void)aprend_binding_set_create(aprend_builtin_bloom_layout(view->instance), entries, 2, &view->bloom_set, nullptr);
 	if (!view->bloom_set)
-		printf("apricot: bloom: the binding set that reads a view can't be created\n");
+		aprend_report(view->instance, APRESULT_APREND_GPU_FAILURE, "bloom: the binding set that reads a view can't be created");
 	return view->bloom_set;
 }
 

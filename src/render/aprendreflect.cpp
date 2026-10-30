@@ -32,7 +32,7 @@ uint32_t aprend_uniform_type_column_size(APREND_UNIFORM_TYPE type) {
 }
 
 void aprend_write_block_member(
-    const aprend_shader_member &member,
+    const APREND_SHADER_MEMBER &member,
     uint8_t *block,
     const void *data) {
 	const uint8_t *source        = (const uint8_t *)data;
@@ -62,7 +62,7 @@ void aprend_write_block_member(
 }
 
 void aprend_read_block_member(
-    const aprend_shader_member &member,
+    const APREND_SHADER_MEMBER &member,
     const uint8_t *block,
     void *out_data) {
 	uint8_t *destination         = (uint8_t *)out_data;
@@ -288,7 +288,7 @@ struct aprend_reflector {
 		const bool is_struct = type.basetype == spirv_cross::SPIRType::Struct;
 		// A leaf with one dimension or none is one member.
 		if (!is_struct && dims <= 1) {
-			aprend_shader_member member{};
+			APREND_SHADER_MEMBER member{};
 			member.name          = keep(name);
 			member.type          = aprend_uniform_type_of(type);
 			member.offset        = offset;
@@ -336,7 +336,7 @@ struct aprend_reflector {
 		const spirv_cross::SPIRType &base_type = compiler.get_type(resource.base_type_id);
 		const bool is_buffer = type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER || type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 
-		aprend_shader_resource out_resource{};
+		APREND_SHADER_RESOURCE out_resource{};
 		out_resource.set     = compiler.get_decoration(resource.id, spv::DecorationDescriptorSet);
 		out_resource.binding = compiler.get_decoration(resource.id, spv::DecorationBinding);
 		out_resource.type    = type;
@@ -466,7 +466,7 @@ struct aprend_reflector {
 
 		// In set and binding order. The members stay where they are: each
 		// resource knows where its own start.
-		std::stable_sort(out.resources.begin(), out.resources.end(), [](const aprend_shader_resource &a, const aprend_shader_resource &b) {
+		std::stable_sort(out.resources.begin(), out.resources.end(), [](const APREND_SHADER_RESOURCE &a, const APREND_SHADER_RESOURCE &b) {
 			return a.set != b.set ? a.set < b.set : a.binding < b.binding;
 		});
 
@@ -485,7 +485,7 @@ struct aprend_reflector {
 			uint32_t begin = UINT32_MAX;
 			uint32_t end   = 0;
 			for (uint32_t i = 0; i < out.view.push_constant_member_count; ++i) {
-				const aprend_shader_member &member = out.members[out.view.push_constant_first_member + i];
+				const APREND_SHADER_MEMBER &member = out.members[out.view.push_constant_first_member + i];
 				if (!member.used)
 					continue;
 				begin = std::min(begin, member.offset);
@@ -498,7 +498,7 @@ struct aprend_reflector {
 		if (stage == SPUDGPU_SHADER_STAGE_VERTEX) {
 			for (const spirv_cross::Resource &r : resources.stage_inputs) {
 				const spirv_cross::SPIRType &type = compiler.get_type(r.type_id);
-				aprend_shader_input input{};
+				APREND_SHADER_INPUT input{};
 				input.name        = keep(compiler.get_name(r.id));
 				input.location    = compiler.get_decoration(r.id, spv::DecorationLocation);
 				input.scalar_type = aprend_scalar_type(type);
@@ -511,7 +511,7 @@ struct aprend_reflector {
 				out.inputs.push_back(input);
 			}
 			std::sort(out.inputs.begin(), out.inputs.end(),
-			          [](const aprend_shader_input &a, const aprend_shader_input &b) { return a.location < b.location; });
+			          [](const APREND_SHADER_INPUT &a, const APREND_SHADER_INPUT &b) { return a.location < b.location; });
 		}
 
 		if (stage == SPUDGPU_SHADER_STAGE_FRAGMENT) {

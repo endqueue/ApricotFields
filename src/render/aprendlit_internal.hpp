@@ -56,7 +56,7 @@ struct aprend_lit_scene_block {
 	uint32_t tiles_x;
 	uint32_t tiles_y;
 	float occlusion_strength;
-	uint32_t padding;
+	float scene_color_mips;
 	aprend_lit_light_block lights[APREND_LIT_MAX_LIGHTS];
 };
 
@@ -70,6 +70,7 @@ enum : uint32_t {
 	APREND_LIT_SCENE_FLAG_SPOT_REVERSED = 32u,
 	APREND_LIT_SCENE_FLAG_BENT_NORMALS  = 64u,
 	APREND_LIT_SCENE_FLAG_POINT_REVERSED = 128u,
+	APREND_LIT_SCENE_FLAG_SCENE_COLOR   = 256u,
 };
 
 /* AprendLitShadowPass in shaders/aprend_lit_shadow_pass.glslh. */
@@ -96,6 +97,10 @@ struct aprend_lit_material_block {
 	/* Each map's own, after uv_transform: two rows (vec4s) a map, in
 	 * APREND_LIT_MAP order. */
 	float map_uv_transform[4][8];
+	/* x transmission, y index of refraction, z thickness, w attenuation
+	 * distance (0: never). */
+	float transmission[4];
+	float attenuation[4];
 };
 
 /* AprendOcclusionPass in shaders/aprend_lit_occlusion.frag. */
@@ -143,7 +148,7 @@ struct aprend_hosek_sky_block {
 void aprend_lit_hosek_cook(const float sun[3], float turbidity, const float albedo[3], float intensity, aprend_hosek_sky_block *out);
 
 /* The material of [environment]'s Hosek-Wilkie coefficients, made if it
- * isn't (the passes prepared). NULL, printed, if it can't be. */
+ * isn't (the passes prepared). NULL, reported, if it can't be. */
 aprend_material aprend_lit_environment_sky_material(aprend_lit_environment environment);
 
 /* ToneMapParams in shaders/aprend_tone_map.frag. */
@@ -269,7 +274,7 @@ struct aprend_lit_builtins {
 	aprend_texture_view placeholder_cube_view{nullptr};
 	aprend_texture2d placeholder_depth{nullptr};
 	aprend_texture_view placeholder_depth_view{nullptr};
-	aprend_storage_buffer placeholder_tiles{nullptr};
+	aprend_buffer placeholder_tiles{nullptr};
 	/* A material's maps, read linear, mipmapped and repeating. */
 	aprend_sampler material_sampler{nullptr};
 	/* Environments, lookup textures and depth, linear, mipmapped, clamped. */
@@ -309,29 +314,29 @@ struct aprend_lit_builtins {
  * aprend_builtins_destroy(). */
 void aprend_lit_builtins_destroy(aprend_instance instance);
 
-/* The placeholders and samplers, made if they aren't. False, printed, if one
+/* The placeholders and samplers, made if they aren't. False, reported, if one
  * can't be. */
 bool aprend_lit_prepare_resources(aprend_instance instance);
 
-/* The pass of [pass], made if it isn't. NULL, printed, if it can't be. */
+/* The pass of [pass], made if it isn't. NULL, reported, if it can't be. */
 aprend_graphics_pipeline aprend_lit_pass_pipeline(aprend_instance instance, uint32_t pass);
 
 /* The occlusion blur rendering to [format], made if it isn't. */
 aprend_graphics_pipeline aprend_lit_blur_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
 
 /* The tone map pipeline rendering to [format], made if it isn't. NULL,
- * printed, if it can't be. */
+ * reported, if it can't be. */
 aprend_graphics_pipeline aprend_lit_tone_map_pipeline(aprend_instance instance, SPUDGPU_FORMAT format);
 
 /* The exposure histogram's compute pipeline, made if it isn't (the passes
- * prepared). NULL, printed, if it can't be. */
+ * prepared). NULL, reported, if it can't be. */
 aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance);
 
 /* The light culling pipeline, made if it isn't. */
 aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance);
 
 /* The light culling pipeline with depth bounds, made if it isn't (the
- * passes prepared). NULL, printed, if it can't be. */
+ * passes prepared). NULL, reported, if it can't be. */
 aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instance);
 
 /* The BRDF lookup texture and its views, made if they aren't. */
@@ -339,13 +344,13 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance);
 
 /* The set of the pass layout reading [view] through the environment
  * sampler, kept by the view (aprend_texture_view_t::environment_set). NULL,
- * printed, if it can't be made. */
+ * reported, if it can't be made. */
 aprend_binding_set aprend_texture_view_environment_set(aprend_texture_view view);
 
 /* The set of the bounded culling's depth layout (its set 1) reading [view]
  * through the environment sampler, kept by the view
  * (aprend_texture_view_t::cull_depth_set). The bounded culling pipeline has
- * been made. NULL, printed, if it can't be made. */
+ * been made. NULL, reported, if it can't be made. */
 aprend_binding_set aprend_texture_view_cull_depth_set(aprend_texture_view view);
 
 /* ---- Environments, scenes and exposures --------------------------------- */
@@ -354,7 +359,7 @@ typedef struct aprend_lit_environment_t {
 	aprend_lit_environment_t() = default;
 	~aprend_lit_environment_t();
 	aprend_instance instance{nullptr};
-	aprend_lit_environment_desc desc{};
+	APREND_LIT_ENVIRONMENT_DESC desc{};
 	/* The picture, copied in at specular_size with every mip down to 1
 	 * texel: what the prefilter and irradiance passes sample. Its faces'
 	 * first mip as render targets, and the whole cube as one view. */
@@ -395,7 +400,7 @@ typedef struct aprend_lit_scene_t {
 	/* The tiles, a copy for each frame in flight, written by the culling
 	 * pass and read by the surface; NULL with no target size. Sized for
 	 * tiles_x by tiles_y. */
-	aprend_storage_buffer_set tiles{nullptr};
+	aprend_buffer tiles{nullptr};
 	/* The block as last set, written whole into the materials that hold it
 	 * each time. */
 	aprend_lit_scene_block block{};
@@ -414,7 +419,7 @@ typedef struct aprend_exposure_t {
 	aprend_exposure_t() = default;
 	~aprend_exposure_t();
 	aprend_instance instance{nullptr};
-	aprend_exposure_desc desc{};
+	APREND_EXPOSURE_DESC desc{};
 	/* The picture's log luminance, with every mip down to 1 texel; its
 	 * first mip as a render target, the whole as one view. */
 	aprend_texture2d luminance{nullptr};
@@ -432,7 +437,7 @@ typedef struct aprend_exposure_t {
 	/* For an exposure that leaves some of the picture out (low above 0 or
 	 * high below 1): its bins, a copy for each frame, and the set of the
 	 * histogram layout that reads the luminance texture and writes them. */
-	aprend_storage_buffer_set histogram{nullptr};
+	aprend_buffer histogram{nullptr};
 	aprend_binding_set histogram_set{nullptr};
 } aprend_exposure_t;
 

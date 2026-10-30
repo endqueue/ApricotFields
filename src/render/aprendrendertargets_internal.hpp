@@ -71,7 +71,7 @@ struct aprend_pool_take {
 /* An entry of the pool of [width] by [height] in [format] with [levels]
  * levels, render target and shader resource, free since the frame it was
  * last taken in finished; made if there is none. Marked taken in the current
- * frame, and the take added to [cmd_list]'s. NULL, printed, if one can't be
+ * frame, and the take added to [cmd_list]'s. NULL, reported, if one can't be
  * made. Its contents are undefined. */
 aprend_pooled_target *aprend_render_target_take(
     aprend_command_list_t *cmd_list,

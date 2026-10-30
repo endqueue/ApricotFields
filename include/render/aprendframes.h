@@ -22,8 +22,8 @@ extern "C" {
 /**
  * @brief One color attachment of a framebuffer.
  */
-/* Frozen: an array element of aprend_framebuffer_desc. It never changes; a new need gets a new type. */
-typedef struct aprend_framebuffer_texture_spec {
+/* Frozen: an array element of APREND_FRAMEBUFFER_DESC. It never changes; a new need gets a new type. */
+typedef struct APREND_FRAMEBUFFER_TEXTURE_SPEC {
 	/**
 	 * A texture of the caller's to use as the attachment, or NULL for the
 	 * framebuffer to create one. If it is not NULL, #format is ignored, and
@@ -35,12 +35,12 @@ typedef struct aprend_framebuffer_texture_spec {
 	SPUDGPU_FORMAT format;
 	/** Whether a shader samples the texture the framebuffer creates. */
 	bool shader_resource;
-} aprend_framebuffer_texture_spec;
+} APREND_FRAMEBUFFER_TEXTURE_SPEC;
 
 /**
  * @brief Configuration descriptor for a framebuffer.
  */
-typedef struct aprend_framebuffer_desc {
+typedef struct APREND_FRAMEBUFFER_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_FRAMEBUFFER_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Width of the framebuffer in texels. Never 0. */
@@ -51,7 +51,7 @@ typedef struct aprend_framebuffer_desc {
 	 * The color attachments, #attachment_count of them. Never NULL. Copied
 	 * at creation: the array only has to live for the call.
 	 */
-	const aprend_framebuffer_texture_spec *attachments;
+	const APREND_FRAMEBUFFER_TEXTURE_SPEC *attachments;
 	/** How many color attachments. Never 0. */
 	uint32_t attachment_count;
 	/**
@@ -61,7 +61,7 @@ typedef struct aprend_framebuffer_desc {
 	SPUDGPU_FORMAT depth_format;
 	/** Sample count of the textures the framebuffer creates. 0 is taken as 1. */
 	uint32_t sample_count;
-} aprend_framebuffer_desc;
+} APREND_FRAMEBUFFER_DESC;
 
 /**
  * @brief Opaque handle to a framebuffer.
@@ -75,18 +75,26 @@ typedef struct aprend_framebuffer_t *aprend_framebuffer;
  * Each attachment is a view of mip 0 of layer 0 of its texture. A texture
  * the framebuffer creates has one mip and one layer.
  *
- * @param[in] instance Instance the framebuffer's textures are created on.
- * @param[in] desc     Framebuffer configuration. Only read during the call.
+ * @param[in]  instance        Instance the framebuffer's textures are
+ *                             created on.
+ * @param[in]  desc            Framebuffer configuration. Only read during
+ *                             the call.
+ * @param[out] out_framebuffer Receives the framebuffer; NULL on failure.
+ * @param[out] out_error       Why it failed, when it did. May be NULL.
  *
- * @return The framebuffer, or NULL if @p instance or @p desc is NULL,
- *         `width`, `height` or `attachment_count` is 0, `attachments` is
- *         NULL, or a texture or view can't be created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc or
+ *         @p out_framebuffer is NULL, `width`, `height` or
+ *         `attachment_count` is 0, or `attachments` is NULL; the struct
+ *         codes for `desc->base`; or the code a texture or view of it
+ *         couldn't be created with (aprendimages.h).
  *
  * @see aprend_framebuffer_destroy()
  */
-aprend_framebuffer aprend_framebuffer_create(
+APRESULT aprend_framebuffer_create(
     aprend_instance instance,
-    const aprend_framebuffer_desc *desc);
+    const APREND_FRAMEBUFFER_DESC *desc,
+    aprend_framebuffer *out_framebuffer,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a framebuffer, its views, and the textures it created.
@@ -113,12 +121,12 @@ void aprend_framebuffer_destroy(aprend_framebuffer framebuffer);
  *                         points at the framebuffer's own copy, which lasts
  *                         as long as the framebuffer.
  *
- * @return false, with nothing written, if @p framebuffer or @p out_desc is
- *         NULL.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p framebuffer or @p out_desc is NULL.
  */
-bool aprend_framebuffer_get_desc(
+APRESULT aprend_framebuffer_get_desc(
     aprend_framebuffer framebuffer,
-    aprend_framebuffer_desc *out_desc);
+    APREND_FRAMEBUFFER_DESC *out_desc);
 
 /**
  * @brief Recreates a framebuffer's attachments at a new size.
@@ -131,17 +139,19 @@ bool aprend_framebuffer_get_desc(
  * @param[in] framebuffer Framebuffer to resize.
  * @param[in] width       New width in texels. Never 0.
  * @param[in] height      New height in texels. Never 0.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return true if the framebuffer is that size now, which it is at once if
- *         it already was. false if @p framebuffer is NULL, @p width or
- *         @p height is 0, or an attachment can't be created, which leaves
- *         the framebuffer with only the attachments made before the
- *         failure.
+ * @return APRESULT_OK if the framebuffer is that size now, which it is at
+ *         once if it already was; APRESULT_INVALID_ARGUMENT if
+ *         @p framebuffer is NULL or @p width or @p height is 0; or the code
+ *         an attachment couldn't be created with, which leaves the
+ *         framebuffer with only the attachments made before the failure.
  */
-bool aprend_framebuffer_resize(
+APRESULT aprend_framebuffer_resize(
     aprend_framebuffer framebuffer,
     uint32_t width,
-    uint32_t height);
+    uint32_t height,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Clears every color attachment of a framebuffer to one color.
@@ -158,17 +168,20 @@ bool aprend_framebuffer_resize(
  * @param[in] g           Green.
  * @param[in] b           Blue.
  * @param[in] a           Alpha.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return false if @p framebuffer or @p queue is NULL or the clears can't
- *         be recorded.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p framebuffer or
+ *         @p queue is NULL or @p queue is not the instance's; or the code
+ *         for SpudGPU's result if the clears can't be recorded.
  */
-bool aprend_framebuffer_clear_colors(
+APRESULT aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
     spudgpu_command_queue queue,
     float r,
     float g,
     float b,
-    float a);
+    float a,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Clears the depth, the stencil or both of a framebuffer's depth
@@ -182,18 +195,22 @@ bool aprend_framebuffer_clear_colors(
  * @param[in] clear_stencil Whether the stencil is cleared, to @p stencil.
  * @param[in] depth         Depth value.
  * @param[in] stencil       Stencil value.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return false if @p framebuffer or @p queue is NULL, the framebuffer has
- *         no depth attachment, or the clear can't be recorded. true with nothing
- *         done if neither @p clear_depth nor @p clear_stencil is set.
+ * @return APRESULT_OK, with nothing done if neither @p clear_depth nor
+ *         @p clear_stencil is set; APRESULT_INVALID_ARGUMENT if
+ *         @p framebuffer or @p queue is NULL, @p queue is not the
+ *         instance's, or the framebuffer has no depth attachment; or the
+ *         code for SpudGPU's result if the clear can't be recorded.
  */
-bool aprend_framebuffer_clear_depth(
+APRESULT aprend_framebuffer_clear_depth(
     aprend_framebuffer framebuffer,
     spudgpu_command_queue queue,
     bool clear_depth,
     bool clear_stencil,
     float depth,
-    uint32_t stencil);
+    uint32_t stencil,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Gets one color attachment's view, for a pass's color target.

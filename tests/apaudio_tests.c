@@ -6,6 +6,7 @@
 
 #include "audio/apaudio.h"
 #include "audio/apaudiocues.h"
+#include "archive/aparchive.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -49,6 +50,7 @@ static APAUDIO_MIXER_DESC valid_mixer_desc(void)
     desc.max_modifiers = 4;
     desc.queue_capacity = 64;
     desc.resampler = APAUDIO_RESAMPLER_LINEAR;
+    desc.limiter = APAUDIO_LIMITER_OFF;
     desc.gain = 1.0f;
     return desc;
 }
@@ -743,7 +745,7 @@ static void test_formats(void)
         stereo_samples[2 * i + 1] = -0.5f;
     }
 
-    /* Integer formats are clamped. */
+    /* Integer formats are clamped. 16-bit is dithered: within a bit. */
     APAUDIO_MIXER_DESC desc = plain_mixer_desc();
     desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_S16;
     apaudio_mixer mixer = make_mixer(&desc);
@@ -751,7 +753,8 @@ static void test_formats(void)
     play(mixer, sound, 1.0f, 0, false);
     int16_t s16[2 * 8];
     apaudio_mixer_render(mixer, s16, 8, NULL);
-    CHECK(s16[0] == 32767 && s16[1] == -16384 && s16[14] == 32767 && s16[15] == -16384);
+    CHECK(s16[0] == 32767 && s16[14] == 32767);
+    CHECK(abs(s16[1] + 16384) <= 1 && abs(s16[15] + 16384) <= 1);
     apaudio_mixer_destroy(mixer);
 
     desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_S24_PACKED;
@@ -1406,6 +1409,190 @@ static APAUDIO_CUE_INFO cue_info(apaudio_cues cues, APAUDIO_CUE cue)
     return info;
 }
 
+/* A ZIP archive in memory, for apaudio_cues_load_zip_bank(). */
+typedef struct memory_zip
+{
+    unsigned char bytes[4096];
+    uint64_t size;
+} memory_zip;
+
+static bool memory_zip_write(void *user, const void *data, uint64_t count)
+{
+    memory_zip *zip = (memory_zip *)user;
+    if (count > sizeof(zip->bytes) - zip->size)
+        return false;
+    memcpy(zip->bytes + zip->size, data, (size_t)count);
+    zip->size += count;
+    return true;
+}
+
+static bool memory_zip_read(void *user, uint64_t offset, void *buffer, uint64_t count)
+{
+    const memory_zip *zip = (const memory_zip *)user;
+    if (offset > zip->size || count > zip->size - offset)
+        return false;
+    memcpy(buffer, zip->bytes + offset, (size_t)count);
+    return true;
+}
+
+static bool any_sound(uint32_t frames)
+{
+    for (uint32_t i = 0; i < 2 * frames; i++)
+        if (out[i] != 0.0f)
+            return true;
+    return false;
+}
+
+/* Playing cues: one-shots heard, a cue switched off and a muted bus
+ * silent; sustained playings started, stopped, faded by an exclusive
+ * start, and limited to max_playings; the sample rate changed; a bank
+ * read from a ZIP archive. */
+static void test_cues_playing(void)
+{
+    current_test = "cues playing";
+    APAUDIO_MIXER_DESC mixer_desc = valid_mixer_desc();
+    apaudio_mixer mixer = make_mixer(&mixer_desc);
+    APAUDIO_CUES_BUS buses[2];
+    memset(buses, 0, sizeof(buses));
+    buses[0].name = "feedback";
+    buses[0].bus = make_bus(mixer, 0, 1.0f);
+    buses[0].virtual_behavior = APAUDIO_VIRTUAL_KILL;
+    buses[1].name = "music";
+    buses[1].bus = make_bus(mixer, 0, 1.0f);
+    buses[1].virtual_behavior = APAUDIO_VIRTUAL_KILL;
+    APAUDIO_CUES_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_CUES_DESC;
+    desc.mixer = mixer;
+    desc.buses = buses;
+    desc.bus_count = 2;
+    desc.max_cues = 8;
+    desc.max_playings = 3;
+    desc.max_voices = mixer_desc.max_voices;
+    desc.sample_rate = 48000;
+    desc.max_bank_size = 1 << 20;
+    desc.duck_fade_in_us = 10000;
+    desc.duck_fade_out_us = 10000;
+    apaudio_cues cues = NULL;
+    APAUDIO_ERROR error;
+    CHECK(apaudio_cues_create(&desc, &cues, &error) == APRESULT_OK && cues != NULL);
+    if (!cues)
+    {
+        apaudio_mixer_destroy(mixer);
+        return;
+    }
+
+    /* 16-bit mono at half scale, 64 frames. */
+    static unsigned char pcm16[128];
+    for (int i = 0; i < 64; i++)
+    {
+        pcm16[2 * i] = 0x00;
+        pcm16[2 * i + 1] = 0x40;
+    }
+    unsigned char wav[512];
+    unsigned char fmt[40];
+    make_fmt(fmt, 1, 1, 48000, 16);
+    const uint64_t wav_size = make_wav(wav, fmt, 16, pcm16, sizeof(pcm16));
+    static const char manifest[] = "{\"version\": 1, \"cues\": {"
+                                   "\"ui.tick\": {\"sounds\": [\"tick.wav\"], \"bus\": \"feedback\"},"
+                                   "\"song.a\": {\"sounds\": [\"tick.wav\"], \"bus\": \"music\", \"loop\": true,"
+                                   " \"exclusive\": true, \"fade_out_ms\": 1},"
+                                   "\"song.b\": {\"sounds\": [\"tick.wav\"], \"bus\": \"music\", \"loop\": true,"
+                                   " \"exclusive\": true},"
+                                   "\"hum\": {\"sounds\": [\"tick.wav\"], \"bus\": \"feedback\", \"loop\": true}}}";
+
+    /* The bank as a ZIP archive. */
+    memory_zip zip;
+    zip.size = 0;
+    aparchive_codecs codecs = NULL;
+    CHECK(aparchive_codecs_create(&codecs) == APRESULT_OK);
+    APARCHIVE_WRITER_DESC wd;
+    memset(&wd, 0, sizeof(wd));
+    wd.base.type = APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC;
+    wd.sink.user = &zip;
+    wd.sink.write = memory_zip_write;
+    wd.codecs = codecs;
+    aparchive_writer writer = NULL;
+    CHECK(aparchive_writer_create(&wd, &writer) == APRESULT_OK);
+    APARCHIVE_ENTRY_DESC entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.base.type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC;
+    entry.method = APARCHIVE_METHOD_STORED;
+    entry.dos_date = 0x0021;
+    entry.name = "manifest.json";
+    CHECK(aparchive_writer_add_entry(writer, &entry, manifest, strlen(manifest), NULL) == APRESULT_OK);
+    entry.name = "tick.wav";
+    CHECK(aparchive_writer_add_entry(writer, &entry, wav, wav_size, NULL) == APRESULT_OK);
+    CHECK(aparchive_writer_finish(writer, NULL) == APRESULT_OK);
+    aparchive_writer_destroy(writer);
+    aparchive_codecs_destroy(codecs);
+    APARCHIVE_SOURCE source = {&zip, zip.size, memory_zip_read};
+    CHECK(apaudio_cues_load_zip_bank(cues, &source, &error) == APRESULT_OK);
+    APARCHIVE_SOURCE not_zip = {&zip, 10, memory_zip_read};
+    CHECK(apaudio_cues_load_zip_bank(cues, &not_zip, &error) == APRESULT_CORRUPT_DATA);
+    CHECK(apaudio_cues_load_zip_bank(cues, NULL, &error) == APRESULT_INVALID_ARGUMENT);
+
+    APAUDIO_CUE tick = 0, a = 0, b = 0, hum = 0;
+    CHECK(apaudio_cues_find(cues, "ui.tick", &tick) == APRESULT_OK);
+    CHECK(apaudio_cues_find(cues, "song.a", &a) == APRESULT_OK);
+    CHECK(apaudio_cues_find(cues, "song.b", &b) == APRESULT_OK);
+    CHECK(apaudio_cues_find(cues, "hum", &hum) == APRESULT_OK);
+
+    /* A one-shot: queued, heard, not a playing. */
+    APAUDIO_VOICE voice = 0;
+    CHECK(apaudio_cues_play(cues, tick, NULL, &voice) == APRESULT_OK && voice != 0);
+    CHECK(!apaudio_cues_is_playing(cues, voice));
+    apaudio_mixer_update(mixer);
+    render(mixer, 32);
+    CHECK(any_sound(32));
+    render(mixer, 64); /* the rest of it */
+
+    /* Off, then muted: nothing is queued. */
+    CHECK(apaudio_cues_set_enabled(cues, tick, false) == APRESULT_OK);
+    CHECK(apaudio_cues_play(cues, tick, NULL, &voice) == APRESULT_OK && voice == 0);
+    CHECK(apaudio_cues_set_enabled(cues, tick, true) == APRESULT_OK);
+    CHECK(apaudio_cues_set_bus_muted(cues, 0, true) == APRESULT_OK);
+    CHECK(apaudio_cues_play(cues, tick, NULL, &voice) == APRESULT_OK && voice == 0);
+    CHECK(apaudio_cues_set_bus_muted(cues, 0, false) == APRESULT_OK);
+    CHECK(apaudio_cues_set_bus_muted(cues, 2, true) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_cues_set_enabled(cues, 0, true) == APRESULT_NOT_FOUND);
+
+    /* Sustained: started, live; an exclusive start on its bus ends the
+     * other; stopped at once, not live. */
+    APAUDIO_VOICE song_a = 0, song_b = 0;
+    CHECK(apaudio_cues_start(cues, a, NULL, &song_a) == APRESULT_OK && song_a != 0);
+    CHECK(apaudio_cues_is_playing(cues, song_a));
+    apaudio_cues_update(cues);
+    CHECK(apaudio_cues_start(cues, b, NULL, &song_b) == APRESULT_OK && song_b != 0);
+    CHECK(apaudio_cues_is_playing(cues, song_b));
+    CHECK(!apaudio_cues_is_playing(cues, song_a));
+    apaudio_cues_stop(cues, song_b, false);
+    CHECK(!apaudio_cues_is_playing(cues, song_b));
+    apaudio_cues_stop(cues, song_b, true); /* not live: nothing */
+    apaudio_cues_update(cues);
+
+    /* max_playings: three live, the fourth refused. */
+    APAUDIO_VOICE hums[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 3; i++)
+        CHECK(apaudio_cues_start(cues, hum, NULL, &hums[i]) == APRESULT_OK && hums[i] != 0);
+    CHECK(apaudio_cues_start(cues, hum, NULL, &hums[3]) == APRESULT_LIMIT);
+    CHECK(apaudio_cues_start(cues, hum, NULL, NULL) == APRESULT_INVALID_ARGUMENT);
+    for (int i = 0; i < 3; i++)
+        apaudio_cues_stop(cues, hums[i], true);
+    apaudio_cues_update(cues);
+
+    /* The device's rate changes: the table follows; a play still works. */
+    apaudio_cues_set_sample_rate(cues, 44100);
+    apaudio_cues_set_sample_rate(NULL, 44100);
+    apaudio_cues_update(NULL);
+    CHECK(apaudio_cues_play(cues, tick, NULL, &voice) == APRESULT_OK && voice != 0);
+    CHECK(!apaudio_cues_is_playing(NULL, voice));
+
+    apaudio_cues_destroy(cues);
+    apaudio_mixer_destroy(mixer);
+}
+
+
 /* apaudio_cues_clear_banks(): what banks defined goes - cues and ducking -
  * while names, handles and the table itself stay good for the next bank. */
 static void test_cues_clear_banks(void)
@@ -1499,7 +1686,334 @@ static void test_cues_clear_banks(void)
     apaudio_mixer_destroy(mixer);
 }
 
-int main(void)
+/* ---- Dither, the limiter, collecting, folding (APAUDIO_TODO.md items 7-9) ---- */
+
+/* 16-bit output is dithered: silence becomes noise of a bit either side,
+ * and a level a quarter of a bit, which plain rounding would lose, comes
+ * out on average. */
+static void test_dither(void)
+{
+    current_test = "dither";
+    static float quarter[2 * 2048];
+    for (int i = 0; i < 2 * 2048; i++)
+        quarter[i] = 0.25f / 32768.0f;
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_S16;
+    apaudio_mixer mixer = make_mixer(&desc);
+    static int16_t s16[2 * 512];
+    apaudio_mixer_render(mixer, s16, 512, NULL);
+    int outside = 0, nonzero = 0;
+    for (int i = 0; i < 2 * 512; i++)
+    {
+        if (s16[i] < -1 || s16[i] > 1)
+            outside++;
+        if (s16[i] != 0)
+            nonzero++;
+    }
+    CHECK(outside == 0);
+    CHECK(nonzero > 0);
+
+    APAUDIO_SOUND sound = make_sound(mixer, quarter, 2048, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, sound, 1.0f, 0, true);
+    double sum = 0.0;
+    int count = 0;
+    for (int block = 0; block < 8; block++)
+    {
+        apaudio_mixer_render(mixer, s16, 512, NULL);
+        for (int i = 0; i < 2 * 512; i++, count++)
+            sum += s16[i];
+    }
+    double mean = sum / count;
+    CHECK(mean > 0.15 && mean < 0.35);
+    apaudio_mixer_destroy(mixer);
+}
+
+static APAUDIO_MIXER_DESC limited_desc(void)
+{
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.limiter = APAUDIO_LIMITER_ON;
+    desc.limiter_lookahead_us = 2000; /* 96 frames at 48 kHz */
+    desc.limiter_release_us = 50000;
+    desc.limiter_ceiling = 0.9f;
+    return desc;
+}
+
+/* The limiter: a mix of 2 comes out at the ceiling, never past it, a
+ * lookahead late; quiet sound goes through untouched; refusals. */
+static void test_limiter(void)
+{
+    current_test = "limiter";
+    static float loud[2 * 4096];
+    static float quiet[2 * 4096];
+    for (int i = 0; i < 2 * 4096; i++)
+    {
+        loud[i] = 2.0f;
+        quiet[i] = 0.5f;
+    }
+    APAUDIO_MIXER_DESC desc = limited_desc();
+    apaudio_mixer mixer = make_mixer(&desc);
+
+    /* Quiet: unchanged, but a lookahead (96 frames) late. */
+    APAUDIO_SOUND soft = make_sound(mixer, quiet, 4096, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    APAUDIO_VOICE voice = play(mixer, soft, 1.0f, 0, false);
+    render(mixer, 512);
+    CHECK(frames_are(0, 95, 0.0f, 0.0f));
+    CHECK(frames_are(96, 511, 0.5f, 0.5f));
+    apaudio_voice_stop(mixer, voice, 0);
+    render(mixer, 512);
+    render(mixer, 512);
+
+    /* Loud: never past the ceiling, and at it once the gain has come down. */
+    APAUDIO_SOUND hard = make_sound(mixer, loud, 4096, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, hard, 1.0f, 0, false);
+    float peak = 0.0f;
+    for (int block = 0; block < 4; block++)
+    {
+        render(mixer, 512);
+        for (int i = 0; i < 2 * 512; i++)
+            peak = fabsf(out[i]) > peak ? fabsf(out[i]) : peak;
+    }
+    CHECK(peak <= 0.9f);
+    CHECK(close_to(out[2 * 500], 0.9f));
+    apaudio_mixer_destroy(mixer);
+
+    /* Off, the same loud sound clips. */
+    desc = plain_mixer_desc();
+    desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_S16;
+    mixer = make_mixer(&desc);
+    hard = make_sound(mixer, loud, 4096, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, hard, 1.0f, 0, false);
+    int16_t s16[2 * 64];
+    apaudio_mixer_render(mixer, s16, 64, NULL);
+    CHECK(s16[0] == 32767);
+    apaudio_mixer_destroy(mixer);
+
+    /* Refusals: no choice, no lookahead or too much, no release, a ceiling
+     * outside (0, 1]. */
+    APAUDIO_ERROR error;
+    apaudio_mixer refused = NULL;
+    desc = plain_mixer_desc();
+    desc.limiter = APAUDIO_LIMITER_UNSPECIFIED;
+    CHECK(apaudio_mixer_create(&desc, &refused, &error) == APRESULT_INVALID_ARGUMENT && strstr(error.message, "limiter"));
+    desc = limited_desc();
+    desc.limiter_lookahead_us = 0;
+    CHECK(apaudio_mixer_create(&desc, &refused, &error) == APRESULT_INVALID_ARGUMENT && strstr(error.message, "lookahead"));
+    desc.limiter_lookahead_us = 100001;
+    CHECK(apaudio_mixer_create(&desc, &refused, &error) == APRESULT_INVALID_ARGUMENT);
+    desc = limited_desc();
+    desc.limiter_release_us = 0;
+    CHECK(apaudio_mixer_create(&desc, &refused, &error) == APRESULT_INVALID_ARGUMENT && strstr(error.message, "release"));
+    desc = limited_desc();
+    desc.limiter_ceiling = 0.0f;
+    CHECK(apaudio_mixer_create(&desc, &refused, &error) == APRESULT_INVALID_ARGUMENT && strstr(error.message, "ceiling"));
+    desc.limiter_ceiling = 1.5f;
+    CHECK(apaudio_mixer_create(&desc, &refused, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(refused == NULL);
+    /* Its settings aren't read with it off. */
+    desc = plain_mixer_desc();
+    desc.limiter_ceiling = -7.0f;
+    mixer = make_mixer(&desc);
+    apaudio_mixer_destroy(mixer);
+}
+
+/* Destroyed sounds' memory is freed by apaudio_mixer_collect(), or by a
+ * create that finds every slot taken; ASan and leaks see the rest. */
+static void test_collect(void)
+{
+    current_test = "collect";
+    float samples[2 * 64] = {0};
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_sounds = 1;
+    apaudio_mixer mixer = make_mixer(&desc);
+    APAUDIO_SOUND sound = make_sound(mixer, samples, 64, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    apaudio_sound_destroy(mixer, sound);
+    render(mixer, 64);
+    apaudio_mixer_collect(mixer);
+    apaudio_mixer_collect(NULL);
+    /* The slot is free again. */
+    sound = make_sound(mixer, samples, 64, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    apaudio_sound_destroy(mixer, sound);
+    render(mixer, 64);
+    /* Not collected: the create finds the slot taken and collects. */
+    sound = make_sound(mixer, samples, 64, 2, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    CHECK(sound != 0);
+    apaudio_mixer_destroy(mixer);
+}
+
+/* On stereo, a sound from behind is folded to the front, and the voice
+ * says so; one ahead, one with no direction, and one on a layout with rear
+ * speakers aren't. */
+static void test_folded(void)
+{
+    current_test = "folded";
+    static float mono[4096];
+    for (int i = 0; i < 4096; i++)
+        mono[i] = 0.25f;
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    apaudio_mixer mixer = make_mixer(&desc);
+    APAUDIO_SOUND sound = make_sound(mixer, mono, 4096, 1, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    APAUDIO_DIRECTION behind = {3.0, 0.0}, ahead = {0.5, 0.0};
+    APAUDIO_PLAY_DESC p = play_desc(1.0f);
+    p.direction = &behind;
+    APAUDIO_VOICE back = 0, front = 0, plain = 0;
+    CHECK(apaudio_play(mixer, sound, &p, &back) == APRESULT_OK);
+    p.direction = &ahead;
+    CHECK(apaudio_play(mixer, sound, &p, &front) == APRESULT_OK);
+    p.direction = NULL;
+    CHECK(apaudio_play(mixer, sound, &p, &plain) == APRESULT_OK);
+    CHECK(!apaudio_voice_is_folded(mixer, back)); /* not yet rendered */
+    render(mixer, 64);
+    CHECK(apaudio_voice_is_folded(mixer, back));
+    CHECK(!apaudio_voice_is_folded(mixer, front));
+    CHECK(!apaudio_voice_is_folded(mixer, plain));
+    /* Turned to face it: no longer folded once the change is rendered. */
+    CHECK(apaudio_voice_set_direction(mixer, back, &ahead) == APRESULT_OK);
+    render(mixer, 64);
+    CHECK(!apaudio_voice_is_folded(mixer, back));
+    CHECK(!apaudio_voice_is_folded(mixer, 0));
+    CHECK(!apaudio_voice_is_folded(NULL, back));
+    apaudio_mixer_destroy(mixer);
+
+    static const SPUDAUDIO_CHANNEL_POSITION surround[6] = {
+        SPUDAUDIO_CHANNEL_POSITION_FL, SPUDAUDIO_CHANNEL_POSITION_FR,  SPUDAUDIO_CHANNEL_POSITION_FC,
+        SPUDAUDIO_CHANNEL_POSITION_LFE, SPUDAUDIO_CHANNEL_POSITION_RL, SPUDAUDIO_CHANNEL_POSITION_RR};
+    desc.format.channel_count = 6;
+    desc.format.positions = surround;
+    mixer = make_mixer(&desc);
+    sound = make_sound(mixer, mono, 4096, 1, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+    p.direction = &behind;
+    CHECK(apaudio_play(mixer, sound, &p, &back) == APRESULT_OK);
+    static float six[6 * 64];
+    apaudio_mixer_render(mixer, six, 64, NULL);
+    CHECK(!apaudio_voice_is_folded(mixer, back));
+    apaudio_mixer_destroy(mixer);
+}
+
+/* ---- Decoders (APAUDIO_TODO.md item 15) ---- */
+
+static const char *data_dir = NULL;
+
+/* Reads tests/data/apaudio/[name] whole into [buffer]; its size, or 0. */
+static size_t read_data(const char *name, unsigned char *buffer, size_t capacity)
+{
+    if (!data_dir)
+        return 0;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", data_dir, name);
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return 0;
+    size_t size = fread(buffer, 1, capacity, file);
+    fclose(file);
+    return size;
+}
+
+/* The energy of channel [channel] of [pcm], per sample. */
+static double channel_power(const APAUDIO_PCM *pcm, uint32_t channel, uint64_t from)
+{
+    double sum = 0.0;
+    uint64_t n = 0;
+    for (uint64_t i = from; i < pcm->frame_count; i++, n++)
+    {
+        double v = pcm->samples[i * pcm->channel_count + channel];
+        sum += v * v;
+    }
+    return n ? sum / (double)n : 0.0;
+}
+
+/* tone.wav is two sines at half scale, 440 Hz left and 660 Hz right, 0.1 s
+ * at 48 kHz; tone.flac the same bits, losslessly; tone.ogg and tone.opus
+ * the same sound, lossily (made with ffmpeg 2026-10-30). */
+static void test_decoders(void)
+{
+    current_test = "decoders";
+    static unsigned char bytes[64 * 1024];
+    APAUDIO_PCM wav, pcm;
+    APAUDIO_ERROR error;
+    size_t size = read_data("tone.wav", bytes, sizeof(bytes));
+    CHECK(size > 0);
+    if (size == 0)
+    {
+        printf("FAIL %s: no test data (run with tests/data/apaudio)\n", current_test);
+        return;
+    }
+    CHECK(apaudio_wav_decode(bytes, size, &wav, &error) == APRESULT_OK);
+    CHECK(wav.frame_count == 4800 && wav.channel_count == 2 && wav.sample_rate == 48000);
+
+    /* FLAC: every sample the WAV's. */
+    size = read_data("tone.flac", bytes, sizeof(bytes));
+    CHECK(apaudio_flac_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_OK);
+    CHECK(pcm.frame_count == wav.frame_count && pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    if (pcm.samples && pcm.frame_count == wav.frame_count)
+    {
+        int differ = 0;
+        for (uint64_t i = 0; i < 2 * pcm.frame_count; i++)
+            if (fabsf(pcm.samples[i] - wav.samples[i]) > 1e-6f)
+                differ++;
+        CHECK(differ == 0);
+    }
+    apaudio_pcm_free(&pcm);
+    CHECK(pcm.samples == NULL);
+
+    /* Vorbis and Opus: the same length, rate and channels, and each
+     * channel's energy the WAV's within what a lossy codec changes (a
+     * tenth); Opus at 48 kHz always. */
+    const double left_power = channel_power(&wav, 0, 960), right_power = channel_power(&wav, 1, 960);
+    CHECK(left_power > 1e-4 && right_power > 1e-4);
+    size = read_data("tone.ogg", bytes, sizeof(bytes));
+    CHECK(apaudio_vorbis_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_OK);
+    CHECK(pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    CHECK(pcm.frame_count >= 4700 && pcm.frame_count <= 4900);
+    CHECK(fabs(channel_power(&pcm, 0, 960) / left_power - 1.0) < 0.1);
+    CHECK(fabs(channel_power(&pcm, 1, 960) / right_power - 1.0) < 0.1);
+    apaudio_pcm_free(&pcm);
+
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    CHECK(apaudio_opus_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_OK);
+    if (error.message[0])
+        printf("     %s\n", error.message);
+    CHECK(pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    CHECK(pcm.frame_count == 4800);
+    CHECK(fabs(channel_power(&pcm, 0, 960) / left_power - 1.0) < 0.1);
+    CHECK(fabs(channel_power(&pcm, 1, 960) / right_power - 1.0) < 0.1);
+    apaudio_pcm_free(&pcm);
+
+    /* Each refuses the others' files, garbage, nothing, and NULLs. */
+    size = read_data("tone.wav", bytes, sizeof(bytes));
+    CHECK(apaudio_flac_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_CORRUPT_DATA && pcm.samples == NULL);
+    CHECK(apaudio_vorbis_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_CORRUPT_DATA && pcm.samples == NULL);
+    CHECK(apaudio_opus_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_CORRUPT_DATA && pcm.samples == NULL);
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    CHECK(apaudio_vorbis_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_CORRUPT_DATA);
+    size = read_data("tone.ogg", bytes, sizeof(bytes));
+    CHECK(apaudio_opus_decode(bytes, size, 1000000, &pcm, &error) == APRESULT_CORRUPT_DATA);
+    CHECK(apaudio_flac_decode(bytes, 0, 1000000, &pcm, &error) == APRESULT_CORRUPT_DATA);
+    CHECK(apaudio_flac_decode(NULL, 10, 1000000, &pcm, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_vorbis_decode(bytes, size, 1000000, NULL, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_opus_decode(NULL, 0, 1000000, &pcm, NULL) == APRESULT_CORRUPT_DATA);
+    /* Truncated: what was there, or refused, never past the end. */
+    size = read_data("tone.flac", bytes, sizeof(bytes));
+    APRESULT truncated = apaudio_flac_decode(bytes, size / 2, 1000000, &pcm, &error);
+    CHECK(truncated == APRESULT_OK || truncated == APRESULT_CORRUPT_DATA);
+    apaudio_pcm_free(&pcm);
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    truncated = apaudio_opus_decode(bytes, size / 2, 1000000, &pcm, &error);
+    CHECK(truncated == APRESULT_OK || truncated == APRESULT_CORRUPT_DATA);
+    apaudio_pcm_free(&pcm);
+    /* max_frames: 0 refused; fewer than the file holds, the limit. */
+    size = read_data("tone.flac", bytes, sizeof(bytes));
+    CHECK(apaudio_flac_decode(bytes, size, 0, &pcm, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_flac_decode(bytes, size, 4799, &pcm, &error) == APRESULT_LIMIT && pcm.samples == NULL);
+    CHECK(apaudio_flac_decode(bytes, size, 4800, &pcm, &error) == APRESULT_OK && pcm.frame_count == 4800);
+    apaudio_pcm_free(&pcm);
+    size = read_data("tone.ogg", bytes, sizeof(bytes));
+    CHECK(apaudio_vorbis_decode(bytes, size, 1000, &pcm, &error) == APRESULT_LIMIT);
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    CHECK(apaudio_opus_decode(bytes, size, 1000, &pcm, &error) == APRESULT_LIMIT);
+    apaudio_pcm_free(&wav);
+}
+
+int main(int argc, char **argv)
 {
     test_format_from_spudaudio();
     test_null_arguments();
@@ -1517,6 +2031,13 @@ int main(void)
     test_modifiers();
     test_start_time();
     test_cues_clear_banks();
+    test_cues_playing();
+    test_dither();
+    test_limiter();
+    test_collect();
+    test_folded();
+    data_dir = argc > 1 ? argv[1] : NULL;
+    test_decoders();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);

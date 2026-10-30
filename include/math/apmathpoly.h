@@ -4,7 +4,8 @@
  * of polygons with holes, exactly, on an integer grid.
  *
  * Built in src/math/apmathpoly.cpp, with headless tests in
- * tests/apmathpoly_tests.c. apricotfields.h doesn't include it.
+ * tests/apmathpoly_tests.c. It is not part of
+ * aprend.h, which is Aprend's alone.
  *
  * Coordinates are integers. What one unit is - a micrometre, a pixel - is
  * the caller's: it rounds its own coordinates onto the grid, and every
@@ -21,7 +22,8 @@
  * General purpose: it knows nothing about what a polygon outlines or what
  * a tag names.
  *
- * Out of scope: curves (a caller tessellates them), round joins, polylines
+ * Out of scope: curves (a caller tessellates them; an offset's round
+ * corners are the one arc made here, to the caller's tolerance), polylines
  * that aren't closed, and floating-point coordinates.
  *
  * @par Threads
@@ -317,7 +319,52 @@ void apmath_poly_destroy(apmath_poly poly);
  */
 APMATH_POLY_SET apmath_poly_get_set(apmath_poly poly);
 
+/* ---- Locating a point ------------------------------------------------ */
+
+/** @brief Where a point lies against a set: what apmath_poly_locate_point() finds. */
+typedef enum APMATH_POLY_PLACE APRI_ENUM_BASE {
+	/** Outside what the set encloses, and on none of its edges. */
+	APMATH_POLY_PLACE_OUTSIDE = 0,
+	/** Inside what the set encloses, and on none of its edges. */
+	APMATH_POLY_PLACE_INSIDE = 1,
+	/** On an edge of the set, its ends included. */
+	APMATH_POLY_PLACE_ON_EDGE = 2,
+} APMATH_POLY_PLACE;
+
+/**
+ * @brief Finds whether a point is inside what a set's rings enclose under a
+ * fill rule, outside it, or on one of its edges.
+ *
+ * Exact: the point's winding number is counted with integer orientation
+ * tests, so the answer is the same on every platform. Any rings are taken -
+ * crossing, overlapping, either winding - and `ring_outers` isn't read: the
+ * fill rule decides, as in a boolean. Costs the set's edge count.
+ *
+ * @param[in]  set       The rings.
+ * @param[in]  fill      Which winding numbers are inside.
+ * @param[in]  point     The point; within APMATH_POLY_COORD_LIMIT.
+ * @param[out] out_place Receives where it lies.
+ * @param[out] out_error Why the call failed. May be NULL.
+ *
+ * @return APRESULT_OK, or a failure as in "Results" above.
+ *         APRESULT_INVALID_ARGUMENT also if @p out_place is NULL or
+ *         @p point is past the coordinate limit.
+ */
+APRESULT apmath_poly_locate_point(const APMATH_POLY_SET *set, APMATH_POLY_FILL fill, APMATH_POLY_POINT point,
+                                  APMATH_POLY_PLACE *out_place, APMATH_ERROR *out_error);
+
 /* ---- Offsetting ------------------------------------------------------ */
+
+/** @brief How apmath_poly_offset_edges() fills a corner the move opens. */
+typedef enum APMATH_POLY_JOIN APRI_ENUM_BASE {
+	/** Mitred, bevelled past the mitre limit. */
+	APMATH_POLY_JOIN_MITER = 0,
+	/**
+	 * An arc round the original corner, cut into straight edges no more
+	 * than `arc_tolerance` short of it.
+	 */
+	APMATH_POLY_JOIN_ROUND = 1,
+} APMATH_POLY_JOIN;
 
 /** @brief Configuration descriptor for apmath_poly_offset_edges(). */
 typedef struct APMATH_POLY_OFFSET_DESC {
@@ -341,8 +388,22 @@ typedef struct APMATH_POLY_OFFSET_DESC {
 	 * than this many times the larger of the two distances; then the corner
 	 * is cut across from one moved edge's end to the other's (bevelled). At
 	 * least 1. A right angle moved by d on both sides mitres within sqrt(2).
+	 * Read for every corner the move doesn't open, and with
+	 * APMATH_POLY_JOIN_MITER for every corner.
 	 */
 	double miter_limit;
+	/**
+	 * How a corner the move opens is filled: one where the two moved edges
+	 * part, as an outer ring's convex corner moved out does. A corner the
+	 * move closes is mitred either way. 0 is APMATH_POLY_JOIN_MITER.
+	 */
+	APMATH_POLY_JOIN join;
+	/**
+	 * With APMATH_POLY_JOIN_ROUND, the most, in grid units, that an edge of
+	 * a round corner may fall short of the true arc. Above 0 and finite
+	 * there; not read with APMATH_POLY_JOIN_MITER.
+	 */
+	double arc_tolerance;
 } APMATH_POLY_OFFSET_DESC;
 
 /**
@@ -351,7 +412,13 @@ typedef struct APMATH_POLY_OFFSET_DESC {
  *
  * Corners are mitred, bevelled past the mitre limit, and stepped where two
  * edges that run on in one line move by different distances (a short edge
- * square to them joins the two).
+ * square to them joins the two). With APMATH_POLY_JOIN_ROUND, a corner the
+ * move opens is an arc centred on the original corner instead, from the
+ * end of one moved edge to the start of the next, its radius going from
+ * the one distance to the other where the two differ. An arc is cut by
+ * halving its angle as often as the tolerance needs, every piece alike,
+ * with nothing but arithmetic and square roots, so it is the same on every
+ * platform.
  *
  * An edge the move shortens to nothing is gone: as if the move ran from 0
  * to its whole distance, each edge whose two ends meet on the way is taken
@@ -367,7 +434,8 @@ typedef struct APMATH_POLY_OFFSET_DESC {
  *
  * The result is a boolean's (apmath_poly_boolean()): normalised the same
  * way, and each edge tagged with the tag of the input edge it was moved
- * from. A bevel, or a step, takes the tag of the edge after it. The same
+ * from. A bevel, a step, or an arc's edges, take the tag of the edge after
+ * it. The same
  * desc gives the same result on every platform: moved corners are computed
  * in doubles and rounded to the nearest grid point.
  *
@@ -378,7 +446,9 @@ typedef struct APMATH_POLY_OFFSET_DESC {
  *
  * @return APRESULT_OK, or a failure as in "Results" above.
  *         APRESULT_INVALID_ARGUMENT also for a moved corner past the
- *         coordinate limit.
+ *         coordinate limit, a `join` that isn't an APMATH_POLY_JOIN, or an
+ *         `arc_tolerance` that isn't above 0 and finite with
+ *         APMATH_POLY_JOIN_ROUND.
  */
 APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_poly *out_poly, APMATH_ERROR *out_error);
 
@@ -389,8 +459,8 @@ typedef struct APMATH_POLY_SKELETON_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
-	 * One ring, simple and counter-clockwise (apmath_poly_validate()); no
-	 * holes (APRESULT_UNSUPPORTED).
+	 * Polygons with holes (apmath_poly_validate()): outer rings
+	 * counter-clockwise, holes clockwise, grouped by `ring_outers`.
 	 */
 	APMATH_POLY_SET set;
 	/**
@@ -407,10 +477,17 @@ typedef struct APMATH_POLY_SKELETON_DESC {
 /**
  * @brief Builds the weighted straight skeleton of a desc's polygon.
  *
- * Every edge moves inward at its weight, corners follow where their two
+ * Every edge moves inward at its weight - into its polygon, so a hole's
+ * edges move out into the polygon round it - corners follow where their two
  * edges meet, and where the moving edges collide the polygon shrinks,
- * splits and closes up. The region an edge sweeps before it's gone is its
- * face.
+ * splits, joins round a hole and closes up. The region an edge sweeps
+ * before it's gone is its face.
+ *
+ * Where two edges that weren't neighbours come to follow each other on one
+ * line mid-way (an edge between them gone), they move on as one edge: the
+ * one with the larger weight takes the line, and on equal weights the one
+ * earlier in the input; the other's face ends there, along the line. Every
+ * platform builds the same skeleton by that rule.
  *
  * The result holds one ring per input edge, in input order, each that
  * edge's face: counter-clockwise, starting with the edge itself (its point
@@ -430,8 +507,11 @@ typedef struct APMATH_POLY_SKELETON_DESC {
  *
  * Corners are found in doubles and rounded to the grid; two edges that
  * follow each other count as parallel when the cross product of their unit
- * directions is less than 1e-12 in magnitude. The same desc gives the same
- * result on every platform. Costs about the cube of the edge count.
+ * directions is less than 1e-12 in magnitude. Where a face's boundary
+ * passes a point where more than two of its traces meet, the walk takes
+ * the trace that turns most to the right, which keeps the face on its
+ * left. The same desc gives the same result on every platform. Costs about
+ * the cube of the edge count.
  *
  * @param[in]  desc      The polygon and its weights. Only read during the
  *                       call.
@@ -439,10 +519,9 @@ typedef struct APMATH_POLY_SKELETON_DESC {
  * @param[out] out_error Why the call failed. May be NULL.
  *
  * @return APRESULT_OK, or a failure as in "Results" above.
- *         APRESULT_INVALID_ARGUMENT also for a set that isn't one simple
- *         counter-clockwise ring, and for a polygon whose skeleton can't be
- *         traced (a degenerate case the message names).
- *         APRESULT_UNSUPPORTED for a set with holes.
+ *         APRESULT_INVALID_ARGUMENT also for a set that isn't polygons
+ *         with holes, and for a polygon whose skeleton can't be traced (a
+ *         degenerate case the message names).
  */
 APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly *out_poly, APMATH_ERROR *out_error);
 

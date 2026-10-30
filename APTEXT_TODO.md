@@ -327,7 +327,19 @@ How a build lays text out is described at the top of
       for a codepoint wins. Shaping runs per face run, since HarfBuzz shapes
       one face at a time. A codepoint no face has becomes the first face's
       `.notdef`, never a skipped glyph.
-- [ ] Variable fonts (weight, width axes through HarfBuzz): later.
+- [x] Variable fonts (weight, width axes through HarfBuzz). Built
+      2026-10-30 on macOS: `APTEXT_FACE_DESC::variations` (an array of
+      `APTEXT_VARIATION`, tag and value, set at creation since a face never
+      changes; every axis the font's, once, within its range, else
+      `APRESULT_INVALID_ARGUMENT`), `aptext_face_get_axis_count` and
+      `aptext_face_get_axis` (`APTEXT_AXIS`: tag, min, default, max,
+      hidden). HarfBuzz applies them to shaping, metrics and the outlines
+      msdfgen draws; the fingerprint's third word takes a CRC of them, so a
+      saved atlas is never loaded for another instance. Tested on Roboto's
+      variable a, b and c (`tests/data/aptext/aptext_variable_abc.ttf`,
+      Apache 2.0, from HarfBuzz's tests; `NOTICE.md`): its axes, an advance
+      and pixels that change with weight, five refusals; `aptext_bits_tests`
+      records 'a' at weight 637.
 
 ### 2. Shaping and layout
 
@@ -379,8 +391,8 @@ How a build lays text out is described at the top of
 
 ### 4. Single-stroke fonts
 
-- [ ] Plotter-style single-stroke fonts (1 and 2 built 2026-10-29; LFF
-      and SHX not) are open polylines, not filled
+- [x] Plotter-style single-stroke fonts (1 and 2 built 2026-10-29; LFF
+      and SHX 2026-10-30, below) are open polylines, not filled
       outlines, and have no distance field. Their glyphs come out as
       polylines in em units, laid out by the same layout code, for the
       caller to draw as lines. Which formats to read is undecided.
@@ -398,6 +410,34 @@ How a build lays text out is described at the top of
          is reverse-engineered and its well-known fonts are Autodesk's,
          so it reads the user's own files.
       Drawn as lines, e.g. by Aprend's batcher with pen widths (item 23).
+
+      **LFF and SHX, built 2026-10-30 on macOS** (`src/text/
+      aptext_cadfonts.cpp`): `aptext_face_create_lff` (the header's
+      LetterSpacing and WordSpacing, LibreCAD's 3 and 6.75 where it leaves
+      them out; "[hhhh]" glyphs; "x,y" and "x,y,Ab" vertices; "Chhhh"
+      references to earlier glyphs; the space added at the word spacing
+      when the file has none; `units_per_em` and the metrics the caller's)
+      and `aptext_face_create_shx` (shapes 1.0 and 1.1 with the caller's
+      code page above 127, unifont 1.0; big fonts `APRESULT_UNSUPPORTED`;
+      every command: vectors, pen, scale, push and pop to 16, subshapes to
+      8 deep, displacements, octant, fractional and bulge arcs, the
+      vertical skip; one em the "above" height, the descender the file's
+      "below", the advance where the pen ends). Both cut arcs by halving
+      with square roots alone and parse numbers themselves (strtod follows
+      the locale), and SHX's fractional arcs take their sines from a
+      series, so faces are the same bits everywhere: `aptext_bits_tests`
+      records the points of both (Windows' and Linux's runs still to
+      check). Limits a file can't pass: 4M points, 256K commands a glyph.
+      Tested with files built in the test (no LibreCAD or Autodesk font is
+      in the repository): every command's points, the arcs on their circles
+      within the tolerance, references, advances, the unifont's two-byte
+      subshape, eleven refusals. `aptext_fuzz` reads both (inputs 3 and 4)
+      and a font at its axes' extremes (5). The fractional arc's end is
+      read as AutoCAD's documentation's example has it (the last octant it
+      spans plus the end offset); a real font that disagrees would show it.
+      Fuzzed 2026-10-30, macOS, Debug, ASan and UBSan: 15 minutes,
+      6,465,517 inputs over every reader with the new ones' seeds, nothing
+      found.
 
 ### 5. Tests
 

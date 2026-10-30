@@ -22,7 +22,7 @@ extern "C" {
  * pipeline the caller makes, with Aprend's surface fragment shader
  * (APREND_LIT_SHADER_SURFACE_FRAGMENT) and a vertex shader: the caller's
  * own, for geometry of its own kind, or Aprend's
- * (APREND_LIT_SHADER_SURFACE_VERTEX), for meshes of aprend_lit_vertex with
+ * (APREND_LIT_SHADER_SURFACE_VERTEX), for meshes of APREND_LIT_VERTEX with
  * a transform per instance. Unreal splits a surface the same way (a vertex
  * factory per kind of geometry, a shading model per kind of surface); Hazel
  * ships one shader with both in it, for its one vertex layout. There is no
@@ -76,7 +76,7 @@ extern "C" {
  * the surface writes is linear radiance times the view's exposure, for a
  * float target and then APREND_COMMAND_TONE_MAP (aprendcommands.h), or
  * already clamped and sRGB-encoded for an 8-bit UNORM target shown as it is
- * (aprend_lit_view::output_encoding). It is premultiplied by the opacity:
+ * (APREND_LIT_VIEW::output_encoding). It is premultiplied by the opacity:
  * blending is the pipeline's, and an opaque surface writes alpha 1.
  *
  * @par Shading
@@ -96,7 +96,7 @@ extern "C" {
  * The first compile that binds a lit scene makes the instance's BRDF lookup
  * texture, once; one that binds a scene whose environment has never been
  * filled clears it to black; and one that binds a scene with a target size
- * (aprend_lit_view) culls its lights for each 16-texel tile of the target
+ * (APREND_LIT_VIEW) culls its lights for each 16-texel tile of the target
  * with a compute pass, so a fragment reads its tile's lights, not all of
  * them. Each is recorded at the top of the list, before anything else.
  *
@@ -141,8 +141,8 @@ enum {
 	 */
 	APREND_LIT_SHADER_DEPTH_FRAGMENT = 1,
 	/**
-	 * Meshes of aprend_lit_vertex at vertex buffer slot 0, with an
-	 * aprend_lit_instance per instance at slot 1 (aprend_lit_vertex_layout()
+	 * Meshes of APREND_LIT_VERTEX at vertex buffer slot 0, with an
+	 * APREND_LIT_INSTANCE per instance at slot 1 (aprend_lit_vertex_layout()
 	 * and aprend_lit_instance_layout() for the pipeline's vertex bindings),
 	 * through the view's view_projection; positions out in the space the
 	 * instance's transform takes them to.
@@ -169,7 +169,7 @@ enum {
 	 * drawn before the surfaces: each texel looks along its ray through the
 	 * view's view_projection and reads the environment there, times its
 	 * intensity and the exposure, written out as a surface is. Black with
-	 * no environment. With a sun disc (aprend_lit_sun::disc_angle), the
+	 * no environment. With a sun disc (APREND_LIT_SUN::disc_angle), the
 	 * sun is drawn over it, its edge softened over a texel. Reads set 0
 	 * and needs the view's target size.
 	 */
@@ -183,13 +183,16 @@ enum {
  * The shader is the instance's, made on the first call and destroyed with
  * the instance. Don't pass it to aprend_shader_destroy().
  *
- * @param[in] instance Instance the shader is of.
- * @param[in] shader   Which.
+ * @param[in]  instance   Instance the shader is of.
+ * @param[in]  shader     Which.
+ * @param[out] out_shader Receives the shader; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return The shader, or NULL if @p instance is NULL, @p shader is not an
- *         APREND_LIT_SHADER, or it can't be created (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_shader is NULL or @p shader is not an APREND_LIT_SHADER;
+ *         or APRESULT_APREND_GPU_FAILURE if it can't be created.
  */
-aprend_shader aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shader);
+APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shader, aprend_shader *out_shader, APREND_ERROR *out_error);
 
 /**
  * @brief The layout of set APREND_LIT_SCENE_SET, for slot 0 of a lit
@@ -199,12 +202,15 @@ aprend_shader aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER 
  *
  * The instance's, as aprend_lit_get_shader()'s are: don't destroy it.
  *
- * @param[in] instance Instance the layout is of.
+ * @param[in]  instance   Instance the layout is of.
+ * @param[out] out_layout Receives the layout; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return The layout, or NULL if @p instance is NULL or it can't be made
- *         (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_layout is NULL; or APRESULT_APREND_GPU_FAILURE if it can't
+ *         be made.
  */
-aprend_binding_layout aprend_lit_get_scene_layout(aprend_instance instance);
+APRESULT aprend_lit_get_scene_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error);
 
 /**
  * @brief The layout of set 0 of a pass that renders a shadow map with
@@ -214,31 +220,37 @@ aprend_binding_layout aprend_lit_get_scene_layout(aprend_instance instance);
  * aprend_lit_scene_get_spot_shadow_material()). The instance's: don't
  * destroy it.
  *
- * @param[in] instance Instance the layout is of.
+ * @param[in]  instance   Instance the layout is of.
+ * @param[out] out_layout Receives the layout; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return The layout, or NULL if @p instance is NULL or it can't be made
- *         (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_layout is NULL; or APRESULT_APREND_GPU_FAILURE if it can't
+ *         be made.
  */
-aprend_binding_layout aprend_lit_get_shadow_layout(aprend_instance instance);
+APRESULT aprend_lit_get_shadow_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error);
 
 /**
  * @brief The layout of set APREND_LIT_MATERIAL_SET, for slot 1 of a lit
  * pipeline (and of a cut-out shadow pass): what a lit material fills. The
  * instance's: don't destroy it.
  *
- * @param[in] instance Instance the layout is of.
+ * @param[in]  instance   Instance the layout is of.
+ * @param[out] out_layout Receives the layout; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return The layout, or NULL if @p instance is NULL or it can't be made
- *         (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_layout is NULL; or APRESULT_APREND_GPU_FAILURE if it can't
+ *         be made.
  */
-aprend_binding_layout aprend_lit_get_material_layout(aprend_instance instance);
+APRESULT aprend_lit_get_material_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error);
 
 /**
  * @brief One vertex of a mesh for Aprend's lit vertex shaders: 48 bytes,
  * tightly packed.
  */
 /* Frozen: a vertex in GPU memory, laid out as the lit shaders read it. It never changes; a new need gets a new type. */
-typedef struct aprend_lit_vertex {
+typedef struct APREND_LIT_VERTEX {
 	/** The position, in the mesh's own space. */
 	float position[3];
 	/** The normal, in the mesh's own space. */
@@ -247,7 +259,7 @@ typedef struct aprend_lit_vertex {
 	float uv[2];
 	/** xyz along u, w +1 or -1 for which way v runs; all 0 for none. */
 	float tangent[4];
-} aprend_lit_vertex;
+} APREND_LIT_VERTEX;
 
 /**
  * @brief One instance for Aprend's lit vertex shaders: a draw list's
@@ -255,31 +267,31 @@ typedef struct aprend_lit_vertex {
  * steps per instance.
  */
 /* Frozen: an instance in GPU memory, laid out as the lit shaders read it. It never changes; a new need gets a new type. */
-typedef struct aprend_lit_instance {
+typedef struct APREND_LIT_INSTANCE {
 	/**
 	 * The mesh's transform into the space the scene is in, column after
 	 * column. Normals go through its inverse transpose, so a scale that
 	 * isn't the same along every axis, or a mirror, keeps them square.
 	 */
 	float transform[16];
-} aprend_lit_instance;
+} APREND_LIT_INSTANCE;
 
 /**
- * @brief The vertex layout of aprend_lit_vertex, for vertex binding 0 of a
+ * @brief The vertex layout of APREND_LIT_VERTEX, for vertex binding 0 of a
  * pipeline with Aprend's lit vertex shaders. Its elements are Aprend's own,
  * static, so the layout may be kept as long as anything likes.
  *
  * @return The layout: four elements, a stride of 48.
  */
-aprend_vertex_layout aprend_lit_vertex_layout(void);
+APREND_VERTEX_LAYOUT aprend_lit_vertex_layout(void);
 
 /**
- * @brief The vertex layout of aprend_lit_instance (four VEC4 columns), for
+ * @brief The vertex layout of APREND_LIT_INSTANCE (four VEC4 columns), for
  * vertex binding 1, per instance. Static, as aprend_lit_vertex_layout()'s.
  *
  * @return The layout: four elements, a stride of 64.
  */
-aprend_vertex_layout aprend_lit_instance_layout(void);
+APREND_VERTEX_LAYOUT aprend_lit_instance_layout(void);
 
 /* ---- Materials ---------------------------------------------------------- */
 
@@ -288,7 +300,7 @@ aprend_vertex_layout aprend_lit_instance_layout(void);
  * default lit shading takes and glTF's are, each multiplied by its map, and
  * glTF's clear coat and sheen.
  */
-typedef struct aprend_lit_material_values {
+typedef struct APREND_LIT_MATERIAL_VALUES {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** rgb: the surface's color, linear: what a non-metal scatters and a
@@ -333,7 +345,29 @@ typedef struct aprend_lit_material_values {
 	float sheen_color[3];
 	/** The sheen's roughness, 0.07 to 1. */
 	float sheen_roughness;
-} aprend_lit_material_values;
+	/** How much light passes through the surface instead of scattering
+	 * back, 0 (none) to 1: glTF's KHR_materials_transmission. That share
+	 * of the diffuse light is replaced by the opaque picture behind, bent
+	 * by #ior through #thickness and blurred by the roughness, read from
+	 * the scene's color (aprend_lit_scene_set_scene_color()); without one,
+	 * nothing passes. A metal transmits nothing. What is behind other
+	 * transmitting surfaces, or off the screen, doesn't show. */
+	float transmission;
+	/** The index of refraction, from 1 (no bending): 1.5 for glass, 1.33
+	 * for water (glTF's KHR_materials_ior). Below 1 is taken as 1. */
+	float ior;
+	/** How thick the surface is, in the scene's units: how far the bent
+	 * view ray travels inside it, so how far what is behind seems to move,
+	 * and how far light travels for #attenuation_distance (glTF's
+	 * KHR_materials_volume). 0 for a thin sheet, which shifts nothing. */
+	float thickness;
+	/** The color light passing through is tinted to after
+	 * #attenuation_distance, linear. */
+	float attenuation_color[3];
+	/** How far light travels inside before it is tinted to
+	 * #attenuation_color (Beer's law); 0 for never. */
+	float attenuation_distance;
+} APREND_LIT_MATERIAL_VALUES;
 
 /**
  * @brief The maps of a lit material.
@@ -367,35 +401,42 @@ enum {
  * by their names in the block (`base_color`, `roughness`, ...) with
  * aprend_material_set_uniform().
  *
- * @param[in] instance Instance the material is of.
+ * @param[in]  instance     Instance the material is of.
+ * @param[out] out_material Receives the material; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The material, or NULL if @p instance is NULL or it can't be made
- *         (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_material is NULL; or the code it can't be made with.
  */
-aprend_material aprend_lit_material_create(aprend_instance instance);
+APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *out_material, APREND_ERROR *out_error);
 
 /**
  * @brief Sets every value of a lit material at once.
  *
  * @param[in] material Material to change.
  * @param[in] values   The values. Only read during the call.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if an argument is NULL, @p material
- *         is not of aprend_lit_get_material_layout(), or a value is not
- *         finite.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if an argument is NULL, @p material is not of
+ *         aprend_lit_get_material_layout(), or a value is not finite.
  */
-bool aprend_lit_material_set_values(aprend_material material, const aprend_lit_material_values *values);
+APRESULT aprend_lit_material_set_values(aprend_material material, const APREND_LIT_MATERIAL_VALUES *values, APREND_ERROR *out_error);
 
 /**
  * @brief Reads a lit material's values back.
  *
  * @param[in]  material   Material to read.
  * @param[out] out_values Receives the values.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL or @p material
- *         is not of aprend_lit_get_material_layout().
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument is NULL or @p material is not of
+ *         aprend_lit_get_material_layout().
  */
-bool aprend_lit_material_get_values(aprend_material material, aprend_lit_material_values *out_values);
+APRESULT aprend_lit_material_get_values(aprend_material material, APREND_LIT_MATERIAL_VALUES *out_values, APREND_ERROR *out_error);
 
 /**
  * @brief Puts a texture in one of a lit material's maps, or puts back
@@ -407,16 +448,19 @@ bool aprend_lit_material_get_values(aprend_material material, aprend_lit_materia
  *                     shader reads as floats, or NULL for the neutral map. It
  *                     must outlive the material, or be replaced before the
  *                     next compile after it goes.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p material is NULL or not of
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p material is NULL or not of
  *         aprend_lit_get_material_layout(), @p map is not an APREND_LIT_MAP,
  *         or @p view is of the wrong type or instance.
  */
-bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, aprend_texture_view view);
+APRESULT aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, aprend_texture_view view, APREND_ERROR *out_error);
 
 /**
  * @brief Sets the transform of one map's texture coordinate, applied after
- * the material's own (aprend_lit_material_values::uv_transform), so each
+ * the material's own (APREND_LIT_MATERIAL_VALUES::uv_transform), so each
  * map can be tiled, moved or turned on its own: glTF's
  * KHR_texture_transform, whose offset, rotation and scale make the matrix
  * that extension gives, and which the caller writes here.
@@ -430,12 +474,15 @@ bool aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, a
  *                      u' = [0]u + [1]v + [2], v' = [3]u + [4]v + [5].
  *                      Identity is {1, 0, 0, 0, 1, 0}. Only read during the
  *                      call.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p material is NULL or not of
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p material is NULL or not of
  *         aprend_lit_get_material_layout(), @p map is not an APREND_LIT_MAP,
  *         @p transform is NULL, or a value of it is not finite.
  */
-bool aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_LIT_MAP map, const float transform[6]);
+APRESULT aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_LIT_MAP map, const float transform[6], APREND_ERROR *out_error);
 
 /**
  * @brief Reads the transform of one map's texture coordinate back.
@@ -445,12 +492,15 @@ bool aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_L
  * @param[out] out_transform Receives the two rows, as
  *                           aprend_lit_material_set_map_uv_transform() takes
  *                           them.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if @p material is NULL or not of
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if @p material is NULL or not of
  *         aprend_lit_get_material_layout(), @p map is not an APREND_LIT_MAP,
  *         or @p out_transform is NULL.
  */
-bool aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_LIT_MAP map, float out_transform[6]);
+APRESULT aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_LIT_MAP map, float out_transform[6], APREND_ERROR *out_error);
 
 /**
  * @brief Puts the sampler every map of a lit material is read through, or
@@ -460,12 +510,15 @@ bool aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_L
  * @param[in] sampler  The sampler, or NULL for Aprend's. It must outlive
  *                     the material, or be replaced before the next compile
  *                     after it goes.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p material is NULL or not of
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p material is NULL or not of
  *         aprend_lit_get_material_layout(), or @p sampler is of another
  *         instance.
  */
-bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler);
+APRESULT aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler, APREND_ERROR *out_error);
 
 /* ---- Environments -------------------------------------------------------- */
 
@@ -486,7 +539,7 @@ bool aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sa
  * @brief Configuration descriptor for an environment. No field has a
  * default.
  */
-typedef struct aprend_lit_environment_desc {
+typedef struct APREND_LIT_ENVIRONMENT_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
@@ -498,18 +551,27 @@ typedef struct aprend_lit_environment_desc {
 	/** The width of a face of the irradiance cube: a power of 2 from 8 to 128.
 	 * Irradiance is smooth, so 32 is plenty. */
 	uint32_t irradiance_size;
-} aprend_lit_environment_desc;
+} APREND_LIT_ENVIRONMENT_DESC;
 
 /**
  * @brief Creates an environment, black until it is filled.
  *
- * @param[in] instance Instance the environment is of.
- * @param[in] desc     The environment's sizes. Only read during the call.
+ * @param[in]  instance        Instance the environment is of.
+ * @param[in]  desc            The environment's sizes. Only read during the
+ *                             call.
+ * @param[out] out_environment Receives the environment; NULL on failure.
+ * @param[out] out_error       Why it failed, when it did. May be NULL.
  *
- * @return The environment, or NULL if an argument is NULL, a size is not a
- *         power of 2 in its range, or a texture can't be created (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if an argument is NULL or a
+ *         size is not a power of 2 in its range; the struct codes for
+ *         `desc->base`; APRESULT_OUT_OF_MEMORY; or
+ *         APRESULT_APREND_GPU_FAILURE if a texture can't be created.
  */
-aprend_lit_environment aprend_lit_environment_create(aprend_instance instance, const aprend_lit_environment_desc *desc);
+APRESULT aprend_lit_environment_create(
+    aprend_instance instance,
+    const APREND_LIT_ENVIRONMENT_DESC *desc,
+    aprend_lit_environment *out_environment,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys an environment. The GPU doesn't have to be finished with
@@ -556,12 +618,15 @@ typedef struct aprend_lit_scene_t *aprend_lit_scene;
  * everything else 0: no view, no sun, no lights, no ambient light, no
  * shadows, so a surface drawn with it is black but for its emission.
  *
- * @param[in] instance Instance the scene is of.
+ * @param[in]  instance  Instance the scene is of.
+ * @param[out] out_scene Receives the scene; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return The scene, or NULL if @p instance is NULL or it can't be made
- *         (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_scene is NULL; APRESULT_OUT_OF_MEMORY; or
+ *         APRESULT_APREND_GPU_FAILURE if what it is drawn with can't be made.
  */
-aprend_lit_scene aprend_lit_scene_create(aprend_instance instance);
+APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out_scene, APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a scene and its materials. What it names (shadow maps, an
@@ -617,7 +682,7 @@ aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene
 /**
  * @brief Where a scene is seen from.
  */
-typedef struct aprend_lit_view {
+typedef struct APREND_LIT_VIEW {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_VIEW, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Where the eye is: what view-dependent shading (highlights, Fresnel)
@@ -647,25 +712,28 @@ typedef struct aprend_lit_view {
 	float exposure;
 	/** How the surface writes its color. */
 	APREND_COLOR_ENCODING output_encoding;
-} aprend_lit_view;
+} APREND_LIT_VIEW;
 
 /**
  * @brief Sets where a scene is seen from.
  *
  * @param[in] scene Scene to change.
  * @param[in] view  Where from. Only read during the call.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if an argument is NULL, a value is not
- *         finite, the exposure is negative, only one of the target's sides
- *         is 0, the target is larger than 16384 texels a side, or the
- *         encoding is not an APREND_COLOR_ENCODING.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if an argument is NULL, a value is not finite, the
+ *         exposure is negative, only one of the target's sides is 0, the
+ *         target is larger than 16384 texels a side, or the encoding is not
+ *         an APREND_COLOR_ENCODING.
  */
-bool aprend_lit_scene_set_view(aprend_lit_scene scene, const aprend_lit_view *view);
+APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW *view, APREND_ERROR *out_error);
 
 /**
  * @brief The sun: a light from one direction, everywhere alike.
  */
-typedef struct aprend_lit_sun {
+typedef struct APREND_LIT_SUN {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SUN, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** From the surface towards the sun; any length but 0. */
@@ -681,19 +749,22 @@ typedef struct aprend_lit_sun {
 	 * solid angle, 2 pi (1 - cos(disc_angle)). A larger disc is dimmer.
 	 */
 	float disc_angle;
-} aprend_lit_sun;
+} APREND_LIT_SUN;
 
 /**
  * @brief Sets a scene's sun.
  *
  * @param[in] scene Scene to change.
  * @param[in] sun   The sun. Only read during the call.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if an argument is NULL, a value is not
- *         finite or a radiance negative, the direction is 0 while the
- *         radiance isn't, or the disc angle is out of 0 to 0.5.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if an argument is NULL, a value is not finite or a
+ *         radiance negative, the direction is 0 while the radiance isn't, or
+ *         the disc angle is out of 0 to 0.5.
  */
-bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun);
+APRESULT aprend_lit_scene_set_sun(aprend_lit_scene scene, const APREND_LIT_SUN *sun, APREND_ERROR *out_error);
 
 /**
  * @brief The sun's shadow: cascaded shadow maps the caller rendered, each
@@ -715,7 +786,7 @@ bool aprend_lit_scene_set_sun(aprend_lit_scene scene, const aprend_lit_sun *sun)
  * aprend_lit_fit_sun_cascades() does: where a cascade's map doesn't reach,
  * it reads as lit.
  */
-typedef struct aprend_lit_sun_shadow {
+typedef struct APREND_LIT_SUN_SHADOW {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
@@ -744,7 +815,7 @@ typedef struct aprend_lit_sun_shadow {
 	float strength;
 	/** The maps were rendered with depth reversed: near at 1, far at 0. */
 	bool reversed_depth;
-} aprend_lit_sun_shadow;
+} APREND_LIT_SUN_SHADOW;
 
 /**
  * @brief Sets the sun's shadow, or takes it away.
@@ -754,22 +825,25 @@ typedef struct aprend_lit_sun_shadow {
  * @param[in] scene  Scene to change.
  * @param[in] shadow The shadow, or NULL for none. Its map must outlive its
  *                   use by the scene.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p scene is NULL, the map is NULL,
- *         of another instance, not a depth view as above or has fewer layers
- *         than cascades, the cascade count is 0 or too many, a value is not
- *         finite, the splits are not increasing above 0, the softness is
- *         out of range, or the strength is out of 0 to 1.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL, the map is NULL, of another instance,
+ *         not a depth view as above or has fewer layers than cascades, the
+ *         cascade count is 0 or too many, a value is not finite, the splits
+ *         are not increasing above 0, the softness is out of range, or the
+ *         strength is out of 0 to 1.
  */
-bool aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const aprend_lit_sun_shadow *shadow);
+APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LIT_SUN_SHADOW *shadow, APREND_ERROR *out_error);
 
 /**
  * @brief How aprend_lit_fit_sun_cascades() frames the sun's cascades.
  */
-typedef struct aprend_lit_cascade_fit {
+typedef struct APREND_LIT_CASCADE_FIT {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
-	/** The view's eye, as aprend_lit_view has it. */
+	/** The view's eye, as APREND_LIT_VIEW has it. */
 	float eye_position[3];
 	/** Which way the view looks; any length but 0. */
 	float view_direction[3];
@@ -794,7 +868,7 @@ typedef struct aprend_lit_cascade_fit {
 	 * (logarithmically); between, a mix of the two (Zhang's practical split
 	 * scheme). 0.75 suits most views. */
 	float split_lambda;
-	/** From the scene towards the sun, as aprend_lit_sun has it. */
+	/** From the scene towards the sun, as APREND_LIT_SUN has it. */
 	float sun_direction[3];
 	/** How far beyond a cascade towards the sun its map still catches what
 	 * casts a shadow into it, in the scene's units: the height of the
@@ -805,7 +879,7 @@ typedef struct aprend_lit_cascade_fit {
 	uint32_t map_size;
 	/** Whether the maps will be rendered with depth reversed. */
 	bool reversed_depth;
-} aprend_lit_cascade_fit;
+} APREND_LIT_CASCADE_FIT;
 
 /**
  * @brief Frames the sun's cascades for a view: for each, the matrix its layer
@@ -826,13 +900,16 @@ typedef struct aprend_lit_cascade_fit {
  * @param[in]  fit        The view and how its cascades are framed. Only read
  *                        during the call.
  * @param[out] out_shadow Receives the cascades, as above.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL, a value is not
- *         finite, a direction is 0, up runs along the view, the depths or the
- *         field of view are out of their ranges, the cascade count is 0 or
- *         too many, the map size is 0, or either struct's base is wrong.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument is NULL, a value is not finite, a direction
+ *         is 0, up runs along the view, the depths or the field of view are
+ *         out of their ranges, the cascade count is 0 or too many, the map
+ *         size is 0, or either struct's base is wrong.
  */
-bool aprend_lit_fit_sun_cascades(const aprend_lit_cascade_fit *fit, aprend_lit_sun_shadow *out_shadow);
+APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_LIT_SUN_SHADOW *out_shadow, APREND_ERROR *out_error);
 
 /**
  * @brief Point and spot lights.
@@ -849,7 +926,7 @@ enum {
  * @brief One point or spot light.
  */
 /* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
-typedef struct aprend_lit_light {
+typedef struct APREND_LIT_LIGHT {
 	/** A point light or a spot. */
 	APREND_LIT_LIGHT_TYPE type;
 	/** Where the light is, in the scene's space. */
@@ -867,7 +944,7 @@ typedef struct aprend_lit_light {
 	float inner_angle;
 	/** ...fading to none at this one: inner_angle to pi / 2. */
 	float outer_angle;
-} aprend_lit_light;
+} APREND_LIT_LIGHT;
 
 /**
  * @brief Sets a scene's point and spot lights, replacing the ones it had.
@@ -876,36 +953,39 @@ typedef struct aprend_lit_light {
  * @param[in] scene  Scene to change.
  * @param[in] lights The lights; NULL with a count of 0 for none.
  * @param[in] count  How many: up to APREND_LIT_MAX_LIGHTS.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p scene is NULL, @p lights is NULL
- *         with a count above 0, @p count is above APREND_LIT_MAX_LIGHTS, or a
- *         light has a type that is not an APREND_LIT_LIGHT_TYPE, a value that
- *         is not finite, a negative radiance, a range that is not above 0, or
- *         (a spot) a direction of 0 or angles out of order or past pi / 2.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL, @p lights is NULL with a count above
+ *         0, @p count is above APREND_LIT_MAX_LIGHTS, or a light has a type
+ *         that is not an APREND_LIT_LIGHT_TYPE, a value that is not finite, a
+ *         negative radiance, a range that is not above 0, or (a spot) a
+ *         direction of 0 or angles out of order or past pi / 2.
  */
-bool aprend_lit_scene_set_lights(aprend_lit_scene scene, const aprend_lit_light *lights, uint32_t count);
+APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LIGHT *lights, uint32_t count, APREND_ERROR *out_error);
 
 /**
  * @brief The shadow of one spot light, from a layer of a depth map the
  * caller rendered, as a sun cascade is.
  */
 /* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
-typedef struct aprend_lit_spot_shadow {
+typedef struct APREND_LIT_SPOT_SHADOW {
 	/** The spot it is the shadow of: its place in the scene's lights. A
 	 * light that is not a spot casts no shadow from it. */
 	uint32_t light;
 	/** The scene's space to its layer's clip space, as rendered:
 	 * aprend_lit_spot_shadow_view_projection() frames one. */
 	float view_projection[16];
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float depth_bias;
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float normal_offset;
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float softness;
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float strength;
-} aprend_lit_spot_shadow;
+} APREND_LIT_SPOT_SHADOW;
 
 /**
  * @brief Sets the shadows of a scene's spot lights, replacing any it had.
@@ -920,14 +1000,18 @@ typedef struct aprend_lit_spot_shadow {
  * @param[in] shadows        The shadows; NULL with a count of 0.
  * @param[in] count          Up to APREND_LIT_MAX_SPOT_SHADOWS.
  * @param[in] reversed_depth The maps were rendered near at 1.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p scene is NULL, @p map or
- *         @p shadows is NULL with a count above 0, there are too many, the
- *         map is not a depth view as above or has too few layers, two
- *         shadows name one light, or a value is out of its range.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL, @p map or @p shadows is NULL with a
+ *         count above 0, there are too many, the map is not a depth view as
+ *         above or has too few layers, two shadows name one light, or a value
+ *         is out of its range.
  */
-bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const aprend_lit_spot_shadow *shadows,
-                                       uint32_t count, bool reversed_depth);
+APRESULT aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_SPOT_SHADOW *shadows,
+                                       uint32_t count, bool reversed_depth,
+                                       APREND_ERROR *out_error);
 
 /**
  * @brief The shadow of one point light, from six layers of a depth map the
@@ -935,7 +1019,7 @@ bool aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_vi
  * is from one.
  */
 /* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
-typedef struct aprend_lit_point_shadow {
+typedef struct APREND_LIT_POINT_SHADOW {
 	/** The point light it is the shadow of: its place in the scene's lights.
 	 * A light that is not a point light casts no shadow from it. */
 	uint32_t light;
@@ -948,15 +1032,15 @@ typedef struct aprend_lit_point_shadow {
 	 * looked up in the face its offset from the light is largest along.
 	 */
 	float view_projection[6][16];
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float depth_bias;
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float normal_offset;
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float softness;
-	/** As aprend_lit_sun_shadow's. */
+	/** As APREND_LIT_SUN_SHADOW's. */
 	float strength;
-} aprend_lit_point_shadow;
+} APREND_LIT_POINT_SHADOW;
 
 /**
  * @brief Sets the shadows of a scene's point lights, replacing any it had.
@@ -973,14 +1057,18 @@ typedef struct aprend_lit_point_shadow {
  * @param[in] shadows        The shadows; NULL with a count of 0.
  * @param[in] count          Up to APREND_LIT_MAX_POINT_SHADOWS.
  * @param[in] reversed_depth The maps were rendered near at 1.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p scene is NULL, @p map or
- *         @p shadows is NULL with a count above 0, there are too many, the
- *         map is not a depth view as above or has too few layers, two
- *         shadows name one light, or a value is out of its range.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL, @p map or @p shadows is NULL with a
+ *         count above 0, there are too many, the map is not a depth view as
+ *         above or has too few layers, two shadows name one light, or a value
+ *         is out of its range.
  */
-bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const aprend_lit_point_shadow *shadows,
-                                        uint32_t count, bool reversed_depth);
+APRESULT aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_POINT_SHADOW *shadows,
+                                        uint32_t count, bool reversed_depth,
+                                        APREND_ERROR *out_error);
 
 /**
  * @brief The material a pass that renders face @p face of point shadow
@@ -991,7 +1079,7 @@ bool aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_v
  * @param[in] index Which point shadow: its place in the shadows
  *                  aprend_lit_scene_set_point_shadows() was given.
  * @param[in] face  Which face, 0 to 5, in the order of
- *                  aprend_lit_point_shadow::view_projection.
+ *                  APREND_LIT_POINT_SHADOW::view_projection.
  *
  * @return The material, or NULL if @p scene is NULL, @p index is not below
  *         APREND_LIT_MAX_POINT_SHADOWS or @p face is not below 6.
@@ -1011,14 +1099,17 @@ aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scen
  * @param[in]  reversed_depth      Whether the map is rendered with depth
  *                                 reversed: near at 1, far at 0.
  * @param[out] out_view_projection Receives the matrix, column after column.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL, the light is
- *         not a valid point light (as aprend_lit_scene_set_lights() checks),
- *         @p face is not below 6, or @p near_depth is not between 0 and the
- *         range.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument is NULL, the light is not a valid point
+ *         light (as aprend_lit_scene_set_lights() checks), @p face is not
+ *         below 6, or @p near_depth is not between 0 and the range.
  */
-bool aprend_lit_point_shadow_view_projection(const aprend_lit_light *light, uint32_t face, float near_depth, bool reversed_depth,
-                                             float out_view_projection[16]);
+APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, uint32_t face, float near_depth, bool reversed_depth,
+                                             float out_view_projection[16],
+                                             APREND_ERROR *out_error);
 
 /**
  * @brief The matrix a spot light's shadow is rendered through: a perspective
@@ -1030,18 +1121,21 @@ bool aprend_lit_point_shadow_view_projection(const aprend_lit_light *light, uint
  * @param[in]  reversed_depth      Whether the map is rendered with depth
  *                                 reversed: near at 1, far at 0.
  * @param[out] out_view_projection Receives the matrix, column after column.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL, the light is
- *         not a valid spot (as aprend_lit_scene_set_lights() checks), or
- *         @p near_depth is not between 0 and the range.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument is NULL, the light is not a valid spot (as
+ *         aprend_lit_scene_set_lights() checks), or @p near_depth is not
+ *         between 0 and the range.
  */
-bool aprend_lit_spot_shadow_view_projection(const aprend_lit_light *light, float near_depth, bool reversed_depth, float out_view_projection[16]);
+APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_LIGHT *light, float near_depth, bool reversed_depth, float out_view_projection[16], APREND_ERROR *out_error);
 
 /**
  * @brief The light that comes from all round: a hemisphere of two colors,
  * and an environment, added together.
  */
-typedef struct aprend_lit_ambient {
+typedef struct APREND_LIT_AMBIENT {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_AMBIENT, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/** Which way is up: the sky is that way, the ground the other. Any length
@@ -1064,19 +1158,22 @@ typedef struct aprend_lit_ambient {
 	 * takes {1,0,0, 0,0,1, 0,-1,0}.
 	 */
 	float environment_rotation[9];
-} aprend_lit_ambient;
+} APREND_LIT_AMBIENT;
 
 /**
  * @brief Sets a scene's ambient light.
  *
  * @param[in] scene   Scene to change.
  * @param[in] ambient The ambient light. Only read during the call.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if an argument is NULL, a value is not
- *         finite, a color or the intensity is negative, up is 0 while a
- *         color isn't, or the environment is of another instance.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if an argument is NULL, a value is not finite, a color or
+ *         the intensity is negative, up is 0 while a color isn't, or the
+ *         environment is of another instance.
  */
-bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambient *ambient);
+APRESULT aprend_lit_scene_set_ambient(aprend_lit_scene scene, const APREND_LIT_AMBIENT *ambient, APREND_ERROR *out_error);
 
 /**
  * @brief Sets the ambient occlusion of the view, or takes it away: a texture
@@ -1088,12 +1185,14 @@ bool aprend_lit_scene_set_ambient(aprend_lit_scene scene, const aprend_lit_ambie
  * @param[in] occlusion A SHADER_RESOURCE 2D view of color, or NULL for none.
  *                      It must outlive its use by the scene.
  * @param[in] strength  How much of it is applied, 0 to 1.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p scene is NULL, the view is of
- *         another instance or of the wrong type or shape, or @p strength is
- *         out of 0 to 1.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL, the view is of another instance or of
+ *         the wrong type or shape, or @p strength is out of 0 to 1.
  */
-bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_texture_view occlusion, float strength);
+APRESULT aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_texture_view occlusion, float strength, APREND_ERROR *out_error);
 
 /**
  * @brief Sets whether the surface reads a bent normal from the ambient
@@ -1107,10 +1206,33 @@ bool aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_textu
  *
  * @param[in] scene Scene to change.
  * @param[in] read  true to read the bent normal.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p scene is NULL.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL.
  */
-bool aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read);
+APRESULT aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read, APREND_ERROR *out_error);
+
+/**
+ * @brief Sets the opaque picture surfaces with transmission show through,
+ * or takes it away: what APREND_COMMAND_COPY_SCENE_COLOR (aprendcommands.h)
+ * copied from the view's color target into a mipped texture, between the
+ * opaque draws and the transmitting ones. It is read exposed and, if the
+ * scene's output encoding is sRGB, encoded, as the surfaces wrote it.
+ *
+ * @param[in] scene       Scene to change.
+ * @param[in] scene_color A SHADER_RESOURCE 2D view of color holding every
+ *                        mip the copy fills, or NULL for none. It must
+ *                        outlive its use by the scene.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
+ *
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p scene is NULL, or the view is of another instance
+ *         or of the wrong type, shape or aspect.
+ */
+APRESULT aprend_lit_scene_set_scene_color(aprend_lit_scene scene, aprend_texture_view scene_color, APREND_ERROR *out_error);
 
 #if __cplusplus
 } // Extern "C"

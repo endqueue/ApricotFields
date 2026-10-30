@@ -15,30 +15,31 @@
  * after, as a submission of its own would, and a frame's updates and clears
  * cost one list between them. What the commands read (a staging buffer) is
  * the caller's to retire after this returns, which holds it until the batch
- * has run. False, with nothing recorded, if no batch can be opened.
+ * has run. Fails, with nothing recorded and [error] saying why, if no
+ * batch can be opened.
  *
  * Used for texture updates, readbacks and framebuffer clears. Shared by
  * aprendimages.cpp and aprendframes.cpp. */
-template <typename Fn> static bool aprend_record_immediate(aprend_instance instance, spudgpu_command_queue queue, Fn &&record) {
+template <typename Fn> static APRESULT aprend_record_immediate(aprend_instance instance, spudgpu_command_queue queue, APREND_ERROR *error, Fn &&record) {
 	spudgpu_command_list cmd = nullptr;
-	SPUDRESULT sr            = aprend_instance_open_upload_batch(instance, queue, &cmd);
-	if (SPUDFAIL(sr)) {
-		printf("apricot: no upload batch to record into: %s\n", spudresult_str(sr));
-		return false;
-	}
+	if (const APRESULT result = aprend_instance_open_upload_batch(instance, queue, &cmd, error))
+		return result;
 	record(cmd);
-	return true;
+	return APRESULT_OK;
 }
 
 /* Submits the upload batch now and blocks until it has run: a wait on the
  * instance's fence for that submission's serial, not on the whole queue. For
  * work whose result the caller reads back. If it fails, what was recorded
  * may still run with a later submission. */
-static inline bool aprend_wait_immediate(aprend_instance instance) {
+static inline APRESULT aprend_wait_immediate(aprend_instance instance, APREND_ERROR *error) {
 	uint64_t serial = 0;
-	if (SPUDFAIL(aprend_instance_flush_upload_batch(instance, &serial)))
-		return false;
-	return !SPUDFAIL(aprend_instance_wait_serial(instance, serial));
+	if (const APRESULT flushed = aprend_instance_flush_upload_batch(instance, &serial, error))
+		return flushed;
+	const SPUDRESULT sr = aprend_instance_wait_serial(instance, serial, UINT64_MAX);
+	if (SPUDFAIL(sr))
+		return aprend_fail_spud(error, sr, "waiting for the batch of updates and clears failed");
+	return APRESULT_OK;
 }
 
 /* One side of mip [level] of a texture whose level 0 is [size] along it. */
@@ -232,7 +233,7 @@ inline SPUDGPU_IMAGE_LAYOUT aprend_texture_upload_rest_layout(APREND_TEXTURE_USA
  * the barriers are recorded, since the batch that holds them goes ahead of
  * every later submission. With [wait], aprend_wait_immediate follows. */
 template <typename Texture, typename Fn>
-static bool aprend_immediate_on_texture(
+static APRESULT aprend_immediate_on_texture(
     Texture *texture,
     spudgpu_command_queue queue,
     bool wait,
@@ -240,6 +241,7 @@ static bool aprend_immediate_on_texture(
     uint32_t layer,
     SPUDGPU_IMAGE_LAYOUT working,
     SPUDGPU_IMAGE_LAYOUT if_undefined,
+    APREND_ERROR *error,
     Fn &&record) {
 	SPUDGPU_IMAGE_LAYOUT *tracked           = texture->tracking.at(mip, layer);
 	const SPUDGPU_IMAGE_LAYOUT found        = *tracked;
@@ -251,15 +253,15 @@ static bool aprend_immediate_on_texture(
 	range.base_array_layer  = layer;
 	range.array_layer_count = 1;
 
-	if (!aprend_record_immediate(texture->instance, queue, [&](spudgpu_command_list cmd) {
+	if (const APRESULT result = aprend_record_immediate(texture->instance, queue, error, [&](spudgpu_command_list cmd) {
 		    spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, found, working);
 		    record(cmd);
 		    if (final_layout != working)
 			    spudgpu_cmd_image_barrier_subresource(cmd, texture->image, &range, working, final_layout);
 	    }))
-		return false;
+		return result;
 	*tracked = final_layout;
-	return !wait || aprend_wait_immediate(texture->instance);
+	return wait ? aprend_wait_immediate(texture->instance, error) : APRESULT_OK;
 }
 
 /* One level of one layer of a mip generation: a view of the level above to
@@ -291,7 +293,7 @@ typedef struct aprend_texture2d_t
     aprend_texture2d_t() = default;
     ~aprend_texture2d_t();
     aprend_instance instance;
-    aprend_texture2d_desc desc;
+    APREND_TEXTURE2D_DESC desc;
     spudgpu_image image{nullptr};
     // One layout for each (mip, layer); see aprend_texture_layouts.
     aprend_texture_layouts tracking{};
@@ -318,7 +320,7 @@ typedef struct aprend_texture3d_t
     aprend_texture3d_t() = default;
     ~aprend_texture3d_t();
     aprend_instance instance;
-    aprend_texture3d_desc desc;
+    APREND_TEXTURE3D_DESC desc;
     spudgpu_image image{nullptr};
     spudgpu_image_view image_view{nullptr};
     // One layout for each mip; a 3D texture has one layer.
@@ -346,7 +348,7 @@ typedef struct aprend_texture_view_t
 	} texture;
 	/* The desc the view was created with, its two counts resolved from
 	 * APREND_TEXTURE_VIEW_REMAINING to real numbers. */
-	aprend_texture_view_desc desc{};
+	APREND_TEXTURE_VIEW_DESC desc{};
 	/* The set of Aprend's bloom layout that reads this view
 	 * (aprend_texture_view_bloom_set), made the first time a bloom reads
 	 * it; NULL until then. Kept by the view, not by a bloom or a list, so
@@ -398,7 +400,7 @@ typedef struct aprend_sampler_t
 	aprend_sampler_t() = default;
 	~aprend_sampler_t();
 	aprend_instance instance{nullptr};
-	aprend_sampler_desc desc{};
+	APREND_SAMPLER_DESC desc{};
 	spudgpu_sampler sampler{nullptr};
 } aprend_sampler_t;
 
@@ -408,16 +410,16 @@ typedef struct aprend_framebuffer_t
     aprend_framebuffer_t() = default;
     ~aprend_framebuffer_t();
     aprend_instance instance;
-    aprend_framebuffer_desc desc;
+    APREND_FRAMEBUFFER_DESC desc;
     // Owns the attachment specs desc.attachments points at — the caller's
     // array (which may be a local of the caller's) is
     // not guaranteed to outlive this framebuffer, but aprend_framebuffer_resize
     // re-reads desc.attachments on every resize, long after creation returns.
-    std::vector<aprend_framebuffer_texture_spec> attachment_specs;
+    std::vector<APREND_FRAMEBUFFER_TEXTURE_SPEC> attachment_specs;
     std::vector<aprend_texture_view> color_attachments;
     // Parallel to color_attachments: the underlying texture if we created it
     // (needs destroying), or nullptr if it was borrowed via
-    // aprend_framebuffer_texture_spec::existing_texture (caller still owns it).
+    // APREND_FRAMEBUFFER_TEXTURE_SPEC::existing_texture (caller still owns it).
     std::vector<aprend_texture2d> owned_color_textures;
     aprend_texture_view depth_attachment{nullptr};
     bool has_depth_attachment{false};
@@ -426,21 +428,23 @@ typedef struct aprend_framebuffer_t
 /* Whether [texture] can have the levels below [base_mip] generated through
  * [filter], by either form: the level exists, the filter is a
  * SPUDGPU_FILTER, the texture has shader resource and render target usage,
- * and its format is one aprend_builtin_downsample_format takes. False,
- * printed with [who] in front, if not. Whether the level has contents is
- * each form's own check. */
-bool aprend_generate_mips_valid(aprend_texture2d texture, uint32_t base_mip, SPUDGPU_FILTER filter, const char *who);
+ * and its format is one aprend_builtin_downsample_format takes.
+ * APRESULT_INVALID_ARGUMENT, [error] saying why, if not. Whether the level
+ * has contents is each form's own check. */
+APRESULT aprend_generate_mips_valid(aprend_texture2d texture, uint32_t base_mip, SPUDGPU_FILTER filter, APREND_ERROR *error);
 
 /* The chain of [texture] for [base_mip] and [filter], made if it has none,
- * and the downsample pipeline for its format. False, printed, if either
- * can't be made, with nothing kept. The pointer is valid until the next
- * call for this texture. Not for the last level, which has no chain. */
-bool aprend_texture2d_mip_chain(
+ * and the downsample pipeline for its format. Fails, [error] saying why,
+ * if either can't be made, with nothing kept. The pointer is valid until
+ * the next call for this texture. Not for the last level, which has no
+ * chain. */
+APRESULT aprend_texture2d_mip_chain(
     aprend_texture2d texture,
     uint32_t base_mip,
     SPUDGPU_FILTER filter,
     const aprend_mip_chain **out_chain,
-    aprend_graphics_pipeline *out_pipeline);
+    aprend_graphics_pipeline *out_pipeline,
+    APREND_ERROR *error);
 
 /* Records the pass that renders [step]'s target, a level [width] by
  * [height], from its source with [pipeline], filtered as [filter] (the

@@ -21,7 +21,6 @@ else()
 endif()
 
 add_library(ApricotFields STATIC
-        src/apricotfields.cpp
         src/apricore.cpp
         src/aprihashindex.hpp
         src/apriplaindata.hpp
@@ -45,6 +44,7 @@ add_library(ApricotFields STATIC
         src/render/aprendswapchain.cpp
         src/render/aprendtransient_internal.hpp
         src/render/aprendtransient.cpp
+        src/render/aprendbatch.cpp
         src/render/aprendtimer.cpp
         src/render/aprendbuiltin_internal.hpp
         src/render/aprendbuiltin.cpp
@@ -54,7 +54,9 @@ add_library(ApricotFields STATIC
         src/render/aprendrendertargets.cpp
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
+        src/audio/apaudio_internal.hpp
         src/audio/apaudio.cpp
+        src/audio/apaudio_decode.cpp
         src/audio/apaudiocues.cpp
         src/math/apmathbvh.cpp
         src/math/apmathpoly_internal.hpp
@@ -63,9 +65,14 @@ add_library(ApricotFields STATIC
         src/sync/apsyncnet.cpp
         src/text/aptext_internal.hpp
         src/text/aptext.cpp
+        src/text/aptext_cadfonts.cpp
         src/text/aptext_layout.cpp
         src/text/aptext_atlas.cpp
+        src/jobs/apjobs.cpp
+        src/aprioverlap.hpp
         include/apricore.h
+        include/aprimath.h
+        include/aprend.h
         include/render/aprendcontext.h
         include/render/aprendbuffers.h
         include/render/aprendimages.h
@@ -79,6 +86,9 @@ add_library(ApricotFields STATIC
         include/render/aprendswapchain.h
         include/render/aprendtransient.h
         include/render/aprendtimer.h
+        include/render/aprendlit.h
+        include/render/aprendpost.h
+        include/render/aprendbatch.h
         include/archive/aparchive.h
         include/audio/apaudio.h
         include/audio/apaudiocues.h
@@ -86,6 +96,7 @@ add_library(ApricotFields STATIC
         include/math/apmathpoly.h
         include/sync/apsyncnet.h
         include/text/aptext.h
+        include/jobs/apjobs.h
         )
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -214,6 +225,11 @@ set(APRICOTFIELDS_SHADERS
         aprend_exposure_adapt.frag
         aprend_exposure_histogram.comp
         aprend_exposure_adapt_histogram.frag
+        aprend_batch.vert
+        aprend_batch_quad.frag
+        aprend_batch_circle.frag
+        aprend_batch_line.frag
+        aprend_batch_glyph.frag
 )
 # What the shaders include (#include, GL_GOOGLE_include_directive), from
 # shaders/: every shader is compiled again when one of them changes.
@@ -225,6 +241,8 @@ set(APRICOTFIELDS_SHADER_INCLUDES
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_material.glslh
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_bindings.glslh
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_shadow_pass.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch.glslh
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch_inputs.glslh
 )
 foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
     set(shader_inc ${APRICOTFIELDS_SHADER_INC_DIR}/${shader}.spv.inc)
@@ -266,6 +284,42 @@ FetchContent_MakeAvailable(libdeflate)
 # ApricotFields may be linked into a shared library too.
 set_target_properties(libdeflate_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ApricotFields PRIVATE libdeflate::libdeflate_static)
+
+# zlib-ng 2.3.3 (zlib licence), native mode - streamed DEFLATE for
+# ApArchive's entries written and read in pieces (card A24, decided
+# 2026-10-28). libdeflate has no streaming and stays for whole entries.
+# Pinned for the reason libdeflate is: a streamed entry's bytes are fixed by
+# zlib-ng's version and level (tests/aparchive_tests.cpp records them).
+# Static, through its own CMakeLists.txt, with no zlib-compatible names, no
+# gz file functions and nothing else.
+# BUILD_SHARED_LIBS and BUILD_TESTING are set for its directory alone, as
+# normal variables its options honour, and put back after.
+set(ZLIB_COMPAT OFF CACHE BOOL "" FORCE)
+set(ZLIB_ALIASES OFF CACHE BOOL "" FORCE)
+set(WITH_GTEST OFF CACHE BOOL "" FORCE)
+set(WITH_GZFILEOP OFF CACHE BOOL "" FORCE)
+set(WITH_FUZZERS OFF CACHE BOOL "" FORCE)
+set(WITH_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(WITH_BENCHMARK_APPS OFF CACHE BOOL "" FORCE)
+set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+foreach (_var BUILD_SHARED_LIBS BUILD_TESTING)
+    if (DEFINED ${_var})
+        set(_apricot_saved_${_var} "${${_var}}")
+    endif ()
+    set(${_var} OFF)
+endforeach ()
+declare_vendored_or_fetch(zlibng zlib-ng https://github.com/zlib-ng/zlib-ng.git 2.3.3)
+FetchContent_MakeAvailable(zlibng)
+foreach (_var BUILD_SHARED_LIBS BUILD_TESTING)
+    if (DEFINED _apricot_saved_${_var})
+        set(${_var} "${_apricot_saved_${_var}}")
+        unset(_apricot_saved_${_var})
+    else ()
+        unset(${_var})
+    endif ()
+endforeach ()
+set_target_properties(zlib-ng PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ApricotFields PRIVATE zlib-ng)
 
 # glaze - JSON, for ApAudio's sound bank manifests (src/audio/apaudiocues.cpp).
 # Header only, vendored under eqdev/.deps/glaze like libdeflate. Private: no
@@ -399,6 +453,134 @@ target_include_directories(aptext_unibreak PUBLIC ${libunibreak_SOURCE_DIR}/src)
 set_target_properties(aptext_unibreak PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ApricotFields PRIVATE aptext_unibreak)
 
+# ApAudio's decoders (APAUDIO_TODO.md item 15, card A26): dr_flac (FLAC),
+# stb_vorbis (Ogg Vorbis), libopus with opusfile and libogg (Ogg Opus), each
+# its own static library linked PRIVATE, with its warnings off: the code is
+# theirs. Both single-file decoders write a global on every open - stb_vorbis
+# its CRC table, dr_flac its CPU capability flags - which two decodes on two
+# threads would race on, and a library here may not have writable globals.
+# So each is read as it is and written into the build directory changed
+# (the file itself is left untouched, as Hosek and Wilkie's below): stb_vorbis
+# takes the table as constants (src/audio/apaudio_vorbis_crc.inc), and
+# dr_flac, built without SIMD, never calls its capability check.
+declare_vendored_or_fetch_sources(dr_libs dr_libs
+        https://github.com/mackron/dr_libs.git flac-0.13.3
+        dr_flac.h)
+FetchContent_MakeAvailable(dr_libs)
+file(READ "${dr_libs_SOURCE_DIR}/dr_flac.h" APAUDIO_DRFLAC)
+string(REPLACE "    drflac__init_cpu_caps();" "    /* ApricotFields: no CPU capability flags written. */" APAUDIO_DRFLAC "${APAUDIO_DRFLAC}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/dr_flac.h" "${APAUDIO_DRFLAC}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/apaudio_drflac.c"
+        "#define DR_FLAC_IMPLEMENTATION\n#define DR_FLAC_NO_SIMD\n#define DR_FLAC_NO_STDIO\n#define DR_FLAC_NO_OGG\n#include \"dr_flac.h\"\n")
+add_library(apaudio_drflac STATIC "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/apaudio_drflac.c")
+target_include_directories(apaudio_drflac PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders")
+target_compile_definitions(apaudio_drflac PUBLIC DR_FLAC_NO_SIMD DR_FLAC_NO_STDIO DR_FLAC_NO_OGG)
+
+declare_vendored_or_fetch_sources(stb stb
+        https://github.com/nothings/stb.git 003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5
+        stb_vorbis.c)
+FetchContent_MakeAvailable(stb)
+file(READ "${stb_SOURCE_DIR}/stb_vorbis.c" APAUDIO_STB_VORBIS)
+string(REPLACE "static uint32 crc_table[256];"
+        "static const uint32 crc_table[256] = {\n#include \"apaudio_vorbis_crc.inc\"\n};" APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "      crc_table[i] = s;" "      (void)s; /* ApricotFields: the table is constant. */" APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "static uint8 ogg_page_header[4]" "static const uint8 ogg_page_header[4]" APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+# A vendor or comment length past 2^31 reads as negative: len + 1 then
+# wraps, the setup allocators hand back memory outside their buffer, and
+# vendor[len] writes before it (found by apaudio_fuzz, 2026-10-30). Each
+# length is refused below 0, and the allocators refuse a size below 0 or
+# one rounding would wrap.
+string(REPLACE "static void *setup_malloc(vorb *f, int sz)\n{\n"
+        "static void *setup_malloc(vorb *f, int sz)\n{\n   if (sz < 0 || sz > 0x7FFFFFF0) return NULL; /* ApricotFields */\n"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "static void *setup_temp_malloc(vorb *f, int sz)\n{\n"
+        "static void *setup_temp_malloc(vorb *f, int sz)\n{\n   if (sz < 0 || sz > 0x7FFFFFF0) return NULL; /* ApricotFields */\n"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "   len = get32_packet(f);\n   f->vendor"
+        "   len = get32_packet(f);\n   if (len < 0) return error(f, VORBIS_invalid_setup); /* ApricotFields */\n   f->vendor"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "      len = get32_packet(f);\n      f->comment_list[i]"
+        "      len = get32_packet(f);\n      if (len < 0) return error(f, VORBIS_invalid_setup); /* ApricotFields */\n      f->comment_list[i]"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+# A codebook of dimension 0 divides by it, and casts the infinity to int
+# (the same day): refused as an invalid setup, as a lookup that can't be
+# made is. Its signature table is never written: const.
+string(REPLACE "static int lookup1_values(int entries, int dim)\n{\n"
+        "static int lookup1_values(int entries, int dim)\n{\n   if (entries <= 0 || dim <= 0) return -1; /* ApricotFields */\n"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "static uint8 vorbis[6] = " "static const uint8 vorbis[6] = " APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+# And a comment list whose allocation failed is NULL with its length set,
+# which tearing down then reads (the same day).
+string(REPLACE "   for (i=0; i < p->comment_list_length; ++i) {\n      setup_free(p, p->comment_list[i]);"
+        "   for (i=0; p->comment_list && i < p->comment_list_length; ++i) { /* ApricotFields */\n      setup_free(p, p->comment_list[i]);"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+foreach (_fix "if (sz < 0 || sz > 0x7FFFFFF0) return NULL; /* ApricotFields */" "if (len < 0) return error(f, VORBIS_invalid_setup); /* ApricotFields */"
+        "p->comment_list && i < p->comment_list_length; ++i) { /* ApricotFields */"
+        "if (entries <= 0 || dim <= 0) return -1; /* ApricotFields */" "static const uint8 vorbis[6] = ")
+    string(FIND "${APAUDIO_STB_VORBIS}" "${_fix}" _at)
+    if (_at EQUAL -1)
+        message(FATAL_ERROR "stb_vorbis.c changed: ApricotFields' fix \"${_fix}\" no longer applies (CMakeLists.txt)")
+    endif ()
+endforeach ()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/stb_vorbis.c" "${APAUDIO_STB_VORBIS}")
+add_library(apaudio_stb_vorbis STATIC "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/stb_vorbis.c")
+target_include_directories(apaudio_stb_vorbis PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/audio")
+target_compile_definitions(apaudio_stb_vorbis PUBLIC STB_VORBIS_NO_STDIO STB_VORBIS_NO_PUSHDATA_API)
+
+# libogg 1.3.6 (BSD): Ogg pages and packets, from its two sources; its
+# config_types.h, which its own build generates, is written here from
+# <stdint.h>.
+declare_vendored_or_fetch_sources(ogg ogg
+        https://github.com/xiph/ogg.git v1.3.6
+        src/framing.c)
+FetchContent_MakeAvailable(ogg)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/ogg/config_types.h"
+        "#ifndef __CONFIG_TYPES_H__\n#define __CONFIG_TYPES_H__\n#include <stdint.h>\ntypedef int16_t ogg_int16_t;\ntypedef uint16_t ogg_uint16_t;\ntypedef int32_t ogg_int32_t;\ntypedef uint32_t ogg_uint32_t;\ntypedef int64_t ogg_int64_t;\ntypedef uint64_t ogg_uint64_t;\n#endif\n")
+add_library(apaudio_ogg STATIC ${ogg_SOURCE_DIR}/src/bitwise.c ${ogg_SOURCE_DIR}/src/framing.c)
+target_include_directories(apaudio_ogg PUBLIC ${ogg_SOURCE_DIR}/include "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders")
+
+# libopus 1.5.2 (BSD), through its own CMakeLists.txt: float, static, no
+# programs, tests or install modules.
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+declare_vendored_or_fetch(opus opus https://github.com/xiph/opus.git v1.5.2)
+FetchContent_MakeAvailable(opus)
+
+# opusfile 0.12 (BSD): Ogg Opus files over libogg and libopus, from its
+# sources, without its HTTP streaming.
+declare_vendored_or_fetch_sources(opusfile opusfile
+        https://github.com/xiph/opusfile.git v0.12
+        src/opusfile.c)
+FetchContent_MakeAvailable(opusfile)
+add_library(apaudio_opusfile STATIC ${opusfile_SOURCE_DIR}/src/info.c ${opusfile_SOURCE_DIR}/src/internal.c
+        ${opusfile_SOURCE_DIR}/src/opusfile.c ${opusfile_SOURCE_DIR}/src/stream.c)
+target_include_directories(apaudio_opusfile PUBLIC ${opusfile_SOURCE_DIR}/include)
+target_compile_definitions(apaudio_opusfile PRIVATE OP_DISABLE_HTTP OP_DISABLE_DOCS)
+target_link_libraries(apaudio_opusfile PUBLIC apaudio_ogg opus)
+
+foreach (target apaudio_drflac apaudio_stb_vorbis apaudio_ogg apaudio_opusfile opus)
+    set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if (MSVC)
+        target_compile_options(${target} PRIVATE /W0)
+    else ()
+        target_compile_options(${target} PRIVATE -w)
+    endif ()
+endforeach ()
+target_link_libraries(ApricotFields PRIVATE apaudio_drflac apaudio_stb_vorbis apaudio_opusfile)
+# stb_vorbis shifts signed values its reads return (-1 at a packet's end, a
+# byte promoted to int) past their sign bit, wraps signed sums, and casts
+# out-of-range floats to int, all through: undefined in C, defined by every compiler and CPU
+# here, and harmless where it doesn't lead to memory (the cases that did
+# are fixed above). Under the sanitizer presets those three UBSan checks are
+# off for it alone; ASan still watches its memory (apaudio_fuzz,
+# 2026-10-30).
+if (NOT MSVC)
+    target_compile_options(apaudio_stb_vorbis PRIVATE -fno-sanitize=shift,float-cast-overflow,signed-integer-overflow)
+endif ()
+
 # Hosek and Wilkie's sky model, version 1.4a (APREND_COMMAND_LIT_SKY's
 # HOSEK_WILKIE): its RGB coefficients alone, which aprendlit.cpp cooks for a
 # sun and an air. 3-clause BSD licence, in the data file itself and in its
@@ -467,9 +649,21 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(aparchive_tests tests/aparchive_tests.cpp)
     target_link_libraries(aparchive_tests PRIVATE ApricotFields)
     add_test(NAME aparchive_tests COMMAND aparchive_tests)
+    # Every public function with every argument zeroed (ROADMAP.md, section
+    # 3.1): generated from abi.txt by tests/misuse/make_misuse_tests.py.
+    # No allocation per frame (ROADMAP.md, section 3.1): each module's steady
+    # state under the platform's allocation hook.
+    add_executable(aprinoalloc_tests tests/aprinoalloc_tests.c)
+    target_link_libraries(aprinoalloc_tests PRIVATE ApricotFields)
+    add_test(NAME aprinoalloc_tests COMMAND aprinoalloc_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext)
+
+    add_executable(apri_misuse_tests tests/apri_misuse_tests.c)
+    target_link_libraries(apri_misuse_tests PRIVATE ApricotFields)
+    add_test(NAME apri_misuse_tests COMMAND apri_misuse_tests)
+
     add_executable(apaudio_tests tests/apaudio_tests.c)
     target_link_libraries(apaudio_tests PRIVATE ApricotFields)
-    add_test(NAME apaudio_tests COMMAND apaudio_tests)
+    add_test(NAME apaudio_tests COMMAND apaudio_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/apaudio)
     # Two sessions talking over the loopback interface: no GPU, no window,
     # but it does open a listening socket on 127.0.0.1.
     add_executable(apsync_tests tests/apsync_tests.c)
@@ -479,18 +673,33 @@ if (APRICOTFIELDS_BUILD_TESTS)
     # a behavioural test reports pending while its call isn't built.
     add_executable(aptext_tests tests/aptext_tests.c)
     target_link_libraries(aptext_tests PRIVATE ApricotFields)
-    add_test(NAME aptext_tests COMMAND aptext_tests)
+    add_test(NAME aptext_tests COMMAND aptext_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext)
     # The same layout and atlas bits on every platform, against values
     # recorded on macOS.
     add_executable(aptext_bits_tests tests/aptext_bits_tests.c)
     target_link_libraries(aptext_bits_tests PRIVATE ApricotFields)
     add_test(NAME aptext_bits_tests COMMAND aptext_bits_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext)
+    # ApJobs' contract (card L12): the scheduler check, serial runs and the
+    # reference pool, which starts threads; run under -tsan too.
+    # The Debug builds' overlap check every module opens its calls with
+    # (src/aprioverlap.hpp), driven with threads; skips itself in Release.
+    add_executable(aprioverlap_tests tests/aprioverlap_tests.cpp)
+    target_link_libraries(aprioverlap_tests PRIVATE ApricotFields)
+    add_test(NAME aprioverlap_tests COMMAND aprioverlap_tests)
+    add_executable(apjobs_tests tests/apjobs_tests.c)
+    target_link_libraries(apjobs_tests PRIVATE ApricotFields)
+    add_test(NAME apjobs_tests COMMAND apjobs_tests)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
     add_executable(apmathpoly_tests tests/apmathpoly_tests.c)
     target_link_libraries(apmathpoly_tests PRIVATE ApricotFields)
     add_test(NAME apmathpoly_tests COMMAND apmathpoly_tests)
+    # The same bits on every platform: a fixed run of every polygon call,
+    # hashed, against values recorded on macOS (tests/data/apmathpoly).
+    add_executable(apmathpoly_bits_tests tests/apmathpoly_bits_tests.c)
+    target_link_libraries(apmathpoly_bits_tests PRIVATE ApricotFields)
+    add_test(NAME apmathpoly_bits_tests COMMAND apmathpoly_bits_tests)
     # The range list under Aprend's pools: an internal header with no GPU in
     # it, which is why this one test sees src/render.
     add_executable(aprendranges_tests tests/aprendranges_tests.cpp)
@@ -511,6 +720,11 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(aprendfeatures_tests tests/aprendfeatures_tests.c)
     target_link_libraries(aprendfeatures_tests PRIVATE ApricotFields)
     add_test(NAME aprendfeatures_tests COMMAND aprendfeatures_tests)
+    # Aprend's contract: what its converted calls refuse before a device is
+    # touched, from C.
+    add_executable(aprend_contract_tests tests/aprend_contract_tests.c)
+    target_link_libraries(aprend_contract_tests PRIVATE ApricotFields)
+    add_test(NAME aprend_contract_tests COMMAND aprend_contract_tests)
 endif ()
 
 # Fuzz targets (tests/fuzz/aprifuzz.hpp). Each is built two ways: as a
@@ -521,7 +735,7 @@ endif ()
 # on macOS, since Apple's Clang has no libFuzzer). The presets build every
 # target with -fsanitize=fuzzer-no-link,address,undefined; only the fuzz
 # executables link libFuzzer itself.
-set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz aptext_fuzz)
+set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz aptext_fuzz apaudio_fuzz)
 if (APRICOTFIELDS_BUILD_TESTS)
     foreach (target IN LISTS APRICOTFIELDS_FUZZ_TARGETS)
         add_executable(${target}_replay tests/fuzz/aprifuzz_replay.cpp tests/fuzz/${target}.cpp)

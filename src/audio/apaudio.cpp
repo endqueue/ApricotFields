@@ -1,4 +1,6 @@
 #include "audio/apaudio.h"
+#include "apaudio_internal.hpp"
+#include "../aprioverlap.hpp"
 #include "../apristructbase.hpp"
 #include <algorithm>
 #include <atomic>
@@ -645,6 +647,39 @@ static void direction_pan(const Layout &layout, float azimuth, float elevation, 
     ring_pan(layout, layout.rings[above], azimuth, sinf(t * PI_F * 0.5f), gains);
 }
 
+// Whether a sound from [azimuth], [elevation] (degrees) is folded from
+// behind to the front: some ring it pans on leaves the rear empty (a gap),
+// and the direction is in that half of it (ring_pan's mirror).
+static bool direction_folded(const Layout &layout, float azimuth, float elevation)
+{
+    int below = -1, above = -1;
+    for (int layer = 0; layer < LAYER_COUNT; layer++)
+    {
+        if (layout.rings[layer].count == 0)
+            continue;
+        if (layer_elevation[layer] <= elevation)
+            below = layer;
+        if (layer_elevation[layer] >= elevation && above < 0)
+            above = layer;
+    }
+    if (below < 0)
+        below = above;
+    if (above < 0)
+        above = below;
+    if (below < 0)
+        return false;
+    for (int layer : {below, above})
+    {
+        const Ring &ring = layout.rings[layer];
+        if (!ring.gap || ring.count < 2)
+            continue;
+        float off_centre = wrap180(azimuth - (ring.start + ring.span * 0.5f));
+        if (off_centre > 90.0f || off_centre < -90.0f)
+            return true;
+    }
+    return false;
+}
+
 // ---- Objects --------------------------------------------------------------------
 
 // A value moving to a target at a fixed speed: a bus's gain, rate, mute and
@@ -739,6 +774,9 @@ struct Voice
     // The voice's ID from apaudio_play() until the audio thread frees its
     // record; 0 otherwise. apaudio_voice_is_live()'s.
     std::atomic<uint64_t> live_id{0};
+    // The voice's ID while the last render panned it folded from behind; 0
+    // otherwise. apaudio_voice_is_folded()'s.
+    std::atomic<uint64_t> folded_id{0};
 
     // apaudio_play()'s, written before the voice is queued; then the audio
     // thread's, which keeps them up to date with the voice's changes.
@@ -948,6 +986,17 @@ struct apaudio_mixer_t
     float *source{nullptr};      // [2][max_frames]: one voice, resampled
     float *pan{nullptr};         // [slot_count][2][channel_count]: each slot's speaker gains
     float *pan_scratch{nullptr}; // [2][channel_count]
+    // The limiter (APAUDIO_LIMITER_ON): its settings, fixed at creation, and
+    // its buffers, sized with the format: limiter_frames of lookahead.
+    bool limiter_on{false};
+    uint32_t limiter_lookahead_us{0};
+    uint32_t limiter_release_us{0};
+    float limiter_ceiling{1.0f};
+    uint32_t limiter_frames{0};
+    float *limiter_delay{nullptr};     // [channel_count][limiter_frames]: the mix, delayed
+    float *limiter_box{nullptr};       // [limiter_frames]: the window minimums the gain averages
+    float *limiter_queue_gain{nullptr}; // [limiter_frames + 1]: the sliding minimum's queue
+    uint64_t *limiter_queue_at{nullptr};
 
     Voice *voices{nullptr};
     Sound *sounds{nullptr};
@@ -983,7 +1032,25 @@ struct apaudio_mixer_t
     uint32_t free_slot_count{0};
     uint64_t clock{0}; // frames rendered
     uint64_t next_serial{1};
+    // TPDF dither's random numbers (16-bit output).
+    uint64_t dither_state{0x9E3779B97F4A7C15ull};
+    // The limiter's state: frames it has taken in, its queue, the sum of
+    // its box, and the gain it applied last.
+    uint64_t limiter_in{0};
+    uint32_t limiter_queue_head{0};
+    uint32_t limiter_queue_count{0};
+    double limiter_box_sum{0.0};
+    float limiter_gain{1.0f};
+    // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
+    apri_overlap overlap{};
+    // The same for the render, one at a time of its own (apaudio.h's roles).
+    apri_overlap render_overlap{};
 };
+
+apri_overlap &apaudio_mixer_control_guard(apaudio_mixer mixer)
+{
+    return mixer->overlap;
+}
 
 typedef apaudio_mixer_t Mixer;
 
@@ -1114,6 +1181,11 @@ struct FormatBuffers
     float *source{nullptr};
     float *pan{nullptr};
     float *pan_scratch{nullptr};
+    uint32_t limiter_frames{0};
+    float *limiter_delay{nullptr};
+    float *limiter_box{nullptr};
+    float *limiter_queue_gain{nullptr};
+    uint64_t *limiter_queue_at{nullptr};
 };
 
 static void format_buffers_free(FormatBuffers &buffers)
@@ -1122,19 +1194,58 @@ static void format_buffers_free(FormatBuffers &buffers)
     free(buffers.source);
     free(buffers.pan);
     free(buffers.pan_scratch);
+    free(buffers.limiter_delay);
+    free(buffers.limiter_box);
+    free(buffers.limiter_queue_gain);
+    free(buffers.limiter_queue_at);
     buffers = FormatBuffers{};
 }
 
-static bool format_buffers_alloc(const Mixer *m, uint32_t channel_count, uint32_t max_frames, FormatBuffers &buffers)
+// The limiter's lookahead in frames at [sample_rate]: at least 1.
+static uint32_t limiter_frames_at(uint32_t lookahead_us, uint32_t sample_rate)
+{
+    uint64_t frames = ((uint64_t)lookahead_us * sample_rate + 999999) / 1000000;
+    return frames > 0 ? (uint32_t)frames : 1;
+}
+
+static bool format_buffers_alloc(const Mixer *m, uint32_t channel_count, uint32_t sample_rate, uint32_t max_frames,
+                                 FormatBuffers &buffers)
 {
     buffers.mix = alloc_array<float>((size_t)channel_count * max_frames);
     buffers.source = alloc_array<float>((size_t)2 * max_frames);
     buffers.pan = alloc_array<float>((size_t)m->slot_count * 2 * channel_count);
     buffers.pan_scratch = alloc_array<float>((size_t)2 * channel_count);
-    if (buffers.mix && buffers.source && buffers.pan && buffers.pan_scratch)
+    bool limiter = true;
+    if (m->limiter_on)
+    {
+        uint32_t frames = limiter_frames_at(m->limiter_lookahead_us, sample_rate);
+        buffers.limiter_frames = frames;
+        buffers.limiter_delay = alloc_array<float>((size_t)channel_count * frames);
+        buffers.limiter_box = alloc_array<float>(frames);
+        buffers.limiter_queue_gain = alloc_array<float>((size_t)frames + 1);
+        buffers.limiter_queue_at = alloc_array<uint64_t>((size_t)frames + 1);
+        limiter = buffers.limiter_delay && buffers.limiter_box && buffers.limiter_queue_gain && buffers.limiter_queue_at;
+    }
+    if (buffers.mix && buffers.source && buffers.pan && buffers.pan_scratch && limiter)
         return true;
     format_buffers_free(buffers);
     return false;
+}
+
+// The limiter as if nothing had passed through it: silence delayed, full
+// gain everywhere.
+static void limiter_reset(Mixer *m)
+{
+    if (!m->limiter_on)
+        return;
+    memset(m->limiter_delay, 0, sizeof(float) * (size_t)m->channel_count * m->limiter_frames);
+    for (uint32_t i = 0; i < m->limiter_frames; i++)
+        m->limiter_box[i] = 1.0f;
+    m->limiter_in = 0;
+    m->limiter_queue_head = 0;
+    m->limiter_queue_count = 0;
+    m->limiter_box_sum = (double)m->limiter_frames;
+    m->limiter_gain = 1.0f;
 }
 
 static void format_apply(Mixer *m, const APAUDIO_FORMAT &format, uint32_t max_frames, const Layout &layout,
@@ -1144,10 +1255,19 @@ static void format_apply(Mixer *m, const APAUDIO_FORMAT &format, uint32_t max_fr
     free(m->source);
     free(m->pan);
     free(m->pan_scratch);
+    free(m->limiter_delay);
+    free(m->limiter_box);
+    free(m->limiter_queue_gain);
+    free(m->limiter_queue_at);
     m->mix = buffers.mix;
     m->source = buffers.source;
     m->pan = buffers.pan;
     m->pan_scratch = buffers.pan_scratch;
+    m->limiter_frames = buffers.limiter_frames;
+    m->limiter_delay = buffers.limiter_delay;
+    m->limiter_box = buffers.limiter_box;
+    m->limiter_queue_gain = buffers.limiter_queue_gain;
+    m->limiter_queue_at = buffers.limiter_queue_at;
     buffers = FormatBuffers{};
     m->sample_format = format.sample_format;
     m->sample_rate = format.sample_rate;
@@ -1155,6 +1275,7 @@ static void format_apply(Mixer *m, const APAUDIO_FORMAT &format, uint32_t max_fr
     m->interleaved = format.interleaved;
     m->max_frames = max_frames;
     m->layout = layout;
+    limiter_reset(m);
 }
 
 static float *sinc_table_build()
@@ -1675,6 +1796,7 @@ static void sweep(Mixer *m)
         m->active[i] = m->active[--m->active_count];
         v.published_id.store(0, std::memory_order_release);
         v.live_id.store(0, std::memory_order_release);
+        v.folded_id.store(0, std::memory_order_release);
         v.state = VOICE_FREE;
         free_push(m, index);
     }
@@ -1870,6 +1992,9 @@ static void voice_pan(const Mixer *m, const Voice &v, float *gains)
     memset(gains, 0, (size_t)source_channels * channels * sizeof(float));
     if (source_channels == 1)
     {
+        // Audio thread: what apaudio_voice_is_folded() reads.
+        bool folded = v.has_direction && direction_folded(layout, v.azimuth, v.elevation);
+        const_cast<Voice &>(v).folded_id.store(folded ? v.id : 0, std::memory_order_release);
         if (v.has_direction)
             direction_pan(layout, v.azimuth, v.elevation, gains);
         else if (layout.front_centre >= 0)
@@ -2215,9 +2340,107 @@ static int32_t quantize(float value, int bits)
     return (int32_t)lrint(scaled);
 }
 
+// A uniform random number in [-0.5, 0.5) from [state] (xorshift64*). Audio
+// thread: TPDF dither's.
+static double dither_uniform(uint64_t &state)
+{
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    uint64_t bits = state * 0x2545F4914F6CDD1Dull;
+    return (double)(bits >> 11) * (1.0 / 9007199254740992.0) - 0.5;
+}
+
+// [value] as a 16-bit sample with TPDF dither: the sum of two uniform
+// numbers, triangular across one least significant bit either side, added
+// before rounding.
+static int16_t quantize_dithered_16(float value, uint64_t &state)
+{
+    if (!(value == value))
+        return 0;
+    double scaled = (double)value * 32768.0 + dither_uniform(state) + dither_uniform(state);
+    if (scaled >= 32767.0)
+        return 32767;
+    if (scaled <= -32768.0)
+        return -32768;
+    return (int16_t)lrint(scaled);
+}
+
+// Runs [frames] frames of m->mix through the lookahead limiter, in place.
+// Each frame's gain needs, to keep its loudest channel at the ceiling, go
+// into a sliding minimum over the lookahead; the gain applied is the
+// average of that minimum over the lookahead again, so it falls smoothly
+// and is at or below every need it passes, and rises no faster than the
+// release allows. The mix comes out delayed by the lookahead. Audio thread:
+// no allocation, no lock.
+static void limiter_run(Mixer *m, uint32_t frames)
+{
+    const uint32_t lookahead = m->limiter_frames;
+    const uint32_t channels = m->channel_count;
+    const float ceiling = m->limiter_ceiling;
+    const float release_step =
+        1.0f / (float)limiter_frames_at(m->limiter_release_us, m->sample_rate);
+    for (uint32_t i = 0; i < frames; i++)
+    {
+        float peak = 0.0f;
+        for (uint32_t c = 0; c < channels; c++)
+        {
+            float sample = fabsf(m->mix[(size_t)c * m->max_frames + i]);
+            peak = sample > peak || sample != sample ? sample : peak;
+        }
+        float need = peak > ceiling ? ceiling / peak : 1.0f;
+        if (need != need)
+            need = 0.0f;
+        uint64_t at = m->limiter_in++;
+
+        // The sliding minimum of the needs of frames [at - lookahead, at]:
+        // a queue of rising needs, newest at the back.
+        uint32_t capacity = lookahead + 1;
+        while (m->limiter_queue_count > 0)
+        {
+            uint32_t back = (m->limiter_queue_head + m->limiter_queue_count - 1) % capacity;
+            if (m->limiter_queue_gain[back] < need)
+                break;
+            m->limiter_queue_count--;
+        }
+        uint32_t slot = (m->limiter_queue_head + m->limiter_queue_count) % capacity;
+        m->limiter_queue_gain[slot] = need;
+        m->limiter_queue_at[slot] = at;
+        m->limiter_queue_count++;
+        while (at >= lookahead && m->limiter_queue_at[m->limiter_queue_head] < at - lookahead)
+        {
+            m->limiter_queue_head = (m->limiter_queue_head + 1) % capacity;
+            m->limiter_queue_count--;
+        }
+        float minimum = m->limiter_queue_gain[m->limiter_queue_head];
+
+        // Its average over the last lookahead frames.
+        uint32_t ring = (uint32_t)(at % lookahead);
+        m->limiter_box_sum += (double)minimum - (double)m->limiter_box[ring];
+        m->limiter_box[ring] = minimum;
+        float average = (float)(m->limiter_box_sum / (double)lookahead);
+        float gain = m->limiter_gain + release_step;
+        gain = gain < average ? gain : average;
+        gain = gain < 1.0f ? gain : 1.0f;
+        m->limiter_gain = gain;
+
+        // The frame from a lookahead ago goes out at this gain; this one
+        // waits in its place.
+        for (uint32_t c = 0; c < channels; c++)
+        {
+            float &delayed = m->limiter_delay[(size_t)c * lookahead + ring];
+            float &sample = m->mix[(size_t)c * m->max_frames + i];
+            float out = delayed * gain;
+            delayed = sample;
+            // Rounding can leave a hair over: the ceiling is a promise.
+            sample = out > ceiling ? ceiling : (out < -ceiling ? -ceiling : out);
+        }
+    }
+}
+
 // Writes [frames] frames of m->mix into the caller's buffer(s), from frame
 // [offset] of them, in the mixer's format.
-static void write_output(const Mixer *m, void *frames_out, uint32_t offset, uint32_t frames)
+static void write_output(Mixer *m, void *frames_out, uint32_t offset, uint32_t frames)
 {
     uint32_t channels = m->channel_count;
     size_t bytes = m->sample_format == SPUDAUDIO_SAMPLE_FORMAT_S16          ? 2
@@ -2243,7 +2466,7 @@ static void write_output(const Mixer *m, void *frames_out, uint32_t offset, uint
             switch (m->sample_format)
             {
             case SPUDAUDIO_SAMPLE_FORMAT_S16: {
-                int16_t sample = (int16_t)quantize(mix[i], 16);
+                int16_t sample = quantize_dithered_16(mix[i], m->dither_state);
                 memcpy(out, &sample, 2);
                 break;
             }
@@ -2318,6 +2541,10 @@ static void mixer_free(Mixer *m)
     free(m->source);
     free(m->pan);
     free(m->pan_scratch);
+    free(m->limiter_delay);
+    free(m->limiter_box);
+    free(m->limiter_queue_gain);
+    free(m->limiter_queue_at);
     free(m->voices);
     free(m->sounds);
     free(m->buses);
@@ -2396,6 +2623,15 @@ extern "C"
             return fail(error, APRESULT_INVALID_ARGUMENT, "virtual_threshold or gain isn't finite and >= 0");
         if (d.resampler != APAUDIO_RESAMPLER_LINEAR && d.resampler != APAUDIO_RESAMPLER_SINC)
             return fail(error, APRESULT_INVALID_ARGUMENT, "resampler %u isn't LINEAR or SINC", d.resampler);
+        if (d.limiter != APAUDIO_LIMITER_OFF && d.limiter != APAUDIO_LIMITER_ON)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "limiter %u isn't OFF or ON", d.limiter);
+        if (d.limiter == APAUDIO_LIMITER_ON && (d.limiter_lookahead_us == 0 || d.limiter_lookahead_us > 100000))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "limiter_lookahead_us is %u: 1 to 100000 with the limiter on",
+                        d.limiter_lookahead_us);
+        if (d.limiter == APAUDIO_LIMITER_ON && d.limiter_release_us == 0)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "limiter_release_us is 0 with the limiter on");
+        if (d.limiter == APAUDIO_LIMITER_ON && !(d.limiter_ceiling > 0.0f && d.limiter_ceiling <= 1.0f))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "limiter_ceiling isn't in (0, 1] with the limiter on");
         uint64_t records = (uint64_t)d.max_voices + d.queue_capacity + d.max_fading_voices;
         uint64_t slots = (uint64_t)d.max_real_voices + d.max_fading_voices;
         if (records >= 0x7FFFFFFFull || d.max_sounds == UINT32_MAX || d.max_buses == UINT32_MAX)
@@ -2418,9 +2654,13 @@ extern "C"
         m->transition_fade_us = d.transition_fade_us;
         m->min_real_us = d.min_real_us;
         m->resampler = d.resampler;
+        m->limiter_on = d.limiter == APAUDIO_LIMITER_ON;
+        m->limiter_lookahead_us = d.limiter_lookahead_us;
+        m->limiter_release_us = d.limiter_release_us;
+        m->limiter_ceiling = d.limiter_ceiling;
 
         FormatBuffers buffers;
-        bool allocated = format_buffers_alloc(m, d.format.channel_count, d.max_frames, buffers);
+        bool allocated = format_buffers_alloc(m, d.format.channel_count, d.format.sample_rate, d.max_frames, buffers);
         if (allocated)
             format_apply(m, d.format, d.max_frames, layout, buffers);
         m->voices = alloc_array<Voice>(m->record_count);
@@ -2474,11 +2714,12 @@ extern "C"
         clear_error(error);
         if (!mixer || !format)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer or format is null");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_set_format", "mixer's control calls");
         Layout layout;
         if (APRESULT result = layout_build(*format, max_frames, layout, error))
             return result;
         FormatBuffers buffers;
-        if (!format_buffers_alloc(mixer, format->channel_count, max_frames, buffers))
+        if (!format_buffers_alloc(mixer, format->channel_count, format->sample_rate, max_frames, buffers))
             return fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the mixer's buffers");
 
         // Nothing is rendering, so the audio thread's state is this thread's
@@ -2500,16 +2741,23 @@ extern "C"
             bus.mute.step *= rescale;
             bus.pause.step *= rescale;
         }
-        collect_sounds(mixer);
         return APRESULT_OK;
+    }
+
+    void apaudio_mixer_collect(apaudio_mixer mixer)
+    {
+        if (!mixer)
+            return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_collect", "mixer's control calls");
+        collect_sounds(mixer);
     }
 
     void apaudio_mixer_update(apaudio_mixer mixer)
     {
         if (!mixer)
             return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_update", "mixer's control calls");
         Mixer *m = mixer;
-        collect_sounds(m);
 
         // Triggered modifiers: active while their bus has audible voices.
         for (uint32_t i = 0; i < m->max_modifiers; i++)
@@ -2584,6 +2832,7 @@ extern "C"
     {
         if (!mixer || !frames || frame_count == 0)
             return;
+        APRI_ENTER(mixer->render_overlap, "apaudio", "apaudio_mixer_render", "mixer's render");
         Mixer *m = mixer;
         m->render_sequence.fetch_add(1);
         bool host_valid = info && (info->flags & SPUDAUDIO_CALLBACK_FLAG_HOST_TIME_VALID);
@@ -2594,6 +2843,8 @@ extern "C"
             uint32_t part = frame_count - offset < m->max_frames ? frame_count - offset : m->max_frames;
             uint64_t host_ns = host_valid ? info->host_time_ns + (uint64_t)offset * 1000000000ull / m->sample_rate : 0;
             render_block(m, part, host_valid, host_ns);
+            if (m->limiter_on)
+                limiter_run(m, part);
             write_output(m, frames, offset, part);
             offset += part;
         }
@@ -2622,6 +2873,7 @@ extern "C"
             *out_bus = 0;
         if (!mixer || !desc || !out_bus)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_bus is null");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_bus_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_BUS_DESC))
             return fail(error, result, "desc %s", apri_struct_check_message(result));
@@ -2652,6 +2904,7 @@ extern "C"
         uint32_t index;
         if (!mixer || bus == 0 || !find_bus(mixer, bus, index) || index == 0)
             return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_bus_destroy", "mixer's control calls");
         Mixer *m = mixer;
         Config &config = m->shadow;
         uint32_t parent = config.buses[index].parent;
@@ -2688,6 +2941,7 @@ extern "C"
     {
         if (!mixer)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_bus_set_parent", "mixer's control calls");
         Mixer *m = mixer;
         uint32_t index, parent_index;
         if (bus == 0 || !find_bus(m, bus, index) || !find_bus(m, parent, parent_index))
@@ -2744,6 +2998,7 @@ extern "C"
             *out_modifier = 0;
         if (!mixer || !desc || !out_modifier)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_modifier is null");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_modifier_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC))
             return fail(error, result, "desc %s", apri_struct_check_message(result));
@@ -2796,6 +3051,7 @@ extern "C"
         uint32_t index, generation;
         if (!mixer || !split_id(modifier, mixer->max_modifiers, index, generation))
             return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_modifier_destroy", "mixer's control calls");
         ModifierConfig &config = mixer->shadow.modifiers[index];
         if (!config.live || config.generation != generation)
             return;
@@ -2828,6 +3084,7 @@ extern "C"
             *out_group = 0;
         if (!mixer || !desc || !out_group)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_group is null");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_concurrency_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC))
             return fail(error, result, "desc %s", apri_struct_check_message(result));
@@ -2858,6 +3115,7 @@ extern "C"
         uint32_t index, generation;
         if (!mixer || !split_id(group, mixer->max_groups, index, generation))
             return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_concurrency_destroy", "mixer's control calls");
         GroupConfig &config = mixer->shadow.groups[index];
         if (!config.live || config.generation != generation)
             return;
@@ -2875,6 +3133,7 @@ extern "C"
             *out_sound = 0;
         if (!mixer || !desc || !out_sound)
             return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_sound is null");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_sound_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC))
             return fail(error, result, "desc %s", apri_struct_check_message(result));
@@ -2895,9 +3154,16 @@ extern "C"
             return fail(error, APRESULT_OUT_OF_MEMORY, "%llu frames don't fit in memory",
                         (unsigned long long)d.frame_count);
 
-        collect_sounds(m);
         uint32_t index = find_slot(0, m->max_sounds, m->sound_cursor,
                                    [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+        if (index == m->max_sounds)
+        {
+            // Every slot taken: those of destroyed sounds the audio thread
+            // has let go of are free for the asking (apaudio.h).
+            collect_sounds(m);
+            index = find_slot(0, m->max_sounds, m->sound_cursor,
+                              [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+        }
         if (index == m->max_sounds)
             return fail(error, APRESULT_LIMIT, "all %u sounds are in use, or destroyed and waiting for a render to "
                         "let go of them", m->max_sounds);
@@ -2936,6 +3202,7 @@ extern "C"
         uint32_t index, generation;
         if (!mixer || !split_id(sound, mixer->max_sounds, index, generation))
             return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_sound_destroy", "mixer's control calls");
         Sound &slot = mixer->sounds[index];
         if (slot.state != SOUND_LIVE || slot.generation != generation)
             return;
@@ -2946,7 +3213,6 @@ extern "C"
         uint64_t sequence = mixer->render_sequence.load();
         slot.retire_sequence = sequence + 2 + (sequence & 1);
         slot.state = SOUND_RETIRED;
-        collect_sounds(mixer);
     }
 
     // ---- Voices -------------------------------------------------------------
@@ -3037,6 +3303,14 @@ extern "C"
                 break;
         }
         return APRESULT_OK;
+    }
+
+    bool apaudio_voice_is_folded(apaudio_mixer mixer, APAUDIO_VOICE voice)
+    {
+        uint32_t index, generation;
+        if (!mixer || !split_id(voice, mixer->record_count, index, generation))
+            return false;
+        return mixer->voices[index].folded_id.load(std::memory_order_acquire) == voice;
     }
 
     bool apaudio_voice_is_live(apaudio_mixer mixer, APAUDIO_VOICE voice)

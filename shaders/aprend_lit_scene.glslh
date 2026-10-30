@@ -26,6 +26,7 @@ const uint APREND_LIT_SCENE_OCCLUSION      = 16u; // ambient_occlusion is this v
 const uint APREND_LIT_SCENE_SPOT_REVERSED  = 32u; // spot shadows rendered near at 1
 const uint APREND_LIT_SCENE_BENT_NORMALS   = 64u; // ambient_occlusion's gba is a bent normal, read for diffuse ambient light
 const uint APREND_LIT_SCENE_POINT_REVERSED = 128u; // point shadows rendered near at 1
+const uint APREND_LIT_SCENE_SCENE_COLOR    = 256u; // scene_color holds the opaque picture behind
 
 layout(set = 0, binding = 0) uniform AprendLitScene {
     mat4 view_projection;
@@ -58,5 +59,6 @@ layout(set = 0, binding = 0) uniform AprendLitScene {
     uint tiles_x;
     uint tiles_y;
     float occlusion_strength;
+    float scene_color_mips;       // scene_color's mip count
     AprendLitLight lights[APREND_LIT_MAX_LIGHTS];
 } u_lit_scene;

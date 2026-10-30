@@ -69,7 +69,7 @@ void aprend_transient_arena_destroy(aprend_instance instance);
  * live. [who] names the command, for the message. */
 bool aprend_transient_span_valid(
     aprend_instance instance,
-    const aprend_transient_span *span,
+    const APREND_TRANSIENT_SPAN *span,
     const char *who);
 
 /* aprend_transient_allocate for staging an upload, which has a buffer of
@@ -81,14 +81,14 @@ bool aprend_transient_allocate_staging(
     aprend_instance instance,
     uint64_t size,
     uint64_t alignment,
-    aprend_transient_span *out_span);
+    APREND_TRANSIENT_SPAN *out_span);
 
 /* A view of [span] with elements of [stride] bytes, for a command list to
  * bind. It is the arena's: destroyed when the span's frame is rewound.
  * [span] has passed aprend_transient_span_valid. */
 SPUDRESULT aprend_transient_span_view(
     aprend_instance instance,
-    const aprend_transient_span *span,
+    const APREND_TRANSIENT_SPAN *span,
     uint64_t stride,
     spudgpu_buffer_view *out_view);
 

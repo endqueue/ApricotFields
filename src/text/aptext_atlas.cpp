@@ -7,6 +7,7 @@
 #include <new>
 #include <stdlib.h>
 #include <string.h>
+#include "../aprioverlap.hpp"
 
 // ApText's glyph generation and atlases (APTEXT_TODO.md, item 3). A glyph's
 // outline comes from HarfBuzz's draw callbacks into an msdfgen shape, in em
@@ -891,6 +892,7 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_get_info", "atlas");
         if (!out_info)
             return APRESULT_INVALID_ARGUMENT;
         if (APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APTEXT_ATLAS_INFO))
@@ -1000,6 +1002,7 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_find_glyph", "atlas");
         if (!face)
             return APRESULT_INVALID_ARGUMENT;
         if (!out_glyph)
@@ -1017,6 +1020,7 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_get_page", "atlas");
         if (!out_pixels)
             return APRESULT_INVALID_ARGUMENT;
         *out_pixels = nullptr;
@@ -1031,6 +1035,7 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_take_dirty", "atlas");
         if (aptext_missing(rects, capacity))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_count)
@@ -1059,6 +1064,7 @@ extern "C"
         aptext_clear_error(out_error);
         if (!atlas)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is null");
+        APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_save", "atlas");
         if (aptext_missing(faces, face_count))
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "faces is null with a face_count of %u", face_count);
         for (uint32_t i = 0; i < face_count; i++)

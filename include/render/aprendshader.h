@@ -20,7 +20,7 @@
  *   vertex bindings they are given against what the shaders declare, and
  *   refuse a pipeline that doesn't match, where before a mismatch was found
  *   on screen. A graphics pipeline can also take its vertex input locations
- *   from the shader's input names (aprend_graphics_pipeline_desc::
+ *   from the shader's input names (APREND_GRAPHICS_PIPELINE_DESC::
  *   _vertex_inputs_by_name).
  * - aprend_binding_layout_create_from_shaders() (aprendpipeline.h) builds a
  *   layout from them, with the names and block members of its bindings,
@@ -36,7 +36,7 @@
  * a pipeline needn't declare what its shaders declare and don't use. When
  * the SPIR-V has more than one entry point for the shader's stage this can't
  * be told from the shader alone, and everything it declares counts as used
- * (aprend_shader_reflection::entry_point is then NULL).
+ * (APREND_SHADER_REFLECTION::entry_point is then NULL).
  *
  * Nothing here compiles a shader or reads GLSL: the input is SPIR-V
  * (APREND_TODO.md, item 22).
@@ -76,22 +76,29 @@ typedef struct aprend_shader_t *aprend_shader;
  *                         SPUDGPU_SHADER_STAGE_COMPUTE and
  *                         SPUDGPU_SHADER_STAGE_MESH are accepted, the last
  *                         only on a device created with
- *                         SPUDGPU_FEATURE_MESH_SHADING (refused, printed,
- *                         without it).
+ *                         SPUDGPU_FEATURE_MESH_SHADING (refused without
+ *                         it).
+ * @param[out] out_shader  Receives the shader; NULL on failure.
+ * @param[out] out_error   Why it failed, when it did. May be NULL.
  *
- * @return The shader, or NULL if @p instance or @p filename is NULL,
- *         @p shader_stage is not accepted, the file doesn't exist or can't be
- *         read, the SPIR-V can't be reflected (see
- *         aprend_shader_create_spirv()), or the shader module can't be
- *         created.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance,
+ *         @p filename or @p out_shader is NULL, @p shader_stage is not
+ *         accepted, the file is not a whole number of SPIR-V words, or the
+ *         SPIR-V can't be reflected (see aprend_shader_create_spirv());
+ *         APRESULT_UNSUPPORTED for a mesh shader on a device without the
+ *         feature; APRESULT_NOT_FOUND if the file doesn't exist;
+ *         APRESULT_IO if it can't be read; APRESULT_OUT_OF_MEMORY; or the
+ *         code for SpudGPU's result if the shader module can't be created.
  *
  * @see aprend_shader_create_spirv()
  * @see aprend_shader_destroy()
  */
-aprend_shader aprend_shader_read_from_file_spirv(
+APRESULT aprend_shader_read_from_file_spirv(
     aprend_instance instance,
     const char *filename,
-    SPUDGPU_SHADER_STAGE shader_stage);
+    SPUDGPU_SHADER_STAGE shader_stage,
+    aprend_shader *out_shader,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Creates a shader from SPIR-V already in memory, such as code embedded
@@ -109,25 +116,32 @@ aprend_shader aprend_shader_read_from_file_spirv(
  *                         SPUDGPU_SHADER_STAGE_COMPUTE and
  *                         SPUDGPU_SHADER_STAGE_MESH are accepted, the last
  *                         only on a device created with
- *                         SPUDGPU_FEATURE_MESH_SHADING (refused, printed,
- *                         without it).
+ *                         SPUDGPU_FEATURE_MESH_SHADING (refused without
+ *                         it).
+ * @param[out] out_shader  Receives the shader; NULL on failure.
+ * @param[out] out_error   Why it failed, when it did. May be NULL.
  *
- * @return The shader, or NULL if @p instance or @p spirv_code is NULL,
- *         @p spirv_size is 0 or not a multiple of 4, @p shader_stage is not
- *         accepted, the shader module can't be created, or the SPIR-V can't
- *         be reflected: it isn't valid SPIR-V, it has no entry point for
- *         @p shader_stage, or its entry point uses a resource Aprend has no
- *         binding for (a texel buffer, an input attachment, an acceleration
- *         structure, an array of descriptors without a size, an image of a
- *         dimension no texture view has). Each is printed.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance,
+ *         @p spirv_code or @p out_shader is NULL, @p spirv_size is 0 or not
+ *         a multiple of 4, @p shader_stage is not accepted, or the SPIR-V
+ *         can't be reflected: it isn't valid SPIR-V, it has no entry point
+ *         for @p shader_stage, or its entry point uses a resource Aprend has
+ *         no binding for (a texel buffer, an input attachment, an
+ *         acceleration structure, an array of descriptors without a size, an
+ *         image of a dimension no texture view has); APRESULT_UNSUPPORTED
+ *         for a mesh shader on a device without the feature;
+ *         APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's result if the
+ *         shader module can't be created.
  *
  * @see aprend_shader_destroy()
  */
-aprend_shader aprend_shader_create_spirv(
+APRESULT aprend_shader_create_spirv(
     aprend_instance instance,
     const void *spirv_code,
     uint64_t spirv_size,
-    SPUDGPU_SHADER_STAGE shader_stage);
+    SPUDGPU_SHADER_STAGE shader_stage,
+    aprend_shader *out_shader,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a shader.
@@ -164,12 +178,17 @@ void aprend_shader_destroy(aprend_shader shader);
  * Aprend needs it itself) and destroyed with the instance. Don't pass it to
  * aprend_shader_destroy().
  *
- * @param[in] instance Instance the shader is of.
+ * @param[in]  instance   Instance the shader is of.
+ * @param[out] out_shader Receives the shader; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return The shader, or NULL if @p instance is NULL or it can't be
- *         created (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_shader is NULL; or the code it couldn't be created with.
  */
-aprend_shader aprend_get_fullscreen_vertex_shader(aprend_instance instance);
+APRESULT aprend_get_fullscreen_vertex_shader(
+    aprend_instance instance,
+    aprend_shader *out_shader,
+    APREND_ERROR *out_error);
 
 /**
  * @brief The kind of number a shader reads or writes.
@@ -191,7 +210,7 @@ enum {
 };
 
 /**
- * @brief For aprend_shader_member::type: a member whose type has no
+ * @brief For APREND_SHADER_MEMBER::type: a member whose type has no
  * APREND_UNIFORM_TYPE, such as a double, a non-square matrix or a 16-bit
  * value. It is still listed, with its offset and size, and is written as
  * bytes (aprend_material_set_uniform_bytes()).
@@ -207,8 +226,8 @@ enum {
  * member that is an array of a scalar, vector or matrix is one entry with
  * `array_count` elements.
  */
-/* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
-typedef struct aprend_shader_member {
+/* Frozen: an array element of APREND_SHADER_REFLECTION. It never changes; a new need gets a new type. */
+typedef struct APREND_SHADER_MEMBER {
 	/**
 	 * The member's path inside its block, as GLSL would write it after the
 	 * block's name: `color`, `light.position`, `lights[2].position`. The
@@ -240,18 +259,18 @@ typedef struct aprend_shader_member {
 	/**
 	 * Whether the entry point reads or writes the member: some part of the
 	 * top-level member of its block it belongs to. Every member, if the
-	 * entry point can't be told (aprend_shader_reflection::entry_point is
+	 * entry point can't be told (APREND_SHADER_REFLECTION::entry_point is
 	 * NULL).
 	 */
 	bool used;
-} aprend_shader_member;
+} APREND_SHADER_MEMBER;
 
 /**
  * @brief One descriptor binding a shader reads or writes: `layout(set = S,
  * binding = B)` in GLSL.
  */
-/* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
-typedef struct aprend_shader_resource {
+/* Frozen: an array element of APREND_SHADER_REFLECTION. It never changes; a new need gets a new type. */
+typedef struct APREND_SHADER_RESOURCE {
 	/**
 	 * The variable's name: `u_Albedo`, or a block's instance name
 	 * (`uniform Material { ... } u_Material` is `u_Material`). A block with no
@@ -283,7 +302,7 @@ typedef struct aprend_shader_resource {
 	 * one of its elements; 0 otherwise.
 	 */
 	uint32_t runtime_array_stride;
-	/** For a block, where its members start in aprend_shader_reflection::members. */
+	/** For a block, where its members start in APREND_SHADER_REFLECTION::members. */
 	uint32_t first_member;
 	/** For a block, how many members it has there; 0 for anything else. */
 	uint32_t member_count;
@@ -309,13 +328,13 @@ typedef struct aprend_shader_resource {
 	bool read_only;
 	/** Whether the entry point uses the binding (see "used" at the top of this header). */
 	bool used;
-} aprend_shader_resource;
+} APREND_SHADER_RESOURCE;
 
 /**
  * @brief One input of a vertex shader: `layout(location = L) in ...`.
  */
-/* Frozen: an array element of aprend_shader_reflection. It never changes; a new need gets a new type. */
-typedef struct aprend_shader_input {
+/* Frozen: an array element of APREND_SHADER_REFLECTION. It never changes; a new need gets a new type. */
+typedef struct APREND_SHADER_INPUT {
 	/** The variable's name. The shader's own string; not NULL. */
 	const char *name;
 	/** Its first location. */
@@ -331,14 +350,14 @@ typedef struct aprend_shader_input {
 	uint32_t components;
 	/** Whether the entry point reads it. */
 	bool used;
-} aprend_shader_input;
+} APREND_SHADER_INPUT;
 
 /**
  * @brief What one shader's SPIR-V declares. Read when the shader is created
  * and the shader's for its lifetime.
  */
 /* Frozen: Aprend's own, read through the pointer aprend_shader_get_reflection() returns; a new need gets a new getter. */
-typedef struct aprend_shader_reflection {
+typedef struct APREND_SHADER_REFLECTION {
 	/** The shader's stage. */
 	SPUDGPU_SHADER_STAGE stage;
 	/**
@@ -348,15 +367,15 @@ typedef struct aprend_shader_reflection {
 	 */
 	const char *entry_point;
 	/** The descriptor bindings, ordered by set and then binding. */
-	const aprend_shader_resource *resources;
+	const APREND_SHADER_RESOURCE *resources;
 	/** Number of elements in #resources. */
 	uint32_t resource_count;
 	/** The members of every block, the resources' and the push constant block's. */
-	const aprend_shader_member *members;
+	const APREND_SHADER_MEMBER *members;
 	/** Number of elements in #members. */
 	uint32_t member_count;
 	/** A vertex shader's inputs, ordered by location; none for any other stage. */
-	const aprend_shader_input *inputs;
+	const APREND_SHADER_INPUT *inputs;
 	/** Number of elements in #inputs. */
 	uint32_t input_count;
 	/**
@@ -374,7 +393,7 @@ typedef struct aprend_shader_reflection {
 	/**
 	 * Where the last member the entry point uses ends: a range for this
 	 * stage has to reach there. Each member's bytes in between are covered
-	 * only if the member is used (aprend_shader_member::used), which is what
+	 * only if the member is used (APREND_SHADER_MEMBER::used), which is what
 	 * lets two stages share one block and each take part of it.
 	 */
 	uint32_t push_constant_end;
@@ -393,7 +412,7 @@ typedef struct aprend_shader_reflection {
 	 * constant.
 	 */
 	uint32_t workgroup_size[3];
-} aprend_shader_reflection;
+} APREND_SHADER_REFLECTION;
 
 /**
  * @brief Gets what a shader's SPIR-V declares.
@@ -403,20 +422,20 @@ typedef struct aprend_shader_reflection {
  * @return The reflection, owned by the shader and valid until it is
  *         destroyed; NULL if @p shader is NULL.
  */
-const aprend_shader_reflection *aprend_shader_get_reflection(aprend_shader shader);
+const APREND_SHADER_REFLECTION *aprend_shader_get_reflection(aprend_shader shader);
 
 /**
  * @brief Finds one of a shader's resources by name.
  *
  * @param[in] shader Shader to search.
- * @param[in] name   The resource's name (aprend_shader_resource::name), or
- *                   a block's name (aprend_shader_resource::block_name).
+ * @param[in] name   The resource's name (APREND_SHADER_RESOURCE::name), or
+ *                   a block's name (APREND_SHADER_RESOURCE::block_name).
  *                   Case-sensitive.
  *
  * @return The first resource of that name, owned by the shader; NULL if
  *         there is none, or if an argument is NULL.
  */
-const aprend_shader_resource *aprend_shader_find_resource(
+const APREND_SHADER_RESOURCE *aprend_shader_find_resource(
     aprend_shader shader,
     const char *name);
 

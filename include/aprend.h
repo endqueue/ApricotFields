@@ -1,10 +1,10 @@
-#ifndef APRICOTFIELDS_H
-#define APRICOTFIELDS_H
+#ifndef APREND_H
+#define APREND_H
 
 /**
- * @file apricotfields.h
- * @brief Every Aprend header. The other modules are not included here:
- * include their own headers.
+ * @file aprend.h
+ * @brief Aprend's umbrella: every header in `render/`. ApricotFields'
+ * other modules are not included here; include their own headers.
  */
 #include "render/aprendcontext.h"
 #include "render/aprendbuffers.h"
@@ -21,15 +21,6 @@
 #include "render/aprenddrawlist.h"
 #include "render/aprendlit.h"
 #include "render/aprendpost.h"
+#include "render/aprendbatch.h"
 
-/*
-#if __cplusplus
-extern "C" {
-#endif
-
-#if __cplusplus
-}
-#endif
-*/
-
-#endif // APRICOTFIELDS_H
+#endif // APREND_H

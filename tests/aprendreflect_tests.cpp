@@ -34,15 +34,15 @@ static bool reflect(const uint32_t (&words)[N], SPUDGPU_SHADER_STAGE stage, apre
     return aprend_reflect_spirv(words, N, stage, out, error);
 }
 
-static const aprend_shader_resource *find_resource(const aprend_reflection_store &store, const char *name)
+static const APREND_SHADER_RESOURCE *find_resource(const aprend_reflection_store &store, const char *name)
 {
-    for (const aprend_shader_resource &resource : store.resources)
+    for (const APREND_SHADER_RESOURCE &resource : store.resources)
         if (strcmp(resource.name, name) == 0)
             return &resource;
     return nullptr;
 }
 
-static const aprend_shader_member *find_member(const aprend_reflection_store &store, const aprend_shader_resource *resource,
+static const APREND_SHADER_MEMBER *find_member(const aprend_reflection_store &store, const APREND_SHADER_RESOURCE *resource,
                                                const char *name)
 {
     if (!resource)
@@ -53,9 +53,9 @@ static const aprend_shader_member *find_member(const aprend_reflection_store &st
     return nullptr;
 }
 
-static const aprend_shader_input *find_input(const aprend_reflection_store &store, const char *name)
+static const APREND_SHADER_INPUT *find_input(const aprend_reflection_store &store, const char *name)
 {
-    for (const aprend_shader_input &input : store.inputs)
+    for (const APREND_SHADER_INPUT &input : store.inputs)
         if (strcmp(input.name, name) == 0)
             return &input;
     return nullptr;
@@ -74,7 +74,7 @@ static void test_vertex_shader()
 
     // A uniform block, with std140's offsets: a mat3 takes 48 bytes, a vec3
     // and a float share 16.
-    const aprend_shader_resource *camera = find_resource(store, "u_Camera");
+    const APREND_SHADER_RESOURCE *camera = find_resource(store, "u_Camera");
     CHECK(camera);
     if (camera)
     {
@@ -86,16 +86,16 @@ static void test_vertex_shader()
         CHECK(camera->used);
         CHECK(camera->member_count == 4);
     }
-    const aprend_shader_member *normal_matrix = find_member(store, camera, "normal_matrix");
+    const APREND_SHADER_MEMBER *normal_matrix = find_member(store, camera, "normal_matrix");
     CHECK(normal_matrix && normal_matrix->type == APREND_UNIFORM_TYPE_MAT3);
     CHECK(normal_matrix && normal_matrix->offset == 64 && normal_matrix->size == 48 && normal_matrix->matrix_stride == 16);
-    const aprend_shader_member *eye = find_member(store, camera, "eye");
+    const APREND_SHADER_MEMBER *eye = find_member(store, camera, "eye");
     CHECK(eye && eye->type == APREND_UNIFORM_TYPE_VEC3 && eye->offset == 112);
-    const aprend_shader_member *exposure = find_member(store, camera, "exposure");
+    const APREND_SHADER_MEMBER *exposure = find_member(store, camera, "exposure");
     CHECK(exposure && exposure->type == APREND_UNIFORM_TYPE_FLOAT && exposure->offset == 124);
 
     // Declared and not used: listed, and marked so.
-    const aprend_shader_resource *unused = find_resource(store, "u_Unused");
+    const APREND_SHADER_RESOURCE *unused = find_resource(store, "u_Unused");
     CHECK(unused && !unused->used && unused->set == 1);
 
     // The push constant block starts at its first member, not at 0.
@@ -107,12 +107,12 @@ static void test_vertex_shader()
 
     // Inputs in location order; a mat4 takes four.
     CHECK(store.view.input_count == 5);
-    const aprend_shader_input *model = find_input(store, "in_model");
+    const APREND_SHADER_INPUT *model = find_input(store, "in_model");
     CHECK(model && model->location == 2 && model->location_count == 4 && model->components == 4);
     CHECK(model && model->scalar_type == APREND_SHADER_SCALAR_TYPE_FLOAT);
-    const aprend_shader_input *ids = find_input(store, "in_ids");
+    const APREND_SHADER_INPUT *ids = find_input(store, "in_ids");
     CHECK(ids && ids->location == 6 && ids->scalar_type == APREND_SHADER_SCALAR_TYPE_INT && ids->components == 2);
-    const aprend_shader_input *unused_input = find_input(store, "in_unused");
+    const APREND_SHADER_INPUT *unused_input = find_input(store, "in_unused");
     CHECK(unused_input && !unused_input->used);
     for (uint32_t i = 1; i < store.view.input_count; ++i)
         CHECK(store.view.inputs[i - 1].location < store.view.inputs[i].location);
@@ -129,42 +129,42 @@ static void test_fragment_shader()
     CHECK(store.view.input_count == 0);
 
     // An array of structs is its elements' members.
-    const aprend_shader_resource *material = find_resource(store, "u_Material");
+    const APREND_SHADER_RESOURCE *material = find_resource(store, "u_Material");
     CHECK(material && material->set == 1 && material->binding == 0 && material->block_size == 224);
-    const aprend_shader_member *light_color = find_member(store, material, "lights[1].color");
+    const APREND_SHADER_MEMBER *light_color = find_member(store, material, "lights[1].color");
     CHECK(light_color && light_color->type == APREND_UNIFORM_TYPE_VEC4 && light_color->offset == 80);
-    const aprend_shader_member *radius = find_member(store, material, "lights[0].radius");
+    const APREND_SHADER_MEMBER *radius = find_member(store, material, "lights[0].radius");
     CHECK(radius && radius->offset == 44);
     // A mat2's columns are 16 apart in std140; an array of floats' elements too.
-    const aprend_shader_member *uv = find_member(store, material, "uv_transform");
+    const APREND_SHADER_MEMBER *uv = find_member(store, material, "uv_transform");
     CHECK(uv && uv->type == APREND_UNIFORM_TYPE_MAT2 && uv->offset == 96 && uv->size == 32 && uv->matrix_stride == 16);
-    const aprend_shader_member *weights = find_member(store, material, "weights");
+    const APREND_SHADER_MEMBER *weights = find_member(store, material, "weights");
     CHECK(weights && weights->array_count == 3 && weights->array_stride == 16 && weights->offset == 128);
-    const aprend_shader_member *rm = find_member(store, material, "rm");
+    const APREND_SHADER_MEMBER *rm = find_member(store, material, "rm");
     CHECK(rm && rm->row_major && rm->type == APREND_UNIFORM_TYPE_MAT3 && rm->offset == 176);
 
     // Images: their type, shape and what they read as.
-    const aprend_shader_resource *albedo = find_resource(store, "u_Albedo");
+    const APREND_SHADER_RESOURCE *albedo = find_resource(store, "u_Albedo");
     CHECK(albedo && albedo->type == SPUDGPU_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && albedo->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D);
     CHECK(albedo && albedo->image_scalar_type == APREND_SHADER_SCALAR_TYPE_FLOAT && !albedo->image_depth_compare);
-    const aprend_shader_resource *env = find_resource(store, "u_Env");
+    const APREND_SHADER_RESOURCE *env = find_resource(store, "u_Env");
     CHECK(env && env->image_shape == APREND_TEXTURE_VIEW_SHAPE_CUBE);
-    const aprend_shader_resource *layers = find_resource(store, "u_Layers");
+    const APREND_SHADER_RESOURCE *layers = find_resource(store, "u_Layers");
     CHECK(layers && layers->type == SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE && layers->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY);
-    const aprend_shader_resource *sampler = find_resource(store, "u_Sampler");
+    const APREND_SHADER_RESOURCE *sampler = find_resource(store, "u_Sampler");
     CHECK(sampler && sampler->type == SPUDGPU_DESCRIPTOR_TYPE_SAMPLER && sampler->image_shape == APREND_TEXTURE_VIEW_SHAPE_NONE);
-    const aprend_shader_resource *stencil = find_resource(store, "u_Stencil");
+    const APREND_SHADER_RESOURCE *stencil = find_resource(store, "u_Stencil");
     CHECK(stencil && stencil->image_scalar_type == APREND_SHADER_SCALAR_TYPE_UINT);
-    const aprend_shader_resource *shadow = find_resource(store, "u_Shadow");
+    const APREND_SHADER_RESOURCE *shadow = find_resource(store, "u_Shadow");
     CHECK(shadow && shadow->image_depth_compare);
-    const aprend_shader_resource *textures = find_resource(store, "u_Textures");
+    const APREND_SHADER_RESOURCE *textures = find_resource(store, "u_Textures");
     CHECK(textures && textures->count == 4 && textures->binding == 7);
 
     // In set and binding order.
     for (uint32_t i = 1; i < store.view.resource_count; ++i)
     {
-        const aprend_shader_resource &a = store.view.resources[i - 1];
-        const aprend_shader_resource &b = store.view.resources[i];
+        const APREND_SHADER_RESOURCE &a = store.view.resources[i - 1];
+        const APREND_SHADER_RESOURCE &b = store.view.resources[i];
         CHECK(a.set < b.set || (a.set == b.set && a.binding < b.binding));
     }
 }
@@ -178,13 +178,13 @@ static void test_compute_shader()
     CHECK(store.view.workgroup_size[0] == 8 && store.view.workgroup_size[1] == 4 && store.view.workgroup_size[2] == 1);
 
     // A storage block that ends in an array without a size.
-    const aprend_shader_resource *items = find_resource(store, "items");
+    const APREND_SHADER_RESOURCE *items = find_resource(store, "items");
     CHECK(items && items->type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER && items->read_only);
     CHECK(items && items->block_size == 16 && items->runtime_array_stride == 16);
-    const aprend_shader_member *list = find_member(store, items, "items");
+    const APREND_SHADER_MEMBER *list = find_member(store, items, "items");
     CHECK(list && list->array_count == 0 && list->array_stride == 16 && list->offset == 16);
 
-    const aprend_shader_resource *out = find_resource(store, "u_Out");
+    const APREND_SHADER_RESOURCE *out = find_resource(store, "u_Out");
     CHECK(out && out->type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE && out->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D);
 }
 
@@ -194,15 +194,15 @@ static void test_nested_arrays()
     aprend_reflection_store store;
     std::string error;
     CHECK(reflect(spirv_nested_frag, SPUDGPU_SHADER_STAGE_FRAGMENT, &store, &error));
-    const aprend_shader_resource *nested = find_resource(store, "u_Nested");
+    const APREND_SHADER_RESOURCE *nested = find_resource(store, "u_Nested");
     CHECK(nested && nested->block_size == 192);
     // Structs in arrays in structs in arrays, each element listed.
-    const aprend_shader_member *b = find_member(store, nested, "outers[1].inner[1].b");
+    const APREND_SHADER_MEMBER *b = find_member(store, nested, "outers[1].inner[1].b");
     CHECK(b && b->type == APREND_UNIFORM_TYPE_VEC2 && b->offset == 72);
-    const aprend_shader_member *c = find_member(store, nested, "outers[1].c");
+    const APREND_SHADER_MEMBER *c = find_member(store, nested, "outers[1].c");
     CHECK(c && c->offset == 80);
     // An array of arrays of a vector: each outer element is an array.
-    const aprend_shader_member *grid1 = find_member(store, nested, "grid[1]");
+    const APREND_SHADER_MEMBER *grid1 = find_member(store, nested, "grid[1]");
     CHECK(grid1 && grid1->offset == 144 && grid1->array_count == 3 && grid1->array_stride == 16);
     CHECK(nested && nested->member_count == 12);
 }
@@ -259,7 +259,7 @@ static void test_write_member()
     aprend_reflection_store store;
     std::string error;
     CHECK(reflect(spirv_test_frag, SPUDGPU_SHADER_STAGE_FRAGMENT, &store, &error));
-    const aprend_shader_resource *material = find_resource(store, "u_Material");
+    const APREND_SHADER_RESOURCE *material = find_resource(store, "u_Material");
     if (!material)
         return;
     uint8_t block[224];
@@ -267,7 +267,7 @@ static void test_write_member()
     // An array of floats, tightly packed by the caller, 16 apart in the block.
     memset(block, 0xAB, sizeof(block));
     const float weights[3] = {1.0f, 2.0f, 3.0f};
-    const aprend_shader_member *w = find_member(store, material, "weights");
+    const APREND_SHADER_MEMBER *w = find_member(store, material, "weights");
     aprend_write_block_member(*w, block, weights);
     for (int i = 0; i < 3; ++i)
     {
@@ -279,7 +279,7 @@ static void test_write_member()
 
     // A column-major mat2: two columns of 8, each 16 apart.
     const float m2[4] = {1, 2, 3, 4};
-    const aprend_shader_member *uv = find_member(store, material, "uv_transform");
+    const APREND_SHADER_MEMBER *uv = find_member(store, material, "uv_transform");
     aprend_write_block_member(*uv, block, m2);
     float column1[2];
     memcpy(column1, block + 96 + 16, 8);
@@ -291,7 +291,7 @@ static void test_write_member()
     for (int c = 0; c < 3; ++c)
         for (int r = 0; r < 3; ++r)
             m3[c * 3 + r] = (float)(10 * c + r);
-    const aprend_shader_member *rm = find_member(store, material, "rm");
+    const APREND_SHADER_MEMBER *rm = find_member(store, material, "rm");
     aprend_write_block_member(*rm, block, m3);
     for (int r = 0; r < 3; ++r)
         for (int c = 0; c < 3; ++c)

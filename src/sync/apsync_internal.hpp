@@ -5,6 +5,7 @@
 // The wire format, and the objects behind apsync_session.
 
 #include "sync/apsyncnet.h"
+#include "../aprioverlap.hpp"
 #include <spudnet.h>
 
 #include <atomic>
@@ -309,6 +310,8 @@ struct apsync_session_t
     APSYNC_PEER next_peer{APSYNC_PEER_HOST + 1};
     uint64_t sequence{0}; // the last ordered message numbered
     std::deque<apsync_log_entry> log;
+    // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
+    apri_overlap overlap{};
 };
 
 #endif // SPUDNET_EXT_TCP

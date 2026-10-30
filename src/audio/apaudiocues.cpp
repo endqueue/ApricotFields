@@ -1,4 +1,5 @@
 #include "audio/apaudiocues.h"
+#include "apaudio_internal.hpp"
 #include "../apristructbase.hpp"
 
 #include <glaze/glaze.hpp>
@@ -18,6 +19,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "../aprioverlap.hpp"
 
 // ApAudio's cues (apaudiocues.h): a table of cue names, what the loaded
 // banks define for each as the mixer's objects, and the sustained playings.
@@ -866,6 +868,7 @@ extern "C"
     {
         if (!cues)
             return;
+        APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_clear_banks", "mixer's control calls");
         // Every cue is undefined under one hold of cue_mutex, so a play sees
         // every bank or none of them.
         uint32_t count = 0;
@@ -902,6 +905,7 @@ extern "C"
     {
         if (!cues)
             return;
+        APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_update", "mixer's control calls");
         std::lock_guard<std::mutex> lock(cues->playing_mutex);
         for (playing_t &playing : cues->playings)
             if (playing.voice && !apaudio_voice_is_live(cues->mixer, playing.voice))
@@ -914,6 +918,7 @@ extern "C"
             error->message[0] = '\0';
         if (!cues || !source || !source->get_size || !source->read)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_load_bank", "mixer's control calls");
         uint64_t total = 0;
         return load_bank(
             cues,
@@ -947,6 +952,7 @@ extern "C"
             error->message[0] = '\0';
         if (!cues || !source)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_load_zip_bank", "mixer's control calls");
         archive_t archive;
         if (aparchive_codecs_create(&archive.codecs) != APRESULT_OK ||
             aparchive_codecs_add_deflate(archive.codecs) != APRESULT_OK)
@@ -966,13 +972,6 @@ extern "C"
         APRESULT opened = aparchive_reader_open(&desc, &archive.reader, &opening);
         if (opened == APRESULT_OUT_OF_MEMORY)
             return APRESULT_OUT_OF_MEMORY;
-        if (opened == APRESULT_NOT_IMPLEMENTED)
-        {
-            if (error)
-                snprintf(error->message, sizeof(error->message),
-                         "ZIP banks can't be read until ApArchive's reader exists: %s", opening.message);
-            return APRESULT_NOT_IMPLEMENTED;
-        }
         if (opened != APRESULT_OK)
         {
             if (error)
@@ -1046,6 +1045,7 @@ extern "C"
     {
         if (!cues || bus_index >= cues->buses.size())
             return 0;
+        APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_get_bus_ducking", "mixer's control calls");
         return cues->buses[bus_index].ducking;
     }
 

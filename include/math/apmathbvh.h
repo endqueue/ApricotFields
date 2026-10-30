@@ -4,7 +4,8 @@
  * many meshes, in double precision.
  *
  * Built in src/math/apmathbvh.cpp, with headless tests in
- * tests/apmathbvh_tests.c. apricotfields.h doesn't include it yet.
+ * tests/apmathbvh_tests.c. It is not part of
+ * aprend.h, which is Aprend's alone.
  *
  * Two levels of bounding volume hierarchy (BVH), so a cast costs about the
  * logarithm of the triangle count and of the mesh count rather than their

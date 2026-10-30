@@ -189,7 +189,42 @@ typedef struct APTEXT_FACE_DESC {
 	/** Copy #data into the face, so the caller's bytes need only last the
 	 * call. */
 	bool copy_data;
+	/** A variable font's place on its axes (weight, width, slant...), or
+	 * NULL for the font's default. Every axis named must be one of the
+	 * font's (aptext_face_get_axis()), once, at a value within its range;
+	 * axes left out keep their defaults. Shaping, metrics and generated
+	 * glyphs all follow it, and the face's fingerprint changes with it, so
+	 * a saved atlas is never taken for another instance. Only read during
+	 * the call. */
+	const struct APTEXT_VARIATION *variations;
+	/** How many #variations there are; 0 for none. */
+	uint32_t variation_count;
 } APTEXT_FACE_DESC;
+
+/**
+ * @brief One axis of a variable font set to a value.
+ */
+/* Frozen: an element of the array APTEXT_FACE_DESC's `variations` names. It never changes; a new need gets a new type. */
+typedef struct APTEXT_VARIATION {
+	/** The axis's four-letter tag, as OpenType packs it: 'w' 'g' 'h' 't'
+	 * is 0x77676874, weight. */
+	uint32_t tag;
+	/** The value, in the axis's own units (weight 100 to 900, width a
+	 * percentage). Finite. */
+	float value;
+} APTEXT_VARIATION;
+
+/**
+ * @brief One axis of a variable font, as the font defines it.
+ */
+/* Frozen: filled whole by aptext_face_get_axis(). It never changes; a new need gets a new type. */
+typedef struct APTEXT_AXIS {
+	uint32_t tag;        /**< Its four-letter tag, packed as APTEXT_VARIATION's. */
+	float min_value;     /**< The least value it takes. */
+	float default_value; /**< Its value when none is given. */
+	float max_value;     /**< The most it takes. */
+	bool hidden;         /**< The font asks that it not be offered to people. */
+} APTEXT_AXIS;
 
 /**
  * @brief Creates an outline face from font bytes.
@@ -359,6 +394,117 @@ APRESULT aptext_face_create_hershey(const APTEXT_HERSHEY_FACE_DESC *desc, aptext
                                     APTEXT_ERROR *out_error);
 
 /**
+ * @brief Configuration descriptor for a single-stroke face read from an
+ * LFF font (LibreCAD's format).
+ *
+ * LibreCAD's own fonts are under the GPL: a caller reads fonts its users
+ * have, and ships none of them. The format read is text, UTF-8: lines
+ * starting with '#' are the header ("# LetterSpacing: 3", "# WordSpacing:
+ * 6.75"; other keys are read past); a glyph starts with a line
+ * "[hhhh] c", its codepoint in hexadecimal; each line after it until a
+ * blank line is either a polyline - vertices "x,y" separated by ';', a
+ * vertex "x,y,Ab" reaching it by an arc of bulge b (the tangent of a
+ * quarter of its angle, positive anticlockwise) - or "Chhhh", every
+ * polyline of the glyph with that codepoint, which must come earlier.
+ * Coordinates are y up, the pen at (0, 0) on the baseline. A glyph
+ * advances by its rightmost x plus the letter spacing; the space advances
+ * by the word spacing. Arcs become points no further than `arc_tolerance`
+ * from the arc, by halving it, so the result is the same on every
+ * platform.
+ */
+typedef struct APTEXT_LFF_FACE_DESC {
+	/** This struct's type, APRI_STRUCT_TYPE_APTEXT_LFF_FACE_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** The file's bytes. Never NULL. Only read during the call. */
+	const void *data;
+	/** The size of #data in bytes; not 0. */
+	uint64_t data_size;
+	/** How many of the file's units make an em: finite and above 0 (9 for
+	 * LibreCAD's fonts, whose capitals are 9 high, makes the em their
+	 * height). */
+	float units_per_em;
+	/** How far an arc's points may stray from it, in em units: finite and
+	 * above 0. */
+	float arc_tolerance;
+	/** The face's vertical metrics, in em units. */
+	APTEXT_STROKE_METRICS metrics;
+} APTEXT_LFF_FACE_DESC;
+
+/**
+ * @brief Creates a single-stroke face from an LFF font.
+ *
+ * @param[in]  desc      Face configuration. Only read during the call.
+ * @param[out] out_face  The new face; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a NULL argument, a
+ *         NULL `data`, a `data_size` of 0 or a value a field refuses; a
+ *         struct-base code for a wrong `base`; APRESULT_APTEXT_NOT_A_FONT
+ *         for a line that isn't LFF, a glyph twice, a reference to a glyph
+ *         not read yet, or a file with no glyph; or APRESULT_OUT_OF_MEMORY.
+ * @see aptext_face_destroy()
+ */
+APRESULT aptext_face_create_lff(const APTEXT_LFF_FACE_DESC *desc, aptext_face *out_face, APTEXT_ERROR *out_error);
+
+/**
+ * @brief Configuration descriptor for a single-stroke face read from an
+ * SHX font (AutoCAD's compiled shapes).
+ *
+ * The format is reverse-engineered and its well-known fonts are
+ * Autodesk's: a caller reads its users' own files and ships none. Read are
+ * "AutoCAD-86 shapes 1.0" files (shape numbers as codepoints, which are
+ * Unicode below 128 and the file's own code page above, so the caller
+ * names that page's codepoints in `high_codepoints`) and "AutoCAD-86
+ * unifont 1.0" (shape numbers are Unicode). Big fonts are refused. Every
+ * shape command is read: vectors, pen up and down, scale, push and pop,
+ * subshapes, displacements, octant, fractional and bulge arcs, and the
+ * vertical-text skip (horizontal text is laid out). One em is the font's
+ * "above" height (CAD's text height); a glyph advances by where its pen
+ * ends. Arcs become points as LFF's do; a fractional arc's ends need sines,
+ * worked out here by series, not by the platform's library, so the result
+ * is the same everywhere.
+ */
+typedef struct APTEXT_SHX_FACE_DESC {
+	/** This struct's type, APRI_STRUCT_TYPE_APTEXT_SHX_FACE_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** The file's bytes. Never NULL. Only read during the call. */
+	const void *data;
+	/** The size of #data in bytes; not 0. */
+	uint64_t data_size;
+	/** For a shapes 1.0 file: the codepoint shape number 128 + i draws is
+	 * `high_codepoints[i]`; NULL for a file whose shapes stop at 127, or to
+	 * leave those above out. Not read for a unifont. */
+	const uint32_t *high_codepoints;
+	/** How many #high_codepoints there are (at most 65,408); 0 for none. */
+	uint32_t high_codepoint_count;
+	/** How far an arc's points may stray from it, in em units: finite and
+	 * above 0. */
+	float arc_tolerance;
+	/** The space between lines, in em units: finite, not negative. The
+	 * ascender is 1 (the above height) and the descender the file's
+	 * "below", both from the file. */
+	float line_gap;
+} APTEXT_SHX_FACE_DESC;
+
+/**
+ * @brief Creates a single-stroke face from an SHX font.
+ *
+ * @param[in]  desc      Face configuration. Only read during the call.
+ * @param[out] out_face  The new face; NULL on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a NULL argument, a
+ *         NULL `data`, a `data_size` of 0 or a value a field refuses; a
+ *         struct-base code for a wrong `base`; APRESULT_UNSUPPORTED for a
+ *         big font; APRESULT_APTEXT_NOT_A_FONT for a file that isn't SHX, a
+ *         shape cut short or running past its file, a command it doesn't
+ *         know, subshapes nested past 8 deep, a stack pushed past 16, or no
+ *         shape that draws a codepoint; or APRESULT_OUT_OF_MEMORY.
+ * @see aptext_face_destroy()
+ */
+APRESULT aptext_face_create_shx(const APTEXT_SHX_FACE_DESC *desc, aptext_face *out_face, APTEXT_ERROR *out_error);
+
+/**
  * @brief What a face says about itself. Metrics are in em units, font
  * space (y up).
  */
@@ -413,6 +559,34 @@ typedef struct APTEXT_FACE_METRICS {
  *         struct-base code for a wrong `base`.
  */
 APRESULT aptext_face_get_metrics(aptext_face face, APTEXT_FACE_METRICS *out_metrics);
+
+/**
+ * @brief How many variation axes a face has.
+ *
+ * Thread: only reads the face; may overlap any other call that only reads
+ * it, from any thread.
+ *
+ * @param[in] face The face.
+ *
+ * @return The count: 0 for a font that isn't variable, a stroke face, or
+ *         a NULL @p face.
+ */
+uint32_t aptext_face_get_axis_count(aptext_face face);
+
+/**
+ * @brief One of a face's variation axes, as its font defines it.
+ *
+ * Thread: only reads the face; may overlap any other call that only reads
+ * it, from any thread.
+ *
+ * @param[in]  face     The face.
+ * @param[in]  index    From 0, below aptext_face_get_axis_count().
+ * @param[out] out_axis The axis.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a NULL argument; or
+ *         APRESULT_NOT_FOUND for an index past the last axis.
+ */
+APRESULT aptext_face_get_axis(aptext_face face, uint32_t index, APTEXT_AXIS *out_axis);
 
 /**
  * @brief Finds the glyph a face maps a codepoint to, through its character

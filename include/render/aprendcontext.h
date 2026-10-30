@@ -29,8 +29,9 @@
  * - the count of submissions and the release of what was destroyed: every
  *   call that submits, aprend_instance_next_frame() and
  *   aprend_instance_wait_idle();
- * - the frame index: aprend_instance_next_frame(), a buffer set's update
- *   calls, aprend_command_list_compile() and aprend_command_list_submit();
+ * - the frame index: aprend_instance_next_frame(), the buffer writes (of a
+ *   buffer of per-frame copies), aprend_command_list_compile() and
+ *   aprend_command_list_submit();
  * - the command memory of the current frame (a SpudGPU allocator and the
  *   lists recorded from it), which every recording of the instance is made
  *   in: aprend_command_list_compile() and _submit(), the texture update,
@@ -72,7 +73,7 @@
  *   calls ask for (a view before its texture, a set before its layout) is
  *   kept by whoever makes them.
  * - Recording into different command lists, one caller to a list, with
- *   aprend_send_command() and aprend_command_list_reset(), and filling
+ *   aprend_command_list_send() and aprend_command_list_reset(), and filling
  *   different draw lists with aprend_draw_list_add() and
  *   aprend_draw_list_reset() (aprenddrawlist.h). They write the list and
  *   nothing else. Nothing may destroy what the commands name meanwhile.
@@ -95,21 +96,14 @@
  * call the caller makes, never behind its back.
  *
  * Two overlapping calls are a data race, not a failure the call reports. A
- * Debug build of Aprend checks the rule for most of the calls listed above:
- * aprend_command_list_compile() and _submit(), aprend_instance_next_frame()
- * and aprend_instance_wait_idle(), the vertex, index and storage buffer
- * update calls (not a uniform buffer's or a buffer set's), the texture
- * update, readback, resize and mipmap calls, the framebuffer clears,
- * aprend_binding_set_create() and _update(), and the render target pool's
- * get, trim and retirement calls. One that finds a call from another thread
- * still inside the instance prints so, with its own name, and goes on (as
- * Vulkan's validation layer reports an object used by two threads at once).
- * It checks overlap, not which thread calls: a call from a different thread
- * than the last is not reported once the last has returned, and a guarded
- * call that makes another from inside itself is not counted. Only two of
- * those calls overlapping is seen: an overlap with any other call - a
- * create, a set or get_ call, a uniform buffer or buffer set update, a
- * recording, a destroy - is not detected. A Release build checks nothing.
+ * Debug build of Aprend checks the rule (apricore.h, "Threads") on every
+ * call that takes the instance or a handle of it but the exceptions above:
+ * one that finds a call from another thread still inside the instance
+ * prints both calls' names on stderr, and goes on. The recordings, which
+ * are one caller to a list, are checked on their list, and so are a list's
+ * compile and submit, which check the instance as well. The get_ and find
+ * calls and the destroys are not checked, being the exceptions. It checks
+ * overlap, not which thread calls. A Release build checks nothing.
  *
  * @par Destroying
  * A destroy call of anything the GPU uses - a buffer, a texture or a view of
@@ -178,14 +172,34 @@
  * Without either, the pool destroys nothing until the instance goes.
  * aprend_instance_get_render_target_pool() reports what it holds.
  *
+ * @par Results and errors
+ * This is the rule for every Aprend header. A call that can fail returns
+ * an APRESULT (apricore.h), and Aprend prints nothing for it. A command
+ * list's recording calls (aprend_command_list_send(),
+ * aprend_command_list_reset()) return nothing, as Vulkan's do: a command
+ * refused when it is sent is reported by the next compile. A creation hands its handle back through an `out_`
+ * parameter, set to NULL on any failure, the `out_` parameter itself
+ * included when it can be written. A call that can fail for a reason worth
+ * a sentence also takes an APREND_ERROR pointer, last (NULL to skip it): on
+ * failure it says what was wrong in developer English, naming the argument
+ * or the object (by its debug name, where it has one); on success its
+ * message is empty. Being per call, not kept on the instance, it never
+ * outlives the call that filled it. A call whose only failures are NULL
+ * arguments returns the code alone. What SpudGPU refuses becomes
+ * APRESULT_OUT_OF_MEMORY, APRESULT_UNSUPPORTED or APRESULT_LIMIT where one
+ * of those says it, and APRESULT_APREND_GPU_FAILURE otherwise, its message
+ * naming SpudGPU's result. The Debug build's check of "Threads" still
+ * prints, as a validation layer would; it refuses nothing.
+ *
  * @par Struct bases
  * This too is the rule for every Aprend header. A desc, and each of the lit
  * scene's settings, starts with an APRI_STRUCT_BASE named `base`
  * (apricore.h, "Struct bases"): the caller sets `base.type` to the struct's
  * own APRI_STRUCT_TYPE_APREND_* and `base.next` to NULL, since nothing
  * chains onto any of them yet. A call given a wrong type or a chained
- * struct refuses it as it refuses its other invalid arguments - NULL,
- * false, or nothing recorded - and prints why. A get_ call that hands a
+ * struct refuses it with APRESULT_STRUCT_WRONG_TYPE or
+ * APRESULT_STRUCT_UNKNOWN_IN_CHAIN; a command checked at a compile is
+ * reported by that compile. A get_ call that hands a
  * desc or settings back writes the whole struct, `base` included: its own
  * type and no chain, so the caller sets nothing first. Every other struct
  * has a "Frozen" line above it and never changes.
@@ -196,14 +210,26 @@ extern "C" {
 #endif
 
 /**
- * @brief Upper bound on aprend_instance_desc::frames_in_flight.
+ * @brief Upper bound on APREND_INSTANCE_DESC::frames_in_flight.
  */
 #define APREND_MAX_FRAMES_IN_FLIGHT 4
+
+/** @brief The size of APREND_ERROR's `message`, its NUL included. */
+#define APREND_ERROR_MESSAGE_SIZE 256
+
+/**
+ * @brief Why a call failed, filled per call ("Results and errors", at the
+ * top of this header).
+ */
+/* Frozen: filled per call. It never changes; a new need gets a new type. */
+typedef struct APREND_ERROR {
+	char message[APREND_ERROR_MESSAGE_SIZE]; /**< NUL-terminated, truncated to fit; empty on success. */
+} APREND_ERROR;
 
 /**
  * @brief Configuration descriptor for an instance.
  */
-typedef struct aprend_instance_desc {
+typedef struct APREND_INSTANCE_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_INSTANCE_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
@@ -220,10 +246,10 @@ typedef struct aprend_instance_desc {
 	/**
 	 * How many frames the caller lets the GPU hold at once: how many it
 	 * submits before it has to know the oldest has finished. 1 to
-	 * APREND_MAX_FRAMES_IN_FLIGHT, and 0 is refused. A buffer set
-	 * (aprendbuffers.h) keeps this many copies of its buffer, one for each
-	 * frame, so the frame being written never shares a copy with one the
-	 * GPU is still reading. 1 is a caller that waits for each frame to
+	 * APREND_MAX_FRAMES_IN_FLIGHT, and 0 is refused. A buffer of per-frame
+	 * copies (aprendbuffers.h) keeps this many, one for each frame, so the
+	 * frame being written never shares a copy with one the GPU is still
+	 * reading. 1 is a caller that waits for each frame to
 	 * finish before starting the next.
 	 */
 	uint32_t frames_in_flight;
@@ -247,7 +273,7 @@ typedef struct aprend_instance_desc {
 	 * #transient_chunk_size.
 	 */
 	uint64_t transient_memory_limit;
-} aprend_instance_desc;
+} APREND_INSTANCE_DESC;
 
 /**
  * @brief Opaque handle to an instance.
@@ -280,41 +306,51 @@ SPUDGPU_FEATURES aprend_get_optional_gpu_features(void);
 /**
  * @brief Creates an instance on a device.
  *
- * @param[in] desc Instance configuration. Copied: only read during the call.
+ * @param[in]  desc         Instance configuration. Copied: only read during
+ *                          the call.
+ * @param[out] out_instance Receives the instance; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The instance, or NULL if @p desc is NULL, `device` is NULL,
- *         `frames_in_flight` is 0 or above APREND_MAX_FRAMES_IN_FLIGHT,
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p desc or
+ *         @p out_instance is NULL, `device` is NULL, `frames_in_flight` is
+ *         0 or above APREND_MAX_FRAMES_IN_FLIGHT, or
  *         `transient_memory_limit` is set with a `transient_chunk_size` of
- *         0 or is below it, or the device refuses what the instance needs
- *         of it.
+ *         0 or is below it; APRESULT_STRUCT_WRONG_TYPE or
+ *         APRESULT_STRUCT_UNKNOWN_IN_CHAIN for `desc->base`;
+ *         APRESULT_OUT_OF_MEMORY; or, if the device refuses what the
+ *         instance needs of it, the code for SpudGPU's result ("Results and
+ *         errors", at the top of this header).
  *
  * @see aprend_instance_destroy()
  */
-aprend_instance aprend_instance_create(const aprend_instance_desc *desc);
+APRESULT aprend_instance_create(
+    const APREND_INSTANCE_DESC *desc,
+    aprend_instance *out_instance,
+    APREND_ERROR *out_error);
 
 /**
- * @brief Moves the instance to its next frame and returns the new frame
- * index.
+ * @brief Moves the instance to its next frame, once the GPU has finished
+ * what the instance submitted the last time that frame index was current.
  *
  * The frame index runs 0 to `frames_in_flight` - 1 and starts at 0. It says
- * which copy of every buffer set is the current one: the one the update
- * calls write, and the one a command list compiled now reads.
+ * which copy of every buffer of per-frame copies is the current one: the
+ * one a write writes, and the one a command list compiled now reads.
  *
  * This moves to the next index, wrapping to 0. The caller calls it once at
- * the start of each frame after the first, before writing any buffer set or
+ * the start of each frame after the first, before writing any buffer or
  * compiling any command list for that frame.
  *
  * First it submits the frame's texture updates and framebuffer clears, if
  * no submission has carried them yet ("Texture updates and clears", at the
- * top of this header). If that submission fails they are dropped, and that
- * is printed.
+ * top of this header). If that submission fails, nothing else is done.
  *
- * It blocks until everything submitted the last time this index was
- * current has finished: the frame from `frames_in_flight` frames ago. So
- * at most `frames_in_flight` frames are ever on the GPU, and the caller
- * needs no wait of its own between frames. With `frames_in_flight` 1 it
- * waits for the frame before. If the wait fails the index has still moved,
- * and the failure is printed.
+ * Then it waits, up to @p timeout_ns, until everything submitted the last
+ * time the next index was current has finished: the frame from
+ * `frames_in_flight` frames ago. So at most `frames_in_flight` frames are
+ * ever on the GPU, and the caller needs no wait of its own between frames.
+ * With `frames_in_flight` 1 it waits for the frame before. A wait that runs
+ * out, or fails, leaves the instance in the frame it was in: the call may
+ * be made again.
  *
  * What it waits for is what went through Aprend:
  * aprend_command_list_submit() and the texture updates, readbacks and
@@ -325,8 +361,7 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc);
  * comes back: the compiles of command lists and the update batch, recorded
  * through a SpudGPU command allocator of that frame index, which this
  * resets, and the frame's transient memory (aprendtransient.h). A caller
- * that never calls this never gets either back. After a failed wait
- * neither is taken back, and both go on growing until a wait succeeds.
+ * that never calls this never gets either back.
  *
  * An instance submits on one queue. The queue is the caller's to choose,
  * and it is chosen by the first call that submits: every later one is
@@ -334,15 +369,32 @@ aprend_instance aprend_instance_create(const aprend_instance_desc *desc);
  * order of submission, which is only the order things finish in on a single
  * queue.
  *
- * It changes which copy every buffer set writes and every compile reads, so
+ * It changes which copy every buffer write writes and every compile reads, so
  * under the rule at the top of this header ("Threads") no other call is in
  * the instance while it runs.
  *
- * @param[in] instance Instance to move on.
+ * @param[in]  instance        Instance to move on.
+ * @param[in]  timeout_ns      The longest to wait for the frame, in
+ *                             nanoseconds. UINT64_MAX waits without limit;
+ *                             0 only looks.
+ * @param[out] out_frame_index Receives the new frame index. May be NULL;
+ *                             aprend_instance_get_frame_index() reads it
+ *                             too.
+ * @param[out] out_error       Why it failed, when it did. May be NULL.
  *
- * @return The new frame index, or 0 if @p instance is NULL.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance is NULL;
+ *         APRESULT_TIMEOUT if the frame had not finished within
+ *         @p timeout_ns; APRESULT_APREND_DEVICE_LOST if the device is lost,
+ *         after which nothing the instance submits runs; or the code for
+ *         SpudGPU's result if the updates and clears can't be submitted, or
+ *         the wait or a command allocator's reset fails. On every failure the
+ *         frame index is as it was.
  */
-uint32_t aprend_instance_next_frame(aprend_instance instance);
+APRESULT aprend_instance_next_frame(
+    aprend_instance instance,
+    uint64_t timeout_ns,
+    uint32_t *out_frame_index,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Gets the current frame index.
@@ -369,26 +421,36 @@ uint32_t aprend_instance_get_frame_index(aprend_instance instance);
  * It holds the instance while it blocks ("Threads", at the top of this
  * header).
  *
- * @param[in] instance Instance to wait for.
+ * @param[in]  instance  Instance to wait for.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false if @p instance is NULL, the batch of texture updates and
- *         clears can't be submitted, or the wait fails.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance is NULL;
+ *         APRESULT_APREND_DEVICE_LOST if the device is lost; or the code for
+ *         SpudGPU's result if the batch of texture updates and clears can't
+ *         be submitted or the wait fails ("Results and errors", at the top
+ *         of this header). What was destroyed and is
+ *         known to be finished with is released either way.
  */
-bool aprend_instance_wait_idle(aprend_instance instance);
+APRESULT aprend_instance_wait_idle(
+    aprend_instance instance,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Reads an instance's descriptor.
+ *
+ * The whole struct is written, `base` included ("Struct bases", at the top
+ * of this header): the caller sets nothing in it first.
  *
  * @param[in]  instance Instance to read.
  * @param[out] out_desc Receives the descriptor the instance was created
  *                      with.
  *
- * @return false, with nothing written, if @p instance or @p out_desc is
- *         NULL.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing written,
+ *         if @p instance or @p out_desc is NULL.
  */
-bool aprend_instance_get_desc(
+APRESULT aprend_instance_get_desc(
     aprend_instance instance,
-    aprend_instance_desc *out_desc);
+    APREND_INSTANCE_DESC *out_desc);
 
 /**
  * @brief What an instance's render target pool holds
@@ -398,7 +460,7 @@ bool aprend_instance_get_desc(
  * formats count them: what the device allocates is that at least, and more
  * by whatever alignment and padding it adds.
  */
-typedef struct aprend_render_target_pool_info {
+typedef struct APREND_RENDER_TARGET_POOL_INFO {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO, set by the caller (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE_OUT base;
 	/** How many textures the pool holds. */
@@ -412,7 +474,7 @@ typedef struct aprend_render_target_pool_info {
 	uint64_t bytes;
 	/** The texel bytes of the busy ones. */
 	uint64_t busy_bytes;
-} aprend_render_target_pool_info;
+} APREND_RENDER_TARGET_POOL_INFO;
 
 /**
  * @brief Reports what an instance's render target pool holds ("Textures a
@@ -426,12 +488,14 @@ typedef struct aprend_render_target_pool_info {
  * @param[out] out_info Receives the report; its `base.type` is set by the
  *                      caller, as for every struct Aprend fills in.
  *
- * @return false, with nothing written, if @p instance or @p out_info is
- *         NULL, or `out_info->base` is not its own (printed).
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT, with nothing written, if
+ *         @p instance or @p out_info is NULL; APRESULT_STRUCT_WRONG_TYPE or
+ *         APRESULT_STRUCT_UNKNOWN_IN_CHAIN, with nothing written, for
+ *         `out_info->base`.
  */
-bool aprend_instance_get_render_target_pool(
+APRESULT aprend_instance_get_render_target_pool(
     aprend_instance instance,
-    aprend_render_target_pool_info *out_info);
+    APREND_RENDER_TARGET_POOL_INFO *out_info);
 
 /**
  * @brief Destroys the textures of an instance's render target pool that the
@@ -455,16 +519,20 @@ bool aprend_instance_get_render_target_pool(
  * It changes the pool, under the rule at the top of this header
  * ("Threads").
  *
- * @param[in] instance    Instance whose pool is trimmed.
- * @param[in] idle_frames The frames a texture must have gone untaken to be
- *                        destroyed; 0 for every texture the GPU is done
- *                        with.
+ * @param[in]  instance        Instance whose pool is trimmed.
+ * @param[in]  idle_frames     The frames a texture must have gone untaken to
+ *                             be destroyed; 0 for every texture the GPU is
+ *                             done with.
+ * @param[out] out_trim_count  Receives how many textures were destroyed.
+ *                             May be NULL.
  *
- * @return How many textures were destroyed; 0 if @p instance is NULL.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing destroyed
+ *         and 0 written, if @p instance is NULL.
  */
-uint32_t aprend_instance_trim_render_targets(
+APRESULT aprend_instance_trim_render_targets(
     aprend_instance instance,
-    uint32_t idle_frames);
+    uint32_t idle_frames,
+    uint32_t *out_trim_count);
 
 /**
  * @brief Sets how an instance's render target pool destroys textures by
@@ -484,16 +552,18 @@ uint32_t aprend_instance_trim_render_targets(
  * @param[in] idle_frames The frames a texture must have gone untaken before
  *                        it may be destroyed; above 0.
  * @param[in] keep_bytes  The pool's size in texel bytes, as
- *                        aprend_render_target_pool_info counts them, at or
+ *                        APREND_RENDER_TARGET_POOL_INFO counts them, at or
  *                        under which nothing is destroyed; 0 for none kept.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p instance is NULL or
- *         @p idle_frames is 0 (printed).
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT, with nothing changed,
+ *         if @p instance is NULL or @p idle_frames is 0.
  */
-bool aprend_instance_set_render_target_retirement(
+APRESULT aprend_instance_set_render_target_retirement(
     aprend_instance instance,
     uint32_t idle_frames,
-    uint64_t keep_bytes);
+    uint64_t keep_bytes,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys an instance.

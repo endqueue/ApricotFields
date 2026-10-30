@@ -661,6 +661,48 @@ static void meet(const moving_edge &before, const moving_edge &after, double ref
     out_after = {(ref_x - after.sx) * after.ux + (ref_y - after.sy) * after.uy, 0.0};
 }
 
+// The direction halfway between unit directions [a] and [b], turning the
+// way [sweep] says (1 counter-clockwise, -1 clockwise), as a unit vector.
+// Where they are more than a right angle apart, a + b loses its digits, so
+// the half is found square to a - b instead.
+static void half_direction(double ax, double ay, double bx, double by, double sweep, double &out_x, double &out_y)
+{
+    double x, y;
+    if (ax * bx + ay * by >= 0.0)
+    {
+        x = ax + bx;
+        y = ay + by;
+    }
+    else
+    {
+        // a - b turned a quarter, counter-clockwise for a counter-clockwise
+        // sweep.
+        x = -(ay - by) * sweep;
+        y = (ax - bx) * sweep;
+    }
+    double length = std::sqrt(x * x + y * y);
+    out_x = x / length;
+    out_y = y / length;
+}
+
+// The points strictly between the ends of an arc about (cx, cy), from unit
+// direction [a] at radius [ra] to unit direction [b] at radius [rb], over
+// [depth] halvings of its angle: 2^depth - 1 points, in order, the radius
+// going from ra to rb with the angle. Arithmetic and square roots only.
+template <typename Emit>
+static bool arc_points(double cx, double cy, double ax, double ay, double ta, double bx, double by, double tb, double ra,
+                       double rb, double sweep, uint32_t depth, const Emit &emit)
+{
+    if (depth == 0)
+        return true;
+    double mx, my;
+    half_direction(ax, ay, bx, by, sweep, mx, my);
+    double tm = (ta + tb) * 0.5;
+    double r = ra + (rb - ra) * tm;
+    return arc_points(cx, cy, ax, ay, ta, mx, my, tm, ra, rb, sweep, depth - 1, emit) && emit(cx + mx * r, cy + my * r) &&
+           arc_points(cx, cy, mx, my, tm, bx, by, tb, ra, rb, sweep, depth - 1, emit);
+}
+
 // [set]'s rings with each edge moved by its distance and the corners re-met
 // (apmath_poly_offset_edges()), into [out_points], [out_tags] and
 // [out_ring_ends]: rings that may cross themselves or each other, for a
@@ -676,8 +718,12 @@ static void meet(const moving_edge &before, const moving_edge &after, double ref
 // opposite one - which winds the same way as the ring it came from, so the
 // union would keep it. A fold the other way, where a ring crosses itself, is
 // the union's to resolve, as before.
-bool move_edges(const APMATH_POLY_SET &set, const double *distances, double miter_limit,
-                std::vector<APMATH_POLY_POINT> &out_points, std::vector<uint64_t> &out_tags,
+// The most halvings of a round corner's angle: 2^12 pieces, past which a
+// tolerance is finer than the grid can show on any corner in range.
+const uint32_t ARC_MAX_DEPTH = 12;
+
+bool move_edges(const APMATH_POLY_SET &set, const double *distances, double miter_limit, APMATH_POLY_JOIN join,
+                double arc_tolerance, std::vector<APMATH_POLY_POINT> &out_points, std::vector<uint64_t> &out_tags,
                 std::vector<uint32_t> &out_ring_ends, APMATH_ERROR *error)
 {
     const double limit = (double)APMATH_POLY_COORD_LIMIT;
@@ -828,6 +874,7 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
                 double cross = before.ux * after.uy - before.uy * after.ux;
                 double dot = before.ux * after.ux + before.uy * after.uy;
                 bool one_point = false;
+                bool round = false;
                 double x = 0.0, y = 0.0;
                 if (cross != 0.0)
                 {
@@ -838,6 +885,10 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
                     y = before.my + before.uy * s;
                     double reach = std::fabs(d1) > std::fabs(d2) ? std::fabs(d1) : std::fabs(d2);
                     one_point = std::sqrt(x * x + y * y) <= miter_limit * reach;
+                    // The move opens the corner when the moved edges have
+                    // to run on past their ends to meet: then a round join
+                    // fills it, both edges having moved the same way.
+                    round = join == APMATH_POLY_JOIN_ROUND && s > 0.0 && d1 * d2 > 0.0;
                 }
                 else if (dot > 0.0 && d1 == d2)
                 {
@@ -847,9 +898,38 @@ bool move_edges(const APMATH_POLY_SET &set, const double *distances, double mite
                     one_point = true;
                 }
                 double cx = (double)corner.x, cy = (double)corner.y;
-                ok = one_point ? emit(cx + x, cy + y, after.tag)
-                               : emit(cx + before.mx, cy + before.my, after.tag) &&
-                                     emit(cx + after.mx, cy + after.my, after.tag);
+                if (round)
+                {
+                    // From the moved end of the edge before to the moved
+                    // start of the edge after, round the corner, halved as
+                    // often as the tolerance needs: piece by piece, the
+                    // cosine of half a piece's angle is sqrt((1 + c) / 2)
+                    // of the last, starting from the whole angle's half.
+                    double r1 = std::fabs(d1), r2 = std::fabs(d2);
+                    double ax = before.mx / r1, ay = before.my / r1;
+                    double bx = after.mx / r2, by = after.my / r2;
+                    double sweep = ax * by - ay * bx > 0.0 ? 1.0 : -1.0;
+                    double hx, hy;
+                    half_direction(ax, ay, bx, by, sweep, hx, hy);
+                    double half_cos = ax * hx + ay * hy;
+                    double radius = r1 > r2 ? r1 : r2;
+                    uint32_t depth = 0;
+                    while (depth < ARC_MAX_DEPTH && radius * (1.0 - half_cos) > arc_tolerance)
+                    {
+                        half_cos = std::sqrt((1.0 + half_cos) * 0.5);
+                        depth++;
+                    }
+                    auto emit_arc = [&](double px, double py) { return emit(px, py, after.tag); };
+                    ok = emit(cx + before.mx, cy + before.my, after.tag) &&
+                         arc_points(cx, cy, ax, ay, 0.0, bx, by, 1.0, r1, r2, sweep, depth, emit_arc) &&
+                         emit(cx + after.mx, cy + after.my, after.tag);
+                }
+                else
+                {
+                    ok = one_point ? emit(cx + x, cy + y, after.tag)
+                                   : emit(cx + before.mx, cy + before.my, after.tag) &&
+                                         emit(cx + after.mx, cy + after.my, after.tag);
+                }
             }
             else
             {
@@ -924,6 +1004,19 @@ struct sk_trace_t
     uint32_t face_a, face_b; // the input edges whose faces it divides
 };
 
+// The counter-clockwise angle of the direction (dot, cross) from the +x
+// axis, as a pseudo-angle in [0, 4) that rises with it: the same order as
+// atan2, from a division alone, so the same on every platform. A zero
+// direction is 0.
+double diamond_angle(double cross, double dot)
+{
+    if (cross == 0.0 && dot == 0.0)
+        return 0.0;
+    if (cross >= 0.0)
+        return dot >= 0.0 ? cross / (cross + dot) : 1.0 + -dot / (cross - dot);
+    return dot < 0.0 ? 2.0 + -cross / (-cross - dot) : 3.0 + dot / (dot - cross);
+}
+
 struct skeleton_t
 {
     std::vector<sk_edge_t> edges;
@@ -962,8 +1055,8 @@ struct skeleton_t
         else if (a.nx * b.nx + a.ny * b.ny > 0.0)
         {
             // One line: equal weights in valid input. Edges that come to
-            // follow each other later with different weights are a
-            // degenerate meeting; the faster one leads.
+            // follow each other later are merged first (merge_on_line), so
+            // this is an input corner or the moment before a merge.
             double w = a.w > b.w ? a.w : b.w;
             v.vx = a.nx * w;
             v.vy = a.ny * w;
@@ -1005,6 +1098,59 @@ struct skeleton_t
         for (uint32_t at = vertices[v].next; at != v && count <= vertices.size(); at = vertices[at].next)
             count++;
         return count;
+    }
+    // Whether [v]'s two edges have come to run on in one line, the same way.
+    bool on_one_line(uint32_t v) const
+    {
+        const sk_vertex_t &vertex = vertices[v];
+        if (vertex.in == vertex.out)
+            return false;
+        const sk_edge_t &a = edges[vertex.in];
+        const sk_edge_t &b = edges[vertex.out];
+        return std::fabs(a.dx * b.dy - a.dy * b.dx) < SKELETON_PARALLEL && a.dx * b.dx + a.dy * b.dy > 0.0;
+    }
+    // [v], made by an event at [t], between two edges that have come to
+    // follow each other on one line: they go on as one (the header's rule).
+    // The larger weight takes the line, then the edge earlier in the input.
+    // The other ends here: its face is closed along the line from [v] to
+    // the loser's other end, and that end's vertex goes on beside the
+    // winner. Returns the vertex that goes on, or [v] where there's nothing
+    // to merge. Throws std::bad_alloc.
+    uint32_t merge_on_line(uint32_t v, double t)
+    {
+        if (!on_one_line(v))
+            return v;
+        const sk_vertex_t vertex = vertices[v];
+        const sk_edge_t &a = edges[vertex.in];
+        const sk_edge_t &b = edges[vertex.out];
+        bool in_wins = a.w > b.w || (a.w == b.w && vertex.in < vertex.out);
+        uint32_t winner = in_wins ? vertex.in : vertex.out;
+        uint32_t loser = in_wins ? vertex.out : vertex.in;
+        // The loser's other end: the next vertex for an edge after [v], the
+        // one before for an edge before it.
+        uint32_t other = in_wins ? vertex.next : vertex.prev;
+        if (other == v)
+            return v;
+        // [v] was made at its node at [t]: the face walk joins sides by node.
+        uint32_t here = vertex.node;
+        uint32_t there = add_node(x_at(other, t), y_at(other, t));
+        traces.push_back({here, there, loser, winner});
+        end_vertex(v, vertex.node);
+        uint32_t before = in_wins ? vertex.prev : vertices[other].prev;
+        uint32_t after = in_wins ? vertices[other].next : vertex.next;
+        uint32_t in = in_wins ? winner : vertices[other].in;
+        uint32_t out = in_wins ? vertices[other].out : winner;
+        end_vertex(other, there);
+        uint32_t merged = add_vertex(x_at(other, t), y_at(other, t), t, in, out, there);
+        if (before == other || before == v)
+            before = merged;
+        if (after == other || after == v)
+            after = merged;
+        vertices[merged].prev = before;
+        vertices[merged].next = after;
+        vertices[before].next = merged;
+        vertices[after].prev = merged;
+        return merged;
     }
     // A loop of two vertices or one, at time [t]: nothing left inside it.
     void finish_small(uint32_t v, double t)
@@ -1066,11 +1212,18 @@ bool run_skeleton(skeleton_t &sk, const char *&problem)
             if (!sk.vertices[u].reflex)
                 continue;
             const sk_vertex_t &vu = sk.vertices[u];
-            for (uint32_t x = vu.next; x != u; x = sk.vertices[x].next)
+            // Every edge of every loop: one of its own loop splits it, one
+            // of another loop (a hole's, or the polygon's round a hole)
+            // joins the two.
+            for (uint32_t x = 0; x < sk.vertices.size(); x++)
             {
+                if (!sk.vertices[x].alive)
+                    continue;
+                if (x == u)
+                    continue;
                 uint32_t y = sk.vertices[x].next;
                 if (y == u)
-                    break;
+                    continue;
                 uint32_t edge = sk.vertices[x].out;
                 if (edge == vu.in || edge == vu.out)
                     continue;
@@ -1128,6 +1281,8 @@ bool run_skeleton(skeleton_t &sk, const char *&problem)
             sk.vertices[m].next = after;
             sk.vertices[before].next = m;
             sk.vertices[after].prev = m;
+            if (sk.loop_size(m) > 2)
+                m = sk.merge_on_line(m, now);
             if (sk.loop_size(m) <= 2)
                 sk.finish_small(m, now);
         }
@@ -1149,8 +1304,12 @@ bool run_skeleton(skeleton_t &sk, const char *&problem)
             sk.vertices[second].prev = x;
             sk.vertices[second].next = after;
             sk.vertices[after].prev = second;
+            if (sk.loop_size(first) > 2)
+                first = sk.merge_on_line(first, now);
             if (sk.loop_size(first) <= 2)
                 sk.finish_small(first, now);
+            if (sk.vertices[second].alive && sk.loop_size(second) > 2)
+                second = sk.merge_on_line(second, now);
             if (sk.vertices[second].alive && sk.loop_size(second) <= 2)
                 sk.finish_small(second, now);
         }
@@ -1184,6 +1343,74 @@ APRESULT apmath_poly_validate(const APMATH_POLY_SET *set, APMATH_POLY_DEFECT_INF
     {
         return fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory checking the set");
     }
+    return APRESULT_OK;
+}
+
+// ---- Locating a point ---------------------------------------------------------------
+
+APRESULT apmath_poly_locate_point(const APMATH_POLY_SET *set, APMATH_POLY_FILL fill, APMATH_POLY_POINT point,
+                                  APMATH_POLY_PLACE *out_place, APMATH_ERROR *out_error)
+{
+    clear(out_error);
+    if (out_place)
+        *out_place = APMATH_POLY_PLACE_OUTSIDE;
+    if (!set)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "set is null");
+    if (fill != APMATH_POLY_FILL_EVEN_ODD && fill != APMATH_POLY_FILL_NON_ZERO && fill != APMATH_POLY_FILL_POSITIVE)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "fill %d isn't an APMATH_POLY_FILL", (int)fill);
+    if (point.x > APMATH_POLY_COORD_LIMIT || point.x < -APMATH_POLY_COORD_LIMIT)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "the point's x is past the coordinate limit");
+    if (point.y > APMATH_POLY_COORD_LIMIT || point.y < -APMATH_POLY_COORD_LIMIT)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "the point's y is past the coordinate limit");
+    if (!out_place)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_place is null");
+    APRESULT result = check_set(*set, "the set", false, out_error);
+    if (result != APRESULT_OK)
+        return result;
+
+    // The winding number, counted where the ray from the point towards +x
+    // crosses an edge: up across with the point on the edge's left is +1,
+    // down across with it on the right is -1 (Sunday's form, which needs no
+    // division and counts a vertex on the ray once).
+    int64_t wind = 0;
+    for (uint32_t ring = 0; ring < set->ring_count; ring++)
+    {
+        uint32_t begin = ring_begin(*set, ring), count = ring_size(*set, ring);
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const APMATH_POLY_POINT &a = set->points[begin + i];
+            const APMATH_POLY_POINT &b = set->points[begin + (i + 1) % count];
+            int side = orient(a, b, point);
+            if (side == 0 && within(a, b, point))
+            {
+                *out_place = APMATH_POLY_PLACE_ON_EDGE;
+                return APRESULT_OK;
+            }
+            if (a.y <= point.y)
+            {
+                if (b.y > point.y && side > 0)
+                    wind++;
+            }
+            else if (b.y <= point.y && side < 0)
+            {
+                wind--;
+            }
+        }
+    }
+    bool inside = false;
+    switch (fill)
+    {
+    case APMATH_POLY_FILL_EVEN_ODD:
+        inside = (wind & 1) != 0;
+        break;
+    case APMATH_POLY_FILL_NON_ZERO:
+        inside = wind != 0;
+        break;
+    case APMATH_POLY_FILL_POSITIVE:
+        inside = wind > 0;
+        break;
+    }
+    *out_place = inside ? APMATH_POLY_PLACE_INSIDE : APMATH_POLY_PLACE_OUTSIDE;
     return APRESULT_OK;
 }
 
@@ -1271,6 +1498,12 @@ APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_po
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "miter_limit is below 1");
     if (!std::isfinite(d.miter_limit))
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "miter_limit isn't finite");
+    if (d.join != APMATH_POLY_JOIN_MITER && d.join != APMATH_POLY_JOIN_ROUND)
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "join %d isn't an APMATH_POLY_JOIN", (int)d.join);
+    if (d.join == APMATH_POLY_JOIN_ROUND && !(d.arc_tolerance > 0.0))
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "arc_tolerance isn't above 0");
+    if (d.join == APMATH_POLY_JOIN_ROUND && !std::isfinite(d.arc_tolerance))
+        return fail(out_error, APRESULT_INVALID_ARGUMENT, "arc_tolerance isn't finite");
 
     try
     {
@@ -1279,7 +1512,7 @@ APRESULT apmath_poly_offset_edges(const APMATH_POLY_OFFSET_DESC *desc, apmath_po
         std::vector<uint32_t> ring_ends;
         points.reserve((size_t)d.set.point_count * 2);
         tags.reserve((size_t)d.set.point_count * 2);
-        if (!move_edges(d.set, d.distances, d.miter_limit, points, tags, ring_ends, out_error))
+        if (!move_edges(d.set, d.distances, d.miter_limit, d.join, d.arc_tolerance, points, tags, ring_ends, out_error))
             return APRESULT_INVALID_ARGUMENT;
         APMATH_POLY_SET moved{};
         moved.points = points.data();
@@ -1314,8 +1547,6 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
         return result;
     if (d.set.ring_count == 0)
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "the set has no ring");
-    if (d.set.ring_count > 1)
-        return fail(out_error, APRESULT_UNSUPPORTED, "the set has holes, which the skeleton doesn't take");
     if (!d.weights)
         return fail(out_error, APRESULT_INVALID_ARGUMENT, "weights is null");
     bool moving = false;
@@ -1333,17 +1564,26 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
     apmath_poly_t *poly = nullptr;
     try
     {
-        APMATH_POLY_SET ring = d.set;
-        ring.ring_outers = nullptr;
-        APMATH_POLY_DEFECT_INFO defect = find_defect(ring);
+        APMATH_POLY_DEFECT_INFO defect = find_defect(d.set);
         if (defect.defect != APMATH_POLY_DEFECT_NONE)
             return fail(out_error, APRESULT_INVALID_ARGUMENT,
-                        "the set isn't a simple counter-clockwise ring (defect %d at edge %u)", (int)defect.defect,
-                        defect.edge);
+                        "the set isn't polygons with holes (defect %d at ring %u, edge %u)", (int)defect.defect,
+                        defect.ring, defect.edge);
 
         // Relative to the first point, so the doubles stay small; exact,
         // since coordinates are within 2^40.
         uint32_t n = d.set.point_count;
+        // Each point's neighbours in its own ring.
+        std::vector<uint32_t> ring_next(n), ring_prev(n);
+        for (uint32_t ring = 0; ring < d.set.ring_count; ring++)
+        {
+            uint32_t begin = ring_begin(d.set, ring), count = ring_size(d.set, ring);
+            for (uint32_t i = 0; i < count; i++)
+            {
+                ring_next[begin + i] = begin + (i + 1) % count;
+                ring_prev[begin + i] = begin + (i + count - 1) % count;
+            }
+        }
         const APMATH_POLY_POINT &origin = d.set.points[0];
         auto px = [&](uint32_t i) { return (double)(d.set.points[i].x - origin.x); };
         auto py = [&](uint32_t i) { return (double)(d.set.points[i].y - origin.y); };
@@ -1353,7 +1593,7 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
         sk.edges.resize(n);
         for (uint32_t i = 0; i < n; i++)
         {
-            uint32_t j = (i + 1) % n;
+            uint32_t j = ring_next[i];
             double dx = px(j) - px(i), dy = py(j) - py(i);
             double length = std::sqrt(dx * dx + dy * dy);
             sk_edge_t &e = sk.edges[i];
@@ -1370,12 +1610,12 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
         }
         for (uint32_t i = 0; i < n; i++)
         {
-            const sk_edge_t &a = sk.edges[(i + n - 1) % n];
+            const sk_edge_t &a = sk.edges[ring_prev[i]];
             const sk_edge_t &b = sk.edges[i];
             bool parallel = std::fabs(a.dx * b.dy - a.dy * b.dx) < SKELETON_PARALLEL && a.dx * b.dx + a.dy * b.dy > 0.0;
             if (parallel && a.w != b.w)
                 return fail(out_error, APRESULT_INVALID_ARGUMENT,
-                            "edges %u and %u follow each other on one line with different weights", (i + n - 1) % n, i);
+                            "edges %u and %u follow each other on one line with different weights", ring_prev[i], i);
         }
         double extent = hi_x - lo_x > hi_y - lo_y ? hi_x - lo_x : hi_y - lo_y;
         sk.eps_length = (extent > 1.0 ? extent : 1.0) * 1e-9;
@@ -1385,11 +1625,11 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
         for (uint32_t i = 0; i < n; i++)
             sk.add_node(px(i), py(i));
         for (uint32_t i = 0; i < n; i++)
-            sk.add_vertex(px(i), py(i), 0.0, (i + n - 1) % n, i, i);
+            sk.add_vertex(px(i), py(i), 0.0, ring_prev[i], i, i);
         for (uint32_t i = 0; i < n; i++)
         {
-            sk.vertices[i].prev = (i + n - 1) % n;
-            sk.vertices[i].next = (i + 1) % n;
+            sk.vertices[i].prev = ring_prev[i];
+            sk.vertices[i].next = ring_next[i];
         }
 
         const char *problem = nullptr;
@@ -1421,19 +1661,35 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
         for (uint32_t face = 0; face < n; face++)
         {
             // From the edge's end back round to its start.
-            uint32_t start = face, end = (face + 1) % n;
+            uint32_t start = face, end = ring_next[face];
             nodes.assign({start, end});
             tags.assign({d.set.edge_tags ? d.set.edge_tags[face] : 0});
             used.assign(sides[face].size(), false);
-            uint32_t at = end;
+            uint32_t at = end, came_from = start;
             bool closed = false;
             for (size_t walked = 0; walked <= sides[face].size() && !closed; walked++)
             {
+                // Of the unused sides at [at], the one that turns most to
+                // the right from where the walk came: the face's own,
+                // where more than two of its traces meet at one point (the
+                // face is on the walk's left).
                 size_t found = SIZE_MAX;
-                for (size_t k = 0; k < sides[face].size() && found == SIZE_MAX; k++)
+                double best_angle = 0.0;
+                double back_x = sk.node_x[came_from] - sk.node_x[at], back_y = sk.node_y[came_from] - sk.node_y[at];
+                for (size_t k = 0; k < sides[face].size(); k++)
                 {
-                    if (!used[k] && (sides[face][k].a == at || sides[face][k].b == at))
+                    if (used[k] || (sides[face][k].a != at && sides[face][k].b != at))
+                        continue;
+                    uint32_t to = sides[face][k].a == at ? sides[face][k].b : sides[face][k].a;
+                    double out_x = sk.node_x[to] - sk.node_x[at], out_y = sk.node_y[to] - sk.node_y[at];
+                    // Clockwise from the way back, as a pseudo-angle in
+                    // (0, 4]: smallest is the sharpest right turn.
+                    double angle = 4.0 - diamond_angle(back_x * out_y - back_y * out_x, back_x * out_x + back_y * out_y);
+                    if (found == SIZE_MAX || angle < best_angle)
+                    {
                         found = k;
+                        best_angle = angle;
+                    }
                 }
                 if (found == SIZE_MAX)
                     break;
@@ -1445,6 +1701,7 @@ APRESULT apmath_poly_skeleton(const APMATH_POLY_SKELETON_DESC *desc, apmath_poly
                     closed = true;
                 else
                     nodes.push_back(next);
+                came_from = at;
                 at = next;
             }
             if (!closed)

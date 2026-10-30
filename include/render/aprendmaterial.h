@@ -25,8 +25,8 @@
  *   on the GPU, not one for each frame, and one descriptor set for the
  *   material.
  * - Anything else a binding set holds, given by the caller: a uniform
- *   buffer or buffer set it keeps itself (an external block), a storage
- *   buffer or buffer set, a texture view, a sampler.
+ *   buffer it keeps itself (an external block), a storage buffer, a
+ *   texture view, a sampler.
  *
  * It is bound with APREND_COMMAND_SET_MATERIAL (aprendcommands.h), in place
  * of an aprend_binding_set, at the slot where the pipeline declares the
@@ -48,7 +48,7 @@
  * aprend_material_set_uniform() searches the layout's members by name at
  * every call. A value set every frame, or in many materials, is found once
  * instead: aprend_material_find_uniform() turns a name into an
- * aprend_material_uniform, a small value that names the member within the
+ * APREND_MATERIAL_UNIFORM, a small value that names the member within the
  * layout, and aprend_material_set_uniform_value() writes it with no search.
  * One is found from the layout, not from a material, so it serves every
  * material of that layout: found when the layout is made, used for each
@@ -91,7 +91,7 @@
  * values don't change costs nothing per frame.
  *
  * So an instance with materials that own a block has transient memory
- * (aprend_instance_desc::transient_chunk_size): a copy takes the block's
+ * (APREND_INSTANCE_DESC::transient_chunk_size): a copy takes the block's
  * size of it, rounded up to 16, in the frame it is made.
  *
  * @par Threads
@@ -118,7 +118,7 @@ typedef struct aprend_material_t *aprend_material;
  *
  * No field has a default.
  */
-typedef struct aprend_material_desc {
+typedef struct APREND_MATERIAL_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_MATERIAL_DESC, and its chain (apricore.h, "Struct bases"). */
 	APRI_STRUCT_BASE base;
 	/**
@@ -138,28 +138,36 @@ typedef struct aprend_material_desc {
 	const char *const *_external_blocks;
 	/** Number of elements in #_external_blocks. */
 	uint32_t _external_block_count;
-} aprend_material_desc;
+} APREND_MATERIAL_DESC;
 
 /**
  * @brief Creates a material. Its owned blocks start as zeroes; every other
  * binding starts empty.
  *
- * @param[in] instance Instance the material's buffers are created on.
- * @param[in] desc     Material configuration. Only read during the call.
+ * @param[in]  instance     Instance the material's buffers are created on.
+ * @param[in]  desc         Material configuration. Only read during the
+ *                          call.
+ * @param[out] out_material Receives the material; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The material, or NULL if @p instance or @p desc is NULL, `_layout`
- *         is NULL or of another instance, a binding of the layout has no
- *         name, two have the same name, `_external_blocks` is NULL with a
- *         count above 0 or names something that is not a uniform buffer
- *         binding of the layout, the material owns a block and the instance
- *         has no transient memory, or the material arena needs another
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance, @p desc or
+ *         @p out_material is NULL, `_layout` is NULL or of another
+ *         instance, a binding of the layout has no name, two have the same
+ *         name, or `_external_blocks` is NULL with a count above 0 or names
+ *         something that is not a uniform buffer binding of the layout;
+ *         APRESULT_UNSUPPORTED if the material owns a block and the instance
+ *         has no transient memory; APRESULT_LIMIT for a block past 32 bits;
+ *         the struct codes for `desc->base`; APRESULT_OUT_OF_MEMORY; or
+ *         APRESULT_APREND_GPU_FAILURE if the material arena needs another
  *         buffer and the device refuses it.
  *
  * @see aprend_material_destroy()
  */
-aprend_material aprend_material_create(
+APRESULT aprend_material_create(
     aprend_instance instance,
-    const aprend_material_desc *desc);
+    const APREND_MATERIAL_DESC *desc,
+    aprend_material *out_material,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Destroys a material and its binding set, and gives its blocks'
@@ -191,7 +199,7 @@ void aprend_material_destroy(aprend_material material);
  * The new material fills the same layout, owns the same blocks (those the
  * source was not told to leave external), and holds the source's values in
  * them in blocks of its own. Every resource the source holds - a view, a
- * sampler, a uniform or storage buffer or buffer set - it holds too: the
+ * sampler, a uniform or storage buffer - it holds too: the
  * same handles, shared, not duplicated, so each must outlive both
  * materials or be replaced in each before its next compile. A binding the
  * source leaves empty is empty in the copy. After the call the two are
@@ -204,15 +212,21 @@ void aprend_material_destroy(aprend_material material);
  * is built at the first compile that binds it. A copy of a lit material
  * (aprend_lit_material_create(), aprendlit.h) is a lit material.
  *
- * @param[in] source Material to copy. Only read during the call.
+ * @param[in]  source       Material to copy. Only read during the call.
+ * @param[out] out_material Receives the copy; NULL on failure.
+ * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
- * @return The copy, or NULL if @p source is NULL, there is no memory, or the
- *         material arena needs another buffer and the device refuses it.
- *         Each is printed.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p source or
+ *         @p out_material is NULL; APRESULT_OUT_OF_MEMORY; or
+ *         APRESULT_APREND_GPU_FAILURE if the material arena needs another
+ *         buffer and the device refuses it.
  *
  * @see aprend_material_destroy()
  */
-aprend_material aprend_material_copy(aprend_material source);
+APRESULT aprend_material_copy(
+    aprend_material source,
+    aprend_material *out_material,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Gets the layout a material fills.
@@ -228,8 +242,8 @@ aprend_binding_layout aprend_material_get_layout(aprend_material material);
  * command list that binds it can't be compiled until it does.
  *
  * Owned blocks always do. A combined image sampler binding needs a texture
- * and a sampler. A compile that finds one missing prints which binding and
- * element it is.
+ * and a sampler. A compile that finds one missing fails, its message naming
+ * the binding and element.
  *
  * @param[in] material Material to read.
  *
@@ -252,14 +266,18 @@ bool aprend_material_is_complete(aprend_material material);
  *                     Case-sensitive.
  * @param[in] data     The whole member, tightly packed, as
  *                     aprend_material_set_uniform_value() takes it.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL, or either
- *         call it makes would return false.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument is NULL, or the failure's code of either
+ *         call it makes.
  */
-bool aprend_material_set_uniform(
+APRESULT aprend_material_set_uniform(
     aprend_material material,
     const char *name,
-    const void *data);
+    const void *data,
+    APREND_ERROR *out_error);
 
 /**
  * @brief One member of a uniform block of a binding layout, as
@@ -274,14 +292,14 @@ bool aprend_material_set_uniform(
  * it refuses it.
  */
 /* Frozen: a value, Aprend's to fill in. It never changes; a new need gets a new type. */
-typedef struct aprend_material_uniform {
+typedef struct APREND_MATERIAL_UNIFORM {
 	/** The layout the member was found in. */
 	aprend_binding_layout _layout;
 	/** The block's binding: its place in the layout's bindings. */
 	uint32_t _binding_index;
 	/** The member's place in its block's members. */
 	uint32_t _member_index;
-} aprend_material_uniform;
+} APREND_MATERIAL_UNIFORM;
 
 /**
  * @brief Finds a member of one of a layout's uniform blocks by name, for
@@ -307,16 +325,20 @@ typedef struct aprend_material_uniform {
  *                         array count, for a caller that checks them once
  *                         (that `roughness` is a float, say). Its `name` is
  *                         the layout's, valid as long as it. May be NULL.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument but @p out_member is
- *         NULL, no member of those blocks has that name, or more than one
- *         does and the name isn't qualified by its binding. Each is printed.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument but @p out_member is NULL, no member of
+ *         those blocks has that name, or more than one does and the name
+ *         isn't qualified by its binding.
  */
-bool aprend_material_find_uniform(
+APRESULT aprend_material_find_uniform(
     aprend_binding_layout layout,
     const char *name,
-    aprend_material_uniform *out_uniform,
-    aprend_shader_member *out_member);
+    APREND_MATERIAL_UNIFORM *out_uniform,
+    APREND_SHADER_MEMBER *out_member,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Sets one uniform of a material's owned blocks, found beforehand
@@ -336,19 +358,23 @@ bool aprend_material_find_uniform(
  *                     glm keeps one. A `bool` is 4 bytes, as the shader
  *                     keeps it: pass a `uint32_t`, never a C `bool`, whose
  *                     one byte would be read as four.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if @p material or @p data is NULL,
- *         @p uniform is no uniform or was found in another layout than the
- *         material's, its block is one the material doesn't own (named in
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if @p material or @p data is NULL, @p uniform is no
+ *         uniform or was found in another layout than the material's, its
+ *         block is one the material doesn't own (named in
  *         `_external_blocks`), the member has no APREND_UNIFORM_TYPE (write
  *         it with aprend_material_set_uniform_bytes() at the offset
- *         aprend_material_find_uniform() gives), or it is an array without
- *         a size. Each is printed.
+ *         aprend_material_find_uniform() gives), or it is an array without a
+ *         size.
  */
-bool aprend_material_set_uniform_value(
+APRESULT aprend_material_set_uniform_value(
     aprend_material material,
-    aprend_material_uniform uniform,
-    const void *data);
+    APREND_MATERIAL_UNIFORM uniform,
+    const void *data,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Reads one uniform of a material's owned blocks back: the value it
@@ -361,14 +387,18 @@ bool aprend_material_set_uniform_value(
  * @param[in]  uniform  The uniform, found in the material's layout.
  * @param[out] out_data Receives the whole member, tightly packed, as
  *                      aprend_material_set_uniform_value() takes it.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, under the conditions of
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, under the conditions of
  *         aprend_material_set_uniform_value().
  */
-bool aprend_material_get_uniform_value(
+APRESULT aprend_material_get_uniform_value(
     aprend_material material,
-    aprend_material_uniform uniform,
-    void *out_data);
+    APREND_MATERIAL_UNIFORM uniform,
+    void *out_data,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Writes bytes into one of a material's owned blocks.
@@ -382,45 +412,50 @@ bool aprend_material_get_uniform_value(
  * @param[in] offset   Where in the block the bytes go.
  * @param[in] size     How many bytes. Not 0.
  * @param[in] data     The bytes.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing written, if an argument is NULL, @p size is 0,
- *         no binding has that name or its block is not owned, or the bytes
- *         run past the end of the block.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         written, if an argument is NULL, @p size is 0, no binding has that
+ *         name or its block is not owned, or the bytes run past the end of
+ *         the block.
  */
-bool aprend_material_set_uniform_bytes(
+APRESULT aprend_material_set_uniform_bytes(
     aprend_material material,
     const char *name,
     uint32_t offset,
     uint32_t size,
-    const void *data);
+    const void *data,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Puts a uniform buffer the caller keeps in a uniform buffer binding
  * the material doesn't own, the whole buffer.
  *
- * Exactly one of @p buffer and @p set is given: a single buffer, or a buffer
- * set read at the copy of the frame a list is compiled in.
+ * A buffer of per-frame copies is read at the copy of the frame a list is
+ * compiled in.
  *
  * @param[in] material      Material to change.
  * @param[in] name          The binding's name in the layout, or for a
  *                          uniform buffer binding its block name.
  * @param[in] array_element Index into the binding's array; 0 where its
  *                          `_count` is 1.
- * @param[in] buffer        The buffer, or NULL.
- * @param[in] set           The buffer set, or NULL.
+ * @param[in] buffer        The buffer, of #APREND_BUFFER_USAGE_UNIFORM.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if @p material or @p name is NULL, no
- *         binding has that name, it is not a uniform buffer binding or is
- *         an owned block, @p array_element is not below the binding's
- *         `_count`, or not exactly one of @p buffer and @p set is given or
- *         it is of another instance.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, if @p material, @p name or @p buffer is NULL, no binding
+ *         has that name, it is not a uniform buffer binding or is an owned
+ *         block, @p array_element is not below the binding's `_count`, or
+ *         @p buffer is of another instance or lacks the usage.
  */
-bool aprend_material_set_uniform_buffer(
+APRESULT aprend_material_set_uniform_buffer(
     aprend_material material,
     const char *name,
     uint32_t array_element,
-    aprend_uniform_buffer buffer,
-    aprend_uniform_buffer_set set);
+    aprend_buffer buffer,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Puts a storage buffer in a storage buffer binding, the whole
@@ -431,19 +466,21 @@ bool aprend_material_set_uniform_buffer(
  * @param[in] material      Material to change.
  * @param[in] name          The binding's name in the layout.
  * @param[in] array_element Index into the binding's array.
- * @param[in] buffer        The buffer, or NULL.
- * @param[in] set           The buffer set, or NULL.
+ * @param[in] buffer        The buffer, of #APREND_BUFFER_USAGE_STORAGE.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, under the conditions of
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
+ *         own code (aprendcontext.h, "Results and errors"), with nothing
+ *         changed, under the conditions of
  *         aprend_material_set_uniform_buffer(), for a binding that is not a
  *         storage buffer binding.
  */
-bool aprend_material_set_storage_buffer(
+APRESULT aprend_material_set_storage_buffer(
     aprend_material material,
     const char *name,
     uint32_t array_element,
-    aprend_storage_buffer buffer,
-    aprend_storage_buffer_set set);
+    aprend_buffer buffer,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Puts a texture view in a sampled image, storage image or combined
@@ -459,17 +496,22 @@ bool aprend_material_set_storage_buffer(
  *                          other two. It must outlive every material that
  *                          holds it, or be replaced in each before its next
  *                          compile after it goes.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if an argument is NULL, no binding has
- *         that name, the binding is of none of those types,
- *         @p array_element is not below its `_count`, or @p view is of
- *         another instance or of the wrong type.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT
+ *         (APRESULT_NOT_FOUND where nothing has the name or number) or the
+ *         failure's own code (aprendcontext.h, "Results and errors"), with
+ *         nothing changed, if an argument is NULL, no binding has that name,
+ *         the binding is of none of those types, @p array_element is not
+ *         below its `_count`, or @p view is of another instance or of the
+ *         wrong type.
  */
-bool aprend_material_set_texture(
+APRESULT aprend_material_set_texture(
     aprend_material material,
     const char *name,
     uint32_t array_element,
-    aprend_texture_view view);
+    aprend_texture_view view,
+    APREND_ERROR *out_error);
 
 /**
  * @brief Puts a sampler in a sampler or combined image sampler binding.
@@ -479,16 +521,21 @@ bool aprend_material_set_texture(
  * @param[in] array_element Index into the binding's array.
  * @param[in] sampler       The sampler. As @p view of
  *                          aprend_material_set_texture().
+ * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return false, with nothing changed, if an argument is NULL, no binding has
- *         that name, the binding is of neither type, @p array_element is not
- *         below its `_count`, or @p sampler is of another instance.
+ * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT
+ *         (APRESULT_NOT_FOUND where nothing has the name or number) or the
+ *         failure's own code (aprendcontext.h, "Results and errors"), with
+ *         nothing changed, if an argument is NULL, no binding has that name,
+ *         the binding is of neither type, @p array_element is not below its
+ *         `_count`, or @p sampler is of another instance.
  */
-bool aprend_material_set_sampler(
+APRESULT aprend_material_set_sampler(
     aprend_material material,
     const char *name,
     uint32_t array_element,
-    aprend_sampler sampler);
+    aprend_sampler sampler,
+    APREND_ERROR *out_error);
 
 #if __cplusplus
 } // Extern "C"

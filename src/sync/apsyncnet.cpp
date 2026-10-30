@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include "../aprioverlap.hpp"
 
 // Sessions, channels and snapshots over SpudNet's TCP sockets. What isn't
 // here yet, and what SpudNet still owes it, is in APSYNC_TODO.md.
@@ -1628,6 +1629,7 @@ extern "C"
     {
         if (!session || !out_port || !session->hosting || index >= session->ports.size())
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(session->overlap, "apsync", "apsync_session_get_port", "session");
         *out_port = session->ports[index];
         return APRESULT_OK;
     }
@@ -1641,6 +1643,7 @@ extern "C"
     {
         if (!session)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(session->overlap, "apsync", "apsync_session_poll", "session");
         if (!out_event)
             return APRESULT_INVALID_ARGUMENT;
         if (APRESULT result = apri_struct_out_check(&out_event->base, APRI_STRUCT_TYPE_APSYNC_EVENT))
@@ -1739,6 +1742,7 @@ extern "C"
     {
         if (!session || channel >= session->channels.size() || (size != 0 && !data))
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(session->overlap, "apsync", "apsync_session_send", "session");
         if (session->channels[channel] == APSYNC_CHANNEL_ORDERED && key != 0)
             return APRESULT_INVALID_ARGUMENT;
         if (!session->can_send)
@@ -1775,6 +1779,7 @@ extern "C"
     {
         if (!session || !session->hosting || (size != 0 && !data))
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(session->overlap, "apsync", "apsync_session_send_snapshot", "session");
         if (session->awaiting_snapshot.find(peer) == session->awaiting_snapshot.end())
             return APRESULT_NOT_FOUND;
         apsync_command command;
@@ -1804,6 +1809,7 @@ extern "C"
     {
         if (!session || !session->hosting || peer == APSYNC_PEER_NONE || peer == APSYNC_PEER_HOST)
             return APRESULT_INVALID_ARGUMENT;
+        APRI_ENTER(session->overlap, "apsync", "apsync_session_disconnect_peer", "session");
         apsync_command command;
         command.kind = apsync_command::DISCONNECT;
         command.peer = peer;
