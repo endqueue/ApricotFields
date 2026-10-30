@@ -128,6 +128,8 @@ APRESULT aprend_framebuffer_create(
 		*out_framebuffer = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_framebuffer_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_framebuffer_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -174,15 +176,19 @@ APRESULT aprend_framebuffer_create(
 	return APRESULT_OK;
 }
 void aprend_framebuffer_destroy(aprend_framebuffer framebuffer) {
-	if (framebuffer) {
-		framebuffer->~aprend_framebuffer_t();
-		free(framebuffer);
-	}
+	if (!framebuffer)
+		return;
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_destroy", "framebuffer"))
+		return;
+	framebuffer->~aprend_framebuffer_t();
+	free(framebuffer);
 }
 APRESULT aprend_framebuffer_get_desc(
     aprend_framebuffer framebuffer,
     APREND_FRAMEBUFFER_DESC *out_desc) {
 	if (!framebuffer)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_get_desc", "framebuffer"))
 		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
@@ -199,6 +205,8 @@ APRESULT aprend_framebuffer_resize(
 	aprend_error_clear(out_error);
 	if (!framebuffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "framebuffer is NULL");
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_resize", "framebuffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "framebuffer is destroyed");
 	APREND_ENTER(framebuffer->instance, "aprend_framebuffer_resize");
 	if (width == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "width is 0");
@@ -223,6 +231,8 @@ APRESULT aprend_framebuffer_clear_colors(
 	aprend_error_clear(out_error);
 	if (!framebuffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "framebuffer is NULL");
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_clear_colors", "framebuffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "framebuffer is destroyed");
 	APREND_ENTER(framebuffer->instance, "aprend_framebuffer_clear_colors");
 	if (!queue)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "queue is NULL");
@@ -268,6 +278,8 @@ APRESULT aprend_framebuffer_clear_depth(
 	aprend_error_clear(out_error);
 	if (!framebuffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "framebuffer is NULL");
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_clear_depth", "framebuffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "framebuffer is destroyed");
 	APREND_ENTER(framebuffer->instance, "aprend_framebuffer_clear_depth");
 	if (!queue)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "queue is NULL");
@@ -291,13 +303,18 @@ APRESULT aprend_framebuffer_clear_depth(
 aprend_texture_view aprend_framebuffer_get_color_attachment(
     aprend_framebuffer framebuffer,
     uint32_t index) {
-	if (framebuffer)
-		if (index < framebuffer->color_attachments.size())
-			return framebuffer->color_attachments[index];
-	return nullptr; // Both if's fail.
+	if (!framebuffer)
+		return nullptr;
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_get_color_attachment", "framebuffer"))
+		return nullptr;
+	if (index < framebuffer->color_attachments.size())
+		return framebuffer->color_attachments[index];
+	return nullptr;
 }
 aprend_texture_view aprend_framebuffer_get_depth_attachment(aprend_framebuffer framebuffer) {
 	if (!framebuffer)
+		return nullptr;
+	if (APRI_STALE(framebuffer, "aprend_framebuffer_get_depth_attachment", "framebuffer"))
 		return nullptr;
 	if (framebuffer->has_depth_attachment)
 		return framebuffer->depth_attachment;

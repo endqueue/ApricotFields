@@ -311,6 +311,23 @@ How a build lays text out is described at the top of
 
 ## Items (checked: built 2026-10-29)
 
+### On Windows again (2026-10-30)
+
+The same machine, after 2026-10-30's work on macOS (the LFF, SHX and
+variable faces, the CAD arcs, the left-to-right fast path), MSVC 14.51.
+
+- **Every ctest passes** on `windows-d3d12` and `windows-vulkan`, Debug,
+  Release and RelWithDebInfo, and under both `-asan` presets.
+- **`aptext_bits_tests` passes in every configuration**: the CAD arcs and
+  the variable glyph values are macOS's bits under MSVC too.
+- **libFuzzer**: `aptext_fuzz` 10 minutes (745,532 runs, another target
+  fuzzing beside it): nothing found.
+- **No allocation**: `aprinoalloc_tests` relays out a left-to-right label
+  with none, in Debug and Release. Right-to-left text still makes
+  SheenBidi's objects: 3 a paragraph and 2 a line, measured that day with
+  the Arabic and Hebrew labels of card A31 (workspace `DECISIONS.md`),
+  which has the numbers and the options. Linux not run.
+
 ### 1. Faces and fallback
 
 - [x] A face from font bytes (TTF/OTF; a collection index for TTC). The

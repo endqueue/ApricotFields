@@ -106,6 +106,13 @@ tests plain, under ASan and UBSan, and under TSan; `aparchive_fuzz` (see
 zlib-ng 2.3.3 through its own CMake under MSVC and GCC, `aparchive_tests`
 (whose recorded streamed-DEFLATE bytes are the cross-platform check), the
 fuzz target's replay, Windows' `-asan` and Linux's `-asan` and `-tsan`.
+**Windows, 2026-10-30** (Windows 11 (ThinkPad P1 Gen 5; MSVC 14.51, Vulkan SDK 1.4.363.0, LLVM clang 23 for the fuzz preset)): zlib-ng 2.3.3 built by
+MSVC through its own CMake with no change, and by clang for the fuzz
+preset; `aparchive_tests` passes on `windows-d3d12` and `windows-vulkan`
+in Debug, Release and RelWithDebInfo, and under both `-asan` presets:
+its recorded streamed-DEFLATE bytes are MSVC's too, so zlib-ng's output
+is the same on both platforms. `aparchive_fuzz` ran 10 minutes there
+(1,834,271 runs): nothing found. **Linux has built none of it.**
 
 ## Smaller additions
 

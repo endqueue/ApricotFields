@@ -47,6 +47,8 @@ APRESULT aprend_swap_chain_create(
 		*out_swap_chain = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_swap_chain_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_swap_chain_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -84,6 +86,8 @@ APRESULT aprend_swap_chain_create(
 void aprend_swap_chain_destroy(aprend_swap_chain swap_chain) {
 	if (!swap_chain)
 		return;
+	if (APRI_STALE(swap_chain, "aprend_swap_chain_destroy", "swap_chain"))
+		return;
 	// A compiled list that presents into it would read it at submit.
 	aprend_instance_forget(swap_chain->instance, swap_chain);
 	APREND_DESTRUCT__T(swap_chain, aprend_swap_chain_t);
@@ -96,6 +100,8 @@ APRESULT aprend_swap_chain_resize(
 	aprend_error_clear(out_error);
 	if (!swap_chain)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is NULL");
+	if (APRI_STALE(swap_chain, "aprend_swap_chain_resize", "swap_chain"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is destroyed");
 	APREND_ENTER(swap_chain->instance, "aprend_swap_chain_resize");
 	if (width == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "width is 0");
@@ -126,6 +132,8 @@ APRESULT aprend_swap_chain_get_desc(
 	APREND_SWAP_CHAIN_DESC *out_desc) {
 	if (!swap_chain)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(swap_chain, "aprend_swap_chain_get_desc", "swap_chain"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
 	*out_desc           = swap_chain->desc;
@@ -138,6 +146,8 @@ APRESULT aprend_swap_chain_acquire(aprend_swap_chain swap_chain, APREND_ERROR *o
 	aprend_error_clear(out_error);
 	if (!swap_chain)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is NULL");
+	if (APRI_STALE(swap_chain, "aprend_swap_chain_acquire", "swap_chain"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is destroyed");
 	APREND_ENTER(swap_chain->instance, "aprend_swap_chain_acquire");
 	if (!swap_chain->swap_chain)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the swap chain has no back buffers since a resize failed");
@@ -162,6 +172,8 @@ APRESULT aprend_swap_chain_get_back_buffer_size(
 	uint32_t *out_height) {
 	if (!swap_chain)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(swap_chain, "aprend_swap_chain_get_back_buffer_size", "swap_chain"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_width)
 		return APRESULT_INVALID_ARGUMENT;
 	if (!out_height)
@@ -181,6 +193,8 @@ APRESULT aprend_swap_chain_present(aprend_swap_chain swap_chain, APREND_ERROR *o
 	aprend_error_clear(out_error);
 	if (!swap_chain)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is NULL");
+	if (APRI_STALE(swap_chain, "aprend_swap_chain_present", "swap_chain"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "swap_chain is destroyed");
 	APREND_ENTER(swap_chain->instance, "aprend_swap_chain_present");
 	if (!swap_chain->swap_chain)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the swap chain has no back buffers since a resize failed");

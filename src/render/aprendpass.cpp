@@ -176,6 +176,8 @@ APRESULT aprend_render_pass_create(
 		*out_pass = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_render_pass_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_render_pass_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -263,6 +265,8 @@ APRESULT aprend_render_pass_create(
 void aprend_render_pass_destroy(aprend_render_pass pass) {
 	if (!pass)
 		return;
+	if (APRI_STALE(pass, "aprend_render_pass_destroy", "pass"))
+		return;
 	// Nothing of the GPU's: every command that named the pass recorded what
 	// it held, so it can go now.
 	APREND_DESTRUCT__T(pass, aprend_render_pass_t);
@@ -276,23 +280,35 @@ APRESULT aprend_render_pass_set_binding_set(
 	aprend_error_clear(out_error);
 	if (!pass)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pass is NULL");
+	if (APRI_STALE(pass, "aprend_render_pass_set_binding_set", "pass"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pass is destroyed");
 	APREND_ENTER(pass->instance, "aprend_render_pass_set_binding_set");
 	const APREND_GRAPHICS_PIPELINE_DESC &pipeline = pass->desc._pipeline->desc;
 	if (slot >= pipeline._binding_layout_count)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "slot %u, and the pipeline declares %u slots", slot, pipeline._binding_layout_count);
+	if (set && APRI_STALE(set, "aprend_render_pass_set_binding_set", "set"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "set is destroyed");
 	if (set && !aprend_binding_set_fits(set, pipeline._binding_layouts[slot]))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the set is not of the layout the pipeline declares at slot %u", slot);
 	pass->desc._binding_sets[slot] = set;
 	return APRESULT_OK;
 }
 
-aprend_graphics_pipeline aprend_render_pass_get_pipeline(aprend_render_pass pass) { return pass ? pass->desc._pipeline : nullptr; }
+aprend_graphics_pipeline aprend_render_pass_get_pipeline(aprend_render_pass pass) {
+	if (!pass)
+		return nullptr;
+	if (APRI_STALE(pass, "aprend_render_pass_get_pipeline", "pass"))
+		return nullptr;
+	return pass->desc._pipeline;
+}
 
 APRESULT aprend_render_pass_get_size(
     aprend_render_pass pass,
     uint32_t *out_width,
     uint32_t *out_height) {
 	if (!pass)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(pass, "aprend_render_pass_get_size", "pass"))
 		return APRESULT_INVALID_ARGUMENT;
 	uint32_t width  = 0;
 	uint32_t height = 0;
@@ -320,6 +336,8 @@ APRESULT aprend_compute_pass_create(
 		*out_pass = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_compute_pass_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_compute_pass_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -348,6 +366,8 @@ APRESULT aprend_compute_pass_create(
 void aprend_compute_pass_destroy(aprend_compute_pass pass) {
 	if (!pass)
 		return;
+	if (APRI_STALE(pass, "aprend_compute_pass_destroy", "pass"))
+		return;
 	APREND_DESTRUCT__T(pass, aprend_compute_pass_t);
 }
 
@@ -359,10 +379,14 @@ APRESULT aprend_compute_pass_set_binding_set(
 	aprend_error_clear(out_error);
 	if (!pass)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pass is NULL");
+	if (APRI_STALE(pass, "aprend_compute_pass_set_binding_set", "pass"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pass is destroyed");
 	APREND_ENTER(pass->instance, "aprend_compute_pass_set_binding_set");
 	const APREND_COMPUTE_PIPELINE_DESC &pipeline = pass->desc._pipeline->desc;
 	if (slot >= pipeline._binding_layout_count)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "slot %u, and the pipeline declares %u slots", slot, pipeline._binding_layout_count);
+	if (set && APRI_STALE(set, "aprend_compute_pass_set_binding_set", "set"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "set is destroyed");
 	if (set && !aprend_binding_set_fits(set, pipeline._binding_layouts[slot]))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the set is not of the layout the pipeline declares at slot %u", slot);
 	pass->desc._binding_sets[slot] = set;

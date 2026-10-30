@@ -236,11 +236,13 @@ static uint32_t aprend_bloom_max_levels(aprend_texture_view source) {
  * taken. Throws std::bad_alloc, recording nothing. */
 static SPUDRESULT aprend_cmd_record_uploads(
     aprend_command_list cmd_list,
-    const std::vector<aprend_upload_copy> &copies,
+    const eq::array<aprend_upload_copy> &copies,
     spudgpu_command_list *out_upload) {
-	*out_upload = nullptr;
-	std::vector<spudgpu_buffer_barrier> before;
-	std::vector<spudgpu_buffer_barrier> after;
+	*out_upload                                 = nullptr;
+	eq::array<spudgpu_buffer_barrier> &before = cmd_list->upload_before;
+	eq::array<spudgpu_buffer_barrier> &after  = cmd_list->upload_after;
+	before.clear();
+	after.clear();
 	for (const aprend_upload_copy &copy : copies) {
 		bool known = false;
 		for (const spudgpu_buffer_barrier &barrier : before)
@@ -248,14 +250,14 @@ static SPUDRESULT aprend_cmd_record_uploads(
 				known = true;
 		if (known)
 			continue;
-		before.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
-		after.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COPY_DEST, SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER});
+		aprend_push(before, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
+		aprend_push(after, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COPY_DEST, SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER});
 	}
 	for (aprend_buffer_store *store : cmd_list->staged_stores) {
 		if (store->uploads.empty())
 			continue;
-		before.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
-		after.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COPY_DEST, store->use_state});
+		aprend_push(before, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
+		aprend_push(after, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COPY_DEST, store->use_state});
 	}
 	// A store whose state the list's barriers track must start the list in
 	// its use_state, which the copy above leaves it in. One with nothing to
@@ -264,7 +266,7 @@ static SPUDRESULT aprend_cmd_record_uploads(
 		aprend_buffer_store *store = tracked.store;
 		if (store->staged && !store->uploads.empty())
 			continue;
-		before.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, store->use_state});
+		aprend_push(before, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, store->use_state});
 	}
 	if (before.empty())
 		return SPUD_SUCCESS;
@@ -274,7 +276,7 @@ static SPUDRESULT aprend_cmd_record_uploads(
 	if (SPUDFAIL(sr))
 		return sr;
 	spudgpu_begin_command_list(upload);
-	spudgpu_cmd_pipeline_barrier(upload, before.data(), (uint32_t)before.size(), nullptr, 0);
+	spudgpu_cmd_pipeline_barrier(upload, before.data, (uint32_t)before.size(), nullptr, 0);
 	// In each store's order: a ONCE store's uploads may overlap, and the
 	// later write is the one that has to land.
 	for (aprend_buffer_store *store : cmd_list->staged_stores)
@@ -283,7 +285,7 @@ static SPUDRESULT aprend_cmd_record_uploads(
 	for (const aprend_upload_copy &copy : copies)
 		spudgpu_cmd_copy_buffer(upload, copy.source, copy.destination, copy.source_offset, copy.destination_offset, copy.size);
 	if (!after.empty())
-		spudgpu_cmd_pipeline_barrier(upload, after.data(), (uint32_t)after.size(), nullptr, 0);
+		spudgpu_cmd_pipeline_barrier(upload, after.data, (uint32_t)after.size(), nullptr, 0);
 	spudgpu_end_command_list(upload);
 	*out_upload = upload;
 	return SPUD_SUCCESS;
@@ -361,6 +363,8 @@ APRESULT aprend_command_list_create(aprend_instance instance, aprend_command_lis
 		*out_list = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_command_list_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_command_list_create");
 	if (!out_list)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_list is NULL");
@@ -383,6 +387,8 @@ APRESULT aprend_command_list_create(aprend_instance instance, aprend_command_lis
 void aprend_command_list_destroy(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return;
+	if (APRI_STALE(cmd_list, "aprend_command_list_destroy", "cmd_list"))
+		return;
 	// A compile it never submitted gives back what it took from the render
 	// target pool. Here and not in its release, which may come after the
 	// instance's destructor has freed the pool.
@@ -390,11 +396,14 @@ void aprend_command_list_destroy(aprend_command_list cmd_list) {
 	// No destroy call may find it among the compiled lists once it is gone.
 	aprend_cmd_list_unlist(cmd_list);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(cmd_list);
 	aprend_instance_retire(cmd_list->instance, cmd_list, &aprend_release_handle<aprend_command_list_t>);
 }
 
 void aprend_command_list_reset(aprend_command_list cmd_list) {
 	if (!cmd_list)
+		return;
+	if (APRI_STALE(cmd_list, "aprend_command_list_reset", "cmd_list"))
 		return;
 	APREND_ENTER_LIST(cmd_list, "aprend_command_list_reset");
 	// Off the compiled lists before what it uses is cleared: a destroy call
@@ -1450,6 +1459,8 @@ void aprend_command_list_send(
     APREND_COMMAND cmd) {
 	if (!cmd_list)
 		return;
+	if (APRI_STALE(cmd_list, "aprend_command_list_send", "cmd_list"))
+		return;
 	APREND_ENTER_LIST(cmd_list, "aprend_command_list_send");
 	if (cmd._type == APREND_COMMAND_NONE)
 		return;
@@ -1971,27 +1982,11 @@ static void aprend_cmd_begin_rendering(
 	spudgpu_cmd_begin_rendering(cmd, &desc);
 }
 
-/* A texture one pass's binding sets read or write, and the layout that takes. */
-struct aprend_pass_image {
-	/* The mips and layers the view in the set covers. */
-	aprend_texture_range range;
-	SPUDGPU_IMAGE_LAYOUT layout;
-	/* A storage image a pipeline of the pass or dispatch writes. */
-	bool written;
-};
-
-/* A storage buffer one pass's or dispatch's binding sets hold. */
-struct aprend_pass_store {
-	aprend_buffer_store *store;
-	/* A pipeline of the pass or dispatch writes it. */
-	bool written;
-};
-
 /* Adds the storage buffers [set], at [slot], holds for frame [frame] to
  * [stores], each once, with whether [writes] (the pipeline's) writes the
  * binding each is in. */
 static void aprend_storage_stores_add_set(
-    std::vector<aprend_pass_store> &stores,
+    eq::array<aprend_pass_store> &stores,
     aprend_binding_set set,
     uint32_t frame,
     uint32_t slot,
@@ -2008,7 +2003,7 @@ static void aprend_storage_stores_add_set(
 			known          = true;
 		}
 		if (!known)
-			stores.push_back({frame_stores[i].store, written});
+			aprend_push(stores, aprend_pass_store{frame_stores[i].store, written});
 	}
 }
 
@@ -2020,7 +2015,7 @@ static void aprend_storage_stores_add_set(
  * mip be read while another is written. */
 static bool aprend_pass_images_add_set(
     aprend_command_list cmd_list,
-    std::vector<aprend_pass_image> &images,
+    eq::array<aprend_pass_image> &images,
     aprend_binding_set set,
     uint32_t slot,
     const std::vector<aprend_storage_write> &writes) {
@@ -2046,7 +2041,7 @@ static bool aprend_pass_images_add_set(
 			}
 		}
 		if (!known)
-			images.push_back({range, use.layout, written});
+			aprend_push(images, aprend_pass_image{range, use.layout, written});
 	}
 	return true;
 }
@@ -2122,8 +2117,8 @@ static aprend_command_list_t::storage_hazard &aprend_cmd_store_hazard(
  * resource. Recorded outside any pass. Throws std::bad_alloc. */
 static void aprend_cmd_ready_set_resources(
     aprend_command_list cmd_list,
-    const std::vector<aprend_pass_image> &images,
-    const std::vector<aprend_pass_store> &stores) {
+    const eq::array<aprend_pass_image> &images,
+    const eq::array<aprend_pass_store> &stores) {
 	for (const aprend_pass_image &pass_image : images) {
 		const aprend_texture_range &range = pass_image.range;
 		if (pass_image.layout != SPUDGPU_IMAGE_LAYOUT_GENERAL) {
@@ -2152,7 +2147,8 @@ static void aprend_cmd_ready_set_resources(
 			}
 		}
 	}
-	std::vector<spudgpu_buffer_barrier> buffer_barriers;
+	eq::array<spudgpu_buffer_barrier> &buffer_barriers = cmd_list->set_barriers;
+	buffer_barriers.clear();
 	for (const aprend_pass_store &pass_store : stores) {
 		aprend_buffer_store *store = pass_store.store;
 		// One that was last an indirect argument buffer comes back to the
@@ -2161,7 +2157,7 @@ static void aprend_cmd_ready_set_resources(
 			aprend_cmd_transition_store(cmd_list, store, store->use_state);
 		aprend_command_list_t::storage_hazard &hazard = aprend_cmd_store_hazard(cmd_list, store);
 		if (hazard.written || (pass_store.written && hazard.accessed)) {
-			buffer_barriers.push_back({{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
+			aprend_push(buffer_barriers, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
 			hazard.written = false;
 		}
 		hazard.accessed = true;
@@ -2169,7 +2165,7 @@ static void aprend_cmd_ready_set_resources(
 	}
 	if (buffer_barriers.empty())
 		return;
-	spudgpu_cmd_pipeline_barrier(cmd_list->cmd_list, buffer_barriers.data(), (uint32_t)buffer_barriers.size(), nullptr, 0);
+	spudgpu_cmd_pipeline_barrier(cmd_list->cmd_list, buffer_barriers.data, (uint32_t)buffer_barriers.size(), nullptr, 0);
 }
 
 /* Before the BEGIN_RENDERING at [begin_index] opens its pass: moves every
@@ -2184,10 +2180,13 @@ static bool aprend_cmd_prepare_pass_images(
     aprend_command_list cmd_list,
     size_t begin_index,
     const aprend_binding_set *slots) {
-	std::vector<aprend_pass_image> images;
-	std::vector<aprend_pass_store> stores;
+	eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+	eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
 	/* The argument buffers of the pass's indirect draws, each once. */
-	std::vector<aprend_buffer_store *> argument_stores;
+	eq::array<aprend_buffer_store *> &argument_stores = cmd_list->pass_arguments;
+	images.clear();
+	stores.clear();
+	argument_stores.clear();
 	aprend_binding_set pass_slots[APREND_MAX_BINDING_LAYOUTS];
 	for (uint32_t slot = 0; slot < APREND_MAX_BINDING_LAYOUTS; ++slot)
 		pass_slots[slot] = slots[slot];
@@ -2228,7 +2227,7 @@ static bool aprend_cmd_prepare_pass_images(
 					if (store == arguments)
 						known = true;
 				if (!known)
-					argument_stores.push_back(arguments);
+					aprend_push(argument_stores, arguments);
 			}
 			// A draw with no pipeline, or with an empty slot, fails the
 			// compile when it is reached.
@@ -2294,8 +2293,10 @@ static bool aprend_cmd_prepare_dispatch(
     aprend_compute_pipeline pipeline,
     const aprend_binding_set *slots,
     aprend_binding_set *applied) {
-	std::vector<aprend_pass_image> images;
-	std::vector<aprend_pass_store> stores;
+	eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+	eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+	images.clear();
+	stores.clear();
 	for (uint32_t slot = 0; slot < pipeline->desc._binding_layout_count; ++slot) {
 		aprend_binding_set set = slots[slot];
 		if (!set) {
@@ -3109,9 +3110,11 @@ static bool aprend_cmd_auto_exposure(aprend_command_list cmd_list, const APREND_
 		// The bins emptied, then counted, then read by the pass: each use
 		// ordered after the last as any dispatch's set is (the first after
 		// what an earlier submission of the frame left of this copy).
-		aprend_binding_set set = exposure->histogram_set;
-		std::vector<aprend_pass_image> images;
-		std::vector<aprend_pass_store> stores;
+		aprend_binding_set set                = exposure->histogram_set;
+		eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+		eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+		images.clear();
+		stores.clear();
 		try {
 			if (!aprend_pass_images_add_set(cmd_list, images, set, 0, count->storage_writes))
 				return false;
@@ -3210,8 +3213,10 @@ static bool aprend_cmd_lit_cull_lights(aprend_command_list cmd_list, const APREN
 		return false;
 	// Each set's resources ordered as any dispatch's are: the depth moved to
 	// be sampled, the tiles after what read or wrote them before.
-	std::vector<aprend_pass_image> images;
-	std::vector<aprend_pass_store> stores;
+	eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+	eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+	images.clear();
+	stores.clear();
 	try {
 		for (uint32_t slot = 0; slot < 2; ++slot) {
 			if (!aprend_pass_images_add_set(cmd_list, images, sets[slot], slot, pipeline->storage_writes))
@@ -3245,10 +3250,9 @@ static bool aprend_cmd_prepare_lit_scenes(aprend_command_list cmd_list) {
 	aprend_instance instance = cmd_list->instance;
 	aprend_lit_builtins &lit = instance->builtins.lit;
 	// A copy: culling adds materials to the list.
-	std::vector<aprend_material> materials;
-	try {
-		materials = cmd_list->materials;
-	} catch (const std::bad_alloc &) {
+	eq::array<aprend_material> &materials = cmd_list->lit_materials;
+	materials.clear();
+	if (materials.append(cmd_list->materials.data(), cmd_list->materials.size()) != EQ_SUCCESS) {
 		aprend_cmd_report(cmd_list, APRESULT_OUT_OF_MEMORY, "compile: out of memory");
 		return false;
 	}
@@ -3300,8 +3304,10 @@ static bool aprend_cmd_prepare_lit_scenes(aprend_command_list cmd_list) {
 			// of this frame made earlier: its first use in the list gets a
 			// barrier for that.
 			aprend_binding_set set = scene->cull_material->set;
-			std::vector<aprend_pass_image> cull_images;
-			std::vector<aprend_pass_store> cull_stores;
+			eq::array<aprend_pass_image> &cull_images = cmd_list->pass_images;
+			eq::array<aprend_pass_store> &cull_stores = cmd_list->pass_stores;
+			cull_images.clear();
+			cull_stores.clear();
 			if (!aprend_pass_images_add_set(cmd_list, cull_images, set, 0, pipeline->storage_writes))
 				return false;
 			aprend_storage_stores_add_set(cull_stores, set, cmd_list->compiled_frame, 0, pipeline->storage_writes);
@@ -3373,6 +3379,8 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 	aprend_error_clear(out_error);
 	if (!cmd_list)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cmd_list is NULL");
+	if (APRI_STALE(cmd_list, "aprend_command_list_compile", "cmd_list"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cmd_list is destroyed");
 	APREND_ENTER_LIST(cmd_list, "aprend_command_list_compile");
 	APREND_ENTER(cmd_list->instance, "aprend_command_list_compile");
 	aprend_cmd_report_scope scope(cmd_list, out_error);
@@ -3453,7 +3461,8 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 	const APREND_COMMAND *open_pass = nullptr;
 	/* The open labelled regions, innermost last: whether each was opened
 	 * inside a pass. */
-	std::vector<bool> open_labels;
+	eq::array<uint8_t> &open_labels = cmd_list->open_labels;
+	open_labels.clear();
 	/* The pipeline bound in the open pass; none until the pass sets one. */
 	aprend_graphics_pipeline bound_pipeline = nullptr;
 	/* The stride of the buffer or transient span last put in each vertex
@@ -3972,7 +3981,7 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 			}
 			case APREND_COMMAND_BEGIN_LABEL:
 				try {
-					open_labels.push_back(in_pass);
+					aprend_push(open_labels, (uint8_t)in_pass);
 				} catch (const std::bad_alloc &) {
 					aprend_cmd_report(cmd_list, APRESULT_OUT_OF_MEMORY, "compile: out of memory");
 					ok = false;
@@ -3986,12 +3995,12 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 					ok = false;
 					break;
 				}
-				if (open_labels.back() != in_pass) {
-					aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "END_LABEL %s a pass, and its BEGIN_LABEL was %s one", in_pass ? "inside" : "outside", open_labels.back() ? "inside" : "outside");
+				if ((open_labels[open_labels.size() - 1] != 0) != in_pass) {
+					aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "END_LABEL %s a pass, and its BEGIN_LABEL was %s one", in_pass ? "inside" : "outside", open_labels[open_labels.size() - 1] ? "inside" : "outside");
 					ok = false;
 					break;
 				}
-				open_labels.pop_back();
+				(void)open_labels.remove(open_labels.size() - 1);
 				spudgpu_cmd_end_debug_label(cmd);
 				break;
 			default:
@@ -4019,15 +4028,15 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 	 * aprend_command_list_submit refuses it when this returns false. The
 	 * labels opened inside the pass close before it does, and the rest
 	 * after. */
-	while (in_pass && !open_labels.empty() && open_labels.back()) {
+	while (in_pass && !open_labels.empty() && open_labels[open_labels.size() - 1]) {
 		spudgpu_cmd_end_debug_label(cmd);
-		open_labels.pop_back();
+		(void)open_labels.remove(open_labels.size() - 1);
 	}
 	if (in_pass)
 		spudgpu_cmd_end_rendering(cmd);
 	while (!open_labels.empty()) {
 		spudgpu_cmd_end_debug_label(cmd);
-		open_labels.pop_back();
+		(void)open_labels.remove(open_labels.size() - 1);
 	}
 
 	spudgpu_end_command_list(cmd);
@@ -4054,6 +4063,8 @@ APRESULT aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_comman
 	aprend_error_clear(out_error);
 	if (!cmd_list)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cmd_list is NULL");
+	if (APRI_STALE(cmd_list, "aprend_command_list_submit", "cmd_list"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cmd_list is destroyed");
 	APREND_ENTER_LIST(cmd_list, "aprend_command_list_submit");
 	if (!queue)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "queue is NULL");
@@ -4107,7 +4118,8 @@ APRESULT aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_comman
 	// of its materials that changed since they were last copied, through
 	// this frame's transient memory.
 	spudgpu_command_list upload = nullptr;
-	std::vector<aprend_upload_copy> copies;
+	eq::array<aprend_upload_copy> &copies = cmd_list->upload_copies;
+	copies.clear();
 	try {
 		for (aprend_material material : cmd_list->materials)
 			if (!aprend_material_stage_uploads(material, copies))

@@ -30,6 +30,14 @@ macOS (Apple M5 Pro, Debug) plain, under ASan and under TSan, and
 over it. **Windows and Linux have built none of it**: there, libopus
 through its own CMake under MSVC and GCC, libogg's `config_types.h` as
 written here, `apaudio_tests` and the fuzz target's replay.
+**Windows, 2026-10-30** (Windows 11 (ThinkPad P1 Gen 5; MSVC 14.51, Vulkan SDK 1.4.363.0, LLVM clang 23 for the fuzz preset)): libopus, libogg (its
+`config_types.h` as written here), opusfile, dr_flac and stb_vorbis built
+by MSVC and by clang with no configure change; `apaudio_tests` and the
+fuzz replay pass on `windows-d3d12` and `windows-vulkan` in Debug, Release
+and RelWithDebInfo, and under both `-asan` presets; `apaudio_fuzz` ran
+10 minutes there for the first time (558,633 runs): nothing found.
+`aprinoalloc_tests`' update and render make no allocation there either.
+**Linux has built none of it.**
 
 ## Wrong things: design bugs in the draft
 

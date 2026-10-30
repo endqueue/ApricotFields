@@ -358,6 +358,8 @@ APRESULT aprend_vertex_pool_create(aprend_instance instance, const APREND_VERTEX
 		*out_pool = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_vertex_pool_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_vertex_pool_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -395,6 +397,8 @@ APRESULT aprend_vertex_pool_create(aprend_instance instance, const APREND_VERTEX
 void aprend_vertex_pool_destroy(aprend_vertex_pool pool) {
 	if (!pool)
 		return;
+	if (APRI_STALE(pool, "aprend_vertex_pool_destroy", "pool"))
+		return;
 	// The pool itself is nothing the GPU uses. Its blocks are buffers, each
 	// released once the GPU has finished with it.
 	pool->~aprend_vertex_pool_t();
@@ -407,6 +411,8 @@ APRESULT aprend_vertex_pool_allocate(aprend_vertex_pool pool, uint32_t vertex_co
 		*out_range = {};
 	if (!pool)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	if (APRI_STALE(pool, "aprend_vertex_pool_allocate", "pool"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is destroyed");
 	APREND_ENTER(pool->core.instance, "aprend_vertex_pool_allocate");
 	if (vertex_count == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "vertex_count is 0");
@@ -438,6 +444,8 @@ APRESULT aprend_vertex_pool_free(aprend_vertex_pool pool, const APREND_VERTEX_RA
 	aprend_error_clear(out_error);
 	if (!pool)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	if (APRI_STALE(pool, "aprend_vertex_pool_free", "pool"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is destroyed");
 	APREND_ENTER(pool->core.instance, "aprend_vertex_pool_free");
 	if (!range)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "range is NULL");
@@ -447,12 +455,16 @@ APRESULT aprend_vertex_pool_free(aprend_vertex_pool pool, const APREND_VERTEX_RA
 void aprend_vertex_pool_trim(aprend_vertex_pool pool) {
 	if (!pool)
 		return;
+	if (APRI_STALE(pool, "aprend_vertex_pool_trim", "pool"))
+		return;
 	APREND_ENTER(pool->core.instance, "aprend_vertex_pool_trim");
 	aprend_pool_trim(&pool->core);
 }
 
 APRESULT aprend_vertex_pool_get_usage(aprend_vertex_pool pool, uint64_t *out_used_bytes, uint64_t *out_block_bytes) {
 	if (!pool)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(pool, "aprend_vertex_pool_get_usage", "pool"))
 		return APRESULT_INVALID_ARGUMENT;
 	aprend_pool_reclaim(&pool->core);
 	if (out_used_bytes)
@@ -468,6 +480,8 @@ APRESULT aprend_index_pool_create(aprend_instance instance, const APREND_INDEX_P
 		*out_pool = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_index_pool_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_index_pool_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -506,6 +520,8 @@ APRESULT aprend_index_pool_create(aprend_instance instance, const APREND_INDEX_P
 void aprend_index_pool_destroy(aprend_index_pool pool) {
 	if (!pool)
 		return;
+	if (APRI_STALE(pool, "aprend_index_pool_destroy", "pool"))
+		return;
 	// As aprend_vertex_pool_destroy.
 	pool->~aprend_index_pool_t();
 	free(pool);
@@ -517,6 +533,8 @@ APRESULT aprend_index_pool_allocate(aprend_index_pool pool, uint32_t index_count
 		*out_range = {};
 	if (!pool)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	if (APRI_STALE(pool, "aprend_index_pool_allocate", "pool"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is destroyed");
 	APREND_ENTER(pool->core.instance, "aprend_index_pool_allocate");
 	if (index_count == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "index_count is 0");
@@ -548,6 +566,8 @@ APRESULT aprend_index_pool_free(aprend_index_pool pool, const APREND_INDEX_RANGE
 	aprend_error_clear(out_error);
 	if (!pool)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is NULL");
+	if (APRI_STALE(pool, "aprend_index_pool_free", "pool"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "pool is destroyed");
 	APREND_ENTER(pool->core.instance, "aprend_index_pool_free");
 	if (!range)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "range is NULL");
@@ -557,12 +577,16 @@ APRESULT aprend_index_pool_free(aprend_index_pool pool, const APREND_INDEX_RANGE
 void aprend_index_pool_trim(aprend_index_pool pool) {
 	if (!pool)
 		return;
+	if (APRI_STALE(pool, "aprend_index_pool_trim", "pool"))
+		return;
 	APREND_ENTER(pool->core.instance, "aprend_index_pool_trim");
 	aprend_pool_trim(&pool->core);
 }
 
 APRESULT aprend_index_pool_get_usage(aprend_index_pool pool, uint64_t *out_used_bytes, uint64_t *out_block_bytes) {
 	if (!pool)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(pool, "aprend_index_pool_get_usage", "pool"))
 		return APRESULT_INVALID_ARGUMENT;
 	aprend_pool_reclaim(&pool->core);
 	if (out_used_bytes)

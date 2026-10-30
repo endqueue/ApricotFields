@@ -119,6 +119,16 @@ block near the top. A new header gets the same block.
   after its handle's null check, on the object or the unit its header
   names - unless it is a destroy or marked `Thread:`. The object's struct
   holds an `apri_overlap`. Nothing is checked in Release.
+- **A destroyed handle is refused in Debug** (card X16, 2026-10-30;
+  `src/apristale.hpp`). Every handle struct holds `APRI_STALE_TAG` after
+  its `debug_name` (live from construction, dead from its destructor), a
+  destroy that defers its free through the release queue writes it dead
+  with `APRI_KILL` at the call, and every public call checks each handle
+  right after its null check, its own `if`, refusing as the null check
+  does: `if (APRI_STALE(x, "call", "x")) return <the null check's
+  result>;`, which prints one line. Release has no field and no check. A
+  new handle type gets the tag and a factory in
+  `tests/misuse/misuse_factories.h` (Aprend's in `../apricottests`).
 - **Platform gaps come from SpudLib's `SPUD*_EXT_*` macros**, never from a
   platform's name, and surface as `APRESULT_UNSUPPORTED`.
 
@@ -356,11 +366,18 @@ registered with `add_test` behind `APRICOTFIELDS_BUILD_TESTS`.
   implementation turns it on without editing it (`tests/aptext_tests.c`).
 - A new module ships with its tests file; a new call ships with a test in the
   existing one.
-- `tests/apri_misuse_tests.c` calls every public function with zeroes: it is
-  generated from `abi.txt` (`python3 tests/misuse/make_misuse_tests.py`
-  after `./check.sh --update-abi`), never edited by hand.
+- `tests/apri_misuse_tests.c` calls every public function with zeroes, and
+  in Debug (not under a sanitizer) every one taking a handle first with
+  that handle destroyed (X16): it is generated from `abi.txt`
+  (`python3 tests/misuse/make_misuse_tests.py` after
+  `./check.sh --update-abi`; the factories are `tests/misuse/misuse_factories.h`),
+  never edited by hand.
   `tests/aprinoalloc_tests.c` holds each module's steady state to no heap
-  allocation; a new per-frame path gets a scenario there. Brute-force comparison against a slow obvious implementation is the
+  allocation of ours, counted by `tests/alloctrace.h` (which puts each
+  allocation down to the code that asked, the runtime's and drivers' apart;
+  the libraries keep identical copies, `check.sh alloc-trace-copies`); a
+  new per-frame path gets a scenario there, and Aprend's frame is
+  `../apricottests`' `test_frame_allocations`. Brute-force comparison against a slow obvious implementation is the
   preferred check for anything algorithmic (`test_mesh_against_brute_force`).
 
 When asked to verify, on macOS: configure with the `apricotfields-macos-metal`

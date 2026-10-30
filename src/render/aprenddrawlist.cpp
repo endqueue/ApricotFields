@@ -182,6 +182,8 @@ APRESULT aprend_draw_list_create(
 		*out_list = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_draw_list_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_draw_list_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -211,6 +213,8 @@ APRESULT aprend_draw_list_create(
 void aprend_draw_list_destroy(aprend_draw_list list) {
 	if (!list)
 		return;
+	if (APRI_STALE(list, "aprend_draw_list_destroy", "list"))
+		return;
 	// The span it wrote is the instance's, taken back with its frame; the
 	// rest is the CPU's.
 	APREND_DESTRUCT__T(list, aprend_draw_list_t);
@@ -218,6 +222,8 @@ void aprend_draw_list_destroy(aprend_draw_list list) {
 
 void aprend_draw_list_reset(aprend_draw_list list) {
 	if (!list)
+		return;
+	if (APRI_STALE(list, "aprend_draw_list_reset", "list"))
 		return;
 	APREND_ENTER_LIST(list, "aprend_draw_list_reset");
 	// clear() keeps the vectors' memory, so a list refilled each frame stops
@@ -240,6 +246,8 @@ APRESULT aprend_draw_list_add(
 	aprend_error_clear(out_error);
 	if (!list)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "list is NULL");
+	if (APRI_STALE(list, "aprend_draw_list_add", "list"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "list is destroyed");
 	APREND_ENTER_LIST(list, "aprend_draw_list_add");
 	if (!mesh)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "mesh is NULL");
@@ -270,6 +278,8 @@ APRESULT aprend_draw_list_add(
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the mesh isn't indexed and has a _base_vertex of %d", mesh->_base_vertex);
 	if (mesh->_count == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the mesh has a _count of 0");
+	if (material && APRI_STALE(material, "aprend_draw_list_add", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	if (material && material->instance != list->instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is of another instance");
 	if (list->instance_count + instance_count > UINT32_MAX)
@@ -313,6 +323,8 @@ APRESULT aprend_draw_list_build(aprend_draw_list list, APREND_ERROR *out_error) 
 	aprend_error_clear(out_error);
 	if (!list)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "list is NULL");
+	if (APRI_STALE(list, "aprend_draw_list_build", "list"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "list is destroyed");
 	APREND_ENTER(list->instance, "aprend_draw_list_build");
 	list->built = false;
 	list->span  = {};
@@ -375,6 +387,8 @@ APRESULT aprend_draw_list_get_counts(
     uint32_t *out_batch_count,
     uint32_t *out_instance_count) {
 	if (!list)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(list, "aprend_draw_list_get_counts", "list"))
 		return APRESULT_INVALID_ARGUMENT;
 	if (out_draw_count)
 		*out_draw_count = (uint32_t)list->draws.size();

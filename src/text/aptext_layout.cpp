@@ -905,6 +905,8 @@ extern "C"
         aptext_clear_error(out_error);
         if (!layout)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is null");
+        if (APRI_STALE(layout, "aptext_layout_build", "layout"))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is destroyed");
         empty_layout(layout);
         if (!desc)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
@@ -971,6 +973,8 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(layout, "aptext_layout_get_info", "layout"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_info", "layout");
         if (!out_info)
             return APRESULT_INVALID_ARGUMENT;
@@ -990,6 +994,8 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(layout, "aptext_layout_get_glyphs", "layout"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_glyphs", "layout");
         if (!out_glyphs)
             return APRESULT_INVALID_ARGUMENT;
@@ -1003,6 +1009,8 @@ extern "C"
     APRESULT aptext_layout_get_lines(aptext_layout layout, const APTEXT_LINE **out_lines, uint32_t *out_count)
     {
         if (!layout)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(layout, "aptext_layout_get_lines", "layout"))
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_lines", "layout");
         if (!out_lines)
@@ -1018,6 +1026,8 @@ extern "C"
     {
         if (!layout)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(layout, "aptext_layout_get_runs", "layout"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(layout->overlap, "aptext", "aptext_layout_get_runs", "layout");
         if (!out_runs)
             return APRESULT_INVALID_ARGUMENT;
@@ -1032,6 +1042,8 @@ extern "C"
                                        uint32_t *out_count)
     {
         if (!layout)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(layout, "aptext_layout_get_strokes", "layout"))
             return APRESULT_INVALID_ARGUMENT;
         if (aptext_missing(segments, capacity))
             return APRESULT_INVALID_ARGUMENT;
@@ -1091,6 +1103,8 @@ extern "C"
     void aptext_layout_destroy(aptext_layout layout)
     {
         if (!layout)
+            return;
+        if (APRI_STALE(layout, "aptext_layout_destroy", "layout"))
             return;
         layout->~aptext_layout_t();
         free(layout);

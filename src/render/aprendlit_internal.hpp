@@ -9,6 +9,7 @@
 
 #include "render/aprendlit.h"
 #include "render/aprendpost.h"
+#include "../apristale.hpp"
 
 #include <cstdint>
 #include <vector>
@@ -356,6 +357,7 @@ aprend_binding_set aprend_texture_view_cull_depth_set(aprend_texture_view view);
 /* ---- Environments, scenes and exposures --------------------------------- */
 
 typedef struct aprend_lit_environment_t {
+	char *debug_name{nullptr}; /* first, as every handle's: apri_debug_name_set() writes it (apricore.h) */
 	aprend_lit_environment_t() = default;
 	~aprend_lit_environment_t();
 	aprend_instance instance{nullptr};
@@ -380,9 +382,11 @@ typedef struct aprend_lit_environment_t {
 	/* Of the Hosek-Wilkie layout: the coefficients the last
 	 * APREND_COMMAND_LIT_SKY of that model cooked, made by the first. */
 	aprend_material sky_material{nullptr};
+	APRI_STALE_TAG
 } aprend_lit_environment_t;
 
 typedef struct aprend_lit_scene_t {
+	char *debug_name{nullptr}; /* first, as every handle's: apri_debug_name_set() writes it (apricore.h) */
 	aprend_instance instance{nullptr};
 	/* Of the scene layout: the block and every texture set 0 reads. Its
 	 * lit_scene points back here. */
@@ -413,9 +417,11 @@ typedef struct aprend_lit_scene_t {
 	uint32_t point_shadow_count{0};
 	/* What the ambient light names, or NULL. */
 	aprend_lit_environment environment{nullptr};
+	APRI_STALE_TAG
 } aprend_lit_scene_t;
 
 typedef struct aprend_exposure_t {
+	char *debug_name{nullptr}; /* first, as every handle's: apri_debug_name_set() writes it (apricore.h) */
 	aprend_exposure_t() = default;
 	~aprend_exposure_t();
 	aprend_instance instance{nullptr};
@@ -439,6 +445,7 @@ typedef struct aprend_exposure_t {
 	 * histogram layout that reads the luminance texture and writes them. */
 	aprend_buffer histogram{nullptr};
 	aprend_binding_set histogram_set{nullptr};
+	APRI_STALE_TAG
 } aprend_exposure_t;
 
 #endif // APREND_LIT_INTERNAL_HPP

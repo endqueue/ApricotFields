@@ -1,6 +1,7 @@
 #include "jobs/apjobs.h"
 #include "../apriplaindata.hpp"
 #include "../aprioverlap.hpp"
+#include "../apristale.hpp"
 #include "../apristructbase.hpp"
 
 #include <atomic>
@@ -70,6 +71,7 @@ APRI_PLAIN_DATA(apjobs_task_slot);
 typedef struct apjobs_pool_t
 {
     char *debug_name{nullptr};
+    APRI_STALE_TAG
     apjobs_pool_t() = default;
     ~apjobs_pool_t();
     std::mutex mutex{};
@@ -377,6 +379,8 @@ void apjobs_pool_destroy(apjobs_pool pool)
 {
     if (!pool)
         return;
+    if (APRI_STALE(pool, "apjobs_pool_destroy", "pool"))
+        return;
     pool->~apjobs_pool_t();
     free(pool);
 }
@@ -384,6 +388,8 @@ void apjobs_pool_destroy(apjobs_pool pool)
 APRESULT apjobs_pool_get_scheduler(apjobs_pool pool, APJOBS_SCHEDULER *out_scheduler)
 {
     if (!pool)
+        return APRESULT_INVALID_ARGUMENT;
+    if (APRI_STALE(pool, "apjobs_pool_get_scheduler", "pool"))
         return APRESULT_INVALID_ARGUMENT;
     APRI_ENTER(pool->overlap, "apjobs", "apjobs_pool_get_scheduler", "pool");
     if (!out_scheduler)

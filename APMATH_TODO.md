@@ -8,6 +8,14 @@ and triangulation).
 
 ## What has run where
 
+- **2026-10-30, Windows 11** (ThinkPad P1 Gen 5, MSVC 14.51): the first
+  Windows build of the polygons. `apmathpoly_tests`, `apmathpoly_bits_tests`
+  and `apmathbvh_tests` pass on `windows-d3d12` and `windows-vulkan` in
+  Debug, Release and RelWithDebInfo, and under both `-asan` presets; the
+  bits test's hashes are macOS's in every configuration, so the polygons'
+  results are the same bits on both platforms. The test needed
+  `_USE_MATH_DEFINES` for MSVC's `M_PI`. ApMath's ray casts make no
+  allocation there (`aprinoalloc_tests`). Linux never built.
 - **apmathbvh**: built and tested (`tests/apmathbvh_tests.c`) on macOS.
 - **apmathpoly**: written 2026-10-15; reported the same day to build and
   pass its tests (`tests/apmathpoly_tests.c`) - on one platform, which wasn't

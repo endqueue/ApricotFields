@@ -1,6 +1,7 @@
 #include "audio/apaudio.h"
 #include "apaudio_internal.hpp"
 #include "../aprioverlap.hpp"
+#include "../apristale.hpp"
 #include "../apristructbase.hpp"
 #include <algorithm>
 #include <atomic>
@@ -958,6 +959,7 @@ constexpr float SINC_MAX_STRETCH = 16.0f;
 struct apaudio_mixer_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     // Fixed at creation.
     uint32_t max_voices{0};
     uint32_t max_real_voices{0};
@@ -2705,6 +2707,10 @@ extern "C"
 
     void apaudio_mixer_destroy(apaudio_mixer mixer)
     {
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_mixer_destroy", "mixer"))
+            return;
         mixer_free(mixer);
     }
 
@@ -2712,8 +2718,12 @@ extern "C"
                                       APAUDIO_ERROR *error)
     {
         clear_error(error);
-        if (!mixer || !format)
-            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer or format is null");
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_mixer_set_format", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!format)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "format is null");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_set_format", "mixer's control calls");
         Layout layout;
         if (APRESULT result = layout_build(*format, max_frames, layout, error))
@@ -2748,6 +2758,8 @@ extern "C"
     {
         if (!mixer)
             return;
+        if (APRI_STALE(mixer, "apaudio_mixer_collect", "mixer"))
+            return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_collect", "mixer's control calls");
         collect_sounds(mixer);
     }
@@ -2755,6 +2767,8 @@ extern "C"
     void apaudio_mixer_update(apaudio_mixer mixer)
     {
         if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_mixer_update", "mixer"))
             return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_update", "mixer's control calls");
         Mixer *m = mixer;
@@ -2830,7 +2844,11 @@ extern "C"
     void apaudio_mixer_render(apaudio_mixer mixer, void *frames, uint32_t frame_count,
                               const SPUDAUDIO_CALLBACK_INFO *info)
     {
-        if (!mixer || !frames || frame_count == 0)
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_mixer_render", "mixer"))
+            return;
+        if (!frames || frame_count == 0)
             return;
         APRI_ENTER(mixer->render_overlap, "apaudio", "apaudio_mixer_render", "mixer's render");
         Mixer *m = mixer;
@@ -2862,7 +2880,11 @@ extern "C"
 
     APAUDIO_BUS apaudio_mixer_get_master_bus(apaudio_mixer mixer)
     {
-        return mixer ? make_id(0, 1) : 0;
+        if (!mixer)
+            return 0;
+        if (APRI_STALE(mixer, "apaudio_mixer_get_master_bus", "mixer"))
+            return 0;
+        return make_id(0, 1);
     }
 
     APRESULT apaudio_bus_create(apaudio_mixer mixer, const APAUDIO_BUS_DESC *desc, APAUDIO_BUS *out_bus,
@@ -2871,8 +2893,12 @@ extern "C"
         clear_error(error);
         if (out_bus)
             *out_bus = 0;
-        if (!mixer || !desc || !out_bus)
-            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_bus is null");
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_bus_create", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_bus)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "desc or out_bus is null");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_bus_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_BUS_DESC))
@@ -2902,7 +2928,11 @@ extern "C"
     void apaudio_bus_destroy(apaudio_mixer mixer, APAUDIO_BUS bus)
     {
         uint32_t index;
-        if (!mixer || bus == 0 || !find_bus(mixer, bus, index) || index == 0)
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_bus_destroy", "mixer"))
+            return;
+        if (bus == 0 || !find_bus(mixer, bus, index) || index == 0)
             return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_bus_destroy", "mixer's control calls");
         Mixer *m = mixer;
@@ -2941,6 +2971,8 @@ extern "C"
     {
         if (!mixer)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_bus_set_parent", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_bus_set_parent", "mixer's control calls");
         Mixer *m = mixer;
         uint32_t index, parent_index;
@@ -2962,14 +2994,22 @@ extern "C"
 
     APRESULT apaudio_bus_set_gain(apaudio_mixer mixer, APAUDIO_BUS bus, float gain, uint32_t fade_us)
     {
-        if (!mixer || !valid_gain(gain))
+        if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_bus_set_gain", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!valid_gain(gain))
             return APRESULT_INVALID_ARGUMENT;
         return bus_set_value(mixer, bus, &Bus::gain_word, &Bus::gain_fade_word, gain, fade_us);
     }
 
     APRESULT apaudio_bus_set_rate(apaudio_mixer mixer, APAUDIO_BUS bus, float rate, uint32_t fade_us)
     {
-        if (!mixer || !valid_rate(rate))
+        if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_bus_set_rate", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!valid_rate(rate))
             return APRESULT_INVALID_ARGUMENT;
         return bus_set_value(mixer, bus, &Bus::rate_word, &Bus::rate_fade_word, rate, fade_us);
     }
@@ -2978,12 +3018,16 @@ extern "C"
     {
         if (!mixer)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_bus_set_muted", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
         return bus_set_switch(mixer, bus, &Bus::mute_word, muted, fade_us);
     }
 
     APRESULT apaudio_bus_set_paused(apaudio_mixer mixer, APAUDIO_BUS bus, bool paused, uint32_t fade_us)
     {
         if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_bus_set_paused", "mixer"))
             return APRESULT_INVALID_ARGUMENT;
         return bus_set_switch(mixer, bus, &Bus::pause_word, paused, fade_us);
     }
@@ -2996,8 +3040,12 @@ extern "C"
         clear_error(error);
         if (out_modifier)
             *out_modifier = 0;
-        if (!mixer || !desc || !out_modifier)
-            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_modifier is null");
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_modifier_create", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_modifier)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "desc or out_modifier is null");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_modifier_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC))
@@ -3049,7 +3097,11 @@ extern "C"
     void apaudio_modifier_destroy(apaudio_mixer mixer, APAUDIO_MODIFIER modifier)
     {
         uint32_t index, generation;
-        if (!mixer || !split_id(modifier, mixer->max_modifiers, index, generation))
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_modifier_destroy", "mixer"))
+            return;
+        if (!split_id(modifier, mixer->max_modifiers, index, generation))
             return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_modifier_destroy", "mixer's control calls");
         ModifierConfig &config = mixer->shadow.modifiers[index];
@@ -3067,6 +3119,8 @@ extern "C"
     {
         if (!mixer)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_modifier_set_active", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
         uint32_t index, generation;
         if (!split_id(modifier, mixer->max_modifiers, index, generation) ||
             !tagged_store(mixer->modifiers[index].active_word, generation, active ? 1 : 0))
@@ -3082,8 +3136,12 @@ extern "C"
         clear_error(error);
         if (out_group)
             *out_group = 0;
-        if (!mixer || !desc || !out_group)
-            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_group is null");
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_concurrency_create", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_group)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "desc or out_group is null");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_concurrency_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC))
@@ -3113,7 +3171,11 @@ extern "C"
     void apaudio_concurrency_destroy(apaudio_mixer mixer, APAUDIO_CONCURRENCY group)
     {
         uint32_t index, generation;
-        if (!mixer || !split_id(group, mixer->max_groups, index, generation))
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_concurrency_destroy", "mixer"))
+            return;
+        if (!split_id(group, mixer->max_groups, index, generation))
             return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_concurrency_destroy", "mixer's control calls");
         GroupConfig &config = mixer->shadow.groups[index];
@@ -3131,8 +3193,12 @@ extern "C"
         clear_error(error);
         if (out_sound)
             *out_sound = 0;
-        if (!mixer || !desc || !out_sound)
-            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer, desc or out_sound is null");
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_sound_create", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_sound)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "desc or out_sound is null");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_sound_create", "mixer's control calls");
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC))
@@ -3200,7 +3266,11 @@ extern "C"
     void apaudio_sound_destroy(apaudio_mixer mixer, APAUDIO_SOUND sound)
     {
         uint32_t index, generation;
-        if (!mixer || !split_id(sound, mixer->max_sounds, index, generation))
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_sound_destroy", "mixer"))
+            return;
+        if (!split_id(sound, mixer->max_sounds, index, generation))
             return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_sound_destroy", "mixer's control calls");
         Sound &slot = mixer->sounds[index];
@@ -3222,7 +3292,11 @@ extern "C"
     {
         if (out_voice)
             *out_voice = 0;
-        if (!mixer || !desc)
+        if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_play", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!desc)
             return APRESULT_INVALID_ARGUMENT;
         Mixer *m = mixer;
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC))
@@ -3289,6 +3363,8 @@ extern "C"
     {
         if (!mixer)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_voice_stop", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
         uint32_t index, generation;
         if (!split_id(voice, mixer->record_count, index, generation))
             return APRESULT_OK;
@@ -3308,7 +3384,11 @@ extern "C"
     bool apaudio_voice_is_folded(apaudio_mixer mixer, APAUDIO_VOICE voice)
     {
         uint32_t index, generation;
-        if (!mixer || !split_id(voice, mixer->record_count, index, generation))
+        if (!mixer)
+            return false;
+        if (APRI_STALE(mixer, "apaudio_voice_is_folded", "mixer"))
+            return false;
+        if (!split_id(voice, mixer->record_count, index, generation))
             return false;
         return mixer->voices[index].folded_id.load(std::memory_order_acquire) == voice;
     }
@@ -3316,14 +3396,22 @@ extern "C"
     bool apaudio_voice_is_live(apaudio_mixer mixer, APAUDIO_VOICE voice)
     {
         uint32_t index, generation;
-        if (!mixer || !split_id(voice, mixer->record_count, index, generation))
+        if (!mixer)
+            return false;
+        if (APRI_STALE(mixer, "apaudio_voice_is_live", "mixer"))
+            return false;
+        if (!split_id(voice, mixer->record_count, index, generation))
             return false;
         return mixer->voices[index].live_id.load(std::memory_order_acquire) == voice;
     }
 
     APRESULT apaudio_voice_set_gain(apaudio_mixer mixer, APAUDIO_VOICE voice, float gain)
     {
-        if (!mixer || !valid_gain(gain))
+        if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_voice_set_gain", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!valid_gain(gain))
             return APRESULT_INVALID_ARGUMENT;
         uint32_t index, generation;
         if (split_id(voice, mixer->record_count, index, generation))
@@ -3333,7 +3421,11 @@ extern "C"
 
     APRESULT apaudio_voice_set_direction(apaudio_mixer mixer, APAUDIO_VOICE voice, const APAUDIO_DIRECTION *direction)
     {
-        if (!mixer || (direction && (!isfinite(direction->azimuth) || !isfinite(direction->elevation))))
+        if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_voice_set_direction", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (direction && (!isfinite(direction->azimuth) || !isfinite(direction->elevation)))
             return APRESULT_INVALID_ARGUMENT;
         uint32_t index, generation;
         if (split_id(voice, mixer->record_count, index, generation))
@@ -3343,7 +3435,11 @@ extern "C"
 
     APRESULT apaudio_voice_set_rate(apaudio_mixer mixer, APAUDIO_VOICE voice, float rate)
     {
-        if (!mixer || !valid_rate(rate))
+        if (!mixer)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(mixer, "apaudio_voice_set_rate", "mixer"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!valid_rate(rate))
             return APRESULT_INVALID_ARGUMENT;
         uint32_t index, generation;
         if (split_id(voice, mixer->record_count, index, generation))

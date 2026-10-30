@@ -1582,6 +1582,8 @@ extern "C"
     {
         if (!codecs)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(codecs, "aparchive_codecs_add", "codecs"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(codecs->overlap, "aparchive", "aparchive_codecs_add", "codec table");
         if (!codec)
             return APRESULT_INVALID_ARGUMENT;
@@ -1611,6 +1613,10 @@ extern "C"
 
     APRESULT aparchive_codecs_add_deflate(aparchive_codecs codecs)
     {
+        if (!codecs)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(codecs, "aparchive_codecs_add_deflate", "codecs"))
+            return APRESULT_INVALID_ARGUMENT;
         APARCHIVE_CODEC codec{};
         codec.base = apri_struct_base(APRI_STRUCT_TYPE_APARCHIVE_CODEC);
         codec.method = APARCHIVE_METHOD_DEFLATE;
@@ -1627,12 +1633,18 @@ extern "C"
     {
         if (!codecs)
             return false;
+        if (APRI_STALE(codecs, "aparchive_codecs_has", "codecs"))
+            return false;
         APRI_ENTER(codecs->overlap, "aparchive", "aparchive_codecs_has", "codec table");
         return method == APARCHIVE_METHOD_STORED || codecs->find(method) != nullptr;
     }
 
     void aparchive_codecs_destroy(aparchive_codecs codecs)
     {
+        if (!codecs)
+            return;
+        if (APRI_STALE(codecs, "aparchive_codecs_destroy", "codecs"))
+            return;
         delete codecs;
     }
 
@@ -1640,6 +1652,8 @@ extern "C"
                                              uint64_t *out_bound)
     {
         if (!codecs)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(codecs, "aparchive_codecs_compress_bound", "codecs"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_bound)
             return APRESULT_INVALID_ARGUMENT;
@@ -1664,6 +1678,8 @@ extern "C"
         clear_error(out_error);
         if (!codecs)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "codecs is null");
+        if (APRI_STALE(codecs, "aparchive_codecs_compress", "codecs"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "codecs is destroyed");
         if (!in && in_size != 0)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "in is null but in_size is %llu",
                         (unsigned long long)in_size);
@@ -1730,6 +1746,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_add_entry", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_add_entry", "writer");
         if (!desc)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
@@ -1757,6 +1775,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_add_raw_entry", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_add_raw_entry", "writer");
         if (!desc)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
@@ -1782,6 +1802,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_begin_entry", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_begin_entry", "writer");
         if (!desc)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
@@ -1804,6 +1826,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_write_entry_data", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_write_entry_data", "writer");
         if (!data && size != 0)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "data is null but size is %llu", (unsigned long long)size);
@@ -1819,6 +1843,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_end_entry", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_end_entry", "writer");
         if (writer->failed)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is unusable after an earlier failure");
@@ -1841,6 +1867,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_set_comment", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_set_comment", "writer");
         if (!comment && comment_size != 0)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "comment is null but comment_size is %u", comment_size);
@@ -1865,6 +1893,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_remove_entry", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_remove_entry", "writer");
         if (!name)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "name is null");
@@ -1930,7 +1960,11 @@ extern "C"
 
     uint64_t aparchive_writer_get_offset(aparchive_writer writer)
     {
-        return writer ? writer->offset : 0;
+        if (!writer)
+            return 0;
+        if (APRI_STALE(writer, "aparchive_writer_get_offset", "writer"))
+            return 0;
+        return writer->offset;
     }
 
     APRESULT aparchive_writer_finish(aparchive_writer writer, APARCHIVE_ERROR *out_error)
@@ -1938,6 +1972,8 @@ extern "C"
         clear_error(out_error);
         if (!writer)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is null");
+        if (APRI_STALE(writer, "aparchive_writer_finish", "writer"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "writer is destroyed");
         APRI_ENTER(writer->overlap, "aparchive", "aparchive_writer_finish", "writer");
         if (writer->failed || writer->finished)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "the writer is %s",
@@ -1958,6 +1994,8 @@ extern "C"
     void aparchive_writer_destroy(aparchive_writer writer)
     {
         if (!writer)
+            return;
+        if (APRI_STALE(writer, "aparchive_writer_destroy", "writer"))
             return;
         writer->~aparchive_writer_t();
         free(writer);
@@ -2007,12 +2045,18 @@ extern "C"
 
     uint32_t aparchive_reader_get_entry_count(aparchive_reader reader)
     {
-        return reader ? (uint32_t)reader->entries.size() : 0;
+        if (!reader)
+            return 0;
+        if (APRI_STALE(reader, "aparchive_reader_get_entry_count", "reader"))
+            return 0;
+        return (uint32_t)reader->entries.size();
     }
 
     APRESULT aparchive_reader_get_entry(aparchive_reader reader, uint32_t index, APARCHIVE_ENTRY_INFO *out_info)
     {
         if (!reader)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(reader, "aparchive_reader_get_entry", "reader"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_info)
             return APRESULT_INVALID_ARGUMENT;
@@ -2028,7 +2072,11 @@ extern "C"
 
     APRESULT aparchive_reader_find(aparchive_reader reader, const char *name, uint32_t *out_index)
     {
-        if (!reader || !name || !out_index)
+        if (!reader)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(reader, "aparchive_reader_find", "reader"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!name || !out_index)
             return APRESULT_INVALID_ARGUMENT;
         auto it = reader->name_index.find(std::string_view(name));
         if (it == reader->name_index.end())
@@ -2041,8 +2089,12 @@ extern "C"
                                               APARCHIVE_ERROR *out_error)
     {
         clear_error(out_error);
-        if (!reader || !out_offset)
-            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader or out_offset is null");
+        if (!reader)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is null");
+        if (APRI_STALE(reader, "aparchive_reader_get_data_offset", "reader"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is destroyed");
+        if (!out_offset)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "out_offset is null");
         if (index >= reader->entries.size())
             return fail(out_error, APRESULT_NOT_FOUND, "no entry %u (the archive has %u)", index,
                         (uint32_t)reader->entries.size());
@@ -2060,8 +2112,12 @@ extern "C"
                                          APARCHIVE_ERROR *out_error)
     {
         clear_error(out_error);
-        if (!reader || (!buffer && buffer_size != 0))
-            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is null, or buffer is null with a size");
+        if (!reader)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is null");
+        if (APRI_STALE(reader, "aparchive_reader_read_entry", "reader"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is destroyed");
+        if (!buffer && buffer_size != 0)
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is null with a size");
         if (index >= reader->entries.size())
             return fail(out_error, APRESULT_NOT_FOUND, "no entry %u (the archive has %u)", index,
                         (uint32_t)reader->entries.size());
@@ -2081,12 +2137,18 @@ extern "C"
 
     void aparchive_reader_destroy(aparchive_reader reader)
     {
+        if (!reader)
+            return;
+        if (APRI_STALE(reader, "aparchive_reader_destroy", "reader"))
+            return;
         delete reader;
     }
 
     APRESULT aparchive_reader_get_comment(aparchive_reader reader, const void **out_comment, uint16_t *out_size)
     {
         if (!reader)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(reader, "aparchive_reader_get_comment", "reader"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_comment)
             return APRESULT_INVALID_ARGUMENT;
@@ -2099,7 +2161,11 @@ extern "C"
 
     uint64_t aparchive_reader_get_offset_shift(aparchive_reader reader)
     {
-        return reader ? reader->shift : 0;
+        if (!reader)
+            return 0;
+        if (APRI_STALE(reader, "aparchive_reader_get_offset_shift", "reader"))
+            return 0;
+        return reader->shift;
     }
 
     APRESULT aparchive_reader_open_entry(aparchive_reader reader, uint32_t index,
@@ -2111,6 +2177,8 @@ extern "C"
         *out_entry_reader = nullptr;
         if (!reader)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is null");
+        if (APRI_STALE(reader, "aparchive_reader_open_entry", "reader"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "reader is destroyed");
         if (index >= reader->entries.size())
             return fail(out_error, APRESULT_NOT_FOUND, "no entry %u (the archive has %u)", index,
                         (uint32_t)reader->entries.size());
@@ -2166,6 +2234,8 @@ extern "C"
         clear_error(out_error);
         if (!entry_reader)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "entry_reader is null");
+        if (APRI_STALE(entry_reader, "aparchive_entry_reader_read", "entry_reader"))
+            return fail(out_error, APRESULT_INVALID_ARGUMENT, "entry_reader is destroyed");
         APRI_ENTER(entry_reader->overlap, "aparchive", "aparchive_entry_reader_read", "entry reader");
         if (!buffer && capacity != 0)
             return fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is null but capacity is %llu",
@@ -2181,6 +2251,8 @@ extern "C"
     void aparchive_entry_reader_destroy(aparchive_entry_reader entry_reader)
     {
         if (!entry_reader)
+            return;
+        if (APRI_STALE(entry_reader, "aparchive_entry_reader_destroy", "entry_reader"))
             return;
         if (entry_reader->codec && entry_reader->state)
             entry_reader->codec->stream_end(entry_reader->codec->user, entry_reader->state);

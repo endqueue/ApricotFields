@@ -497,6 +497,8 @@ APRESULT aprend_texture2d_create(
 		*out_texture = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_texture2d_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_texture2d_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -576,9 +578,12 @@ failedattempt:
 void aprend_texture2d_destroy(aprend_texture2d texture) {
 	if (!texture)
 		return;
+	if (APRI_STALE(texture, "aprend_texture2d_destroy", "texture"))
+		return;
 	// A list compiled against it and not submitted would read its layouts.
 	aprend_instance_forget(texture->instance, &texture->tracking);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(texture);
 	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture2d_t>);
 }
 APRESULT aprend_texture2d_get_desc(
@@ -586,13 +591,21 @@ APRESULT aprend_texture2d_get_desc(
     APREND_TEXTURE2D_DESC *out_desc) {
 	if (!texture)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(texture, "aprend_texture2d_get_desc", "texture"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
 	*out_desc      = texture->desc;
 	out_desc->base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC);
 	return APRESULT_OK;
 }
-spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) { return texture ? texture->image : nullptr; }
+spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) {
+	if (!texture)
+		return nullptr;
+	if (APRI_STALE(texture, "aprend_texture2d_get_spudgpu_image", "texture"))
+		return nullptr;
+	return texture->image;
+}
 APRESULT aprend_texture2d_update(
     aprend_texture2d texture,
     spudgpu_command_queue queue,
@@ -608,6 +621,8 @@ APRESULT aprend_texture2d_update(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture2d_update", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture2d_update");
 	const uint32_t size[3]   = {texture->desc.width, texture->desc.height, 1};
 	const uint32_t offset[3] = {x_offset, y_offset, 0};
@@ -634,6 +649,8 @@ APRESULT aprend_texture2d_get_data(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture2d_get_data", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture2d_get_data");
 	const uint32_t size[3]   = {texture->desc.width, texture->desc.height, 1};
 	const uint32_t offset[3] = {x_offset, y_offset, 0};
@@ -780,6 +797,8 @@ APRESULT aprend_texture2d_generate_mips(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture2d_generate_mips", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture2d_generate_mips");
 	if (!queue)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "queue is NULL");
@@ -853,6 +872,8 @@ APRESULT aprend_texture2d_resize(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture2d_resize", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture2d_resize");
 	if (new_width == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "new_width is 0");
@@ -927,6 +948,8 @@ APRESULT aprend_texture3d_create(
 		*out_texture = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_texture3d_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_texture3d_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1003,9 +1026,12 @@ failedattempt:
 void aprend_texture3d_destroy(aprend_texture3d texture) {
 	if (!texture)
 		return;
+	if (APRI_STALE(texture, "aprend_texture3d_destroy", "texture"))
+		return;
 	// As aprend_texture2d_destroy.
 	aprend_instance_forget(texture->instance, &texture->tracking);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(texture);
 	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture3d_t>);
 }
 APRESULT aprend_texture3d_get_desc(
@@ -1013,14 +1039,28 @@ APRESULT aprend_texture3d_get_desc(
     APREND_TEXTURE3D_DESC *out_desc) {
 	if (!texture)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(texture, "aprend_texture3d_get_desc", "texture"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
 	*out_desc      = texture->desc;
 	out_desc->base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC);
 	return APRESULT_OK;
 }
-spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture) { return texture ? texture->image_view : NULL; }
-spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture) { return texture ? texture->image : NULL; }
+spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture) {
+	if (!texture)
+		return NULL;
+	if (APRI_STALE(texture, "aprend_texture3d_get_spudgpu_image_view", "texture"))
+		return NULL;
+	return texture->image_view;
+}
+spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture) {
+	if (!texture)
+		return NULL;
+	if (APRI_STALE(texture, "aprend_texture3d_get_spudgpu_image", "texture"))
+		return NULL;
+	return texture->image;
+}
 APRESULT aprend_texture3d_update(
     aprend_texture3d texture,
     spudgpu_command_queue queue,
@@ -1037,6 +1077,8 @@ APRESULT aprend_texture3d_update(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture3d_update", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture3d_update");
 	const uint32_t size[3]   = {texture->desc.width, texture->desc.height, texture->desc.depth};
 	const uint32_t offset[3] = {x_offset, y_offset, z_offset};
@@ -1064,6 +1106,8 @@ APRESULT aprend_texture3d_get_data(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture3d_get_data", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture3d_get_data");
 	const uint32_t size[3]   = {texture->desc.width, texture->desc.height, texture->desc.depth};
 	const uint32_t offset[3] = {x_offset, y_offset, z_offset};
@@ -1084,6 +1128,8 @@ APRESULT aprend_texture3d_resize(
 	aprend_error_clear(out_error);
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture3d_resize", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture3d_resize");
 	if (new_width == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "new_width is 0");
@@ -1214,6 +1260,7 @@ static APRESULT aprend_texture_view_make(
 	result = new (result) aprend_texture_view_t();
 
 	result->instance  = texture->instance;
+	result->serial    = aprend_instance_next_serial(texture->instance);
 	result->dimension = dimension;
 	result->view_type = resolved.type;
 	if (dimension == APREND_TEXTURE_DIMENSION_2D)
@@ -1261,6 +1308,8 @@ APRESULT aprend_texture_view_create_2d(
 		*out_view = nullptr;
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture_view_create_2d", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture_view_create_2d");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1340,6 +1389,8 @@ APRESULT aprend_texture_view_create_3d(
 		*out_view = nullptr;
 	if (!texture)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is NULL");
+	if (APRI_STALE(texture, "aprend_texture_view_create_3d", "texture"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "texture is destroyed");
 	APREND_ENTER(texture->instance, "aprend_texture_view_create_3d");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1370,6 +1421,8 @@ APRESULT aprend_texture_view_create_3d(
 void aprend_texture_view_destroy(aprend_texture_view view) {
 	if (!view)
 		return;
+	if (APRI_STALE(view, "aprend_texture_view_destroy", "view"))
+		return;
 #if _DEBUG
 	// Counted off at the caller's destroy, not at the release: the contract
 	// is about the order of the calls.
@@ -1381,13 +1434,22 @@ void aprend_texture_view_destroy(aprend_texture_view view) {
 	// A compiled list that names it is refused at submit.
 	aprend_instance_forget(view->instance, view);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(view);
 	aprend_instance_retire(view->instance, view, &aprend_release_handle<aprend_texture_view_t>);
 }
-APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) { return view ? view->view_type : APREND_TEXTURE_VIEW_TYPE_NONE; }
+APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) {
+	if (!view)
+		return APREND_TEXTURE_VIEW_TYPE_NONE;
+	if (APRI_STALE(view, "aprend_texture_view_get_type", "view"))
+		return APREND_TEXTURE_VIEW_TYPE_NONE;
+	return view->view_type;
+}
 APRESULT aprend_texture_view_get_desc(
     aprend_texture_view view,
     APREND_TEXTURE_VIEW_DESC *out_desc) {
 	if (!view)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(view, "aprend_texture_view_get_desc", "view"))
 		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
@@ -1395,10 +1457,26 @@ APRESULT aprend_texture_view_get_desc(
 	out_desc->base = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
 	return APRESULT_OK;
 }
-APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) { return view ? view->dimension : APREND_TEXTURE_DIMENSION_1D; }
-spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view) { return view ? view->image_view : nullptr; }
+APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) {
+	if (!view)
+		return APREND_TEXTURE_DIMENSION_1D;
+	if (APRI_STALE(view, "aprend_texture_view_get_dimension", "view"))
+		return APREND_TEXTURE_DIMENSION_1D;
+	return view->dimension;
+}
+spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view) {
+	if (!view)
+		return nullptr;
+	if (APRI_STALE(view, "aprend_texture_view_get_spudgpu_image_view", "view"))
+		return nullptr;
+	return view->image_view;
+}
 aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view) {
-	return view && view->dimension == APREND_TEXTURE_DIMENSION_2D ? view->texture._t2d : nullptr;
+	if (!view)
+		return nullptr;
+	if (APRI_STALE(view, "aprend_texture_view_get_texture2d", "view"))
+		return nullptr;
+	return view->dimension == APREND_TEXTURE_DIMENSION_2D ? view->texture._t2d : nullptr;
 }
 
 APRESULT aprend_sampler_create(
@@ -1411,6 +1489,8 @@ APRESULT aprend_sampler_create(
 		*out_sampler = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_sampler_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_sampler_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1424,6 +1504,7 @@ APRESULT aprend_sampler_create(
 		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the sampler");
 	APREND_CONSTRUCT__T(result, aprend_sampler_t);
 	result->instance = instance;
+	result->serial   = aprend_instance_next_serial(instance);
 	result->desc     = *desc;
 
 	spudgpu_sampler_desc sd{};
@@ -1458,9 +1539,12 @@ APRESULT aprend_sampler_create(
 void aprend_sampler_destroy(aprend_sampler sampler) {
 	if (!sampler)
 		return;
+	if (APRI_STALE(sampler, "aprend_sampler_destroy", "sampler"))
+		return;
 	// A compiled list whose sets hold it is refused at submit.
 	aprend_instance_forget(sampler->instance, sampler);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(sampler);
 	aprend_instance_retire(sampler->instance, sampler, &aprend_release_handle<aprend_sampler_t>);
 }
 APRESULT aprend_sampler_get_desc(
@@ -1468,11 +1552,19 @@ APRESULT aprend_sampler_get_desc(
     APREND_SAMPLER_DESC *out_desc) {
 	if (!sampler)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(sampler, "aprend_sampler_get_desc", "sampler"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
 	*out_desc      = sampler->desc;
 	out_desc->base = apri_struct_base(APRI_STRUCT_TYPE_APREND_SAMPLER_DESC);
 	return APRESULT_OK;
 }
-spudgpu_sampler aprend_sampler_get_spudgpu_sampler(aprend_sampler sampler) { return sampler ? sampler->sampler : nullptr; }
+spudgpu_sampler aprend_sampler_get_spudgpu_sampler(aprend_sampler sampler) {
+	if (!sampler)
+		return nullptr;
+	if (APRI_STALE(sampler, "aprend_sampler_get_spudgpu_sampler", "sampler"))
+		return nullptr;
+	return sampler->sampler;
+}
 }

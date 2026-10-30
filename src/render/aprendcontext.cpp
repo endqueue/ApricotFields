@@ -472,6 +472,8 @@ APRESULT aprend_instance_get_desc(
     APREND_INSTANCE_DESC *out_desc) {
 	if (!instance)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(instance, "aprend_instance_get_desc", "instance"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
 	*out_desc           = instance->desc;
@@ -488,6 +490,8 @@ APRESULT aprend_instance_next_frame(
 	aprend_error_clear(out_error);
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_instance_next_frame", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_instance_next_frame");
 	// The batch is the frame's, recorded into its allocator and reading its
 	// transient memory: it goes before the frame ends, if nothing has taken
@@ -530,13 +534,21 @@ APRESULT aprend_instance_next_frame(
 		*out_frame_index = next;
 	return APRESULT_OK;
 }
-uint32_t aprend_instance_get_frame_index(aprend_instance instance) { return instance ? instance->frame_index : 0; }
+uint32_t aprend_instance_get_frame_index(aprend_instance instance) {
+	if (!instance)
+		return 0;
+	if (APRI_STALE(instance, "aprend_instance_get_frame_index", "instance"))
+		return 0;
+	return instance->frame_index;
+}
 APRESULT aprend_instance_wait_idle(
     aprend_instance instance,
     APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_instance_wait_idle", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_instance_wait_idle");
 	// Waiting for everything includes what is recorded and not yet
 	// submitted.
@@ -551,6 +563,8 @@ APRESULT aprend_instance_wait_idle(
 }
 
 void aprend_instance_destroy(aprend_instance instance) {
+	if (instance && APRI_STALE(instance, "aprend_instance_destroy", "instance"))
+		return;
 	if (instance) {
 		// Everything retired is released by the destructor, so the GPU must
 		// be done with all of it first.

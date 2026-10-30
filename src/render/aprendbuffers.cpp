@@ -396,6 +396,7 @@ static APRESULT aprend_buffer_begin(
 	}
 	result                  = new (result) aprend_buffer_t();
 	result->instance        = instance;
+	result->serial          = aprend_instance_next_serial(instance);
 	result->desc.debug_name = name;
 	result->debug_name      = name;
 	// Its destroy's retire, promised now so the destroy can't fail.
@@ -573,6 +574,8 @@ APRESULT aprend_buffer_create(aprend_instance instance, const APREND_BUFFER_DESC
 		*out_buffer = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_buffer_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_buffer_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -629,6 +632,8 @@ APRESULT aprend_buffer_create(aprend_instance instance, const APREND_BUFFER_DESC
 void aprend_buffer_destroy(aprend_buffer buffer) {
 	if (!buffer)
 		return;
+	if (APRI_STALE(buffer, "aprend_buffer_destroy", "buffer"))
+		return;
 	// A list compiled against any copy and not submitted would copy its
 	// writes, or bind it: refused at submit.
 	for (uint32_t i = 0; i < buffer->part_count; ++i)
@@ -636,11 +641,14 @@ void aprend_buffer_destroy(aprend_buffer buffer) {
 	aprend_instance_forget(buffer->instance, buffer);
 	// Released once the GPU has finished everything submitted so far, with
 	// the retire its create promised.
+	APRI_KILL(buffer);
 	aprend_instance_retire(buffer->instance, buffer, &aprend_release_handle<aprend_buffer_t>);
 }
 
 APRESULT aprend_buffer_get_desc(aprend_buffer buffer, APREND_BUFFER_DESC *out_desc) {
 	if (!buffer)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(buffer, "aprend_buffer_get_desc", "buffer"))
 		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
@@ -652,6 +660,8 @@ APRESULT aprend_buffer_write(aprend_buffer buffer, uint64_t offset, const void *
 	aprend_error_clear(out_error);
 	if (!buffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is NULL");
+	if (APRI_STALE(buffer, "aprend_buffer_write", "buffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is destroyed");
 	APREND_ENTER(buffer->instance, "aprend_buffer_write");
 	char label[96];
 	if (!data)
@@ -676,6 +686,8 @@ APRESULT aprend_buffer_write_uniform(aprend_buffer buffer, const APREND_UNIFORM_
 	aprend_error_clear(out_error);
 	if (!buffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is NULL");
+	if (APRI_STALE(buffer, "aprend_buffer_write_uniform", "buffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is destroyed");
 	APREND_ENTER(buffer->instance, "aprend_buffer_write_uniform");
 	char label[96];
 	if (!(buffer->desc.usage & APREND_BUFFER_USAGE_UNIFORM))

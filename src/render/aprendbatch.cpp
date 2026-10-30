@@ -209,16 +209,9 @@ static projected aprend_batch_project(const aprend_batch_t &batch, const float *
 	return out;
 }
 
-// A segment of a line after the near plane: its ends (world or screen
-// points), and whether each touches the next or previous visible segment.
-struct segment {
-	float a[3];
-	float b[3];
-	float a_px[2];
-	float b_px[2];
-	bool joined_before; // continues the visible segment before it
-};
-APRI_PLAIN_DATA(segment);
+// A line's segments after the near plane: aprend_batch_segment
+// (aprendbatch_internal.hpp), kept in the batch's [segments].
+typedef aprend_batch_segment segment;
 
 static float distance2(const float *a, const float *b) {
 	const float dx = a[0] - b[0], dy = a[1] - b[1];
@@ -363,6 +356,8 @@ APRESULT aprend_batch_create(aprend_instance instance, const APREND_BATCH_DESC *
 		*out_batch = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_batch_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_batch_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -475,6 +470,8 @@ APRESULT aprend_batch_create(aprend_instance instance, const APREND_BATCH_DESC *
 void aprend_batch_destroy(aprend_batch batch) {
 	if (!batch)
 		return;
+	if (APRI_STALE(batch, "aprend_batch_destroy", "batch"))
+		return;
 	aprend_batch_free(batch);
 }
 
@@ -482,6 +479,8 @@ APRESULT aprend_batch_begin(aprend_batch batch, const APREND_BATCH_FRAME *frame,
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_begin", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_begin");
 	if (!frame)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "frame is NULL");
@@ -540,6 +539,8 @@ APRESULT aprend_batch_add_quads(aprend_batch batch, const APREND_BATCH_QUAD *qua
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_add_quads", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_add_quads");
 	if (!quads && count != 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "quads is NULL with a count");
@@ -573,6 +574,8 @@ APRESULT aprend_batch_add_circles(aprend_batch batch, const APREND_BATCH_CIRCLE 
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_add_circles", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_add_circles");
 	if (!circles && count != 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "circles is NULL with a count");
@@ -607,6 +610,8 @@ APRESULT aprend_batch_add_line(aprend_batch batch, const APREND_BATCH_LINE *line
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_add_line", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_add_line");
 	if (!line)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "line is NULL");
@@ -652,7 +657,10 @@ APRESULT aprend_batch_add_line(aprend_batch batch, const APREND_BATCH_LINE *line
 	if (!isfinite(l.dash_offset))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "dash_offset is not a number");
 
-	eq::array<segment> segments;
+	// The batch's own array, cleared: a frame of lines allocates nothing
+	// once it has grown to the longest.
+	eq::array<segment> &segments = batch->segments;
+	segments.clear();
 	if (const APRESULT laid = aprend_batch_segments(*batch, l, segments, out_error))
 		return laid;
 	if (const APRESULT room = aprend_batch_room(batch, segments.size(), out_error))
@@ -700,6 +708,8 @@ APRESULT aprend_batch_add_glyphs(aprend_batch batch, const APREND_BATCH_GLYPH *g
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_add_glyphs", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_add_glyphs");
 	if (!glyphs && count != 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "glyphs is NULL with a count");
@@ -737,7 +747,11 @@ APRESULT aprend_batch_add_glyphs(aprend_batch batch, const APREND_BATCH_GLYPH *g
 }
 
 uint32_t aprend_batch_get_shape_count(aprend_batch batch) {
-	return batch ? batch->count : 0;
+	if (!batch)
+		return 0;
+	if (APRI_STALE(batch, "aprend_batch_get_shape_count", "batch"))
+		return 0;
+	return batch->count;
 }
 
 APRESULT aprend_batch_debug_box(aprend_batch batch, const float center[3], const float half_x[3], const float half_y[3], const float half_z[3],
@@ -745,6 +759,8 @@ APRESULT aprend_batch_debug_box(aprend_batch batch, const float center[3], const
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_debug_box", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_debug_box");
 	if (!center)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "center is NULL");
@@ -791,6 +807,8 @@ APRESULT aprend_batch_debug_sphere(aprend_batch batch, const float center[3], fl
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_debug_sphere", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_debug_sphere");
 	if (!center)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "center is NULL");
@@ -823,6 +841,8 @@ APRESULT aprend_batch_debug_arrow(aprend_batch batch, const float from[3], const
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_debug_arrow", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_debug_arrow");
 	if (!from)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "from is NULL");
@@ -863,6 +883,8 @@ APRESULT aprend_batch_debug_axes(aprend_batch batch, const float origin[3], floa
 	aprend_error_clear(out_error);
 	if (!batch)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is NULL");
+	if (APRI_STALE(batch, "aprend_batch_debug_axes", "batch"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "batch is destroyed");
 	APREND_ENTER(batch->instance, "aprend_batch_debug_axes");
 	if (!origin)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "origin is NULL");

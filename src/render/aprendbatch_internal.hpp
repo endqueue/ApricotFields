@@ -39,8 +39,20 @@ struct aprend_batch_push {
 /* The depth modes a batch has pipelines for: over, tested, tested reversed. */
 enum { APREND_BATCH_DEPTH_MODES = 3, APREND_BATCH_KINDS = 4 };
 
+/* A segment of a line after the near plane: its ends (world or screen
+ * points), and whether each touches the next or previous visible segment. */
+struct aprend_batch_segment {
+	float a[3];
+	float b[3];
+	float a_px[2];
+	float b_px[2];
+	bool joined_before; /* continues the visible segment before it */
+};
+APRI_PLAIN_DATA(aprend_batch_segment);
+
 typedef struct aprend_batch_t {
 	const char *debug_name{nullptr}; /* first, as every handle's (apricore.h) */
+	APRI_STALE_TAG
 	aprend_instance instance{nullptr};
 	char *name_copy{nullptr};
 	SPUDGPU_FORMAT color_format{};
@@ -66,6 +78,9 @@ typedef struct aprend_batch_t {
 	uint32_t count{0};
 	uint32_t atlas_layers{0};
 	eq::array<aprend_batch_run> runs;
+	/* aprend_batch_add_line's working array, the line it is adding cut at
+	 * the near plane; kept with its capacity from line to line. */
+	eq::array<aprend_batch_segment> segments;
 } aprend_batch_t;
 
 /* APREND_COMMAND_DRAW_BATCH, at send: the batch's runs as pipelines, its

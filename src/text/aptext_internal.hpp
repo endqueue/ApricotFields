@@ -4,6 +4,7 @@
 #include "text/aptext.h"
 #include "../aprihashindex.hpp"
 #include "../aprioverlap.hpp"
+#include "../apristale.hpp"
 #include "../apriplaindata.hpp"
 #include <eqstd.hpp>
 #include <hb-ot.h>
@@ -89,6 +90,7 @@ APRI_PLAIN_DATA(aptext_cmap_entry);
 struct aptext_face_t
 {
     const char *debug_name = nullptr;
+    APRI_STALE_TAG
     APTEXT_FACE_KIND kind = APTEXT_FACE_KIND_OUTLINE;
     // What aptext_face_get_metrics() gives, its base aside.
     APTEXT_FACE_METRICS metrics = {};
@@ -141,6 +143,7 @@ static constexpr float APTEXT_STROKE_NOTDEF_ADVANCE = 0.5f;
 struct aptext_chain_t
 {
     const char *debug_name = nullptr;
+    APRI_STALE_TAG
     APTEXT_FACE_KIND kind = APTEXT_FACE_KIND_OUTLINE;
     eq::array<aptext_face> faces;
 };
@@ -179,6 +182,7 @@ APRI_PLAIN_DATA(hb_feature_t);
 struct aptext_layout_t
 {
     const char *debug_name = nullptr;
+    APRI_STALE_TAG
     // The chain of the last successful build; null while empty.
     aptext_chain chain = nullptr;
     float em_size = 0.0f;
@@ -270,6 +274,7 @@ APRI_PLAIN_DATA(aptext_atlas_entry);
 struct aptext_atlas_t
 {
     const char *debug_name = nullptr;
+    APRI_STALE_TAG
     APTEXT_ATLAS_DESC settings = {};
     eq::vector<aptext_page> pages;
     eq::array<aptext_atlas_entry> entries; // in the order they were inserted

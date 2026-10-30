@@ -46,8 +46,11 @@ and a reference pool a caller may create. Decided in the workspace's
 
 - macOS (Apple M5 Pro), 2026-10-30: the tests plain, under ASan, and under
   TSan twenty times in a row, clean; every worker ran ranges of the large
-  tasks. **Windows and Linux never built.** Windows: `apjobs_tests` under
-  `windows-*-asan` (MSVC has no TSan). Linux: plain, `-asan` and `-tsan`.
+  tasks. **Linux never built:** plain, `-asan` and `-tsan` there.
+- Windows 11 (ThinkPad P1 Gen 5, MSVC 14.51), 2026-10-30: `apjobs_tests`
+  passes on `windows-d3d12` and `windows-vulkan` in Debug, Release and
+  RelWithDebInfo, and under both `-asan` presets (MSVC has no TSan); the
+  pool's waiting thread makes no allocation (`aprinoalloc_tests`).
 
 ## Not done
 

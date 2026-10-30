@@ -42,6 +42,8 @@ extern "C" APRESULT aprend_get_fullscreen_vertex_shader(aprend_instance instance
 		*out_shader = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_get_fullscreen_vertex_shader", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	if (!out_shader)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
 	aprend_builtins &builtins = instance->builtins;

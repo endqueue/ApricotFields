@@ -873,6 +873,8 @@ APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shade
 		*out_shader = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_lit_get_shader", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	if (shader > APREND_LIT_SHADER_SKY_FRAGMENT)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_SHADER", shader);
 	if (!out_shader)
@@ -960,6 +962,7 @@ static aprend_binding_layout aprend_lit_material_layout(aprend_instance instance
 // A layout getter's public form: the layout through [out_layout], or why
 // it can't be made.
 static APRESULT aprend_lit_layout_result(
+    const char *who,
     aprend_instance instance,
     aprend_binding_layout (*make)(aprend_instance),
     const char *what,
@@ -970,6 +973,8 @@ static APRESULT aprend_lit_layout_result(
 		*out_layout = nullptr;
 	if (!instance)
 		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, who, "instance"))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	if (!out_layout)
 		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "out_layout is NULL");
 	*out_layout = make(instance);
@@ -979,15 +984,15 @@ static APRESULT aprend_lit_layout_result(
 }
 
 APRESULT aprend_lit_get_scene_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error) {
-	return aprend_lit_layout_result(instance, aprend_lit_scene_layout, "scene", out_layout, out_error);
+	return aprend_lit_layout_result("aprend_lit_get_scene_layout", instance, aprend_lit_scene_layout, "scene", out_layout, out_error);
 }
 
 APRESULT aprend_lit_get_shadow_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error) {
-	return aprend_lit_layout_result(instance, aprend_lit_shadow_layout, "shadow pass", out_layout, out_error);
+	return aprend_lit_layout_result("aprend_lit_get_shadow_layout", instance, aprend_lit_shadow_layout, "shadow pass", out_layout, out_error);
 }
 
 APRESULT aprend_lit_get_material_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error) {
-	return aprend_lit_layout_result(instance, aprend_lit_material_layout, "materials", out_layout, out_error);
+	return aprend_lit_layout_result("aprend_lit_get_material_layout", instance, aprend_lit_material_layout, "materials", out_layout, out_error);
 }
 
 // ---- Materials ----------------------------------------------------------------------
@@ -995,10 +1000,13 @@ APRESULT aprend_lit_get_material_layout(aprend_instance instance, aprend_binding
 static const char *const s_map_bindings[4] = {"base_color_map", "normal_map", "orm_map", "emission_map"};
 
 // [material]'s block, through [out_slot], if it is a lit material;
-// APRESULT_INVALID_ARGUMENT, [error] saying why, if not.
-static APRESULT aprend_lit_material_slot(aprend_material material, aprend_material_slot **out_slot, APREND_ERROR *error) {
+// APRESULT_INVALID_ARGUMENT, [error] saying why, if not. [who] is the
+// public call, for the destroyed-handle check (apristale.hpp).
+static APRESULT aprend_lit_material_slot(const char *who, aprend_material material, aprend_material_slot **out_slot, APREND_ERROR *error) {
 	if (!material)
 		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, who, "material"))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	if (!material->layout || material->layout != material->instance->builtins.lit.material_layout)
 		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "material is not a lit material (aprend_lit_material_create)");
 	aprend_material_slot *slot = aprend_lit_block_slot(material, "u_lit_material");
@@ -1014,6 +1022,8 @@ APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *o
 		*out_material = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_lit_material_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_lit_material_create");
 	if (!out_material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_material is NULL");
@@ -1035,7 +1045,7 @@ APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *o
 			set = aprend_material_set_texture(material, binding, 0, lit.placeholder_2d_view, out_error);
 	aprend_material_slot *slot = nullptr;
 	if (set == APRESULT_OK)
-		set = aprend_lit_material_slot(material, &slot, out_error);
+		set = aprend_lit_material_slot("aprend_lit_material_create", material, &slot, out_error);
 	if (set != APRESULT_OK) {
 		aprend_material_destroy(material);
 		return set;
@@ -1071,7 +1081,7 @@ APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *o
 APRESULT aprend_lit_material_set_values(aprend_material material, const APREND_LIT_MATERIAL_VALUES *values, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	aprend_material_slot *slot = nullptr;
-	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+	if (const APRESULT lit = aprend_lit_material_slot("aprend_lit_material_set_values", material, &slot, out_error))
 		return lit;
 	if (!values)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "values is NULL");
@@ -1115,7 +1125,7 @@ APRESULT aprend_lit_material_set_values(aprend_material material, const APREND_L
 APRESULT aprend_lit_material_get_values(aprend_material material, APREND_LIT_MATERIAL_VALUES *out_values, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	aprend_material_slot *slot = nullptr;
-	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+	if (const APRESULT lit = aprend_lit_material_slot("aprend_lit_material_get_values", material, &slot, out_error))
 		return lit;
 	if (!out_values)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_values is NULL");
@@ -1150,10 +1160,12 @@ APRESULT aprend_lit_material_get_values(aprend_material material, APREND_LIT_MAT
 APRESULT aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP map, aprend_texture_view view, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	aprend_material_slot *slot = nullptr;
-	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+	if (const APRESULT lit = aprend_lit_material_slot("aprend_lit_material_set_map", material, &slot, out_error))
 		return lit;
 	if (map > APREND_LIT_MAP_EMISSION)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_MAP", map);
+	if (view && APRI_STALE(view, "aprend_lit_material_set_map", "view"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view is destroyed");
 	if (view && (view->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D || view->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view is not a 2D view of color");
 	aprend_texture_view given = view ? view : material->instance->builtins.lit.placeholder_2d_view;
@@ -1173,7 +1185,7 @@ APRESULT aprend_lit_material_set_map(aprend_material material, APREND_LIT_MAP ma
 APRESULT aprend_lit_material_set_map_uv_transform(aprend_material material, APREND_LIT_MAP map, const float transform[6], APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	aprend_material_slot *slot = nullptr;
-	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+	if (const APRESULT lit = aprend_lit_material_slot("aprend_lit_material_set_map_uv_transform", material, &slot, out_error))
 		return lit;
 	if (map > APREND_LIT_MAP_EMISSION)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_MAP", map);
@@ -1193,7 +1205,7 @@ APRESULT aprend_lit_material_set_map_uv_transform(aprend_material material, APRE
 APRESULT aprend_lit_material_get_map_uv_transform(aprend_material material, APREND_LIT_MAP map, float out_transform[6], APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	aprend_material_slot *slot = nullptr;
-	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+	if (const APRESULT lit = aprend_lit_material_slot("aprend_lit_material_get_map_uv_transform", material, &slot, out_error))
 		return lit;
 	if (map > APREND_LIT_MAP_EMISSION)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_MAP", map);
@@ -1214,8 +1226,10 @@ APRESULT aprend_lit_material_get_map_uv_transform(aprend_material material, APRE
 APRESULT aprend_lit_material_set_sampler(aprend_material material, aprend_sampler sampler, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	aprend_material_slot *slot = nullptr;
-	if (const APRESULT lit = aprend_lit_material_slot(material, &slot, out_error))
+	if (const APRESULT lit = aprend_lit_material_slot("aprend_lit_material_set_sampler", material, &slot, out_error))
 		return lit;
+	if (sampler && APRI_STALE(sampler, "aprend_lit_material_set_sampler", "sampler"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "sampler is destroyed");
 	return aprend_material_set_sampler(material, "material_sampler", 0, sampler ? sampler : material->instance->builtins.lit.material_sampler, out_error);
 }
 
@@ -1300,6 +1314,8 @@ APRESULT aprend_lit_environment_create(
 		*out_environment = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_lit_environment_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_lit_environment_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1355,13 +1371,19 @@ APRESULT aprend_lit_environment_create(
 void aprend_lit_environment_destroy(aprend_lit_environment environment) {
 	if (!environment)
 		return;
+	if (APRI_STALE(environment, "aprend_lit_environment_destroy", "environment"))
+		return;
 	// What it holds on the GPU goes through the release queue, each on its
 	// own; the rest is the CPU's.
 	APREND_DESTRUCT__T(environment, aprend_lit_environment_t);
 }
 
 uint32_t aprend_lit_environment_get_specular_mip_count(aprend_lit_environment environment) {
-	return environment ? environment->specular_mips : 0;
+	if (!environment)
+		return 0;
+	if (APRI_STALE(environment, "aprend_lit_environment_get_specular_mip_count", "environment"))
+		return 0;
+	return environment->specular_mips;
 }
 
 } // extern "C"
@@ -1524,6 +1546,8 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 		*out_scene = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_lit_scene_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_lit_scene_create");
 	if (!out_scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_scene is NULL");
@@ -1600,27 +1624,51 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 void aprend_lit_scene_destroy(aprend_lit_scene scene) {
 	if (!scene)
 		return;
+	if (APRI_STALE(scene, "aprend_lit_scene_destroy", "scene"))
+		return;
 	aprend_lit_scene_free(scene);
 }
 
-aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene) { return scene ? scene->material : nullptr; }
+aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene) {
+	if (!scene)
+		return nullptr;
+	if (APRI_STALE(scene, "aprend_lit_scene_get_material", "scene"))
+		return nullptr;
+	return scene->material;
+}
 
 aprend_material aprend_lit_scene_get_sun_shadow_material(aprend_lit_scene scene, uint32_t cascade) {
-	return scene && cascade < APREND_LIT_MAX_CASCADES ? scene->sun_shadow_materials[cascade] : nullptr;
+	if (!scene)
+		return nullptr;
+	if (APRI_STALE(scene, "aprend_lit_scene_get_sun_shadow_material", "scene"))
+		return nullptr;
+	return cascade < APREND_LIT_MAX_CASCADES ? scene->sun_shadow_materials[cascade] : nullptr;
 }
 
 aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene, uint32_t index) {
-	return scene && index < APREND_LIT_MAX_SPOT_SHADOWS ? scene->spot_shadow_materials[index] : nullptr;
+	if (!scene)
+		return nullptr;
+	if (APRI_STALE(scene, "aprend_lit_scene_get_spot_shadow_material", "scene"))
+		return nullptr;
+	return index < APREND_LIT_MAX_SPOT_SHADOWS ? scene->spot_shadow_materials[index] : nullptr;
 }
 
 aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scene, uint32_t index, uint32_t face) {
-	return scene && index < APREND_LIT_MAX_POINT_SHADOWS && face < 6 ? scene->point_shadow_materials[index * 6 + face] : nullptr;
+	if (!scene)
+		return nullptr;
+	if (APRI_STALE(scene, "aprend_lit_scene_get_point_shadow_material", "scene"))
+		return nullptr;
+	return index < APREND_LIT_MAX_POINT_SHADOWS && face < 6 ? scene->point_shadow_materials[index * 6 + face] : nullptr;
 }
 
 APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW *view, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
-	if (!scene || !view)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", scene ? "view" : "scene");
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_view", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
+	if (!view)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view is NULL");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_view");
 	if (const APRESULT base = aprend_base_check(out_error, "view", &view->base, APRI_STRUCT_TYPE_APREND_LIT_VIEW))
 		return base;
@@ -1692,8 +1740,12 @@ APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW
 
 APRESULT aprend_lit_scene_set_sun(aprend_lit_scene scene, const APREND_LIT_SUN *sun, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
-	if (!scene || !sun)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", scene ? "sun" : "scene");
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_sun", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
+	if (!sun)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "sun is NULL");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_sun");
 	if (const APRESULT base = aprend_base_check(out_error, "sun", &sun->base, APRI_STRUCT_TYPE_APREND_LIT_SUN))
 		return base;
@@ -1772,6 +1824,8 @@ APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LI
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_sun_shadow", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_sun_shadow");
 	aprend_lit_scene_block &b = scene->block;
 	if (!shadow) {
@@ -1829,6 +1883,8 @@ APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LI
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_lights", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_lights");
 	if (count > 0 && !lights)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "lights is NULL with a count of %u", count);
@@ -1860,11 +1916,15 @@ APRESULT aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_textur
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_spot_shadows", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_spot_shadows");
 	if (count > APREND_LIT_MAX_SPOT_SHADOWS)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u spot shadows, and a scene holds %u", count, APREND_LIT_MAX_SPOT_SHADOWS);
 	if (count > 0 && !shadows)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows is NULL with a count of %u", count);
+	if (map && APRI_STALE(map, "aprend_lit_scene_set_spot_shadows", "map"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "map is destroyed");
 	if (count > 0)
 		if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, map, count, out_error))
 			return valid;
@@ -1914,11 +1974,15 @@ APRESULT aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_textu
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_point_shadows", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_point_shadows");
 	if (count > APREND_LIT_MAX_POINT_SHADOWS)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u point shadows, and a scene holds %u", count, APREND_LIT_MAX_POINT_SHADOWS);
 	if (count > 0 && !shadows)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows is NULL with a count of %u", count);
+	if (map && APRI_STALE(map, "aprend_lit_scene_set_point_shadows", "map"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "map is destroyed");
 	if (count > 0)
 		if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, map, count * 6, out_error))
 			return valid;
@@ -1970,8 +2034,12 @@ APRESULT aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_textu
 
 APRESULT aprend_lit_scene_set_ambient(aprend_lit_scene scene, const APREND_LIT_AMBIENT *ambient, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
-	if (!scene || !ambient)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", scene ? "ambient" : "scene");
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_ambient", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
+	if (!ambient)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "ambient is NULL");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_ambient");
 	if (const APRESULT base = aprend_base_check(out_error, "ambient", &ambient->base, APRI_STRUCT_TYPE_APREND_LIT_AMBIENT))
 		return base;
@@ -2025,9 +2093,13 @@ APRESULT aprend_lit_scene_set_ambient_occlusion(aprend_lit_scene scene, aprend_t
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_ambient_occlusion", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_ambient_occlusion");
 	if (!finite(strength) || strength < 0.0f || strength > 1.0f)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "strength is not from 0 to 1");
+	if (occlusion && APRI_STALE(occlusion, "aprend_lit_scene_set_ambient_occlusion", "occlusion"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "occlusion is destroyed");
 	if (occlusion && (occlusion->instance != scene->instance || occlusion->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE ||
 	                  occlusion->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D || occlusion->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)) {
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "occlusion is not a SHADER_RESOURCE 2D view of color of the scene's instance");
@@ -2048,7 +2120,11 @@ APRESULT aprend_lit_scene_set_scene_color(aprend_lit_scene scene, aprend_texture
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_scene_color", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_scene_color");
+	if (scene_color && APRI_STALE(scene_color, "aprend_lit_scene_set_scene_color", "scene_color"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene_color is destroyed");
 	if (scene_color && scene_color->instance != scene->instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene_color is of another instance");
 	if (scene_color && scene_color->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE)
@@ -2075,6 +2151,8 @@ APRESULT aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read, AP
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_bent_normals", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_bent_normals");
 	aprend_lit_scene_block &b = scene->block;
 	if (read)
@@ -2264,6 +2342,8 @@ APRESULT aprend_exposure_create(
 		*out_exposure = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_exposure_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_exposure_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -2330,6 +2410,8 @@ APRESULT aprend_exposure_create(
 
 void aprend_exposure_destroy(aprend_exposure exposure) {
 	if (!exposure)
+		return;
+	if (APRI_STALE(exposure, "aprend_exposure_destroy", "exposure"))
 		return;
 	APREND_DESTRUCT__T(exposure, aprend_exposure_t);
 }

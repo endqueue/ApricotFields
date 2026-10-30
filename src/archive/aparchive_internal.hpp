@@ -3,6 +3,7 @@
 
 #include "archive/aparchive.h"
 #include "../aprioverlap.hpp"
+#include "../apristale.hpp"
 #include <stddef.h>
 #include <string>
 #include <string_view>
@@ -18,6 +19,7 @@
 struct aparchive_codecs_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     std::vector<APARCHIVE_CODEC> codecs; // never STORED
     const APARCHIVE_CODEC *find(uint16_t method) const;
     // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
@@ -47,6 +49,7 @@ struct aparchive_written_entry_t
 struct aparchive_writer_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     APARCHIVE_SINK sink{};
     aparchive_codecs codecs{nullptr};
     uint64_t offset{0}; // bytes written to the sink
@@ -85,6 +88,7 @@ struct aparchive_writer_t
 struct aparchive_reader_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     APARCHIVE_SOURCE source{};
     aparchive_codecs codecs{nullptr};
     // Where the central directory starts: every entry's header and data end
@@ -110,6 +114,7 @@ struct aparchive_reader_t
 struct aparchive_entry_reader_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     aparchive_reader reader{nullptr};
     uint32_t index{0};
     const APARCHIVE_CODEC *codec{nullptr}; // NULL for STORED

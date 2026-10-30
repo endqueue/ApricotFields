@@ -1621,13 +1621,20 @@ extern "C"
 
     void apsync_session_destroy(apsync_session session)
     {
-        if (session)
-            destroy_session(session);
+        if (!session)
+            return;
+        if (APRI_STALE(session, "apsync_session_destroy", "session"))
+            return;
+        destroy_session(session);
     }
 
     APRESULT apsync_session_get_port(apsync_session session, uint32_t index, uint16_t *out_port)
     {
-        if (!session || !out_port || !session->hosting || index >= session->ports.size())
+        if (!session)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(session, "apsync_session_get_port", "session"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_port || !session->hosting || index >= session->ports.size())
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(session->overlap, "apsync", "apsync_session_get_port", "session");
         *out_port = session->ports[index];
@@ -1636,12 +1643,18 @@ extern "C"
 
     APSYNC_PEER apsync_session_get_local_peer(apsync_session session)
     {
-        return session ? session->local_peer : APSYNC_PEER_NONE;
+        if (!session)
+            return APSYNC_PEER_NONE;
+        if (APRI_STALE(session, "apsync_session_get_local_peer", "session"))
+            return APSYNC_PEER_NONE;
+        return session->local_peer;
     }
 
     APRESULT apsync_session_poll(apsync_session session, APSYNC_EVENT *out_event)
     {
         if (!session)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(session, "apsync_session_poll", "session"))
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(session->overlap, "apsync", "apsync_session_poll", "session");
         if (!out_event)
@@ -1716,6 +1729,8 @@ extern "C"
     {
         if (!session)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(session, "apsync_session_wait", "session"))
+            return APRESULT_INVALID_ARGUMENT;
         std::unique_lock<std::mutex> lock(session->inbox_mutex);
         auto ready = [session] { return !session->inbox.empty() || session->woken; };
         if (timeout_ms == APSYNC_WAIT_FOREVER)
@@ -1730,6 +1745,8 @@ extern "C"
     {
         if (!session)
             return;
+        if (APRI_STALE(session, "apsync_session_wake", "session"))
+            return;
         {
             std::lock_guard<std::mutex> lock(session->inbox_mutex);
             session->woken = true;
@@ -1740,7 +1757,11 @@ extern "C"
     APRESULT apsync_session_send(apsync_session session, uint32_t channel, uint64_t key, const void *data,
                                  uint32_t size)
     {
-        if (!session || channel >= session->channels.size() || (size != 0 && !data))
+        if (!session)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(session, "apsync_session_send", "session"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (channel >= session->channels.size() || (size != 0 && !data))
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(session->overlap, "apsync", "apsync_session_send", "session");
         if (session->channels[channel] == APSYNC_CHANNEL_ORDERED && key != 0)
@@ -1777,7 +1798,11 @@ extern "C"
 
     APRESULT apsync_session_send_snapshot(apsync_session session, APSYNC_PEER peer, const void *data, uint64_t size)
     {
-        if (!session || !session->hosting || (size != 0 && !data))
+        if (!session)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(session, "apsync_session_send_snapshot", "session"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!session->hosting || (size != 0 && !data))
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(session->overlap, "apsync", "apsync_session_send_snapshot", "session");
         if (session->awaiting_snapshot.find(peer) == session->awaiting_snapshot.end())
@@ -1807,7 +1832,11 @@ extern "C"
 
     APRESULT apsync_session_disconnect_peer(apsync_session session, APSYNC_PEER peer)
     {
-        if (!session || !session->hosting || peer == APSYNC_PEER_NONE || peer == APSYNC_PEER_HOST)
+        if (!session)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(session, "apsync_session_disconnect_peer", "session"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!session->hosting || peer == APSYNC_PEER_NONE || peer == APSYNC_PEER_HOST)
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(session->overlap, "apsync", "apsync_session_disconnect_peer", "session");
         apsync_command command;

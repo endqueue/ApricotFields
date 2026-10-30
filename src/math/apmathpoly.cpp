@@ -1760,6 +1760,8 @@ void apmath_poly_destroy(apmath_poly poly)
 {
     if (!poly)
         return;
+    if (APRI_STALE(poly, "apmath_poly_destroy", "poly"))
+        return;
     poly->~apmath_poly_t();
     free(poly);
 }
@@ -1769,6 +1771,8 @@ APMATH_POLY_SET apmath_poly_get_set(apmath_poly poly)
     APMATH_POLY_SET set;
     memset(&set, 0, sizeof(set));
     if (!poly)
+        return set;
+    if (APRI_STALE(poly, "apmath_poly_get_set", "poly"))
         return set;
     set.points = poly->points.data();
     set.edge_tags = poly->edge_tags.data();

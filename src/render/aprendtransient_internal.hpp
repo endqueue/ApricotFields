@@ -13,9 +13,23 @@
 #include "render/aprendcontext.h"
 #include "render/aprendtransient.h"
 
+#include "../apriplaindata.hpp"
+#include <eqstd.hpp>
 #include <spudgpu.h>
 
 #include <vector>
+
+/* A view of a transient chunk from [offset] to its end, for spans that
+ * start there with [stride]; [size] is the view's. */
+struct aprend_transient_view {
+	spudgpu_buffer_view view;
+	uint64_t offset;
+	uint64_t stride;
+	uint64_t size;
+	/* Asked for since the chunk's frame was last rewound. */
+	bool used;
+};
+APRI_PLAIN_DATA(aprend_transient_view);
 
 struct aprend_transient_chunk {
 	/* Vertex, index and transfer source usage, mapped for as long as it
@@ -28,9 +42,14 @@ struct aprend_transient_chunk {
 	/* Made for one span larger than the arena's chunk size: destroyed when
 	 * its frame is rewound, where an ordinary chunk is kept and used again. */
 	bool dedicated{false};
-	/* The views command lists bound spans of this chunk through, destroyed
-	 * when the frame is rewound. */
-	std::vector<spudgpu_buffer_view> views;
+	/* The views command lists bound spans of this chunk through, one per
+	 * offset and stride, each reaching the chunk's end. A frame whose spans
+	 * start where the last turn of its index's did (whatever their sizes)
+	 * asks for the same views, so one asked for again is the one already made, and a
+	 * rewind destroys only those the turn before it didn't ask for: a
+	 * steady frame makes no view, and one that changes keeps no more than
+	 * it uses (no allocation per frame, ROADMAP.md 3.1). */
+	eq::array<aprend_transient_view> views;
 };
 
 struct aprend_transient_frame {

@@ -728,6 +728,8 @@ APRESULT aprend_shader_create_spirv(
 		*out_shader = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_shader_create_spirv", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_shader_create_spirv");
 	if (!spirv_code)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "spirv_code is NULL");
@@ -817,6 +819,8 @@ APRESULT aprend_shader_read_from_file_spirv(
 		*out_shader = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_shader_read_from_file_spirv", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_shader_read_from_file_spirv");
 	if (!filename)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "filename is NULL");
@@ -839,7 +843,10 @@ APRESULT aprend_shader_read_from_file_spirv(
 void aprend_shader_destroy(aprend_shader shader) {
 	if (!shader)
 		return;
+	if (APRI_STALE(shader, "aprend_shader_destroy", "shader"))
+		return;
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(shader);
 	aprend_instance_retire(shader->instance, shader, &aprend_release_handle<aprend_shader_t>);
 }
 
@@ -859,7 +866,13 @@ const APREND_SHADER_RESOURCE *aprend_shader_find_resource(aprend_shader shader, 
 	return nullptr;
 }
 
-SPUDGPU_SHADER_STAGE aprend_shader_get_stage(aprend_shader shader) { return shader ? shader->stage : (SPUDGPU_SHADER_STAGE)SPUDGPU_SHADER_STAGE_NONE; }
+SPUDGPU_SHADER_STAGE aprend_shader_get_stage(aprend_shader shader) {
+	if (!shader)
+		return (SPUDGPU_SHADER_STAGE)SPUDGPU_SHADER_STAGE_NONE;
+	if (APRI_STALE(shader, "aprend_shader_get_stage", "shader"))
+		return (SPUDGPU_SHADER_STAGE)SPUDGPU_SHADER_STAGE_NONE;
+	return shader->stage;
+}
 
 spudgpu_blend_attachment_desc aprend_blend_premultiplied(void) {
 	spudgpu_blend_attachment_desc blend{};
@@ -894,6 +907,8 @@ APRESULT aprend_graphics_pipeline_create(
 		*out_pipeline = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_graphics_pipeline_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_graphics_pipeline_create");
 	if (!desc_in)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1196,15 +1211,20 @@ APRESULT aprend_graphics_pipeline_create(
 void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p) {
 	if (!p)
 		return;
+	if (APRI_STALE(p, "aprend_graphics_pipeline_destroy", "p"))
+		return;
 	// A compiled list that binds it is refused at submit.
 	aprend_instance_forget(p->instance, p);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(p);
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_graphics_pipeline_t>);
 }
 APRESULT aprend_graphics_pipeline_get_desc(
     aprend_graphics_pipeline p,
     APREND_GRAPHICS_PIPELINE_DESC *out_desc) {
 	if (!p)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(p, "aprend_graphics_pipeline_get_desc", "p"))
 		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
@@ -1261,6 +1281,8 @@ APRESULT aprend_compute_pipeline_create(
 		*out_pipeline = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_compute_pipeline_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_compute_pipeline_create");
 	if (!desc_in)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -1369,15 +1391,20 @@ APRESULT aprend_compute_pipeline_create(
 void aprend_compute_pipeline_destroy(aprend_compute_pipeline p) {
 	if (!p)
 		return;
+	if (APRI_STALE(p, "aprend_compute_pipeline_destroy", "p"))
+		return;
 	// A compiled list that binds it is refused at submit.
 	aprend_instance_forget(p->instance, p);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(p);
 	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_compute_pipeline_t>);
 }
 APRESULT aprend_compute_pipeline_get_desc(
     aprend_compute_pipeline p,
     APREND_COMPUTE_PIPELINE_DESC *out_desc) {
 	if (!p)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(p, "aprend_compute_pipeline_get_desc", "p"))
 		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
@@ -1397,6 +1424,8 @@ APRESULT aprend_binding_layout_create(
 		*out_layout = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_binding_layout_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_binding_layout_create");
 	if (!bindings)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "bindings is NULL");
@@ -1461,6 +1490,8 @@ APRESULT aprend_binding_layout_create_from_shaders(
 		*out_layout = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_binding_layout_create_from_shaders", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_binding_layout_create_from_shaders");
 	if (!shaders)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shaders is NULL");
@@ -1584,6 +1615,8 @@ APRESULT aprend_binding_layout_find(
     APREND_BINDING_DESC *out_desc) {
 	if (!layout)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(layout, "aprend_binding_layout_find", "layout"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!name)
 		return APRESULT_INVALID_ARGUMENT;
 	for (uint32_t i = 0; i < layout->binding_count; ++i) {
@@ -1606,6 +1639,8 @@ APRESULT aprend_binding_layout_get_binding(
     APREND_BINDING_DESC *out_desc) {
 	if (!layout)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(layout, "aprend_binding_layout_get_binding", "layout"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_desc)
 		return APRESULT_INVALID_ARGUMENT;
 	if (index >= layout->binding_count)
@@ -1614,7 +1649,13 @@ APRESULT aprend_binding_layout_get_binding(
 	return APRESULT_OK;
 }
 
-uint32_t aprend_binding_layout_get_binding_count(aprend_binding_layout layout) { return layout ? layout->binding_count : 0; }
+uint32_t aprend_binding_layout_get_binding_count(aprend_binding_layout layout) {
+	if (!layout)
+		return 0;
+	if (APRI_STALE(layout, "aprend_binding_layout_get_binding_count", "layout"))
+		return 0;
+	return layout->binding_count;
+}
 
 APRESULT aprend_binding_layout_get_block(
     aprend_binding_layout layout,
@@ -1623,6 +1664,8 @@ APRESULT aprend_binding_layout_get_block(
     const APREND_SHADER_MEMBER **out_members,
     uint32_t *out_member_count) {
 	if (!layout)
+		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(layout, "aprend_binding_layout_get_block", "layout"))
 		return APRESULT_INVALID_ARGUMENT;
 	const uint32_t index = aprend_binding_layout_index(layout, binding);
 	if (index == UINT32_MAX)
@@ -1645,6 +1688,8 @@ APRESULT aprend_binding_layout_get_uniform_layout(
     APREND_UNIFORM_LAYOUT *out) {
 	if (!layout)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(layout, "aprend_binding_layout_get_uniform_layout", "layout"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out)
 		return APRESULT_INVALID_ARGUMENT;
 	const uint32_t index = aprend_binding_layout_index(layout, binding);
@@ -1664,7 +1709,10 @@ APRESULT aprend_binding_layout_get_uniform_layout(
 void aprend_binding_layout_destroy(aprend_binding_layout layout) {
 	if (!layout)
 		return;
+	if (APRI_STALE(layout, "aprend_binding_layout_destroy", "layout"))
+		return;
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(layout);
 	aprend_instance_retire(layout->instance, layout, &aprend_release_handle<aprend_binding_layout_t>);
 }
 
@@ -1679,6 +1727,8 @@ APRESULT aprend_binding_set_create(
 		*out_set = nullptr;
 	if (!layout)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is NULL");
+	if (APRI_STALE(layout, "aprend_binding_set_create", "layout"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is destroyed");
 	APREND_ENTER(layout->instance, "aprend_binding_set_create");
 	if (!entries)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entries is NULL");
@@ -1865,6 +1915,8 @@ APRESULT aprend_binding_set_update(
 	aprend_error_clear(out_error);
 	if (!set)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "set is NULL");
+	if (APRI_STALE(set, "aprend_binding_set_update", "set"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "set is destroyed");
 	APREND_ENTER(set->instance, "aprend_binding_set_update");
 	if (!entries)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entries is NULL");
@@ -1930,9 +1982,12 @@ APRESULT aprend_binding_set_update(
 void aprend_binding_set_destroy(aprend_binding_set set) {
 	if (!set)
 		return;
+	if (APRI_STALE(set, "aprend_binding_set_destroy", "set"))
+		return;
 	// A compiled list that binds it is refused at submit.
 	aprend_instance_forget(set->instance, set);
 	// Released once the GPU has finished everything submitted so far.
+	APRI_KILL(set);
 	aprend_instance_retire(set->instance, set, &aprend_release_handle<aprend_binding_set_t>);
 }
 

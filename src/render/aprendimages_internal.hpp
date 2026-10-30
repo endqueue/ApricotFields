@@ -85,16 +85,8 @@ inline bool aprend_texture_layouts_reset(aprend_texture_layouts *tracking, uint3
 	return true;
 }
 
-/* Some mips and layers of one texture: what a view covers, and what a
- * barrier moves. */
-struct aprend_texture_range {
-	spudgpu_image image;
-	aprend_texture_layouts *tracking;
-	uint32_t base_mip;
-	uint32_t mip_count;
-	uint32_t base_layer;
-	uint32_t layer_count;
-};
+/* aprend_texture_range, some mips and layers of one texture, is in
+ * aprend_internal.hpp, where a command list keeps arrays of them. */
 
 /* Whether two ranges share a (mip, layer) of the same image. */
 inline bool aprend_texture_ranges_overlap(const aprend_texture_range &a, const aprend_texture_range &b) {
@@ -290,6 +282,7 @@ struct aprend_mip_chain {
 typedef struct aprend_texture2d_t
 {
     char *debug_name{nullptr};
+    APRI_STALE_TAG
     aprend_texture2d_t() = default;
     ~aprend_texture2d_t();
     aprend_instance instance;
@@ -317,6 +310,7 @@ typedef struct aprend_texture2d_t
 typedef struct aprend_texture3d_t
 {
     char *debug_name{nullptr};
+    APRI_STALE_TAG
     aprend_texture3d_t() = default;
     ~aprend_texture3d_t();
     aprend_instance instance;
@@ -336,9 +330,12 @@ typedef struct aprend_texture3d_t
 typedef struct aprend_texture_view_t
 {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_texture_view_t() = default;
 	~aprend_texture_view_t();
 	aprend_instance instance{nullptr};
+	/* aprend_instance_next_serial's, at creation. */
+	uint64_t serial{0};
 	APREND_TEXTURE_VIEW_TYPE view_type{APREND_TEXTURE_VIEW_TYPE_NONE};
 	APREND_TEXTURE_DIMENSION dimension{APREND_TEXTURE_DIMENSION_1D};
 	spudgpu_image_view image_view{nullptr};
@@ -397,9 +394,12 @@ inline aprend_texture_range aprend_texture_view_range(aprend_texture_view_t *vie
 typedef struct aprend_sampler_t
 {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_sampler_t() = default;
 	~aprend_sampler_t();
 	aprend_instance instance{nullptr};
+	/* aprend_instance_next_serial's, at creation. */
+	uint64_t serial{0};
 	APREND_SAMPLER_DESC desc{};
 	spudgpu_sampler sampler{nullptr};
 } aprend_sampler_t;
@@ -407,6 +407,7 @@ typedef struct aprend_sampler_t
 typedef struct aprend_framebuffer_t
 {
     char *debug_name{nullptr};
+    APRI_STALE_TAG
     aprend_framebuffer_t() = default;
     ~aprend_framebuffer_t();
     aprend_instance instance;

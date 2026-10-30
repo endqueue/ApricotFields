@@ -892,6 +892,8 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(atlas, "aptext_atlas_get_info", "atlas"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_get_info", "atlas");
         if (!out_info)
             return APRESULT_INVALID_ARGUMENT;
@@ -916,6 +918,8 @@ extern "C"
         aptext_clear_error(out_error);
         if (!atlas)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is null");
+        if (APRI_STALE(atlas, "aptext_atlas_insert", "atlas"))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is destroyed");
         if (!desc)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is null");
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APTEXT_GLYPH_GENERATE_DESC))
@@ -974,8 +978,12 @@ extern "C"
         aptext_clear_error(out_error);
         if (!atlas)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is null");
+        if (APRI_STALE(atlas, "aptext_atlas_add_layout", "atlas"))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is destroyed");
         if (!layout)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is null");
+        if (APRI_STALE(layout, "aptext_atlas_add_layout", "layout"))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is destroyed");
         if (!layout->chain)
             return APRESULT_OK; // empty: nothing to add
         if (layout->chain->kind != APTEXT_FACE_KIND_OUTLINE)
@@ -1002,8 +1010,12 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(atlas, "aptext_atlas_find_glyph", "atlas"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_find_glyph", "atlas");
         if (!face)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(face, "aptext_atlas_find_glyph", "face"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_glyph)
             return APRESULT_INVALID_ARGUMENT;
@@ -1020,6 +1032,8 @@ extern "C"
     {
         if (!atlas)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(atlas, "aptext_atlas_get_page", "atlas"))
+            return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_get_page", "atlas");
         if (!out_pixels)
             return APRESULT_INVALID_ARGUMENT;
@@ -1034,6 +1048,8 @@ extern "C"
                                      uint32_t *out_count)
     {
         if (!atlas)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(atlas, "aptext_atlas_take_dirty", "atlas"))
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_take_dirty", "atlas");
         if (aptext_missing(rects, capacity))
@@ -1064,6 +1080,8 @@ extern "C"
         aptext_clear_error(out_error);
         if (!atlas)
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is null");
+        if (APRI_STALE(atlas, "aptext_atlas_save", "atlas"))
+            return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is destroyed");
         APRI_ENTER(atlas->overlap, "aptext", "aptext_atlas_save", "atlas");
         if (aptext_missing(faces, face_count))
             return aptext_fail(out_error, APRESULT_INVALID_ARGUMENT, "faces is null with a face_count of %u", face_count);
@@ -1165,6 +1183,8 @@ extern "C"
     void aptext_atlas_destroy(aptext_atlas atlas)
     {
         if (!atlas)
+            return;
+        if (APRI_STALE(atlas, "aptext_atlas_destroy", "atlas"))
             return;
         delete_atlas(atlas);
     }

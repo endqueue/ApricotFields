@@ -820,6 +820,8 @@ extern "C"
     {
         if (!face)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(face, "aptext_face_get_metrics", "face"))
+            return APRESULT_INVALID_ARGUMENT;
         if (!out_metrics)
             return APRESULT_INVALID_ARGUMENT;
         if (APRESULT result = apri_struct_out_check(&out_metrics->base, APRI_STRUCT_TYPE_APTEXT_FACE_METRICS))
@@ -832,7 +834,11 @@ extern "C"
 
     uint32_t aptext_face_get_axis_count(aptext_face face)
     {
-        if (!face || face->kind != APTEXT_FACE_KIND_OUTLINE)
+        if (!face)
+            return 0;
+        if (APRI_STALE(face, "aptext_face_get_axis_count", "face"))
+            return 0;
+        if (face->kind != APTEXT_FACE_KIND_OUTLINE)
             return 0;
         return hb_ot_var_get_axis_count(face->hb_face);
     }
@@ -840,6 +846,8 @@ extern "C"
     APRESULT aptext_face_get_axis(aptext_face face, uint32_t index, APTEXT_AXIS *out_axis)
     {
         if (!face)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(face, "aptext_face_get_axis", "face"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_axis)
             return APRESULT_INVALID_ARGUMENT;
@@ -860,6 +868,8 @@ extern "C"
     {
         if (!face)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(face, "aptext_face_find_glyph", "face"))
+            return APRESULT_INVALID_ARGUMENT;
         if (!out_glyph)
             return APRESULT_INVALID_ARGUMENT;
         if (!aptext_face_lookup(face, codepoint, out_glyph))
@@ -872,6 +882,8 @@ extern "C"
                                            uint32_t *out_polyline_count)
     {
         if (!face)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(face, "aptext_face_get_glyph_strokes", "face"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_points)
             return APRESULT_INVALID_ARGUMENT;
@@ -904,6 +916,8 @@ extern "C"
     void aptext_face_destroy(aptext_face face)
     {
         if (!face)
+            return;
+        if (APRI_STALE(face, "aptext_face_destroy", "face"))
             return;
         delete_face(face);
     }
@@ -968,6 +982,8 @@ extern "C"
     {
         if (!chain)
             return nullptr;
+        if (APRI_STALE(chain, "aptext_chain_get_face", "chain"))
+            return nullptr;
         if (index >= chain->faces.count)
             return nullptr;
         return chain->faces[index];
@@ -977,6 +993,8 @@ extern "C"
     {
         if (!chain)
             return 0;
+        if (APRI_STALE(chain, "aptext_chain_get_face_count", "chain"))
+            return 0;
         return (uint32_t)chain->faces.count;
     }
 
@@ -984,6 +1002,8 @@ extern "C"
                                      uint32_t *out_glyph)
     {
         if (!chain)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(chain, "aptext_chain_find_glyph", "chain"))
             return APRESULT_INVALID_ARGUMENT;
         if (!out_face_index)
             return APRESULT_INVALID_ARGUMENT;
@@ -1007,6 +1027,8 @@ extern "C"
     void aptext_chain_destroy(aptext_chain chain)
     {
         if (!chain)
+            return;
+        if (APRI_STALE(chain, "aptext_chain_destroy", "chain"))
             return;
         chain->~aptext_chain_t();
         free(chain);

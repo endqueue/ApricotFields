@@ -23,6 +23,8 @@ APRESULT aprend_gpu_timer_create(
 		*out_timer = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_gpu_timer_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_gpu_timer_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -75,8 +77,11 @@ APRESULT aprend_gpu_timer_create(
 void aprend_gpu_timer_destroy(aprend_gpu_timer timer) {
 	if (!timer)
 		return;
+	if (APRI_STALE(timer, "aprend_gpu_timer_destroy", "timer"))
+		return;
 	// A list compiled against it and not submitted would mark its slots.
 	aprend_instance_forget(timer->instance, timer);
+	APRI_KILL(timer);
 	aprend_instance_retire(timer->instance, timer, &aprend_release_handle<aprend_gpu_timer_t>);
 }
 
@@ -88,6 +93,8 @@ APRESULT aprend_gpu_timer_get_ms(
 	aprend_error_clear(out_error);
 	if (!timer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "timer is NULL");
+	if (APRI_STALE(timer, "aprend_gpu_timer_get_ms", "timer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "timer is destroyed");
 	if (slot >= timer->slot_count)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "slot %u is at or above the timer's %u slots", slot, timer->slot_count);
 	if (!out_ms)

@@ -24,6 +24,8 @@
 #include "aprendreflect_internal.hpp"
 #include "aprendtransient_internal.hpp"
 #include "../aprioverlap.hpp"
+#include "../apristale.hpp"
+#include <eqstd.hpp>
 
 #include <spudgpu.h>
 
@@ -167,8 +169,12 @@ struct aprend_material_arena {
 
 typedef struct aprend_instance_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_instance_t() = default;
 	~aprend_instance_t();
+	/* The serial the next view, sampler or buffer made on the instance
+	 * takes (aprend_instance_next_serial); 0 is no handle's. */
+	uint64_t next_serial{1};
 
 	APREND_INSTANCE_DESC desc{};
 	/* What every recording of one frame index is made into: an allocator,
@@ -326,6 +332,16 @@ typedef struct aprend_instance_t {
 	 * entry under it. It is never held while a release function runs. */
 	std::mutex release_mutex{};
 } aprend_instance_t;
+
+/* A serial for a view, sampler or buffer being made on [instance], unique
+ * among every handle the instance ever makes: what tells a handle from a
+ * later one at the same address once the first is freed. A material keeps
+ * the serial of each resource it holds, so setting the same one again
+ * changes nothing (aprend_material_t::resource_serial). Called by a
+ * creation, which the instance's one caller at a time makes. */
+inline uint64_t aprend_instance_next_serial(aprend_instance instance) {
+	return instance->next_serial++;
+}
 
 /* Debug builds' check of the rule in aprendcontext.h ("Threads"): one
  * caller at a time inside an instance, which may be a different thread from
@@ -595,6 +611,7 @@ void aprend_buffer_store_uploads_submitted(aprend_buffer_store *store);
 
 typedef struct aprend_gpu_timer_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_gpu_timer_t() = default;
 	~aprend_gpu_timer_t();
 	aprend_instance instance{nullptr};
@@ -619,8 +636,62 @@ static inline uint64_t aprend_subresource_hash(spudgpu_image image, uint32_t mip
 	return h ^ (((uint64_t)mip << 16 | (uint64_t)layer) * 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2));
 }
 
+/* One copy a submission records ahead of its list: [size] bytes from
+ * [source] at [source_offset] into [destination], a uniform buffer, at
+ * [destination_offset]. [*dirty] is cleared once the submission has gone in. */
+struct aprend_upload_copy {
+	spudgpu_buffer source;
+	uint64_t source_offset;
+	spudgpu_buffer destination;
+	uint64_t destination_offset;
+	uint64_t size;
+	bool *dirty;
+};
+APRI_PLAIN_DATA(aprend_upload_copy);
+
+struct aprend_texture_layouts;
+/* Some mips and layers of one texture: what a view covers, and what a
+ * barrier moves. */
+struct aprend_texture_range {
+	spudgpu_image image;
+	struct aprend_texture_layouts *tracking; /* aprendimages_internal.hpp */
+	uint32_t base_mip;
+	uint32_t mip_count;
+	uint32_t base_layer;
+	uint32_t layer_count;
+};
+
+/* A texture one pass's or dispatch's binding sets read or write, and the
+ * layout that takes. */
+struct aprend_pass_image {
+	/* The mips and layers the view in the set covers. */
+	aprend_texture_range range;
+	SPUDGPU_IMAGE_LAYOUT layout;
+	/* A storage image a pipeline of the pass or dispatch writes. */
+	bool written;
+};
+APRI_PLAIN_DATA(aprend_pass_image);
+
+/* A storage buffer one pass's or dispatch's binding sets hold. */
+struct aprend_pass_store {
+	aprend_buffer_store *store;
+	/* A pipeline of the pass or dispatch writes it. */
+	bool written;
+};
+APRI_PLAIN_DATA(aprend_pass_store);
+
+/* Appends [item] to [array], or throws std::bad_alloc: for the compile's
+ * and submit's code, which turns that into APRESULT_OUT_OF_MEMORY where it
+ * catches it. */
+template <typename T>
+inline void aprend_push(eq::array<T> &array, const T &item) {
+	if (array.push(item) != EQ_SUCCESS)
+		throw std::bad_alloc();
+}
+
 typedef struct aprend_command_list_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_command_list_t() = default;
 	~aprend_command_list_t();
 	aprend_instance instance{nullptr};
@@ -708,6 +779,29 @@ typedef struct aprend_command_list_t {
 	std::vector<side_ref> side_refs{};
 	/* Set by aprend_command_list_send on a malformed command; fails compile until reset. */
 	bool recording_error{false};
+	/* What a compile or submit works in and drops when the call is done,
+	 * kept here with its capacity so a list compiled and submitted every
+	 * frame stops allocating once each has grown (no allocation per frame,
+	 * ROADMAP.md 3.1). Each user clears what it takes first; none is held
+	 * across a call to another user of the same array.
+	 * - pass_images, pass_stores: what one pass's or dispatch's sets hold
+	 *   (aprend_pass_images_add_set, aprend_storage_stores_add_set).
+	 * - pass_arguments: the argument buffers of one pass's indirect draws.
+	 * - set_barriers: aprend_cmd_ready_set_resources' storage buffer barriers.
+	 * - upload_before, upload_after: aprend_cmd_record_uploads' barriers.
+	 * - upload_copies: submit's material block copies.
+	 * - lit_materials: aprend_cmd_prepare_lit_scenes' copy of [materials].
+	 * - open_labels: the compile's open labelled regions, innermost last,
+	 *   each 1 if it was opened inside a pass. */
+	eq::array<aprend_pass_image> pass_images{};
+	eq::array<aprend_pass_store> pass_stores{};
+	eq::array<aprend_buffer_store *> pass_arguments{};
+	eq::array<spudgpu_buffer_barrier> set_barriers{};
+	eq::array<spudgpu_buffer_barrier> upload_before{};
+	eq::array<spudgpu_buffer_barrier> upload_after{};
+	eq::array<aprend_upload_copy> upload_copies{};
+	eq::array<aprend_material> lit_materials{};
+	eq::array<uint8_t> open_labels{};
 	/* For each command in [commands], the aprend_command_list_send it came from,
 	 * counted from the last reset: what a compile's message names, since a
 	 * send that stands for others (BEGIN_RENDER_PASS, SET_COMPUTE_PASS,
@@ -798,6 +892,7 @@ typedef struct aprend_command_list_t {
 
 typedef struct aprend_swap_chain_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_swap_chain_t() = default;
 	~aprend_swap_chain_t();
 	aprend_instance instance{nullptr};
@@ -835,10 +930,13 @@ struct aprend_buffer_part {
 
 typedef struct aprend_buffer_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_buffer_t() = default;
 	~aprend_buffer_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
 	aprend_instance instance{nullptr};
+	/* aprend_instance_next_serial's, at creation. */
+	uint64_t serial{0};
 	/* The desc it was created with: initial_data NULL, debug_name this
 	 * handle's own copy. */
 	APREND_BUFFER_DESC desc{};
@@ -862,6 +960,7 @@ SPUDRESULT aprend_buffer_vertex_view(
 
 typedef struct aprend_shader_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_shader_t() = default;
 	~aprend_shader_t();
 	aprend_instance instance{nullptr};
@@ -920,6 +1019,7 @@ bool aprend_binding_set_matches_images(
 
 typedef struct aprend_graphics_pipeline_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_graphics_pipeline_t() = default;
 	~aprend_graphics_pipeline_t();
 	APREND_GRAPHICS_PIPELINE_DESC desc{};
@@ -951,6 +1051,7 @@ typedef struct aprend_graphics_pipeline_t {
 
 typedef struct aprend_compute_pipeline_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_compute_pipeline_t() = default;
 	~aprend_compute_pipeline_t();
 	APREND_COMPUTE_PIPELINE_DESC desc{};
@@ -1007,6 +1108,7 @@ void aprend_binding_layout_core_release(aprend_binding_layout_core *core);
 
 typedef struct aprend_binding_layout_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_binding_layout_t() = default;
 	~aprend_binding_layout_t();
 	aprend_instance instance{nullptr};
@@ -1043,6 +1145,7 @@ typedef struct aprend_binding_layout_t {
 
 typedef struct aprend_binding_set_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_binding_set_t() = default;
 	~aprend_binding_set_t();
 	/* For aprend_instance_retire when the handle is destroyed. */
@@ -1121,20 +1224,12 @@ struct aprend_material_slot {
 	bool dirty{false};
 };
 
-/* One copy a submission records ahead of its list: [size] bytes from
- * [source] at [source_offset] into [destination], a uniform buffer, at
- * [destination_offset]. [*dirty] is cleared once the submission has gone in. */
-struct aprend_upload_copy {
-	spudgpu_buffer source;
-	uint64_t source_offset;
-	spudgpu_buffer destination;
-	uint64_t destination_offset;
-	uint64_t size;
-	bool *dirty;
-};
+/* aprend_material_t::resource_serial of an owned block's element. */
+#define APREND_SERIAL_OWNED UINT64_MAX
 
 typedef struct aprend_material_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_material_t() = default;
 	~aprend_material_t();
 	aprend_instance instance{nullptr};
@@ -1147,10 +1242,15 @@ typedef struct aprend_material_t {
 	 * creation, the resource as the caller sets it. An owned block's entry
 	 * holds its buffer set from the start. */
 	APREND_BINDING_SET_ENTRY *entries{nullptr};
-	/* Parallel to entries: whether the element has its view (or buffer)
-	 * and whether it has its sampler, as its type needs. */
-	bool *has_resource{nullptr};
-	bool *has_sampler{nullptr};
+	/* Parallel to entries: the serial of the element's view (or buffer)
+	 * and of its sampler, as its type needs: 0 for none yet,
+	 * APREND_SERIAL_OWNED for a block the material owns. Setting the
+	 * handle an element already holds, with the same serial, leaves
+	 * resources_changed as it was, so a material set the same way every
+	 * frame is not built again; a handle at the address of a freed one
+	 * has another serial. */
+	uint64_t *resource_serial{nullptr};
+	uint64_t *sampler_serial{nullptr};
 	uint32_t entry_count{0};
 	/* Built at the first compile that binds the material; NULL until then. */
 	aprend_binding_set set{nullptr};
@@ -1172,7 +1272,7 @@ bool aprend_material_prepare(aprend_material material);
  * once it has gone in (aprend_upload_copy::dirty). False, reported, if the
  * transient memory can't be taken; what was added stays, and is only
  * recorded if the caller goes on. Throws std::bad_alloc from [copies]. */
-bool aprend_material_stage_uploads(aprend_material material, std::vector<aprend_upload_copy> &copies);
+bool aprend_material_stage_uploads(aprend_material material, eq::array<aprend_upload_copy> &copies);
 /* From the instance's destructor, once nothing is left on the release
  * queue: destroys every buffer of the material arena. */
 void aprend_material_arena_destroy(aprend_instance instance);
@@ -1188,6 +1288,7 @@ APRESULT aprend_buffer_create_device_uniform(
 
 typedef struct aprend_render_pass_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_render_pass_t() = default;
 	~aprend_render_pass_t() = default;
 	aprend_instance instance{nullptr};
@@ -1197,6 +1298,7 @@ typedef struct aprend_render_pass_t {
 
 typedef struct aprend_compute_pass_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_compute_pass_t() = default;
 	~aprend_compute_pass_t() = default;
 	aprend_instance instance{nullptr};
@@ -1212,6 +1314,7 @@ bool aprend_draw_list_expand(aprend_command_list cmd_list, aprend_draw_list list
 
 typedef struct aprend_draw_list_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_draw_list_t() = default;
 	~aprend_draw_list_t() = default;
 	aprend_instance instance{nullptr};

@@ -316,14 +316,44 @@ the same change:
     under `leaks --atExit` (no leak without Metal's debug layer; with it,
     six `MTLDebugSamplerState` wrappers of the layer's own object cache,
     made for Aprend's samplers, which are released); a caller's 35 tests
-    and another's 45. **Still needed, on Windows** (ThinkPad P1, both
-    GPUs): the GPU tests on D3D12 (debug layer, and GPU-based validation
-    once) and on Vulkan (validation, synchronization validation), Debug,
-    and ApricotFields' tests plain and under `windows-*-asan`; the two
-    callers' suites there; and SpudGPU's new lost-device code compiled
-    for the first time (D3D12 and Vulkan). **On Linux** (Fedora): the same
-    over Vulkan, with the ASan and TSan presets. A device lost is not made
-    to happen by any test.
+    and another's 45. **Run on Windows the same day** (ThinkPad P1, MSVC
+    14.51): ApricotFields' tests on D3D12 and Vulkan in every
+    configuration and under both `-asan` presets; the GPU tests on D3D12
+    (Iris Xe, RTX A2000, WARP; debug layer, and GPU-based validation
+    once) and Vulkan (both GPUs; validation, synchronization and
+    GPU-assisted validation), every check passing (`../apricottests/README.md`);
+    both callers' suites on both backends; SpudGPU's lost-device code
+    compiled for the first time on D3D12 and Vulkan. The first MSVC build
+    warned C4297 on a throwing helper inside an `extern "C"` block: MSVC
+    assumes C linkage never throws and may drop the catch, so ApricotFields
+    builds with `/EHs` there (`../claude_made_decisions.md`). **On Linux**
+    (Fedora): the same over Vulkan, with the ASan and TSan presets. A
+    device lost is not made to happen by any test.
+  - **No allocation per frame (2026-10-30, Windows):** a settled frame
+    made 147 allocations in Debug and 129 in Release
+    (`../apricottests`' `test_frame_allocations`), each put down to its
+    asker. Now none, on D3D12 and Vulkan: a command list keeps its
+    compile's and submit's working arrays (pass images, stores, argument
+    buffers, barriers, upload barriers and copies, the lit scenes' copy of
+    the materials, the label stack) as `eq::array`s cleared at each use;
+    the batch keeps its line segments; a material set to the resource it
+    holds already (by the handle's serial from its instance, not its
+    address) doesn't rebuild its binding set; a transient chunk keeps a
+    view per offset and stride, reaching its end, and a rewind destroys
+    the ones not used. SpudGPU's recording calls and submissions keep
+    their converted arrays the same way. On the RTX A2000, Release, the
+    frame's CPU time after the wait went from 122 to 106 us. Not run on
+    the Mac.
+  - **Destroyed handles (card X16, 2026-10-30):** every Aprend handle
+    holds a Debug-only tag (`src/apristale.hpp`); a destroy writes it dead
+    at the call (the release queue frees it later), and every call refuses
+    a destroyed handle as it refuses null, printing one line.
+    `../apricottests`' `test_destroyed_handles` calls each function
+    taking an Aprend handle first with a destroyed one: 167 calls, all
+    refused, D3D12 and Vulkan, both GPUs. Three lit structs
+    (`aprend_lit_environment_t`, `aprend_lit_scene_t`,
+    `aprend_exposure_t`) had no `debug_name` first, so `apri_debug_name_set()`
+    overwrote their first member; fixed.
   - **The names (2026-10-30):** `aprend_send_command` is
     `aprend_command_list_send`, every caller with it; the value structs'
     renames were made group by group. Nothing of the decision is left.

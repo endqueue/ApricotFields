@@ -6,9 +6,26 @@
 
 // Destroys [chunk]'s views, which nothing reads any more.
 static void aprend_transient_chunk_destroy_views(aprend_transient_chunk *chunk) {
-	for (spudgpu_buffer_view view : chunk->views)
-		spudgpu_destroy_buffer_view(view);
+	for (const aprend_transient_view &kept : chunk->views)
+		spudgpu_destroy_buffer_view(kept.view);
 	chunk->views.clear();
+}
+
+// At a rewind of [chunk]'s frame, which nothing still reads: destroys the
+// views the turn that just ended didn't ask for, and marks the rest unused
+// for the next.
+static void aprend_transient_chunk_rewind_views(aprend_transient_chunk *chunk) {
+	size_t kept = 0;
+	for (size_t i = 0; i < chunk->views.size(); ++i) {
+		aprend_transient_view v = chunk->views[i];
+		if (!v.used) {
+			spudgpu_destroy_buffer_view(v.view);
+			continue;
+		}
+		v.used                = false;
+		chunk->views[kept++] = v;
+	}
+	(void)chunk->views.resize(kept); // smaller: nothing to allocate
 }
 
 // Destroys [chunk] and everything it holds. The GPU has finished with it.
@@ -84,7 +101,7 @@ void aprend_transient_arena_begin_frame(aprend_instance instance) {
 			aprend_transient_chunk_destroy(chunk);
 			continue;
 		}
-		aprend_transient_chunk_destroy_views(chunk);
+		aprend_transient_chunk_rewind_views(chunk);
 		chunk->write_offset  = 0;
 		frame.chunks[kept++] = chunk;
 	}
@@ -148,21 +165,29 @@ SPUDRESULT aprend_transient_span_view(
     spudgpu_buffer_view *out_view) {
 	(void)instance;
 	aprend_transient_chunk *chunk = (aprend_transient_chunk *)span->_chunk;
+	for (aprend_transient_view &kept : chunk->views) {
+		if (kept.offset == span->_offset && kept.stride == stride) {
+			kept.used = true;
+			*out_view = kept.view;
+			return SPUD_SUCCESS;
+		}
+	}
 	spudgpu_buffer_view_desc vd{};
 	vd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_VIEW_DESC;
 	vd.parent_buffer             = chunk->buffer;
 	vd.offset_from_parent_buffer = span->_offset;
 	vd.stride                    = stride;
-	vd.size                      = span->size;
+	// To the end of the chunk, not the span: a span at this offset next
+	// frame may be another size (a draw list's instances, as many as are
+	// visible), and the view reaches it too. Binding a vertex or index
+	// buffer reads only what the draw names.
+	vd.size                      = chunk->size - span->_offset;
 	spudgpu_buffer_view view     = nullptr;
 	SPUDRESULT sr                = spudgpu_create_buffer_view(chunk->buffer, &vd, &view);
 	if (SPUDFAIL(sr))
 		return sr;
-	// The push can only fail for want of memory. No exception leaves a C
-	// entry point, and this is reached from one.
-	try {
-		chunk->views.push_back(view);
-	} catch (...) {
+	// The push can only fail for want of memory.
+	if (chunk->views.push(aprend_transient_view{view, span->_offset, stride, chunk->size - span->_offset, true}) != EQ_SUCCESS) {
 		spudgpu_destroy_buffer_view(view);
 		return SPUDRESULT_OUT_OF_MEMORY;
 	}
@@ -266,11 +291,15 @@ APRESULT aprend_transient_allocate(
     APREND_TRANSIENT_SPAN *out_span,
     APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
+	if (instance && APRI_STALE(instance, "aprend_transient_allocate", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	return aprend_transient_take(instance, size, alignment, out_span, out_error);
 }
 
 uint64_t aprend_transient_get_frame_usage(aprend_instance instance) {
 	if (!instance)
+		return 0;
+	if (APRI_STALE(instance, "aprend_transient_get_frame_usage", "instance"))
 		return 0;
 	uint64_t used = 0;
 	for (const aprend_transient_chunk *chunk : instance->transient.frames[instance->frame_index].chunks)

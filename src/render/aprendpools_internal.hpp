@@ -17,6 +17,7 @@
 
 #include "aprendranges_internal.hpp"
 #include "../apriplaindata.hpp"
+#include "../apristale.hpp"
 
 #include <vector>
 
@@ -104,6 +105,7 @@ struct aprend_pool_core {
 
 typedef struct aprend_vertex_pool_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_vertex_pool_t() = default;
 	~aprend_vertex_pool_t();
 	aprend_pool_core core{};
@@ -111,6 +113,7 @@ typedef struct aprend_vertex_pool_t {
 
 typedef struct aprend_index_pool_t {
 	char *debug_name{nullptr};
+	APRI_STALE_TAG
 	aprend_index_pool_t() = default;
 	~aprend_index_pool_t();
 	aprend_pool_core core{};

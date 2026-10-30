@@ -3,6 +3,7 @@
 // Written in C on purpose: apmathpoly.h is a C front end, and this proves it
 // compiles and links as one.
 
+#define _USE_MATH_DEFINES // M_PI, for MSVC's <math.h>; before any include
 #include "math/apmathpoly.h"
 #include <math.h>
 #include <stdbool.h>

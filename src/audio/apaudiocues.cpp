@@ -1,6 +1,7 @@
 #include "audio/apaudiocues.h"
 #include "apaudio_internal.hpp"
 #include "../apristructbase.hpp"
+#include "../apristale.hpp"
 
 #include <glaze/glaze.hpp>
 
@@ -227,6 +228,7 @@ bool gain_valid(float gain)
 
 struct apaudio_cues_t
 {
+    char *debug_name{nullptr}; // first, as every handle's: apri_debug_name_set() writes it (apricore.h)
     apaudio_mixer mixer{nullptr};
     // Fixed once created, but for each bus's ducking.
     std::vector<bus_t> buses;
@@ -255,6 +257,7 @@ struct apaudio_cues_t
 
     std::mutex playing_mutex;
     std::vector<playing_t> playings; // max_playings of them
+    APRI_STALE_TAG
 };
 
 namespace
@@ -857,6 +860,8 @@ extern "C"
     {
         if (!cues)
             return;
+        if (APRI_STALE(cues, "apaudio_cues_destroy", "cues"))
+            return;
         // The cues' sounds and groups go with them, on the mixer.
         cues->cues.clear();
         for (bus_t &bus : cues->buses)
@@ -867,6 +872,8 @@ extern "C"
     void apaudio_cues_clear_banks(apaudio_cues cues)
     {
         if (!cues)
+            return;
+        if (APRI_STALE(cues, "apaudio_cues_clear_banks", "cues"))
             return;
         APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_clear_banks", "mixer's control calls");
         // Every cue is undefined under one hold of cue_mutex, so a play sees
@@ -897,13 +904,19 @@ extern "C"
 
     void apaudio_cues_set_sample_rate(apaudio_cues cues, uint32_t sample_rate)
     {
-        if (cues && sample_rate)
+        if (!cues)
+            return;
+        if (APRI_STALE(cues, "apaudio_cues_set_sample_rate", "cues"))
+            return;
+        if (sample_rate)
             cues->sample_rate.store(sample_rate);
     }
 
     void apaudio_cues_update(apaudio_cues cues)
     {
         if (!cues)
+            return;
+        if (APRI_STALE(cues, "apaudio_cues_update", "cues"))
             return;
         APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_update", "mixer's control calls");
         std::lock_guard<std::mutex> lock(cues->playing_mutex);
@@ -916,7 +929,11 @@ extern "C"
     {
         if (error)
             error->message[0] = '\0';
-        if (!cues || !source || !source->get_size || !source->read)
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_load_bank", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!source || !source->get_size || !source->read)
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_load_bank", "mixer's control calls");
         uint64_t total = 0;
@@ -950,7 +967,11 @@ extern "C"
     {
         if (error)
             error->message[0] = '\0';
-        if (!cues || !source)
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_load_zip_bank", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!source)
             return APRESULT_INVALID_ARGUMENT;
         APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_load_zip_bank", "mixer's control calls");
         archive_t archive;
@@ -990,7 +1011,11 @@ extern "C"
     {
         if (out_cue)
             *out_cue = 0;
-        if (!cues || !name || !out_cue)
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_find", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!name || !out_cue)
             return APRESULT_INVALID_ARGUMENT;
         size_t length = strnlen(name, APAUDIO_CUE_NAME_SIZE);
         if (length == 0 || length >= APAUDIO_CUE_NAME_SIZE)
@@ -1026,6 +1051,8 @@ extern "C"
     {
         if (!cues)
             return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_set_enabled", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
         uint32_t index;
         if (!cue_index(cues, cue, index))
             return APRESULT_NOT_FOUND;
@@ -1035,7 +1062,11 @@ extern "C"
 
     APRESULT apaudio_cues_set_bus_muted(apaudio_cues cues, uint32_t bus_index, bool muted)
     {
-        if (!cues || bus_index >= cues->buses.size())
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_set_bus_muted", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (bus_index >= cues->buses.size())
             return APRESULT_INVALID_ARGUMENT;
         cues->bus_muted[bus_index].store(muted ? true : false);
         return APRESULT_OK;
@@ -1043,7 +1074,11 @@ extern "C"
 
     APAUDIO_MODIFIER apaudio_cues_get_bus_ducking(apaudio_cues cues, uint32_t bus_index)
     {
-        if (!cues || bus_index >= cues->buses.size())
+        if (!cues)
+            return 0;
+        if (APRI_STALE(cues, "apaudio_cues_get_bus_ducking", "cues"))
+            return 0;
+        if (bus_index >= cues->buses.size())
             return 0;
         APRI_ENTER(apaudio_mixer_control_guard(cues->mixer), "apaudio", "apaudio_cues_get_bus_ducking", "mixer's control calls");
         return cues->buses[bus_index].ducking;
@@ -1051,7 +1086,11 @@ extern "C"
 
     APRESULT apaudio_cues_get_info(apaudio_cues cues, APAUDIO_CUE cue, APAUDIO_CUE_INFO *out_info)
     {
-        if (!cues || !out_info)
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_get_info", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
+        if (!out_info)
             return APRESULT_INVALID_ARGUMENT;
         if (APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APAUDIO_CUE_INFO))
             return result;
@@ -1086,6 +1125,10 @@ extern "C"
     {
         if (out_voice)
             *out_voice = 0;
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_play", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
         play_plan_t plan;
         APRESULT result = plan_play(cues, cue, desc, plan);
         if (result != APRESULT_OK || !plan.plays)
@@ -1102,6 +1145,10 @@ extern "C"
     {
         if (out_voice)
             *out_voice = 0;
+        if (!cues)
+            return APRESULT_INVALID_ARGUMENT;
+        if (APRI_STALE(cues, "apaudio_cues_start", "cues"))
+            return APRESULT_INVALID_ARGUMENT;
         if (!out_voice)
             return APRESULT_INVALID_ARGUMENT;
         play_plan_t plan;
@@ -1144,6 +1191,8 @@ extern "C"
     {
         if (!cues)
             return;
+        if (APRI_STALE(cues, "apaudio_cues_stop", "cues"))
+            return;
         std::lock_guard<std::mutex> lock(cues->playing_mutex);
         if (playing_t *record = find_playing(cues, voice))
             end_playing(cues, *record, fade);
@@ -1152,6 +1201,8 @@ extern "C"
     bool apaudio_cues_is_playing(apaudio_cues cues, APAUDIO_VOICE voice)
     {
         if (!cues)
+            return false;
+        if (APRI_STALE(cues, "apaudio_cues_is_playing", "cues"))
             return false;
         std::lock_guard<std::mutex> lock(cues->playing_mutex);
         return find_playing(cues, voice) != nullptr;

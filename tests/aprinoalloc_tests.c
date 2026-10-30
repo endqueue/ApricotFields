@@ -1,10 +1,10 @@
 // No allocation per frame (ROADMAP.md, section 3.1, "Data-oriented
 // checks"): each module's steady state, after a warm-up, counted for 100
 // frames with every heap allocation the measuring thread makes, through
-// the platform's own hook: macOS's malloc_logger (what Instruments uses),
-// glibc's malloc replaced by forwarders here, the debug CRT's allocation
-// hook on Windows. Where none is available the test says so and passes
-// nothing off as checked.
+// tests/alloctrace.h, which says what each platform's hook sees and how
+// each allocation is put down to the code that asked for it: only ours
+// (this executable's) must be none. Where no hook is available the test
+// says so and passes nothing off as checked.
 //
 // A frame, per module: ApAudio's render (the audio callback) and update
 // with sounds playing and the limiter on; ApMath's ray casts against a
@@ -38,141 +38,42 @@ static int failures = 0;
 
 // ---- Counting ----------------------------------------------------------------
 
-static volatile bool counting = false;
-static volatile unsigned long allocations = 0;
+#include "alloctrace.h"
 
-#if defined(__APPLE__)
-#include <pthread.h>
-typedef void(malloc_logger_t)(uint32_t type, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3, uintptr_t result,
-                              uint32_t frames_to_skip);
-extern malloc_logger_t *malloc_logger;
-static pthread_t measured;
-static void count_allocation(uint32_t type, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t result, uint32_t skip)
-{
-    (void)a, (void)b, (void)c, (void)result, (void)skip;
-    if (counting && (type & 2u) && pthread_equal(pthread_self(), measured)) // 2: an allocation
-        allocations++;
-}
-static bool hook_available(void)
-{
-    return true;
-}
 static void start_counting(void)
 {
-    measured = pthread_self();
-    allocations = 0;
-    malloc_logger = count_allocation;
-    counting = true;
+    alloc_trace_start();
 }
 static void stop_counting(void)
 {
-    counting = false;
-    malloc_logger = NULL;
+    alloc_trace_stop();
 }
-#elif defined(__linux__) && defined(__GLIBC__)
-#include <pthread.h>
-extern void *__libc_malloc(size_t);
-extern void *__libc_calloc(size_t, size_t);
-extern void *__libc_realloc(void *, size_t);
-extern void *__libc_memalign(size_t, size_t);
-static pthread_t measured;
-static void note(void)
-{
-    if (counting && pthread_equal(pthread_self(), measured))
-        allocations++;
-}
-void *malloc(size_t size)
-{
-    note();
-    return __libc_malloc(size);
-}
-void *calloc(size_t n, size_t size)
-{
-    note();
-    return __libc_calloc(n, size);
-}
-void *realloc(void *p, size_t size)
-{
-    note();
-    return __libc_realloc(p, size);
-}
-void *memalign(size_t alignment, size_t size)
-{
-    note();
-    return __libc_memalign(alignment, size);
-}
-void *aligned_alloc(size_t alignment, size_t size)
-{
-    note();
-    return __libc_memalign(alignment, size);
-}
-int posix_memalign(void **out, size_t alignment, size_t size)
-{
-    note();
-    *out = __libc_memalign(alignment, size);
-    return *out ? 0 : 12; // ENOMEM
-}
-static bool hook_available(void)
-{
-    return true;
-}
-static void start_counting(void)
-{
-    measured = pthread_self();
-    allocations = 0;
-    counting = true;
-}
-static void stop_counting(void)
-{
-    counting = false;
-}
-#elif defined(_WIN32) && defined(_DEBUG)
-#include <crtdbg.h>
-#include <windows.h>
-static DWORD measured;
-static int count_allocation(int type, void *data, size_t size, int block, long request, const unsigned char *file,
-                           int line)
-{
-    (void)data, (void)size, (void)block, (void)request, (void)file, (void)line;
-    if (counting && type != _HOOK_FREE && GetCurrentThreadId() == measured)
-        allocations++;
-    return TRUE;
-}
-static bool hook_available(void)
-{
-    return true;
-}
-static void start_counting(void)
-{
-    measured = GetCurrentThreadId();
-    allocations = 0;
-    _CrtSetAllocHook(count_allocation);
-    counting = true;
-}
-static void stop_counting(void)
-{
-    counting = false;
-    _CrtSetAllocHook(NULL);
-}
-#else
-static bool hook_available(void)
-{
-    return false;
-}
-static void start_counting(void)
-{
-}
-static void stop_counting(void)
-{
-}
-#endif
 
 #define FRAMES 100
 
-static void report(const char *what, unsigned long count)
+// The hook counts at all: one malloc and one calloc of the measuring thread,
+// counted as two of ours. A zero everywhere else means nothing if this is
+// zero too.
+static void test_hook_counts(void)
 {
-    printf("aprinoalloc_tests: %s: %lu allocation(s) in %d frames\n", what, count, FRAMES);
-    if (count != 0)
+    start_counting();
+    void *volatile a = malloc(24);
+    void *volatile b = calloc(3, 8);
+    stop_counting();
+    free(a);
+    free(b);
+    printf("aprinoalloc_tests: the hook counted %lu of 2 known allocations of ours\n", alloc_trace_ours());
+    CHECK(alloc_trace_ours() == 2);
+}
+
+// Ours must be none; what other modules asked for is reported, not
+// counted.
+static void report(const char *what)
+{
+    char line[256];
+    snprintf(line, sizeof(line), "aprinoalloc_tests: %s, %d frames", what, FRAMES);
+    alloc_trace_report(line, 4);
+    if (alloc_trace_ours() != 0)
         failures++;
 }
 
@@ -250,7 +151,7 @@ static void test_audio(void)
         apaudio_mixer_render(mixer, out, 512, NULL);
     }
     stop_counting();
-    report("ApAudio's update and render, three looping voices resampled, the limiter on", allocations);
+    report("ApAudio's update and render, three looping voices resampled, the limiter on");
     apaudio_mixer_destroy(mixer);
 }
 
@@ -306,7 +207,7 @@ static void test_bvh(void)
         }
     stop_counting();
     CHECK(hits == FRAMES * 64);
-    report("ApMath's ray casts, 64 a frame", allocations);
+    report("ApMath's ray casts, 64 a frame");
     apmath_mesh_bvh_destroy(bvh);
 }
 
@@ -343,7 +244,7 @@ static void test_jobs(void)
         apjobs_run(&scheduler, sum_task, 10000, 64, sums);
     stop_counting();
     CHECK(sums[9999] == 19998);
-    report("ApJobs' pool running a task of 10,000 items, the waiting thread counted", allocations);
+    report("ApJobs' pool running a task of 10,000 items, the waiting thread counted");
     apjobs_pool_destroy(pool);
 }
 
@@ -399,7 +300,7 @@ static void test_text(const char *dir)
         for (int f = 0; f < FRAMES; f++)
             aptext_layout_build(layout, &ld, NULL);
         stop_counting();
-        report("ApText laying one label out again with the layout it keeps", allocations);
+        report("ApText laying one label out again with the layout it keeps");
     }
     aptext_layout_destroy(layout);
     aptext_chain_destroy(chain);
@@ -409,12 +310,13 @@ static void test_text(const char *dir)
 
 int main(int argc, char **argv)
 {
-    if (!hook_available())
+    if (!alloc_trace_available())
     {
-        printf("aprinoalloc_tests: no allocation hook on this platform or build (a Release build on Windows): "
-               "nothing measured\n");
+        printf("aprinoalloc_tests: no allocation hook on this platform or build (a sanitizer's heap): nothing "
+               "measured\n");
         return 0;
     }
+    test_hook_counts();
     test_audio();
     test_bvh();
     test_jobs();

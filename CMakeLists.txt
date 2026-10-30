@@ -70,6 +70,7 @@ add_library(ApricotFields STATIC
         src/text/aptext_atlas.cpp
         src/jobs/apjobs.cpp
         src/aprioverlap.hpp
+        src/apristale.hpp
         include/apricore.h
         include/aprimath.h
         include/aprend.h
@@ -100,7 +101,15 @@ add_library(ApricotFields STATIC
         )
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-
+# Internal helpers may throw std::bad_alloc and the C entry points catch it
+# ("Writing a new module"), and many helpers are defined inside the
+# entry points' extern "C" blocks. MSVC's default /EHsc assumes a function
+# of C linkage never throws, may drop the catch around a call to one, and
+# warns (C4297): /EHs without the c takes that assumption away, for every
+# target in this directory. Clang and GCC never make it.
+if (MSVC)
+    string(REPLACE "/EHsc" "/EHs" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+endif ()
 
 # Add the directory for SpudLib library
 if (NOT TARGET spudlib)

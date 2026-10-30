@@ -2,6 +2,13 @@
 // Every public function of ApricotFields called with every argument zeroed
 // (ROADMAP.md, section 3.1). None may crash; one returning APRESULT returns
 // an error unless the generator lists zeroes as a valid call for it.
+// Then, in a Debug build not under a sanitizer, every one whose first
+// parameter is a handle type misuse/misuse_factories.h can make, called
+// with a destroyed handle (DECISIONS.md, card X16): each refuses.
+//
+// Handle types with no factory, not called with a destroyed handle:
+// - An Aprend handle needs a GPU device, which these tests never make; apricottests/tests/aprend_gpu_tests.c, test_destroyed_handles, calls these.
+//   Not covered: aprend_batch, aprend_binding_layout, aprend_binding_set, aprend_buffer, aprend_command_list, aprend_compute_pass, aprend_compute_pipeline, aprend_draw_list, aprend_exposure, aprend_framebuffer, aprend_gpu_timer, aprend_graphics_pipeline, aprend_index_pool, aprend_instance, aprend_lit_environment, aprend_lit_scene, aprend_material, aprend_render_pass, aprend_sampler, aprend_shader, aprend_swap_chain, aprend_texture2d, aprend_texture3d, aprend_texture_view, aprend_vertex_pool.
 
 #include "aprend.h"
 #include "archive/aparchive.h"
@@ -13,7 +20,20 @@
 #include "sync/apsyncnet.h"
 #include "text/aptext.h"
 #include "aprimath.h"
+#include "misuse/misuse_factories.h"
 #include <stdio.h>
+#include <string.h>
+
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MISUSE_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
+#define MISUSE_SANITIZED 1
+#endif
+#endif
+#ifndef MISUSE_SANITIZED
+#define MISUSE_SANITIZED 0
+#endif
 
 static int failures = 0;
 
@@ -25,6 +45,1018 @@ static void expect_error(const char *name, APRESULT result)
         failures++;
     }
 }
+
+#if _DEBUG && !MISUSE_SANITIZED
+static int destroyed_calls = 0;
+
+static void factory_missing(const char *name)
+{
+    printf("FAIL %s: its factory made no handle to destroy\n", name);
+    failures++;
+}
+
+static void expect_refused(const char *name, APRESULT result)
+{
+    destroyed_calls++;
+    if (result == APRESULT_OK)
+    {
+        printf("FAIL %s: returned APRESULT_OK for a destroyed handle\n", name);
+        failures++;
+    }
+}
+
+// A getter given a destroyed handle returns what it returns for NULL.
+static void expect_null_fallback(const char *name, const void *got, const void *for_null, size_t size)
+{
+    destroyed_calls++;
+    if (memcmp(got, for_null, size) != 0)
+    {
+        printf("FAIL %s: a destroyed handle returned other than NULL's fallback\n", name);
+        failures++;
+    }
+}
+
+static void calls_with_destroyed_handles(void)
+{
+    {
+        aparchive_codecs dead = dead_aparchive_codecs();
+        if (!dead)
+            factory_missing("aparchive_codecs_add");
+        else
+            expect_refused("aparchive_codecs_add", aparchive_codecs_add(dead, (const APARCHIVE_CODEC *){0}));
+    }
+    {
+        aparchive_codecs dead = dead_aparchive_codecs();
+        if (!dead)
+            factory_missing("aparchive_codecs_add_deflate");
+        else
+            expect_refused("aparchive_codecs_add_deflate", aparchive_codecs_add_deflate(dead));
+    }
+    {
+        aparchive_codecs dead = dead_aparchive_codecs();
+        if (!dead)
+            factory_missing("aparchive_codecs_compress");
+        else
+            expect_refused("aparchive_codecs_compress", aparchive_codecs_compress(dead, (uint16_t){0}, (int32_t){0}, (const void *){0}, (uint64_t){0}, (void *){0}, (uint64_t){0}, (uint64_t *){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_codecs dead = dead_aparchive_codecs();
+        if (!dead)
+            factory_missing("aparchive_codecs_compress_bound");
+        else
+            expect_refused("aparchive_codecs_compress_bound", aparchive_codecs_compress_bound(dead, (uint16_t){0}, (uint64_t){0}, (uint64_t *){0}));
+    }
+    {
+        aparchive_codecs dead = dead_aparchive_codecs();
+        if (!dead)
+            factory_missing("aparchive_codecs_destroy");
+        else
+        {
+            aparchive_codecs_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        _Bool for_null = aparchive_codecs_has((aparchive_codecs){0}, (uint16_t){0});
+        aparchive_codecs dead = dead_aparchive_codecs();
+        if (!dead)
+            factory_missing("aparchive_codecs_has");
+        else
+        {
+            _Bool got = aparchive_codecs_has(dead, (uint16_t){0});
+            expect_null_fallback("aparchive_codecs_has", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        aparchive_entry_reader dead = dead_aparchive_entry_reader();
+        if (!dead)
+            factory_missing("aparchive_entry_reader_destroy");
+        else
+        {
+            aparchive_entry_reader_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aparchive_entry_reader dead = dead_aparchive_entry_reader();
+        if (!dead)
+            factory_missing("aparchive_entry_reader_read");
+        else
+            expect_refused("aparchive_entry_reader_read", aparchive_entry_reader_read(dead, (void *){0}, (uint64_t){0}, (uint64_t *){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_destroy");
+        else
+        {
+            aparchive_reader_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_find");
+        else
+            expect_refused("aparchive_reader_find", aparchive_reader_find(dead, (const char *){0}, (uint32_t *){0}));
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_get_comment");
+        else
+            expect_refused("aparchive_reader_get_comment", aparchive_reader_get_comment(dead, (const void **){0}, (uint16_t *){0}));
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_get_data_offset");
+        else
+            expect_refused("aparchive_reader_get_data_offset", aparchive_reader_get_data_offset(dead, (uint32_t){0}, (uint64_t *){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_get_entry");
+        else
+            expect_refused("aparchive_reader_get_entry", aparchive_reader_get_entry(dead, (uint32_t){0}, (APARCHIVE_ENTRY_INFO *){0}));
+    }
+    {
+        uint32_t for_null = aparchive_reader_get_entry_count((aparchive_reader){0});
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_get_entry_count");
+        else
+        {
+            uint32_t got = aparchive_reader_get_entry_count(dead);
+            expect_null_fallback("aparchive_reader_get_entry_count", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint64_t for_null = aparchive_reader_get_offset_shift((aparchive_reader){0});
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_get_offset_shift");
+        else
+        {
+            uint64_t got = aparchive_reader_get_offset_shift(dead);
+            expect_null_fallback("aparchive_reader_get_offset_shift", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_open_entry");
+        else
+            expect_refused("aparchive_reader_open_entry", aparchive_reader_open_entry(dead, (uint32_t){0}, (aparchive_entry_reader *){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_reader dead = dead_aparchive_reader();
+        if (!dead)
+            factory_missing("aparchive_reader_read_entry");
+        else
+            expect_refused("aparchive_reader_read_entry", aparchive_reader_read_entry(dead, (uint32_t){0}, (void *){0}, (uint64_t){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_add_entry");
+        else
+            expect_refused("aparchive_writer_add_entry", aparchive_writer_add_entry(dead, (const APARCHIVE_ENTRY_DESC *){0}, (const void *){0}, (uint64_t){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_add_raw_entry");
+        else
+            expect_refused("aparchive_writer_add_raw_entry", aparchive_writer_add_raw_entry(dead, (const APARCHIVE_ENTRY_DESC *){0}, (const void *){0}, (uint64_t){0}, (uint64_t){0}, (uint32_t){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_begin_entry");
+        else
+            expect_refused("aparchive_writer_begin_entry", aparchive_writer_begin_entry(dead, (const APARCHIVE_ENTRY_DESC *){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_destroy");
+        else
+        {
+            aparchive_writer_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_end_entry");
+        else
+            expect_refused("aparchive_writer_end_entry", aparchive_writer_end_entry(dead, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_finish");
+        else
+            expect_refused("aparchive_writer_finish", aparchive_writer_finish(dead, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        uint64_t for_null = aparchive_writer_get_offset((aparchive_writer){0});
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_get_offset");
+        else
+        {
+            uint64_t got = aparchive_writer_get_offset(dead);
+            expect_null_fallback("aparchive_writer_get_offset", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_remove_entry");
+        else
+            expect_refused("aparchive_writer_remove_entry", aparchive_writer_remove_entry(dead, (const char *){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_set_comment");
+        else
+            expect_refused("aparchive_writer_set_comment", aparchive_writer_set_comment(dead, (const void *){0}, (uint16_t){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        aparchive_writer dead = dead_aparchive_writer();
+        if (!dead)
+            factory_missing("aparchive_writer_write_entry_data");
+        else
+            expect_refused("aparchive_writer_write_entry_data", aparchive_writer_write_entry_data(dead, (const void *){0}, (uint64_t){0}, (APARCHIVE_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_create");
+        else
+            expect_refused("apaudio_bus_create", apaudio_bus_create(dead, (const APAUDIO_BUS_DESC *){0}, (APAUDIO_BUS *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_destroy");
+        else
+        {
+            apaudio_bus_destroy(dead, (APAUDIO_BUS){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_set_gain");
+        else
+            expect_refused("apaudio_bus_set_gain", apaudio_bus_set_gain(dead, (APAUDIO_BUS){0}, (float){0}, (uint32_t){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_set_muted");
+        else
+            expect_refused("apaudio_bus_set_muted", apaudio_bus_set_muted(dead, (APAUDIO_BUS){0}, (_Bool){0}, (uint32_t){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_set_parent");
+        else
+            expect_refused("apaudio_bus_set_parent", apaudio_bus_set_parent(dead, (APAUDIO_BUS){0}, (APAUDIO_BUS){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_set_paused");
+        else
+            expect_refused("apaudio_bus_set_paused", apaudio_bus_set_paused(dead, (APAUDIO_BUS){0}, (_Bool){0}, (uint32_t){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_bus_set_rate");
+        else
+            expect_refused("apaudio_bus_set_rate", apaudio_bus_set_rate(dead, (APAUDIO_BUS){0}, (float){0}, (uint32_t){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_concurrency_create");
+        else
+            expect_refused("apaudio_concurrency_create", apaudio_concurrency_create(dead, (const APAUDIO_CONCURRENCY_DESC *){0}, (APAUDIO_CONCURRENCY *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_concurrency_destroy");
+        else
+        {
+            apaudio_concurrency_destroy(dead, (APAUDIO_CONCURRENCY){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_clear_banks");
+        else
+        {
+            apaudio_cues_clear_banks(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_destroy");
+        else
+        {
+            apaudio_cues_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_find");
+        else
+            expect_refused("apaudio_cues_find", apaudio_cues_find(dead, (const char *){0}, (APAUDIO_CUE *){0}));
+    }
+    {
+        APAUDIO_MODIFIER for_null = apaudio_cues_get_bus_ducking((apaudio_cues){0}, (uint32_t){0});
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_get_bus_ducking");
+        else
+        {
+            APAUDIO_MODIFIER got = apaudio_cues_get_bus_ducking(dead, (uint32_t){0});
+            expect_null_fallback("apaudio_cues_get_bus_ducking", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_get_info");
+        else
+            expect_refused("apaudio_cues_get_info", apaudio_cues_get_info(dead, (APAUDIO_CUE){0}, (APAUDIO_CUE_INFO *){0}));
+    }
+    {
+        _Bool for_null = apaudio_cues_is_playing((apaudio_cues){0}, (APAUDIO_VOICE){0});
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_is_playing");
+        else
+        {
+            _Bool got = apaudio_cues_is_playing(dead, (APAUDIO_VOICE){0});
+            expect_null_fallback("apaudio_cues_is_playing", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_load_bank");
+        else
+            expect_refused("apaudio_cues_load_bank", apaudio_cues_load_bank(dead, (const APAUDIO_BANK_SOURCE *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_load_zip_bank");
+        else
+            expect_refused("apaudio_cues_load_zip_bank", apaudio_cues_load_zip_bank(dead, (const APARCHIVE_SOURCE *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_play");
+        else
+            expect_refused("apaudio_cues_play", apaudio_cues_play(dead, (APAUDIO_CUE){0}, (const APAUDIO_CUE_PLAY_DESC *){0}, (APAUDIO_VOICE *){0}));
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_set_bus_muted");
+        else
+            expect_refused("apaudio_cues_set_bus_muted", apaudio_cues_set_bus_muted(dead, (uint32_t){0}, (_Bool){0}));
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_set_enabled");
+        else
+            expect_refused("apaudio_cues_set_enabled", apaudio_cues_set_enabled(dead, (APAUDIO_CUE){0}, (_Bool){0}));
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_set_sample_rate");
+        else
+        {
+            apaudio_cues_set_sample_rate(dead, (uint32_t){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_start");
+        else
+            expect_refused("apaudio_cues_start", apaudio_cues_start(dead, (APAUDIO_CUE){0}, (const APAUDIO_CUE_PLAY_DESC *){0}, (APAUDIO_VOICE *){0}));
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_stop");
+        else
+        {
+            apaudio_cues_stop(dead, (APAUDIO_VOICE){0}, (_Bool){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_cues dead = dead_apaudio_cues();
+        if (!dead)
+            factory_missing("apaudio_cues_update");
+        else
+        {
+            apaudio_cues_update(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_collect");
+        else
+        {
+            apaudio_mixer_collect(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_destroy");
+        else
+        {
+            apaudio_mixer_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        APAUDIO_BUS for_null = apaudio_mixer_get_master_bus((apaudio_mixer){0});
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_get_master_bus");
+        else
+        {
+            APAUDIO_BUS got = apaudio_mixer_get_master_bus(dead);
+            expect_null_fallback("apaudio_mixer_get_master_bus", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_render");
+        else
+        {
+            apaudio_mixer_render(dead, (void *){0}, (uint32_t){0}, (const SPUDAUDIO_CALLBACK_INFO *){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_set_format");
+        else
+            expect_refused("apaudio_mixer_set_format", apaudio_mixer_set_format(dead, (const APAUDIO_FORMAT *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_update");
+        else
+        {
+            apaudio_mixer_update(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_modifier_create");
+        else
+            expect_refused("apaudio_modifier_create", apaudio_modifier_create(dead, (const APAUDIO_MODIFIER_DESC *){0}, (APAUDIO_MODIFIER *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_modifier_destroy");
+        else
+        {
+            apaudio_modifier_destroy(dead, (APAUDIO_MODIFIER){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_modifier_set_active");
+        else
+            expect_refused("apaudio_modifier_set_active", apaudio_modifier_set_active(dead, (APAUDIO_MODIFIER){0}, (_Bool){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_play");
+        else
+            expect_refused("apaudio_play", apaudio_play(dead, (APAUDIO_SOUND){0}, (const APAUDIO_PLAY_DESC *){0}, (APAUDIO_VOICE *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_sound_create");
+        else
+            expect_refused("apaudio_sound_create", apaudio_sound_create(dead, (const APAUDIO_SOUND_DESC *){0}, (APAUDIO_SOUND *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_sound_destroy");
+        else
+        {
+            apaudio_sound_destroy(dead, (APAUDIO_SOUND){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        _Bool for_null = apaudio_voice_is_folded((apaudio_mixer){0}, (APAUDIO_VOICE){0});
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_voice_is_folded");
+        else
+        {
+            _Bool got = apaudio_voice_is_folded(dead, (APAUDIO_VOICE){0});
+            expect_null_fallback("apaudio_voice_is_folded", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        _Bool for_null = apaudio_voice_is_live((apaudio_mixer){0}, (APAUDIO_VOICE){0});
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_voice_is_live");
+        else
+        {
+            _Bool got = apaudio_voice_is_live(dead, (APAUDIO_VOICE){0});
+            expect_null_fallback("apaudio_voice_is_live", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_voice_set_direction");
+        else
+            expect_refused("apaudio_voice_set_direction", apaudio_voice_set_direction(dead, (APAUDIO_VOICE){0}, (const APAUDIO_DIRECTION *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_voice_set_gain");
+        else
+            expect_refused("apaudio_voice_set_gain", apaudio_voice_set_gain(dead, (APAUDIO_VOICE){0}, (float){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_voice_set_rate");
+        else
+            expect_refused("apaudio_voice_set_rate", apaudio_voice_set_rate(dead, (APAUDIO_VOICE){0}, (float){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_voice_stop");
+        else
+            expect_refused("apaudio_voice_stop", apaudio_voice_stop(dead, (APAUDIO_VOICE){0}, (uint32_t){0}));
+    }
+    {
+        apjobs_pool dead = dead_apjobs_pool();
+        if (!dead)
+            factory_missing("apjobs_pool_destroy");
+        else
+        {
+            apjobs_pool_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apjobs_pool dead = dead_apjobs_pool();
+        if (!dead)
+            factory_missing("apjobs_pool_get_scheduler");
+        else
+            expect_refused("apjobs_pool_get_scheduler", apjobs_pool_get_scheduler(dead, (APJOBS_SCHEDULER *){0}));
+    }
+    {
+        _Bool for_null = apmath_instance_bvh_cast((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_cast");
+        else
+        {
+            _Bool got = apmath_instance_bvh_cast(dead, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0});
+            expect_null_fallback("apmath_instance_bvh_cast", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_instance_bvh_cast_all((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0}, (uint32_t){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_cast_all");
+        else
+        {
+            uint32_t got = apmath_instance_bvh_cast_all(dead, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0}, (uint32_t){0});
+            expect_null_fallback("apmath_instance_bvh_cast_all", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_destroy");
+        else
+        {
+            apmath_instance_bvh_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        APMATH_AABB for_null = apmath_instance_bvh_get_bounds((apmath_instance_bvh){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_get_bounds");
+        else
+        {
+            APMATH_AABB got = apmath_instance_bvh_get_bounds(dead);
+            expect_null_fallback("apmath_instance_bvh_get_bounds", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_instance_bvh_get_instance_count((apmath_instance_bvh){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_get_instance_count");
+        else
+        {
+            uint32_t got = apmath_instance_bvh_get_instance_count(dead);
+            expect_null_fallback("apmath_instance_bvh_get_instance_count", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        _Bool for_null = apmath_mesh_bvh_cast((apmath_mesh_bvh){0}, (const APMATH_RAY *){0}, (APMATH_MESH_HIT *){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_cast");
+        else
+        {
+            _Bool got = apmath_mesh_bvh_cast(dead, (const APMATH_RAY *){0}, (APMATH_MESH_HIT *){0});
+            expect_null_fallback("apmath_mesh_bvh_cast", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_destroy");
+        else
+        {
+            apmath_mesh_bvh_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        APMATH_AABB for_null = apmath_mesh_bvh_get_bounds((apmath_mesh_bvh){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_get_bounds");
+        else
+        {
+            APMATH_AABB got = apmath_mesh_bvh_get_bounds(dead);
+            expect_null_fallback("apmath_mesh_bvh_get_bounds", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_mesh_bvh_get_triangle_count((apmath_mesh_bvh){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_get_triangle_count");
+        else
+        {
+            uint32_t got = apmath_mesh_bvh_get_triangle_count(dead);
+            expect_null_fallback("apmath_mesh_bvh_get_triangle_count", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apmath_poly dead = dead_apmath_poly();
+        if (!dead)
+            factory_missing("apmath_poly_destroy");
+        else
+        {
+            apmath_poly_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        APMATH_POLY_SET for_null = apmath_poly_get_set((apmath_poly){0});
+        apmath_poly dead = dead_apmath_poly();
+        if (!dead)
+            factory_missing("apmath_poly_get_set");
+        else
+        {
+            APMATH_POLY_SET got = apmath_poly_get_set(dead);
+            expect_null_fallback("apmath_poly_get_set", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_destroy");
+        else
+        {
+            apsync_session_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_disconnect_peer");
+        else
+            expect_refused("apsync_session_disconnect_peer", apsync_session_disconnect_peer(dead, (APSYNC_PEER){0}));
+    }
+    {
+        APSYNC_PEER for_null = apsync_session_get_local_peer((apsync_session){0});
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_get_local_peer");
+        else
+        {
+            APSYNC_PEER got = apsync_session_get_local_peer(dead);
+            expect_null_fallback("apsync_session_get_local_peer", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_get_port");
+        else
+            expect_refused("apsync_session_get_port", apsync_session_get_port(dead, (uint32_t){0}, (uint16_t *){0}));
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_poll");
+        else
+            expect_refused("apsync_session_poll", apsync_session_poll(dead, (APSYNC_EVENT *){0}));
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_send");
+        else
+            expect_refused("apsync_session_send", apsync_session_send(dead, (uint32_t){0}, (uint64_t){0}, (const void *){0}, (uint32_t){0}));
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_send_snapshot");
+        else
+            expect_refused("apsync_session_send_snapshot", apsync_session_send_snapshot(dead, (APSYNC_PEER){0}, (const void *){0}, (uint64_t){0}));
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_wait");
+        else
+            expect_refused("apsync_session_wait", apsync_session_wait(dead, (uint32_t){0}));
+    }
+    {
+        apsync_session dead = dead_apsync_session();
+        if (!dead)
+            factory_missing("apsync_session_wake");
+        else
+        {
+            apsync_session_wake(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_add_layout");
+        else
+            expect_refused("aptext_atlas_add_layout", aptext_atlas_add_layout(dead, (aptext_layout){0}, (APTEXT_ERROR *){0}));
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_destroy");
+        else
+        {
+            aptext_atlas_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_find_glyph");
+        else
+            expect_refused("aptext_atlas_find_glyph", aptext_atlas_find_glyph(dead, (aptext_face){0}, (uint32_t){0}, (APTEXT_ATLAS_GLYPH *){0}));
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_get_info");
+        else
+            expect_refused("aptext_atlas_get_info", aptext_atlas_get_info(dead, (APTEXT_ATLAS_INFO *){0}));
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_get_page");
+        else
+            expect_refused("aptext_atlas_get_page", aptext_atlas_get_page(dead, (uint32_t){0}, (const void **){0}));
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_insert");
+        else
+            expect_refused("aptext_atlas_insert", aptext_atlas_insert(dead, (const APTEXT_GLYPH_GENERATE_DESC *){0}, (const void *){0}, (uint64_t){0}, (APTEXT_ATLAS_GLYPH *){0}, (APTEXT_ERROR *){0}));
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_save");
+        else
+            expect_refused("aptext_atlas_save", aptext_atlas_save(dead, (const aptext_face *){0}, (uint32_t){0}, (void *){0}, (uint64_t){0}, (uint64_t *){0}, (APTEXT_ERROR *){0}));
+    }
+    {
+        aptext_atlas dead = dead_aptext_atlas();
+        if (!dead)
+            factory_missing("aptext_atlas_take_dirty");
+        else
+            expect_refused("aptext_atlas_take_dirty", aptext_atlas_take_dirty(dead, (APTEXT_DIRTY_RECT *){0}, (uint32_t){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_chain dead = dead_aptext_chain();
+        if (!dead)
+            factory_missing("aptext_chain_destroy");
+        else
+        {
+            aptext_chain_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aptext_chain dead = dead_aptext_chain();
+        if (!dead)
+            factory_missing("aptext_chain_find_glyph");
+        else
+            expect_refused("aptext_chain_find_glyph", aptext_chain_find_glyph(dead, (uint32_t){0}, (uint32_t *){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_face for_null = aptext_chain_get_face((aptext_chain){0}, (uint32_t){0});
+        aptext_chain dead = dead_aptext_chain();
+        if (!dead)
+            factory_missing("aptext_chain_get_face");
+        else
+        {
+            aptext_face got = aptext_chain_get_face(dead, (uint32_t){0});
+            expect_null_fallback("aptext_chain_get_face", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = aptext_chain_get_face_count((aptext_chain){0});
+        aptext_chain dead = dead_aptext_chain();
+        if (!dead)
+            factory_missing("aptext_chain_get_face_count");
+        else
+        {
+            uint32_t got = aptext_chain_get_face_count(dead);
+            expect_null_fallback("aptext_chain_get_face_count", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        aptext_face dead = dead_aptext_face();
+        if (!dead)
+            factory_missing("aptext_face_destroy");
+        else
+        {
+            aptext_face_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aptext_face dead = dead_aptext_face();
+        if (!dead)
+            factory_missing("aptext_face_find_glyph");
+        else
+            expect_refused("aptext_face_find_glyph", aptext_face_find_glyph(dead, (uint32_t){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_face dead = dead_aptext_face();
+        if (!dead)
+            factory_missing("aptext_face_get_axis");
+        else
+            expect_refused("aptext_face_get_axis", aptext_face_get_axis(dead, (uint32_t){0}, (APTEXT_AXIS *){0}));
+    }
+    {
+        uint32_t for_null = aptext_face_get_axis_count((aptext_face){0});
+        aptext_face dead = dead_aptext_face();
+        if (!dead)
+            factory_missing("aptext_face_get_axis_count");
+        else
+        {
+            uint32_t got = aptext_face_get_axis_count(dead);
+            expect_null_fallback("aptext_face_get_axis_count", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        aptext_face dead = dead_aptext_face();
+        if (!dead)
+            factory_missing("aptext_face_get_glyph_strokes");
+        else
+            expect_refused("aptext_face_get_glyph_strokes", aptext_face_get_glyph_strokes(dead, (uint32_t){0}, (const ApriVec2 **){0}, (uint32_t *){0}, (const APTEXT_STROKE_POLYLINE **){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_face dead = dead_aptext_face();
+        if (!dead)
+            factory_missing("aptext_face_get_metrics");
+        else
+            expect_refused("aptext_face_get_metrics", aptext_face_get_metrics(dead, (APTEXT_FACE_METRICS *){0}));
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_build");
+        else
+            expect_refused("aptext_layout_build", aptext_layout_build(dead, (const APTEXT_LAYOUT_DESC *){0}, (APTEXT_ERROR *){0}));
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_destroy");
+        else
+        {
+            aptext_layout_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_get_glyphs");
+        else
+            expect_refused("aptext_layout_get_glyphs", aptext_layout_get_glyphs(dead, (const APTEXT_GLYPH **){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_get_info");
+        else
+            expect_refused("aptext_layout_get_info", aptext_layout_get_info(dead, (APTEXT_LAYOUT_INFO *){0}));
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_get_lines");
+        else
+            expect_refused("aptext_layout_get_lines", aptext_layout_get_lines(dead, (const APTEXT_LINE **){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_get_runs");
+        else
+            expect_refused("aptext_layout_get_runs", aptext_layout_get_runs(dead, (const APTEXT_RUN **){0}, (uint32_t *){0}));
+    }
+    {
+        aptext_layout dead = dead_aptext_layout();
+        if (!dead)
+            factory_missing("aptext_layout_get_strokes");
+        else
+            expect_refused("aptext_layout_get_strokes", aptext_layout_get_strokes(dead, (APTEXT_SEGMENT *){0}, (uint32_t){0}, (uint32_t *){0}));
+    }
+}
+#endif
 
 int main(void)
 {
@@ -738,5 +1770,15 @@ int main(void)
     expect_error("aptext_layout_get_strokes", aptext_layout_get_strokes((aptext_layout){0}, (APTEXT_SEGMENT *){0}, (uint32_t){0}, (uint32_t *){0}));
     calls++;
     printf("apri_misuse_tests: %d calls with zeroes, %d failure(s)\n", calls, failures);
+#if _DEBUG && !MISUSE_SANITIZED
+    // Each refusal below prints a line on stderr: they are expected.
+    const int zero_failures = failures;
+    calls_with_destroyed_handles();
+    printf("apri_misuse_tests: %d calls with a destroyed handle (of 116 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
+#elif _DEBUG
+    printf("apri_misuse_tests: calls with a destroyed handle skipped: under a sanitizer, whose heap reports the read of freed memory itself\n");
+#else
+    printf("apri_misuse_tests: calls with a destroyed handle skipped: a Release build doesn't check for one\n");
+#endif
     return failures ? 1 : 0;
 }

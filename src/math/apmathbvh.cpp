@@ -1,4 +1,5 @@
 #include "math/apmathbvh.h"
+#include "../apristale.hpp"
 #include "../apristructbase.hpp"
 #include <algorithm>
 #include <cfloat>
@@ -380,6 +381,7 @@ struct mesh_hit_t
 struct apmath_mesh_bvh_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     // The desc's triangles, degenerate ones included.
     uint32_t triangle_count{0};
     box_t bounds;
@@ -411,6 +413,7 @@ struct instance_t
 struct apmath_instance_bvh_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
     std::vector<instance_t> instances; // the desc's order
     box_t bounds;
     // Over the instances with triangles; its order holds their indices.
@@ -636,23 +639,39 @@ extern "C"
 
     void apmath_mesh_bvh_destroy(apmath_mesh_bvh bvh)
     {
+        if (!bvh)
+            return;
+        if (APRI_STALE(bvh, "apmath_mesh_bvh_destroy", "bvh"))
+            return;
         delete bvh;
     }
 
     uint32_t apmath_mesh_bvh_get_triangle_count(apmath_mesh_bvh bvh)
     {
-        return bvh ? bvh->triangle_count : 0;
+        if (!bvh)
+            return 0;
+        if (APRI_STALE(bvh, "apmath_mesh_bvh_get_triangle_count", "bvh"))
+            return 0;
+        return bvh->triangle_count;
     }
 
     APMATH_AABB apmath_mesh_bvh_get_bounds(apmath_mesh_bvh bvh)
     {
-        return to_aabb(bvh ? bvh->bounds : box_t());
+        if (!bvh)
+            return to_aabb(box_t());
+        if (APRI_STALE(bvh, "apmath_mesh_bvh_get_bounds", "bvh"))
+            return to_aabb(box_t());
+        return to_aabb(bvh->bounds);
     }
 
     bool apmath_mesh_bvh_cast(apmath_mesh_bvh bvh, const APMATH_RAY *ray, APMATH_MESH_HIT *out_hit)
     {
         ray_t r;
-        if (!bvh || !read_ray(ray, r))
+        if (!bvh)
+            return false;
+        if (APRI_STALE(bvh, "apmath_mesh_bvh_cast", "bvh"))
+            return false;
+        if (!read_ray(ray, r))
             return false;
         mesh_hit_t hit;
         if (!cast_mesh(*bvh, r, ray->t_min, ray->t_max, hit))
@@ -770,17 +789,29 @@ extern "C"
 
     void apmath_instance_bvh_destroy(apmath_instance_bvh bvh)
     {
+        if (!bvh)
+            return;
+        if (APRI_STALE(bvh, "apmath_instance_bvh_destroy", "bvh"))
+            return;
         delete bvh;
     }
 
     uint32_t apmath_instance_bvh_get_instance_count(apmath_instance_bvh bvh)
     {
-        return bvh ? (uint32_t)bvh->instances.size() : 0;
+        if (!bvh)
+            return 0;
+        if (APRI_STALE(bvh, "apmath_instance_bvh_get_instance_count", "bvh"))
+            return 0;
+        return (uint32_t)bvh->instances.size();
     }
 
     APMATH_AABB apmath_instance_bvh_get_bounds(apmath_instance_bvh bvh)
     {
-        return to_aabb(bvh ? bvh->bounds : box_t());
+        if (!bvh)
+            return to_aabb(box_t());
+        if (APRI_STALE(bvh, "apmath_instance_bvh_get_bounds", "bvh"))
+            return to_aabb(box_t());
+        return to_aabb(bvh->bounds);
     }
 
     bool apmath_instance_bvh_cast(apmath_instance_bvh bvh, const APMATH_RAY *ray, const APMATH_CAST_DESC *desc,
@@ -789,7 +820,11 @@ extern "C"
         ray_t r;
         APMATH_CAST_DESC d;
         bool filtered;
-        if (!bvh || !read_ray(ray, r) || !read_cast_desc(desc, d, filtered))
+        if (!bvh)
+            return false;
+        if (APRI_STALE(bvh, "apmath_instance_bvh_cast", "bvh"))
+            return false;
+        if (!read_ray(ray, r) || !read_cast_desc(desc, d, filtered))
             return false;
         bool found = false;
         uint32_t best_index = 0;
@@ -814,7 +849,11 @@ extern "C"
         ray_t r;
         APMATH_CAST_DESC d;
         bool filtered;
-        if (!bvh || !read_ray(ray, r) || !read_cast_desc(desc, d, filtered))
+        if (!bvh)
+            return 0;
+        if (APRI_STALE(bvh, "apmath_instance_bvh_cast_all", "bvh"))
+            return 0;
+        if (!read_ray(ray, r) || !read_cast_desc(desc, d, filtered))
             return 0;
         if (!out_hits)
             hit_capacity = 0;

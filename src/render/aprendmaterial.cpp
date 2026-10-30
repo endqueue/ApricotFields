@@ -128,8 +128,8 @@ aprend_material_t::~aprend_material_t() {
 		free(slot.bytes);
 	}
 	free(this->entries);
-	free(this->has_resource);
-	free(this->has_sampler);
+	free(this->resource_serial);
+	free(this->sampler_serial);
 }
 
 static bool aprend_material_type_reads_view(SPUDGPU_DESCRIPTOR_TYPE type) {
@@ -192,8 +192,8 @@ static bool aprend_material_find_empty(
 			// A sampler binding reads a sampler and nothing else.
 			const bool needs_resource = type != SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
 			const bool needs_sampler  = aprend_material_type_reads_sampler(type);
-			const bool lacks_resource = needs_resource && !material->has_resource[i];
-			const bool lacks_sampler  = needs_sampler && !material->has_sampler[i];
+			const bool lacks_resource = needs_resource && material->resource_serial[i] == 0;
+			const bool lacks_sampler  = needs_sampler && material->sampler_serial[i] == 0;
 			if (!lacks_resource && !lacks_sampler)
 				continue;
 			*out_slot    = &slot;
@@ -236,7 +236,7 @@ static APRESULT aprend_material_own_block(
 	entry._resource._uniform._buffer         = slot.arena->buffer;
 	entry._resource._uniform._offset         = slot.offset;
 	entry._resource._uniform._range          = block_size;
-	material->has_resource[slot.first_entry] = true;
+	material->resource_serial[slot.first_entry] = APREND_SERIAL_OWNED;
 	return APRESULT_OK;
 }
 
@@ -270,7 +270,7 @@ bool aprend_material_prepare(aprend_material material) {
 	return true;
 }
 
-bool aprend_material_stage_uploads(aprend_material material, std::vector<aprend_upload_copy> &copies) {
+bool aprend_material_stage_uploads(aprend_material material, eq::array<aprend_upload_copy> &copies) {
 	for (uint32_t i = 0; i < material->slot_count; ++i) {
 		aprend_material_slot &slot = material->slots[i];
 		if (!slot.arena || !slot.dirty)
@@ -285,7 +285,7 @@ bool aprend_material_stage_uploads(aprend_material material, std::vector<aprend_
 		}
 		memcpy(span.data, slot.bytes, slot.block_size);
 		const aprend_transient_chunk *chunk = (const aprend_transient_chunk *)span._chunk;
-		copies.push_back({chunk->buffer, span._offset, slot.arena->buffer->parts[0].store.buffer, slot.offset, slot.block_size, &slot.dirty});
+		aprend_push(copies, aprend_upload_copy{chunk->buffer, span._offset, slot.arena->buffer->parts[0].store.buffer, slot.offset, slot.block_size, &slot.dirty});
 	}
 	return true;
 }
@@ -302,6 +302,8 @@ APRESULT aprend_material_create(
 		*out_material = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_material_create", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	APREND_ENTER(instance, "aprend_material_create");
 	if (!desc)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "desc is NULL");
@@ -347,9 +349,9 @@ APRESULT aprend_material_create(
 	result->entry_count = layout->descriptor_count;
 
 	result->entries      = (APREND_BINDING_SET_ENTRY *)calloc(result->entry_count, sizeof(APREND_BINDING_SET_ENTRY));
-	result->has_resource = (bool *)calloc(result->entry_count, sizeof(bool));
-	result->has_sampler  = (bool *)calloc(result->entry_count, sizeof(bool));
-	if (!result->entries || !result->has_resource || !result->has_sampler) {
+	result->resource_serial = (uint64_t *)calloc(result->entry_count, sizeof(uint64_t));
+	result->sampler_serial  = (uint64_t *)calloc(result->entry_count, sizeof(uint64_t));
+	if (!result->entries || !result->resource_serial || !result->sampler_serial) {
 		APREND_DESTRUCT__T(result, aprend_material_t);
 		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the material's entries");
 	}
@@ -431,6 +433,8 @@ APRESULT aprend_material_copy(
 		*out_material = nullptr;
 	if (!source)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "source is NULL");
+	if (APRI_STALE(source, "aprend_material_copy", "source"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "source is destroyed");
 	APREND_ENTER(source->instance, "aprend_material_copy");
 
 	APREND_MALLOC__T(result, aprend_material_t);
@@ -445,17 +449,17 @@ APRESULT aprend_material_copy(
 	// material is the scene's alone.
 
 	result->entries      = (APREND_BINDING_SET_ENTRY *)calloc(result->entry_count, sizeof(APREND_BINDING_SET_ENTRY));
-	result->has_resource = (bool *)calloc(result->entry_count, sizeof(bool));
-	result->has_sampler  = (bool *)calloc(result->entry_count, sizeof(bool));
-	if (!result->entries || !result->has_resource || !result->has_sampler) {
+	result->resource_serial = (uint64_t *)calloc(result->entry_count, sizeof(uint64_t));
+	result->sampler_serial  = (uint64_t *)calloc(result->entry_count, sizeof(uint64_t));
+	if (!result->entries || !result->resource_serial || !result->sampler_serial) {
 		APREND_DESTRUCT__T(result, aprend_material_t);
 		return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "no memory for the material's entries");
 	}
 	// Every resource the source holds, the same handles: they are the
 	// caller's, shared by both.
 	memcpy(result->entries, source->entries, sizeof(APREND_BINDING_SET_ENTRY) * result->entry_count);
-	memcpy(result->has_resource, source->has_resource, sizeof(bool) * result->entry_count);
-	memcpy(result->has_sampler, source->has_sampler, sizeof(bool) * result->entry_count);
+	memcpy(result->resource_serial, source->resource_serial, sizeof(uint64_t) * result->entry_count);
+	memcpy(result->sampler_serial, source->sampler_serial, sizeof(uint64_t) * result->entry_count);
 
 	for (uint32_t i = 0; i < source->slot_count; ++i) {
 		const aprend_material_slot &from = source->slots[i];
@@ -493,18 +497,29 @@ APRESULT aprend_material_copy(
 void aprend_material_destroy(aprend_material material) {
 	if (!material)
 		return;
+	if (APRI_STALE(material, "aprend_material_destroy", "material"))
+		return;
 	// A list compiled against it and not submitted would write its blocks.
 	aprend_instance_forget(material->instance, material);
 	// The whole material goes through the release queue: its ranges of the
 	// arena are given back once the GPU has finished with everything
 	// submitted up to now, which may read them.
+	APRI_KILL(material);
 	aprend_instance_retire(material->instance, material, &aprend_release_handle<aprend_material_t>);
 }
 
-aprend_binding_layout aprend_material_get_layout(aprend_material material) { return material ? material->layout : nullptr; }
+aprend_binding_layout aprend_material_get_layout(aprend_material material) {
+	if (!material)
+		return nullptr;
+	if (APRI_STALE(material, "aprend_material_get_layout", "material"))
+		return nullptr;
+	return material->layout;
+}
 
 bool aprend_material_is_complete(aprend_material material) {
 	if (!material)
+		return false;
+	if (APRI_STALE(material, "aprend_material_is_complete", "material"))
 		return false;
 	const aprend_material_slot *slot = nullptr;
 	uint32_t element                 = 0;
@@ -560,6 +575,8 @@ APRESULT aprend_material_find_uniform(
 	aprend_error_clear(out_error);
 	if (!layout)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is NULL");
+	if (APRI_STALE(layout, "aprend_material_find_uniform", "layout"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "layout is destroyed");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
 	if (!out_uniform)
@@ -620,6 +637,8 @@ APRESULT aprend_material_set_uniform_value(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_uniform_value", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_uniform_value");
 	if (!data)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "data is NULL");
@@ -641,6 +660,8 @@ APRESULT aprend_material_get_uniform_value(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_get_uniform_value", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	if (!out_data)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_data is NULL");
 	aprend_material_slot *slot         = nullptr;
@@ -659,6 +680,8 @@ APRESULT aprend_material_set_uniform(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_uniform", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_uniform");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
@@ -680,6 +703,8 @@ APRESULT aprend_material_set_uniform_bytes(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_uniform_bytes", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_uniform_bytes");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
@@ -708,6 +733,8 @@ APRESULT aprend_material_set_uniform_buffer(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_uniform_buffer", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_uniform_buffer");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
@@ -723,15 +750,20 @@ APRESULT aprend_material_set_uniform_buffer(
 		return found;
 	if (!buffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is NULL");
+	if (APRI_STALE(buffer, "aprend_material_set_uniform_buffer", "buffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is destroyed");
 	if (buffer->instance != material->instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is of another instance");
 	if (!(buffer->desc.usage & APREND_BUFFER_USAGE_UNIFORM))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer was created without APREND_BUFFER_USAGE_UNIFORM");
+	uint64_t &serial = material->resource_serial[entry - material->entries];
+	if (entry->_resource._uniform._buffer == buffer && serial == buffer->serial)
+		return APRESULT_OK; // held already: nothing to build again
 	entry->_resource._uniform._buffer = buffer;
 	entry->_resource._uniform._offset = 0;
 	entry->_resource._uniform._range  = 0;
-	material->has_resource[entry - material->entries] = true;
-	material->resources_changed                       = true;
+	serial                            = buffer->serial;
+	material->resources_changed       = true;
 	return APRESULT_OK;
 }
 
@@ -744,6 +776,8 @@ APRESULT aprend_material_set_storage_buffer(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_storage_buffer", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_storage_buffer");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
@@ -757,15 +791,20 @@ APRESULT aprend_material_set_storage_buffer(
 		return found;
 	if (!buffer)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is NULL");
+	if (APRI_STALE(buffer, "aprend_material_set_storage_buffer", "buffer"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is destroyed");
 	if (buffer->instance != material->instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer is of another instance");
 	if (!(buffer->desc.usage & APREND_BUFFER_USAGE_STORAGE))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "buffer was created without APREND_BUFFER_USAGE_STORAGE");
+	uint64_t &serial = material->resource_serial[entry - material->entries];
+	if (entry->_resource._storage._buffer == buffer && serial == buffer->serial)
+		return APRESULT_OK; // held already: nothing to build again
 	entry->_resource._storage._buffer = buffer;
 	entry->_resource._storage._offset = 0;
 	entry->_resource._storage._range  = 0;
-	material->has_resource[entry - material->entries] = true;
-	material->resources_changed                       = true;
+	serial                            = buffer->serial;
+	material->resources_changed       = true;
 	return APRESULT_OK;
 }
 
@@ -778,11 +817,15 @@ APRESULT aprend_material_set_texture(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_texture", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_texture");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
 	if (!view)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view is NULL");
+	if (APRI_STALE(view, "aprend_material_set_texture", "view"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view is destroyed");
 	aprend_material_slot *slot = nullptr;
 	if (const APRESULT found = aprend_material_find_slot(material, name, &slot, out_error))
 		return found;
@@ -797,9 +840,12 @@ APRESULT aprend_material_set_texture(
 	                                                                                                      : APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
 	if (view->view_type != wanted)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "binding \"%s\" takes a view of type %u, and view is of type %u", name, (unsigned)wanted, (unsigned)view->view_type);
-	entry->_resource._image._view                     = view;
-	material->has_resource[entry - material->entries] = true;
-	material->resources_changed                       = true;
+	uint64_t &serial = material->resource_serial[entry - material->entries];
+	if (entry->_resource._image._view == view && serial == view->serial)
+		return APRESULT_OK; // held already: nothing to build again
+	entry->_resource._image._view = view;
+	serial                        = view->serial;
+	material->resources_changed   = true;
 	return APRESULT_OK;
 }
 
@@ -812,11 +858,15 @@ APRESULT aprend_material_set_sampler(
 	aprend_error_clear(out_error);
 	if (!material)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is NULL");
+	if (APRI_STALE(material, "aprend_material_set_sampler", "material"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "material is destroyed");
 	APREND_ENTER(material->instance, "aprend_material_set_sampler");
 	if (!name)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "name is NULL");
 	if (!sampler)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "sampler is NULL");
+	if (APRI_STALE(sampler, "aprend_material_set_sampler", "sampler"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "sampler is destroyed");
 	aprend_material_slot *slot = nullptr;
 	if (const APRESULT found = aprend_material_find_slot(material, name, &slot, out_error))
 		return found;
@@ -827,9 +877,12 @@ APRESULT aprend_material_set_sampler(
 		return found;
 	if (sampler->instance != material->instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "sampler is of another instance");
-	entry->_resource._image._sampler                 = sampler;
-	material->has_sampler[entry - material->entries] = true;
-	material->resources_changed                      = true;
+	uint64_t &serial = material->sampler_serial[entry - material->entries];
+	if (entry->_resource._image._sampler == sampler && serial == sampler->serial)
+		return APRESULT_OK; // held already: nothing to build again
+	entry->_resource._image._sampler = sampler;
+	serial                           = sampler->serial;
+	material->resources_changed      = true;
 	return APRESULT_OK;
 }
 

@@ -227,6 +227,8 @@ APRESULT aprend_instance_get_render_target_pool(
     APREND_RENDER_TARGET_POOL_INFO *out_info) {
 	if (!instance)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(instance, "aprend_instance_get_render_target_pool", "instance"))
+		return APRESULT_INVALID_ARGUMENT;
 	if (!out_info)
 		return APRESULT_INVALID_ARGUMENT;
 	if (const APRESULT result = apri_struct_out_check(&out_info->base, APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO))
@@ -257,6 +259,8 @@ APRESULT aprend_instance_trim_render_targets(
 		*out_trim_count = 0;
 	if (!instance)
 		return APRESULT_INVALID_ARGUMENT;
+	if (APRI_STALE(instance, "aprend_instance_trim_render_targets", "instance"))
+		return APRESULT_INVALID_ARGUMENT;
 	APREND_ENTER(instance, "aprend_instance_trim_render_targets");
 	const uint32_t trimmed = aprend_render_target_pool_retire(instance, idle_frames);
 	if (out_trim_count)
@@ -272,6 +276,8 @@ APRESULT aprend_instance_set_render_target_retirement(
 	aprend_error_clear(out_error);
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
+	if (APRI_STALE(instance, "aprend_instance_set_render_target_retirement", "instance"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
 	if (idle_frames == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "idle_frames is 0");
 	APREND_ENTER(instance, "aprend_instance_set_render_target_retirement");

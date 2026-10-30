@@ -6,6 +6,7 @@
 
 #include "sync/apsyncnet.h"
 #include "../aprioverlap.hpp"
+#include "../apristale.hpp"
 #include <spudnet.h>
 
 #include <atomic>
@@ -235,6 +236,7 @@ struct apsync_log_entry
 struct apsync_session_t
 {
     const char *debug_name{nullptr};
+    APRI_STALE_TAG
 
     // ---- Set at creation and never changed ----
     bool hosting{false};
