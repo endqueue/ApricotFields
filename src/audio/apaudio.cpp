@@ -1,11 +1,14 @@
 #include "audio/apaudio.h"
 #include "apaudio_internal.hpp"
+#include "apaudio_stream.hpp"
 #include "../aprioverlap.hpp"
+#include "../apriplaindata.hpp"
 #include "../apristale.hpp"
 #include "../apristructbase.hpp"
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <eqstd.hpp>
 #include <math.h>
 #include <new>
 #include <stdarg.h>
@@ -26,6 +29,9 @@
 //     groups, and apaudio_mixer_update()'s ranking - is posted to the audio
 //     thread as whole copies through a triple buffer; what the audio thread
 //     knows that ranking needs is published back in atomics.
+//   - A streamed voice's ring has one writer, the decoding's item for its
+//     stream, and one reader, the render, each publishing how far it has got
+//     ("Streams" below).
 // The audio thread never allocates or frees: everything is sized at creation.
 //
 // Where this differs from APAUDIO_TODO.md's implementation notes:
@@ -37,8 +43,8 @@
 //   - There are max_fading_voices more voice records than max_voices +
 //     queue_capacity: a voice ended to make room keeps its record while it
 //     fades.
-//   - Sinc keeps no history: sounds are whole in memory, so it reads them
-//     directly.
+//   - Sinc keeps no history: it reads a sound's samples directly, or a
+//     streamed voice's prefetch and ring, which keep its reach behind it.
 
 // ---- Errors -------------------------------------------------------------------
 
@@ -732,14 +738,20 @@ struct Sound
     uint64_t retire_sequence{0}; // the render sequence that frees it
 
     // Written before live_id, and unchanged until the slot is collected.
-    float *samples{nullptr};
-    uint64_t frame_count{0};
+    float *samples{nullptr}; // a streamed sound's: its prefetch, then its last STREAM_REACH frames
+    uint64_t frame_count{0}; // a streamed sound's: the length its file states
     uint32_t channel_count{0};
     uint32_t sample_rate{0};
-    float loudness{0.0f}; // RMS
+    float loudness{0.0f}; // RMS; 1 for a streamed sound
     APAUDIO_VIRTUAL_BEHAVIOR virtual_behavior{0};
     APAUDIO_CONCURRENCY concurrency{0};
     APAUDIO_BUS bus{0};
+    bool streamed{false};       // its voices stream (one its prefetch holds whole doesn't)
+    uint64_t prefetch_frames{0}; // streamed: the frames of its start in samples
+
+    // The render's count of a streamed sound's frames of silence for want of
+    // a ring's (apaudio_sound_get_underrun_frames()).
+    mutable std::atomic<uint64_t> underrun_frames{0};
 };
 
 enum : uint8_t
@@ -758,6 +770,9 @@ enum : uint32_t
     PUBLISHED_HELD = 4,      // on a muted or paused bus
     PUBLISHED_WAITING = 8,   // not started
     PUBLISHED_SETTLED = 16,  // real for min_real_us
+    PUBLISHED_STREAMED = 32, // its sound is streamed: real only with a stream
+    PUBLISHED_AT_START = 64, // streamed, holding no stream, and would play from its prefetch
+    PUBLISHED_LOOP = 128,
 };
 
 struct Voice
@@ -772,6 +787,8 @@ struct Voice
     // priority and PUBLISHED_ flags.
     std::atomic<uint64_t> published_id{0};
     std::atomic<uint64_t> published_info{0};
+    // Its sound's ID, for an update giving a streamed voice a stream.
+    std::atomic<uint64_t> published_sound{0};
     // The voice's ID from apaudio_play() until the audio thread frees its
     // record; 0 otherwise. apaudio_voice_is_live()'s.
     std::atomic<uint64_t> live_id{0};
@@ -827,7 +844,15 @@ struct Voice
     uint64_t serial{0}; // start order
     uint64_t real_frames{0};
     uint64_t fade_serial{0};
+    // A streamed voice's stream (NO_STREAM: none), and whether, virtual, it
+    // waits for the stream to fill; and whether its stream failed.
+    uint32_t stream{UINT32_MAX};
+    bool stream_wait{false};
+    bool stream_failed{false};
 };
+// Read for every active voice each render: 272 bytes before streams, 288
+// with them, five cache lines either way.
+APRI_HOT_RECORD(Voice, 5 * APRI_CACHE_LINE);
 
 struct Bus
 {
@@ -916,6 +941,7 @@ struct Config
     ModifierTarget *targets{nullptr}; // bus_count per modifier
     GroupConfig *groups{nullptr};
 };
+APRI_PLAIN_DATA(Config);
 
 // One writer posting whole values to one reader, neither ever waiting: three
 // buffers - the writer's, the reader's, and the latest one posted.
@@ -945,9 +971,14 @@ struct RankEntry // apaudio_mixer_update()'s
     uint32_t generation;
     uint8_t priority;
     bool real;
+    bool streamed;
+    bool at_start;
+    bool loop;
     float score;
     float key;
+    uint64_t sound;
 };
+APRI_PLAIN_DATA(RankEntry);
 
 // Windowed sinc: SINC_ZEROS zero crossings each side, SINC_RESOLUTION table
 // entries per crossing. Playing faster than the mixer's rate stretches it (a
@@ -955,6 +986,96 @@ struct RankEntry // apaudio_mixer_update()'s
 constexpr int SINC_ZEROS = 8;
 constexpr int SINC_RESOLUTION = 256;
 constexpr float SINC_MAX_STRETCH = 16.0f;
+
+// ---- Streams: records ---------------------------------------------------------
+//
+// A streamed sound's voice decodes into a ring of its own while it is real or
+// fading (apaudio.h, "Streamed sounds"). Each update hands every stream that
+// needs frames to one task on the caller's scheduler; the render reads the
+// sound's prefetch and the rings, and nothing else. A voice's place, while
+// it holds a stream, counts frames in the order it plays them - play order -
+// not wrapping at a loop, since the ring holds them in that order; frames
+// below the sound's length in play order are its own frames, so the prefetch
+// and the tail serve them. Without a stream, it is the sound's frame again.
+
+// How far either side of a voice's place the resampler reads: windowed
+// sinc's half width at its widest stretch; linear interpolation reads one
+// frame ahead. A ring keeps this much behind what its voice reads, a voice
+// needs it ahead of a frame to play the frame, and a looping sound keeps its
+// last this many frames for the taps before its first.
+constexpr uint32_t STREAM_REACH = (uint32_t)(SINC_ZEROS * SINC_MAX_STRETCH);
+// The longest ring a sound may ask for (apaudio.h, `stream_ring_us`).
+constexpr uint32_t STREAM_RING_MAX_US = 10000000;
+constexpr uint32_t NO_STREAM = UINT32_MAX;
+constexpr uint64_t STREAM_END_UNKNOWN = UINT64_MAX;
+// A decision's payload names its voice's stream, plus one, above its two
+// low bits.
+constexpr uint32_t MAX_STREAMS = 0x3FFFFFFFu;
+
+enum : uint32_t
+{
+    STREAM_FREE,      // no voice, no block: the control thread's
+    STREAM_ASSIGNED,  // an update gave it to a voice; where it starts isn't known yet
+    STREAM_REQUESTED, // its start set: the decoding opens it and keeps its ring full
+    STREAM_RELEASED,  // let go by the render (or, never taken, by an update): a collect frees it
+};
+
+// What a streamed sound's streams need, beside its slot: the update copies
+// it into a stream it gives a voice, so the decoding never reads a sound's
+// slot (which a create may reuse while it runs), and the render never reads
+// it at all.
+struct SoundStream
+{
+    StreamInfo info;
+    APAUDIO_SOURCE source;
+    uint64_t prefetch_frames;
+    uint64_t block_bytes; // the decoder's room, then the ring
+    uint32_t ring_frames;
+};
+APRI_PLAIN_DATA(SoundStream);
+
+// A voice's stream: its decoder and ring (one block, from the system heap
+// when the decoding opens it), and the counters by which the decoding and
+// the render keep each other in step without waiting. Array of structs,
+// max_streams of them made with the mixer: the decoding's item for a stream
+// and the render each touch one record's few fields together. Line 0 is the
+// decoding's to write and the render's to read; line 1 the render's to write
+// and the decoding's and the update's to read; the rest, cold, the update's
+// and the decoding's own. So the decoding and the render never write one
+// line, and no two streams' writers share one. Plain data: what two threads
+// share is read and written through std::atomic_ref.
+struct alignas(APRI_CACHE_LINE) Stream
+{
+    // The decoding's, published by `written` (release; the render acquires).
+    uint64_t written; // play order: the ring holds frames up to here
+    uint64_t end;     // play order: where the data ends; STREAM_END_UNKNOWN until it does
+    float *ring;      // ring_frames frames of channels, interleaved, in the block
+    uint64_t origin;  // play order: the ring's first frame
+    uint32_t ring_frames;
+    uint32_t channels;
+    uint32_t failed; // its failure's APRESULT, set after `failure`; 0 while none
+
+    // The render's.
+    alignas(APRI_CACHE_LINE) uint64_t read; // play order: the lowest frame the render may still read
+    uint64_t request_origin;                // the sound frame the stream starts at
+    uint64_t release_sequence;              // a collect frees it once the render sequence reaches this
+    uint32_t state;                         // STREAM_*
+
+    // The update's and the decoding's.
+    alignas(APRI_CACHE_LINE) uint32_t voice_index;
+    uint32_t voice_generation;
+    uint64_t sound_id;
+    SoundStream sound;
+    void *block;
+    StreamDecoder *decoder; // at the block's start
+    uint64_t pass_frames;   // frames decoded since the data last began (a loop's)
+    StreamFailure failure;
+    bool loop;
+    bool opened;
+    bool reported; // its failure told by an update
+};
+APRI_PLAIN_DATA(Stream);
+APRI_HOT_RECORD(Stream, 5 * APRI_CACHE_LINE);
 
 struct apaudio_mixer_t
 {
@@ -1043,6 +1164,21 @@ struct apaudio_mixer_t
     uint32_t limiter_queue_count{0};
     double limiter_box_sum{0.0};
     float limiter_gain{1.0f};
+    // Streams (apaudio.h, "Streamed sounds"), made with the mixer: the
+    // records, each sound slot's stream needs (the update's), each voice
+    // record's stream + 1 or 0 (the update's), and the streams the decoding
+    // in flight serves (the update's to write, the decoding's to read).
+    uint32_t max_streams{0};
+    bool has_scheduler{false};
+    APJOBS_SCHEDULER scheduler{};
+    eq::array<Stream> streams;
+    eq::array<SoundStream> sound_streams;
+    eq::array<uint32_t> voice_streams;
+    eq::array<uint32_t> stream_tasks;
+    // The decoding an update started on the scheduler: waited for before
+    // anything it touches changes.
+    void *decoding{nullptr};
+
     // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
     apri_overlap overlap{};
     // The same for the render, one at a time of its own (apaudio.h's roles).
@@ -1328,6 +1464,33 @@ static void release_slot(Mixer *m, Voice &v)
     v.fading_out = false;
 }
 
+// ---- Streams: the render's side (audio thread) -----------------------------------
+
+// The render stops reading a voice's stream: a collect frees it once the
+// render after this one has finished. Without its stream the voice's place
+// is its sound's frame again.
+static void stream_release(Mixer *m, Voice &v)
+{
+    if (v.stream == NO_STREAM)
+        return;
+    Stream &s = m->streams[v.stream];
+    s.release_sequence = m->render_sequence.load(std::memory_order_relaxed) + 3;
+    std::atomic_ref<uint32_t>(s.state).store(STREAM_RELEASED, std::memory_order_release);
+    v.stream = NO_STREAM;
+    v.stream_wait = false;
+    if (v.loop && v.sound->frame_count > 0)
+        v.position %= v.sound->frame_count;
+}
+
+// A stream an update gave a voice that won't take it (it ended, stopped or
+// was ranked virtual meanwhile): let go untouched.
+static void stream_refuse(Mixer *m, uint32_t index)
+{
+    Stream &s = m->streams[index];
+    s.release_sequence = m->render_sequence.load(std::memory_order_relaxed) + 3;
+    std::atomic_ref<uint32_t>(s.state).store(STREAM_RELEASED, std::memory_order_release);
+}
+
 // Ends a voice. Its record is swept off the active list, and freed, later in
 // the render.
 static void end_voice(Mixer *m, Voice &v)
@@ -1335,6 +1498,7 @@ static void end_voice(Mixer *m, Voice &v)
     if (v.dead)
         return;
     release_slot(m, v);
+    stream_release(m, v);
     if (v.logical)
         m->logical_count--;
     v.logical = false;
@@ -1344,6 +1508,7 @@ static void end_voice(Mixer *m, Voice &v)
 static void make_virtual(Mixer *m, Voice &v, bool frozen)
 {
     release_slot(m, v);
+    stream_release(m, v);
     v.state = VOICE_VIRTUAL;
     v.end_after_fade = false;
     v.envelope = 0.0f;
@@ -1727,6 +1892,8 @@ static bool admit_voice(Mixer *m, uint32_t index, uint32_t frames, bool host_val
     v.envelope_step = 0.0f;
     v.score = 0.0f;
     v.real_frames = 0;
+    v.stream = NO_STREAM;
+    v.stream_wait = v.stream_failed = false;
 
     // The sound may have been destroyed since apaudio_play() checked.
     uint32_t sound_index, sound_generation;
@@ -1919,6 +2086,19 @@ static void prepare_voice(Mixer *m, Voice &v, const uint64_t *decisions, uint32_
         if (v.dead)
             return;
     }
+    // Its stream failed: it ends with a short fade (or at once, if silent),
+    // and the update after the decoding that met it says so.
+    if (v.stream != NO_STREAM && !v.stream_failed &&
+        std::atomic_ref<uint32_t>(m->streams[v.stream].failed).load(std::memory_order_acquire))
+    {
+        v.stream_failed = true;
+        if (v.state == VOICE_REAL)
+            stop_voice(m, v, transition_frames(m));
+        else
+            end_voice(m, v);
+        if (v.dead)
+            return;
+    }
     if (!v.releasing)
         take_changes(v);
     if (v.state == VOICE_WAITING)
@@ -1972,6 +2152,10 @@ static void promote_voice(Mixer *m, Voice &v, uint64_t decision)
         return;
     if (v.state == VOICE_VIRTUAL)
     {
+        // A streamed voice comes back with its stream: at once from its
+        // prefetch, or once the stream has filled (stream_wait_check()).
+        if (v.sound->streamed && (v.stream == NO_STREAM || v.stream_wait))
+            return;
         promote(m, v);
     }
     else if (v.state == VOICE_REAL && v.fading_out && !v.end_after_fade)
@@ -2146,6 +2330,268 @@ static uint32_t render_source(Mixer *m, Voice &v, uint32_t count, uint64_t step_
     return produced;
 }
 
+// A voice takes the stream an update gave it. It starts at the prefetch's
+// end for a voice that will play from its start, or is still within the
+// prefetch, which plays at once; else at the voice's place, which a virtual
+// voice then waits for, silent, until the decoding has filled it.
+static void stream_take(Mixer *m, Voice &v, uint32_t index)
+{
+    Stream &s = m->streams[index];
+    std::atomic_ref<uint32_t> state(s.state);
+    uint64_t prefetch = v.sound->prefetch_frames;
+    bool virtual_voice = v.state == VOICE_VIRTUAL;
+    uint64_t place = virtual_voice && v.behavior == APAUDIO_VIRTUAL_RESTART ? 0 : v.position;
+    if (state.load(std::memory_order_acquire) == STREAM_ASSIGNED)
+    {
+        uint64_t origin = place < prefetch ? prefetch : place;
+        s.request_origin = origin;
+        std::atomic_ref<uint64_t>(s.read).store(origin, std::memory_order_relaxed);
+        state.store(STREAM_REQUESTED, std::memory_order_release);
+    }
+    v.stream = index;
+    v.stream_wait = virtual_voice && place >= prefetch;
+}
+
+// Tells the decoding how far back the voice may still read: as far as the
+// resampler reaches behind its place.
+static void stream_publish_read(Mixer *m, const Voice &v)
+{
+    if (v.stream == NO_STREAM)
+        return;
+    uint64_t read = v.position > STREAM_REACH ? v.position - STREAM_REACH : 0;
+    std::atomic_ref<uint64_t>(m->streams[v.stream].read).store(read, std::memory_order_release);
+}
+
+// What a streamed voice's render reads: its sound's prefetch and tail, and
+// its stream's ring as far as the decoding had written when the render
+// began.
+struct StreamView
+{
+    const float *prefetch;
+    uint64_t prefetch_frames;
+    const float *tail; // the sound's last STREAM_REACH frames, for a loop's first taps
+    const float *ring;
+    uint64_t origin;
+    uint64_t written;
+    uint64_t end;
+    uint32_t ring_frames;
+    uint32_t channels;
+};
+
+static void stream_view(Mixer *m, const Voice &v, StreamView &view)
+{
+    const Sound &sound = *v.sound;
+    view.prefetch = sound.samples;
+    view.prefetch_frames = sound.prefetch_frames;
+    view.tail = sound.samples + (size_t)sound.prefetch_frames * sound.channel_count;
+    view.ring = nullptr;
+    view.origin = 0;
+    view.written = 0;
+    view.end = STREAM_END_UNKNOWN;
+    view.ring_frames = 0;
+    view.channels = sound.channel_count;
+    if (v.stream == NO_STREAM)
+        return;
+    Stream &s = m->streams[v.stream];
+    // The end first: the decoding publishes it after the frames before it.
+    uint64_t end = std::atomic_ref<uint64_t>(s.end).load(std::memory_order_acquire);
+    uint64_t written = std::atomic_ref<uint64_t>(s.written).load(std::memory_order_acquire);
+    if (written == 0)
+        return; // not opened yet
+    view.ring = s.ring;
+    view.origin = s.origin;
+    view.written = written;
+    view.end = end;
+    view.ring_frames = s.ring_frames;
+}
+
+// Frame [frame], in play order: its samples, or null for silence (before
+// the voice's first frame, between the prefetch and a ring starting later,
+// past the data's end).
+static inline const float *stream_frame(const StreamView &s, bool loop, int64_t frame)
+{
+    if (frame < 0)
+    {
+        if (!loop || frame < -(int64_t)STREAM_REACH)
+            return nullptr;
+        return s.tail + (size_t)((int64_t)STREAM_REACH + frame) * s.channels;
+    }
+    uint64_t at = (uint64_t)frame;
+    if (s.end != STREAM_END_UNKNOWN && at >= s.end)
+        return nullptr;
+    if (s.ring && at >= s.origin)
+        return s.ring + (size_t)(at % s.ring_frames) * s.channels;
+    if (at < s.prefetch_frames)
+        return s.prefetch + (size_t)at * s.channels;
+    return nullptr;
+}
+
+// Whether frame [frame], in play order, is there to read, or known silence.
+static inline bool stream_has(const StreamView &s, uint64_t frame)
+{
+    if (s.end != STREAM_END_UNKNOWN && frame >= s.end)
+        return true;
+    if (s.ring && frame >= s.origin)
+        return frame < s.written;
+    return frame < s.prefetch_frames;
+}
+
+// sinc_frame() over a stream's frames: the same taps, weights and sums, so
+// the same bits as from the whole sound in memory.
+static inline void stream_sinc_frame(const float *table, const StreamView &s, bool loop, uint64_t position,
+                                     uint32_t fraction, float stretch, float *out)
+{
+    float t = (float)fraction * (1.0f / 4294967296.0f);
+    int half = (int)ceilf((float)SINC_ZEROS * stretch);
+    float to_table = (float)SINC_RESOLUTION / stretch;
+    const float limit = (float)(SINC_ZEROS * SINC_RESOLUTION);
+    bool end_known = s.end != STREAM_END_UNKNOWN;
+    float sum[2] = {0.0f, 0.0f};
+    for (int k = -half + 1; k <= half; k++)
+    {
+        float at = fabsf((float)k - t) * to_table;
+        if (at >= limit)
+            continue;
+        int entry = (int)at;
+        float weight = table[entry] + (table[entry + 1] - table[entry]) * (at - (float)entry);
+        int64_t frame = (int64_t)position + k;
+        if (!loop && (frame < 0 || (end_known && (uint64_t)frame >= s.end)))
+            continue;
+        const float *samples = stream_frame(s, loop, frame);
+        if (!samples)
+            continue;
+        sum[0] += weight * samples[0];
+        if (s.channels == 2)
+            sum[1] += weight * samples[1];
+    }
+    out[0] = sum[0] / stretch;
+    out[1] = sum[1] / stretch;
+}
+
+// render_source() for a voice of a streamed sound: the same resampling, in
+// the same arithmetic, reading its frames in play order through [s]. Where a
+// frame it needs isn't there yet, the rest of the render is silence - how
+// many frames, in [missing] - and its place moves on through it, so a late
+// decoding doesn't leave it behind the clock.
+static uint32_t render_stream_source(Mixer *m, Voice &v, const StreamView &s, uint32_t count, uint64_t step_end,
+                                     uint32_t &missing)
+{
+    float *out0 = m->source;
+    float *out1 = m->source + m->max_frames;
+    uint64_t position = v.position;
+    uint32_t fraction = v.fraction;
+    uint64_t step = v.step;
+    int64_t glide = ((int64_t)step_end - (int64_t)step) / (int64_t)count;
+
+    bool copy = step == FIXED_ONE && step_end == FIXED_ONE && fraction == 0;
+    bool sinc = !copy && m->resampler == APAUDIO_RESAMPLER_SINC;
+    float stretch = 1.0f;
+    uint64_t ahead = copy ? 0 : 1;
+    bool end_known = s.end != STREAM_END_UNKNOWN;
+    uint64_t end = s.end;
+    if (sinc)
+    {
+        uint64_t fastest = step > step_end ? step : step_end;
+        stretch = clamp_float((float)((double)fastest / 4294967296.0), 1.0f, SINC_MAX_STRETCH);
+        ahead = (uint64_t)ceilf((float)SINC_ZEROS * stretch);
+        if (!v.loop && end_known)
+            end += ahead; // the filter's tail
+    }
+
+    uint32_t produced = count;
+    missing = 0;
+    uint32_t i = 0;
+    for (; i < count; i++)
+    {
+        if (!v.loop && end_known && position >= end)
+        {
+            produced = i;
+            break;
+        }
+        if (!stream_has(s, position + ahead))
+        {
+            produced = i;
+            missing = count - i;
+            break;
+        }
+        if (copy)
+        {
+            const float *frame = stream_frame(s, v.loop, (int64_t)position);
+            out0[i] = frame ? frame[0] : 0.0f;
+            if (s.channels == 2)
+                out1[i] = frame ? frame[1] : 0.0f;
+        }
+        else if (sinc)
+        {
+            float frame[2];
+            stream_sinc_frame(m->sinc, s, v.loop, position, fraction, stretch, frame);
+            out0[i] = frame[0];
+            out1[i] = frame[1];
+        }
+        else
+        {
+            bool silent_after = !v.loop && end_known && position + 1 >= s.end;
+            const float *here = stream_frame(s, v.loop, (int64_t)position);
+            const float *after = silent_after ? nullptr : stream_frame(s, v.loop, (int64_t)position + 1);
+            float t = (float)fraction * (1.0f / 4294967296.0f);
+            float a = here ? here[0] : 0.0f;
+            float b = after ? after[0] : 0.0f;
+            out0[i] = a + (b - a) * t;
+            if (s.channels == 2)
+            {
+                a = here ? here[1] : 0.0f;
+                b = after ? after[1] : 0.0f;
+                out1[i] = a + (b - a) * t;
+            }
+        }
+        step = (uint64_t)((int64_t)step + glide);
+        uint64_t moved = (uint64_t)fraction + (step & 0xFFFFFFFFull);
+        position += (step >> 32) + (moved >> 32);
+        fraction = (uint32_t)moved;
+    }
+    // Run dry: the place moves on as if it had played.
+    for (; i < count; i++)
+    {
+        step = (uint64_t)((int64_t)step + glide);
+        uint64_t moved = (uint64_t)fraction + (step & 0xFFFFFFFFull);
+        position += (step >> 32) + (moved >> 32);
+        fraction = (uint32_t)moved;
+    }
+    for (uint32_t k = produced; k < count; k++)
+    {
+        out0[k] = 0.0f;
+        out1[k] = 0.0f;
+    }
+    v.position = position;
+    v.fraction = fraction;
+    v.step = step_end;
+    v.ended = !v.loop && end_known && (position >= end || (produced < count && missing == 0));
+    return produced;
+}
+
+// A virtual voice waiting for its stream (one coming back elsewhere than its
+// start): real again, fading in, once the decoding has filled the ring past
+// its place; ended if its stream failed.
+static void stream_wait_check(Mixer *m, Voice &v)
+{
+    Stream &s = m->streams[v.stream];
+    if (std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_acquire))
+    {
+        end_voice(m, v);
+        return;
+    }
+    uint64_t end = std::atomic_ref<uint64_t>(s.end).load(std::memory_order_acquire);
+    uint64_t written = std::atomic_ref<uint64_t>(s.written).load(std::memory_order_acquire);
+    bool ready = written > v.position + STREAM_REACH || (end != STREAM_END_UNKNOWN && written >= end && written != 0);
+    if (!ready || m->real_count >= m->max_real_voices || m->buses[v.bus_index].held)
+        return;
+    uint64_t fade = transition_frames(m);
+    take_slot(m, v);
+    v.envelope = fade ? 0.0f : 1.0f;
+    v.envelope_step = fade ? 1.0f / (float)fade : 0.0f;
+    v.stream_wait = false;
+}
+
 // Mixes a real voice's part of this render.
 static void mix_voice(Mixer *m, Voice &v, uint32_t frames)
 {
@@ -2174,7 +2620,23 @@ static void mix_voice(Mixer *m, Voice &v, uint32_t frames)
     v.snap = false;
     v.pan_changed = false;
 
-    uint32_t produced = render_source(m, v, count, step);
+    uint32_t produced;
+    if (v.sound->streamed)
+    {
+        StreamView view;
+        stream_view(m, v, view);
+        uint32_t missing;
+        produced = render_stream_source(m, v, view, count, step, missing);
+        // Silence for want of a ring's frames, counted on the sound: not a
+        // voice ending as its stream failed, or as its sound went.
+        if (missing && !v.stream_failed && !v.cut)
+            v.sound->underrun_frames.fetch_add(missing, std::memory_order_relaxed);
+        stream_publish_read(m, v);
+    }
+    else
+    {
+        produced = render_source(m, v, count, step);
+    }
 
     // Gain and envelope, ramped across the render.
     float gain_step = (gain - v.applied_gain) / (float)count;
@@ -2226,16 +2688,30 @@ static void mix_voice(Mixer *m, Voice &v, uint32_t frames)
 }
 
 // A virtual voice's place moves on only if it's CONTINUE, and isn't held.
+// One waiting for its stream counts in play order, as the stream does, and
+// tells the decoding where it has got.
 static void advance_virtual(Mixer *m, Voice &v, uint32_t frames)
 {
     if (v.frozen || v.behavior != APAUDIO_VIRTUAL_CONTINUE)
+    {
+        stream_publish_read(m, v);
         return;
+    }
     uint64_t length = v.sound->frame_count;
     uint64_t step = voice_step(m, v);
     uint64_t moved = (uint64_t)v.fraction + (step & 0xFFFFFFFFull) * frames;
     v.position += (step >> 32) * frames + (moved >> 32);
     v.fraction = (uint32_t)moved;
     v.step = step;
+    if (v.stream != NO_STREAM)
+    {
+        uint64_t end = std::atomic_ref<uint64_t>(m->streams[v.stream].end).load(std::memory_order_acquire);
+        if (!v.loop && end != STREAM_END_UNKNOWN && v.position >= end)
+            end_voice(m, v);
+        else
+            stream_publish_read(m, v);
+        return;
+    }
     if (v.loop)
         v.position %= length;
     else if (v.position >= length)
@@ -2263,8 +2739,18 @@ static void publish(Mixer *m)
             flags |= PUBLISHED_SETTLED;
         if (real && !v.releasing && v.score > m->virtual_threshold)
             m->buses[v.bus_index].has_audible = true;
+        if (v.sound->streamed)
+        {
+            flags |= PUBLISHED_STREAMED;
+            bool restarts = v.state == VOICE_VIRTUAL && v.behavior == APAUDIO_VIRTUAL_RESTART;
+            if (v.stream == NO_STREAM && (restarts || v.position < v.sound->prefetch_frames))
+                flags |= PUBLISHED_AT_START;
+        }
+        if (v.loop)
+            flags |= PUBLISHED_LOOP;
         v.published_info.store((uint64_t)float_bits(v.score) | ((uint64_t)v.priority << 32) | ((uint64_t)flags << 40),
                                std::memory_order_relaxed);
+        v.published_sound.store(v.sound_id, std::memory_order_relaxed);
         v.published_id.store(v.id, std::memory_order_release);
     }
     const Config &config = *m->config;
@@ -2286,6 +2772,31 @@ static void render_block(Mixer *m, uint32_t frames, bool host_valid, uint64_t ho
     update_buses(m, frames);
     const uint64_t *decisions = m->decision_buffer.take() ? m->decisions[m->decision_buffer.read] : nullptr;
 
+    if (decisions && m->max_streams)
+    {
+        // The streams the update gave: each taken by its voice, or let go.
+        for (uint32_t i = 0; i < m->active_count; i++)
+        {
+            Voice &v = m->voices[m->active[i]];
+            uint64_t decision = decisions[m->active[i]];
+            uint32_t given = (uint32_t)decision >> 2;
+            if (v.dead || given == 0 || (uint32_t)(decision >> 32) != v.generation)
+                continue;
+            if (v.stream == given - 1)
+            {
+                // Ranked virtual while still waiting for it: nothing read it.
+                if ((decision & 3) == DECISION_VIRTUAL && v.state == VOICE_VIRTUAL)
+                    stream_release(m, v);
+                continue;
+            }
+            bool takes = (decision & 3) == DECISION_REAL && v.stream == NO_STREAM && v.sound->streamed && !v.releasing &&
+                         !v.cut && v.state != VOICE_WAITING;
+            if (takes)
+                stream_take(m, v, given - 1);
+            else
+                stream_refuse(m, given - 1);
+        }
+    }
     for (uint32_t i = 0; i < m->active_count; i++)
     {
         Voice &v = m->voices[m->active[i]];
@@ -2296,6 +2807,12 @@ static void render_block(Mixer *m, uint32_t frames, bool host_valid, uint64_t ho
     {
         for (uint32_t i = 0; i < m->active_count; i++)
             promote_voice(m, m->voices[m->active[i]], decisions[m->active[i]]);
+    }
+    for (uint32_t i = 0; i < m->active_count && m->max_streams; i++)
+    {
+        Voice &v = m->voices[m->active[i]];
+        if (!v.dead && v.state == VOICE_VIRTUAL && v.stream_wait)
+            stream_wait_check(m, v);
     }
     for (uint32_t i = 0; i < m->active_count; i++)
     {
@@ -2511,6 +3028,382 @@ static void write_output(Mixer *m, void *frames_out, uint32_t offset, uint32_t f
     }
 }
 
+// ---- Streams: the decoding (the scheduler's workers) ---------------------------
+
+// A stream's failure, for the update after the decoding to tell: the data
+// ends where the ring does, so the render plays nothing past it.
+static void stream_fail(Stream &s, uint64_t at)
+{
+    std::atomic_ref<uint64_t>(s.end).store(at, std::memory_order_release);
+    std::atomic_ref<uint32_t>(s.failed).store((uint32_t)s.failure.result, std::memory_order_release);
+}
+
+// Opens a stream newly requested: its block, its decoder in it, and the
+// decoder at the stream's first frame.
+static bool stream_open(Stream &s)
+{
+    void *block = malloc((size_t)s.sound.block_bytes);
+    if (!block)
+    {
+        s.failure = StreamFailure{APRESULT_OUT_OF_MEMORY, STREAM_PART_MEMORY, 0, 0, s.sound.block_bytes, 0};
+        stream_fail(s, 0);
+        return false;
+    }
+    s.block = block;
+    s.decoder = new (block) StreamDecoder();
+    if (!apaudio_stream_open(*s.decoder, s.sound.info.codec, s.sound.source, block, &s.sound.info, s.failure))
+    {
+        stream_fail(s, 0);
+        return false;
+    }
+    s.opened = true;
+    s.ring = (float *)((unsigned char *)block + apaudio_stream_decoder_bytes(s.sound.info));
+    s.origin = s.request_origin;
+    s.pass_frames = 0;
+    if (s.origin == s.sound.prefetch_frames)
+    {
+        // The join with the prefetch: decoded from the start, into the ring
+        // before anything is in it, and dropped, so what follows is the
+        // frames a decode in order gives - the whole file's, whatever its
+        // stated positions say (a seek goes by those, and an Opus seek
+        // isn't the bits even when they're right: card A34).
+        uint64_t left = s.origin;
+        while (left > 0)
+        {
+            uint32_t run = left < s.ring_frames ? (uint32_t)left : s.ring_frames;
+            uint32_t got = apaudio_stream_read(*s.decoder, s.ring, run, s.failure);
+            if (got == 0)
+                break;
+            left -= got;
+            s.pass_frames += got;
+        }
+        if (s.failure.result != APRESULT_OK)
+        {
+            stream_fail(s, s.origin);
+            return false;
+        }
+    }
+    else if (!apaudio_stream_seek(*s.decoder, s.origin, s.failure))
+    {
+        stream_fail(s, s.origin);
+        return false;
+    }
+    std::atomic_ref<uint64_t>(s.written).store(s.origin, std::memory_order_release);
+    return true;
+}
+
+// Moves a stream's decoder on to play-order frame [to], past [at]: the render
+// has played on past what was written (an update came late). False if it
+// failed, or the data ended first.
+static bool stream_skip(Stream &s, uint64_t at, uint64_t to)
+{
+    uint64_t frame = s.decoder->position + (to - at);
+    uint64_t length = s.sound.info.stated_frames;
+    if (s.loop && length > 0)
+        frame %= length;
+    else if (frame >= length)
+    {
+        // Past the data's end: the stream ends where it would have.
+        std::atomic_ref<uint64_t>(s.written).store(at, std::memory_order_release);
+        std::atomic_ref<uint64_t>(s.end).store(at + (length > s.decoder->position ? length - s.decoder->position : 0),
+                                               std::memory_order_release);
+        return false;
+    }
+    if (!apaudio_stream_seek(*s.decoder, frame, s.failure))
+    {
+        stream_fail(s, at);
+        return false;
+    }
+    std::atomic_ref<uint64_t>(s.written).store(to, std::memory_order_release);
+    return true;
+}
+
+// Tops a stream's ring up: from what was written to a ring's length past
+// the oldest frame the render may still read, a run at a time (two at the
+// wrap), seeking back to the start at the end of a looping voice's data.
+static void stream_decode(Stream &s)
+{
+    if (std::atomic_ref<uint32_t>(s.state).load(std::memory_order_acquire) != STREAM_REQUESTED)
+        return; // let go since the update
+    if (!s.opened && !stream_open(s))
+        return;
+    std::atomic_ref<uint64_t> written(s.written);
+    uint64_t at = written.load(std::memory_order_relaxed);
+    if (std::atomic_ref<uint64_t>(s.end).load(std::memory_order_relaxed) != STREAM_END_UNKNOWN)
+        return; // ended or failed: the decoding's own store, read back
+    uint64_t read = std::atomic_ref<uint64_t>(s.read).load(std::memory_order_acquire);
+    uint64_t floor = read > s.origin ? read : s.origin;
+    if (floor > at)
+    {
+        if (!stream_skip(s, at, floor))
+            return;
+        at = floor;
+    }
+    uint64_t limit = floor + s.ring_frames;
+    uint32_t channels = s.channels;
+    while (at < limit)
+    {
+        uint32_t slot = (uint32_t)(at % s.ring_frames);
+        uint64_t room = limit - at;
+        uint32_t run = room < (uint64_t)(s.ring_frames - slot) ? (uint32_t)room : s.ring_frames - slot;
+        uint32_t got = apaudio_stream_read(*s.decoder, s.ring + (size_t)slot * channels, run, s.failure);
+        if (got > 0)
+        {
+            at += got;
+            s.pass_frames += got;
+            written.store(at, std::memory_order_release);
+            continue;
+        }
+        if (s.failure.result != APRESULT_OK)
+        {
+            stream_fail(s, at);
+            return;
+        }
+        // The data's end, before the length its header states: the bytes
+        // past the prefetch are broken (a whole-file decode of them ends
+        // there too).
+        if (s.decoder->position < s.sound.info.stated_frames)
+        {
+            s.failure = StreamFailure{APRESULT_CORRUPT_DATA, STREAM_PART_SHORT, 0, 0, s.sound.info.stated_frames,
+                                      s.decoder->position};
+            stream_fail(s, at);
+            return;
+        }
+        if (!s.loop || s.pass_frames == 0)
+        {
+            // Published after the last frames: a render that sees the end
+            // sees them too.
+            std::atomic_ref<uint64_t>(s.end).store(at, std::memory_order_release);
+            return;
+        }
+        s.pass_frames = 0;
+        if (!apaudio_stream_seek(*s.decoder, 0, s.failure))
+        {
+            stream_fail(s, at);
+            return;
+        }
+    }
+}
+
+// The decoding task: one item per stream it serves.
+static void stream_decode_range(uint32_t first_item, uint32_t end_item, uint32_t worker_index, void *task_data)
+{
+    (void)worker_index;
+    Mixer *m = static_cast<Mixer *>(task_data);
+    for (uint32_t i = first_item; i < end_item; i++)
+        stream_decode(m->streams[m->stream_tasks[i]]);
+}
+
+// ---- Streams: the control thread's side ---------------------------------------
+
+// Waits for the decoding the last update started, if it is in flight.
+static void streams_wait(Mixer *m)
+{
+    if (!m->decoding)
+        return;
+    m->scheduler.wait(m->decoding, m->scheduler.user);
+    m->decoding = nullptr;
+}
+
+// Frees the streams the render has let go of, once the render after the one
+// that did has finished (and a failure, once an update has told it).
+static void collect_streams(Mixer *m)
+{
+    uint64_t sequence = m->render_sequence.load();
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        std::atomic_ref<uint32_t> state(s.state);
+        if (state.load(std::memory_order_acquire) != STREAM_RELEASED || sequence < s.release_sequence)
+            continue;
+        if (std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_relaxed) && !s.reported)
+            continue;
+        if (s.decoder)
+            apaudio_stream_close(*s.decoder);
+        free(s.block);
+        s.block = nullptr;
+        s.decoder = nullptr;
+        s.opened = false;
+        if (m->voice_streams[s.voice_index] == i + 1)
+            m->voice_streams[s.voice_index] = 0;
+        state.store(STREAM_FREE, std::memory_order_relaxed);
+    }
+}
+
+// Keeps the update's record of which voice holds which stream: a stream let
+// go is no voice's, and one given to a voice that has ended without taking
+// it is let go here (nothing reads it: an ended voice's record takes no
+// decision).
+static void streams_refresh(Mixer *m)
+{
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        std::atomic_ref<uint32_t> state(s.state);
+        uint32_t now = state.load(std::memory_order_acquire);
+        if (now == STREAM_FREE)
+            continue;
+        bool held = m->voice_streams[s.voice_index] == i + 1;
+        if (now == STREAM_RELEASED)
+        {
+            if (held)
+                m->voice_streams[s.voice_index] = 0;
+            continue;
+        }
+        if (m->voices[s.voice_index].published_id.load(std::memory_order_acquire) ==
+            make_id(s.voice_index, s.voice_generation))
+            continue;
+        // The render lets go of a stream it took before the voice's record
+        // is swept, so this one was never taken.
+        if (state.compare_exchange_strong(now, STREAM_RELEASED, std::memory_order_acq_rel))
+            s.release_sequence = 0;
+        if (held)
+            m->voice_streams[s.voice_index] = 0;
+    }
+}
+
+// Gives a voice the update ranked real a free stream: index + 1, or 0 if
+// there's none (or its sound has gone).
+static uint32_t stream_assign(Mixer *m, const RankEntry &entry)
+{
+    uint32_t sound_index, sound_generation;
+    if (!split_id(entry.sound, m->max_sounds, sound_index, sound_generation) ||
+        m->sounds[sound_index].live_id.load(std::memory_order_acquire) != entry.sound)
+        return 0;
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        std::atomic_ref<uint32_t> state(s.state);
+        if (state.load(std::memory_order_relaxed) != STREAM_FREE)
+            continue;
+        // Free: nothing else touches it until the decision that names it is
+        // posted (release), or the decoding it is handed to starts.
+        const SoundStream &sound = m->sound_streams[sound_index];
+        s.written = 0;
+        s.end = STREAM_END_UNKNOWN;
+        s.ring = nullptr;
+        s.origin = 0;
+        s.ring_frames = sound.ring_frames;
+        s.channels = sound.info.channels;
+        s.failed = 0;
+        s.voice_index = entry.index;
+        s.voice_generation = entry.generation;
+        s.sound_id = entry.sound;
+        s.sound = sound;
+        s.block = nullptr;
+        s.decoder = nullptr;
+        s.pass_frames = 0;
+        s.failure = StreamFailure{};
+        s.loop = entry.loop;
+        s.opened = false;
+        s.reported = false;
+        // A voice at its start, or within its prefetch, carries on from the
+        // prefetch's end: the decoding opens it now, so its ring is full by
+        // the time the voice gets there.
+        s.request_origin = entry.at_start ? sound.prefetch_frames : 0;
+        s.read = s.request_origin;
+        state.store(entry.at_start ? STREAM_REQUESTED : STREAM_ASSIGNED, std::memory_order_release);
+        m->voice_streams[entry.index] = i + 1;
+        return i + 1;
+    }
+    return 0;
+}
+
+// Starts the decoding of every stream requested whose sound is still there:
+// one task, an item a stream, in record order; inside this call with no
+// scheduler.
+static void streams_start_decoding(Mixer *m)
+{
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        if (std::atomic_ref<uint32_t>(s.state).load(std::memory_order_acquire) != STREAM_REQUESTED)
+            continue;
+        if (std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_relaxed))
+            continue;
+        uint32_t sound_index, sound_generation;
+        if (!split_id(s.sound_id, m->max_sounds, sound_index, sound_generation) ||
+            m->sounds[sound_index].live_id.load(std::memory_order_acquire) != s.sound_id)
+            continue; // destroyed: its source may be gone after the next collect
+        m->stream_tasks[count++] = i;
+    }
+    if (count == 0)
+        return;
+    if (m->has_scheduler)
+        m->decoding = m->scheduler.enqueue(stream_decode_range, count, 1, m, m->scheduler.user);
+    else
+        apjobs_run(nullptr, stream_decode_range, count, 1, m);
+}
+
+// The first failure among the streams no update has told yet, and how many
+// more there are.
+struct StreamReport
+{
+    uint32_t first{NO_STREAM};
+    uint32_t more{0};
+};
+
+static void streams_find_failures(Mixer *m, StreamReport &report)
+{
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        if (s.reported || !std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_acquire))
+            continue;
+        s.reported = true;
+        if (report.first == NO_STREAM)
+            report.first = i;
+        else
+            report.more++;
+    }
+}
+
+// What a failure was, in a clause.
+static void describe_failure(const StreamFailure &f, char *out, size_t size)
+{
+    switch (f.part)
+    {
+    case STREAM_PART_READ:
+        snprintf(out, size, "a read of %llu bytes at offset %llu failed", (unsigned long long)f.count,
+                 (unsigned long long)f.offset);
+        break;
+    case STREAM_PART_PACKET:
+        snprintf(out, size, "a packet past the prefetch, at frame %llu, couldn't be decoded (its decoder's error %d)",
+                 (unsigned long long)f.frame, f.codec_error);
+        break;
+    case STREAM_PART_SHORT:
+        snprintf(out, size, "the data ends at frame %llu, before the %llu its header states", (unsigned long long)f.frame,
+                 (unsigned long long)f.count);
+        break;
+    case STREAM_PART_SEEK:
+        snprintf(out, size, "seeking to frame %llu failed (its decoder's error %d)", (unsigned long long)f.frame,
+                 f.codec_error);
+        break;
+    case STREAM_PART_MEMORY:
+        snprintf(out, size, "no memory for its decoder and ring (%llu bytes)", (unsigned long long)f.count);
+        break;
+    default:
+        snprintf(out, size, "its decoder couldn't be opened on the source (its error %d)", f.codec_error);
+        break;
+    }
+}
+
+static APRESULT streams_report(Mixer *m, const StreamReport &report, APAUDIO_ERROR *error)
+{
+    if (report.first == NO_STREAM)
+        return APRESULT_OK;
+    const Stream &s = m->streams[report.first];
+    char part[192];
+    describe_failure(s.failure, part, sizeof(part));
+    unsigned long long voice = (unsigned long long)make_id(s.voice_index, s.voice_generation);
+    const char *codec = apaudio_stream_codec_name(s.sound.info.codec);
+    if (report.more)
+        return fail(error, s.failure.result, "voice %llu: its %s stream: %s; %u more stream%s failed", voice, codec, part,
+                    report.more, report.more == 1 ? "" : "s");
+    return fail(error, s.failure.result, "voice %llu: its %s stream: %s", voice, codec, part);
+}
+
 // ---- Control-thread helpers ----------------------------------------------------
 
 // A free slot of [count], looking from [cursor] on so the slot freed longest
@@ -2560,7 +3453,16 @@ static void mixer_free(Mixer *m)
     free(m->rank);
     free(m->active);
     free(m->free_slots);
-    delete m;
+    // Every stream, after the decoding the last update started.
+    streams_wait(m);
+    for (Stream &stream : m->streams)
+    {
+        if (stream.decoder)
+            apaudio_stream_close(*stream.decoder);
+        free(stream.block);
+    }
+    m->~Mixer();
+    free(m);
 }
 
 // Records a bus's gain or rate request: the fade first, so the value never
@@ -2597,6 +3499,207 @@ static void bus_words_reset(Bus &bus, uint32_t generation)
     bus.rate_fade_word.store(tagged(generation, 0), std::memory_order_release);
     bus.mute_word.store(tagged(generation, 0), std::memory_order_release);
     bus.pause_word.store(tagged(generation, 0), std::memory_order_release);
+}
+
+// ---- Streamed sounds (control thread) -------------------------------------------
+
+// A streamed sound's create that failed reading its source: its code and
+// message, naming the codec and the part.
+static APRESULT stream_create_fail(APAUDIO_ERROR *error, APAUDIO_STREAM_CODEC codec, const StreamFailure &f)
+{
+    const char *name = apaudio_stream_codec_name(codec);
+    switch (f.part)
+    {
+    case STREAM_PART_READ:
+        return fail(error, f.result, "the %s source: a read of %llu bytes at offset %llu failed", name,
+                    (unsigned long long)f.count, (unsigned long long)f.offset);
+    case STREAM_PART_PACKET:
+        return fail(error, f.result, "the %s file: a packet of the prefetch, at frame %llu, couldn't be decoded (its "
+                    "decoder's error %d)", name, (unsigned long long)f.frame, f.codec_error);
+    case STREAM_PART_SEEK:
+        return fail(error, f.result, "the %s file: seeking to its last frames, from frame %llu, failed (its decoder's "
+                    "error %d)", name, (unsigned long long)f.frame, f.codec_error);
+    case STREAM_PART_MEMORY:
+        return fail(error, f.result, "no memory for the %s decoder (%llu bytes)", name, (unsigned long long)f.count);
+    case STREAM_PART_FORMAT:
+        return fail(error, f.result, "the %s file's links have different channel counts", name);
+    case STREAM_PART_LIMIT:
+        if (f.count)
+            return fail(error, f.result, "the %s source is %llu bytes, at or past the 2 GiB its decoder reads", name,
+                        (unsigned long long)f.count);
+        return fail(error, f.result, "the %s file's setup needs more than its decoder's 2 MiB", name);
+    default:
+        return fail(error, f.result, "the %s file's header can't be read as %s (its decoder's error %d)", name, name,
+                    f.codec_error);
+    }
+}
+
+// apaudio_sound_create() for a streamed sound (apaudio.h, "Streamed sounds"):
+// the checks, then the header read and the prefetch decoded through a
+// decoder on the system heap, which is closed again; a voice opens its own.
+// The sound's samples are its prefetch and, after it, its last STREAM_REACH
+// frames, which a looping voice's resampler reads before its first. A file
+// the prefetch holds whole is an in-memory sound. Changes nothing on failure.
+static APRESULT stream_sound_create(Mixer *m, const APAUDIO_SOUND_DESC &d, APAUDIO_SOUND *out_sound,
+                                    APAUDIO_ERROR *error)
+{
+    if (m->max_streams == 0)
+        return fail(error, APRESULT_UNSUPPORTED, "a streamed sound needs a mixer made with max_streams above 0");
+    if (d.stream_codec > APAUDIO_STREAM_CODEC_OPUS)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "stream_codec %u isn't one of APAUDIO_STREAM_CODEC",
+                    d.stream_codec);
+    if (d.samples)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "samples isn't null: a streamed sound's come from its source");
+    if (d.frame_count != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "frame_count is %llu: a streamed sound's file states its length",
+                    (unsigned long long)d.frame_count);
+    if (d.channel_count != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "channel_count is %u: a streamed sound's file states its channels",
+                    d.channel_count);
+    if (d.sample_rate != 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "sample_rate is %u: a streamed sound's file states its rate",
+                    d.sample_rate);
+    if (d.virtual_behavior < APAUDIO_VIRTUAL_KILL || d.virtual_behavior > APAUDIO_VIRTUAL_PAUSE)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "virtual_behavior %u isn't one a sound can have",
+                    d.virtual_behavior);
+    if (!d.stream_source.read)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "stream_source.read is null");
+    if (d.stream_ring_us == 0)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "stream_ring_us is 0");
+    if (d.stream_ring_us > STREAM_RING_MAX_US)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "stream_ring_us is %u, past %u (10 s)", d.stream_ring_us,
+                    STREAM_RING_MAX_US);
+    // At least what one render takes at the fastest rate: 8 x max_frames
+    // output frames, which is the same time at any rate of the sound's.
+    uint64_t least_us = ((uint64_t)RATE_MAX * m->max_frames * 1000000 + m->sample_rate - 1) / m->sample_rate;
+    if ((uint64_t)d.stream_ring_us * m->sample_rate < (uint64_t)RATE_MAX * m->max_frames * 1000000)
+        return fail(error, APRESULT_INVALID_ARGUMENT, "stream_ring_us is %u: at least %llu, what one render of %u "
+                    "frames at %u Hz takes at 8x", d.stream_ring_us, (unsigned long long)least_us, m->max_frames,
+                    m->sample_rate);
+    const char *name = apaudio_stream_codec_name(d.stream_codec);
+    if (d.stream_source.size == 0)
+        return fail(error, APRESULT_CORRUPT_DATA, "the %s source is empty", name);
+
+    uint32_t index = find_slot(0, m->max_sounds, m->sound_cursor,
+                               [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+    if (index == m->max_sounds)
+    {
+        collect_sounds(m);
+        index = find_slot(0, m->max_sounds, m->sound_cursor,
+                          [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+    }
+    if (index == m->max_sounds)
+        return fail(error, APRESULT_LIMIT, "all %u sounds are in use, or destroyed and waiting for a render to "
+                    "let go of them", m->max_sounds);
+
+    // The header, through a decoder on the heap.
+    StreamDecoder probe{};
+    StreamFailure failure{};
+    if (!apaudio_stream_open(probe, d.stream_codec, d.stream_source, nullptr, nullptr, failure))
+        return stream_create_fail(error, d.stream_codec, failure);
+    StreamInfo info = probe.info;
+    if (info.channels != 1 && info.channels != 2)
+    {
+        apaudio_stream_close(probe);
+        return fail(error, APRESULT_UNSUPPORTED, "the %s file has %u channels: only mono and stereo play", name,
+                    info.channels);
+    }
+    if (info.rate < SOUND_RATE_MIN || info.rate > SOUND_RATE_MAX)
+    {
+        apaudio_stream_close(probe);
+        return fail(error, APRESULT_UNSUPPORTED, "the %s file is at %u Hz, outside %u to %u", name, info.rate,
+                    SOUND_RATE_MIN, SOUND_RATE_MAX);
+    }
+    if (info.stated_frames == 0)
+    {
+        apaudio_stream_close(probe);
+        if (d.stream_codec == APAUDIO_STREAM_CODEC_FLAC)
+            return fail(error, APRESULT_UNSUPPORTED, "the FLAC file doesn't state its length (its STREAMINFO's total "
+                        "is 0)");
+        return fail(error, APRESULT_CORRUPT_DATA, "the %s file states no length (no last page's position)", name);
+    }
+
+    // The prefetch: stream_ring_us of the sound at its own rate, and room
+    // after it for the sound's last frames.
+    uint64_t prefetch_frames = ((uint64_t)d.stream_ring_us * info.rate + 999999) / 1000000;
+    uint64_t ring_frames = prefetch_frames + 2 * (uint64_t)STREAM_REACH + 1;
+    uint64_t sample_count = (prefetch_frames + STREAM_REACH) * info.channels;
+    float *samples = static_cast<float *>(calloc((size_t)sample_count, sizeof(float)));
+    if (!samples)
+    {
+        apaudio_stream_close(probe);
+        return fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the %s prefetch (%llu samples)", name,
+                    (unsigned long long)sample_count);
+    }
+    uint64_t decoded = 0;
+    while (decoded < prefetch_frames)
+    {
+        uint64_t want = prefetch_frames - decoded;
+        uint32_t got = apaudio_stream_read(probe, samples + decoded * info.channels,
+                                           want > UINT32_MAX ? UINT32_MAX : (uint32_t)want, failure);
+        if (got == 0)
+            break;
+        decoded += got;
+    }
+    bool whole = decoded < prefetch_frames;
+    if (failure.result == APRESULT_OK && !whole)
+    {
+        // A looping voice's taps before its first frame read the sound's
+        // last ones, as an in-memory loop's do. Best effort: a file whose
+        // end can't be read (broken past the prefetch, or its source
+        // failing there) leaves them silent, and its streams meet the
+        // failure when they get there.
+        uint64_t tail_from = info.stated_frames > STREAM_REACH ? info.stated_frames - STREAM_REACH : 0;
+        float *tail = samples + prefetch_frames * info.channels;
+        uint64_t tail_frames = info.stated_frames - tail_from;
+        float *into = tail + (STREAM_REACH - tail_frames) * info.channels;
+        StreamFailure tail_failure{};
+        uint64_t taken = 0;
+        if (apaudio_stream_seek(probe, tail_from, tail_failure))
+        {
+            while (taken < tail_frames)
+            {
+                uint32_t got = apaudio_stream_read(probe, into + taken * info.channels,
+                                                   (uint32_t)(tail_frames - taken), tail_failure);
+                if (got == 0)
+                    break;
+                taken += got;
+            }
+        }
+        if (tail_failure.result != APRESULT_OK || taken < tail_frames)
+            memset(tail, 0, (size_t)STREAM_REACH * info.channels * sizeof(float));
+    }
+    apaudio_stream_close(probe);
+    if (failure.result != APRESULT_OK)
+    {
+        free(samples);
+        return stream_create_fail(error, d.stream_codec, failure);
+    }
+
+    Sound &sound = m->sounds[index];
+    sound.samples = samples;
+    sound.frame_count = whole ? decoded : info.stated_frames;
+    sound.channel_count = info.channels;
+    sound.sample_rate = info.rate;
+    sound.loudness = 1.0f; // ranked by gain alone (apaudio.h, APAUDIO_SOUND_DESC `stream_codec`)
+    sound.virtual_behavior = d.virtual_behavior;
+    sound.concurrency = d.concurrency;
+    sound.bus = d.bus;
+    sound.streamed = !whole;
+    sound.prefetch_frames = whole ? 0 : prefetch_frames;
+    sound.underrun_frames.store(0, std::memory_order_relaxed);
+    SoundStream &stream = m->sound_streams[index];
+    stream.info = info;
+    stream.source = d.stream_source;
+    stream.prefetch_frames = prefetch_frames;
+    stream.ring_frames = (uint32_t)ring_frames;
+    stream.block_bytes = apaudio_stream_decoder_bytes(info) + ring_frames * info.channels * sizeof(float);
+    sound.generation = next_generation(sound.generation);
+    sound.state = SOUND_LIVE;
+    uint64_t id = make_id(index, sound.generation);
+    sound.live_id.store(id);
+    *out_sound = id;
+    return APRESULT_OK;
 }
 
 extern "C"
@@ -2638,10 +3741,24 @@ extern "C"
         uint64_t slots = (uint64_t)d.max_real_voices + d.max_fading_voices;
         if (records >= 0x7FFFFFFFull || d.max_sounds == UINT32_MAX || d.max_buses == UINT32_MAX)
             return fail(error, APRESULT_INVALID_ARGUMENT, "more voices, sounds or buses than the mixer can index");
+        if (d.max_streams > d.max_real_voices)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "max_streams is %u, above max_real_voices (%u)", d.max_streams,
+                        d.max_real_voices);
+        // A decision names its voice's stream in 30 bits.
+        if (d.max_streams >= MAX_STREAMS)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "max_streams is %u: more streams than the mixer can index",
+                        d.max_streams);
+        if (d.max_streams > 0 && d.scheduler)
+        {
+            APJOBS_ERROR scheduler_error;
+            if (APRESULT result = apjobs_scheduler_check(d.scheduler, &scheduler_error))
+                return fail(error, result, "scheduler: %s", scheduler_error.message);
+        }
 
-        Mixer *m = new (std::nothrow) Mixer();
-        if (!m)
+        void *memory = malloc(sizeof(Mixer));
+        if (!memory)
             return fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the mixer");
+        Mixer *m = new (memory) Mixer();
         m->max_voices = d.max_voices;
         m->max_real_voices = d.max_real_voices;
         m->max_fading_voices = d.max_fading_voices;
@@ -2682,6 +3799,19 @@ extern "C"
         }
         if (allocated && m->resampler == APAUDIO_RESAMPLER_SINC)
             allocated = (m->sinc = sinc_table_build()) != nullptr;
+        // Streams: every record now, zeroed (STREAM_FREE); a stream's block
+        // only when the decoding opens it.
+        m->max_streams = d.max_streams;
+        if (allocated && d.max_streams > 0)
+        {
+            allocated = m->streams.resize(d.max_streams) == EQ_SUCCESS &&
+                        m->stream_tasks.resize(d.max_streams) == EQ_SUCCESS &&
+                        m->sound_streams.resize(m->max_sounds) == EQ_SUCCESS &&
+                        m->voice_streams.resize(m->record_count) == EQ_SUCCESS;
+            m->has_scheduler = d.scheduler != nullptr;
+            if (d.scheduler)
+                m->scheduler = *d.scheduler;
+        }
         if (!allocated)
         {
             mixer_free(m);
@@ -2725,6 +3855,10 @@ extern "C"
         if (!format)
             return fail(error, APRESULT_INVALID_ARGUMENT, "format is null");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_set_format", "mixer's control calls");
+        // The decoding reads the voices' streams, which a format change keeps
+        // (their rings hold the sounds' own frames, at their own rates): it
+        // is waited for all the same, as apaudio.h says.
+        streams_wait(mixer);
         Layout layout;
         if (APRESULT result = layout_build(*format, max_frames, layout, error))
             return result;
@@ -2761,17 +3895,31 @@ extern "C"
         if (APRI_STALE(mixer, "apaudio_mixer_collect", "mixer"))
             return;
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_collect", "mixer's control calls");
+        // After the decoding: once this returns, nothing reads a destroyed
+        // sound's source (apaudio.h, APAUDIO_SOURCE).
+        streams_wait(mixer);
+        collect_streams(mixer);
         collect_sounds(mixer);
     }
 
-    void apaudio_mixer_update(apaudio_mixer mixer)
+    APRESULT apaudio_mixer_update(apaudio_mixer mixer, APAUDIO_ERROR *error)
     {
+        clear_error(error);
         if (!mixer)
-            return;
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
         if (APRI_STALE(mixer, "apaudio_mixer_update", "mixer"))
-            return;
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
         APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_update", "mixer's control calls");
         Mixer *m = mixer;
+
+        // The decoding the last update started, and the failures it met.
+        StreamReport report;
+        if (m->max_streams)
+        {
+            streams_wait(m);
+            streams_find_failures(m, report);
+            streams_refresh(m);
+        }
 
         // Triggered modifiers: active while their bus has audible voices.
         for (uint32_t i = 0; i < m->max_modifiers; i++)
@@ -2796,6 +3944,7 @@ extern "C"
             if (id == 0)
                 continue;
             uint64_t info = v.published_info.load(std::memory_order_relaxed);
+            uint64_t sound = v.published_sound.load(std::memory_order_relaxed);
             if (v.published_id.load(std::memory_order_acquire) != id)
                 continue; // ended, or replaced, as it was read
             uint32_t flags = (uint32_t)(info >> 40);
@@ -2814,8 +3963,12 @@ extern "C"
             entry.generation = (uint32_t)(id >> 32);
             entry.priority = (uint8_t)(info >> 32);
             entry.real = real;
+            entry.streamed = (flags & PUBLISHED_STREAMED) != 0;
+            entry.at_start = (flags & PUBLISHED_AT_START) != 0;
+            entry.loop = (flags & PUBLISHED_LOOP) != 0;
             entry.score = bits_float((uint32_t)info);
             entry.key = !real ? entry.score : (flags & PUBLISHED_SETTLED) ? entry.score * TIE_MARGIN : INFINITY;
+            entry.sound = sound;
         }
         std::sort(m->rank, m->rank + count, [](const RankEntry &a, const RankEntry &b) {
             if (a.priority != b.priority)
@@ -2832,11 +3985,44 @@ extern "C"
             const RankEntry &entry = m->rank[i];
             float score = entry.real ? entry.score * TIE_MARGIN : entry.score;
             bool real = taken < capacity && audible_enough(m, score);
+            // A streamed voice is real only with a stream: the one it holds,
+            // or a free one; with every stream taken it is virtual, and its
+            // real slot goes to the next.
+            uint32_t held = entry.streamed ? m->voice_streams[entry.index] : 0;
+            if (real && entry.streamed && held == 0)
+            {
+                held = stream_assign(m, entry);
+                real = held != 0;
+            }
             if (real)
                 taken++;
-            decisions[entry.index] = tagged(entry.generation, (uint32_t)(real ? DECISION_REAL : DECISION_VIRTUAL));
+            decisions[entry.index] =
+                tagged(entry.generation, (uint32_t)(real ? DECISION_REAL : DECISION_VIRTUAL) | (held << 2));
+        }
+        // A voice holding a stream it wasn't ranked for (ending, held by its
+        // bus, not started) is told which, so the render lets go of one it
+        // never took.
+        for (uint32_t i = 0; i < m->max_streams; i++)
+        {
+            Stream &s = m->streams[i];
+            uint32_t state = std::atomic_ref<uint32_t>(s.state).load(std::memory_order_acquire);
+            if (state != STREAM_ASSIGNED && state != STREAM_REQUESTED)
+                continue;
+            uint64_t &decision = decisions[s.voice_index];
+            if ((uint32_t)(decision >> 32) != s.voice_generation)
+                decision = tagged(s.voice_generation, (i + 1) << 2);
         }
         m->decision_buffer.post();
+
+        // The next frames of every stream, beside the caller's frame (or now,
+        // with no scheduler, and told now).
+        if (m->max_streams)
+        {
+            streams_start_decoding(m);
+            if (!m->has_scheduler)
+                streams_find_failures(m, report);
+        }
+        return streams_report(m, report, error);
     }
 
     // ---- Rendering ----------------------------------------------------------
@@ -3204,6 +4390,8 @@ extern "C"
         if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC))
             return fail(error, result, "desc %s", apri_struct_check_message(result));
         const APAUDIO_SOUND_DESC &d = *desc;
+        if (d.stream_codec != APAUDIO_STREAM_CODEC_NONE)
+            return stream_sound_create(m, d, out_sound, error);
         if (d.channel_count != 1 && d.channel_count != 2)
             return fail(error, APRESULT_UNSUPPORTED, "a sound of %u channels: only mono and stereo play",
                         d.channel_count);
@@ -3255,6 +4443,9 @@ extern "C"
         sound.virtual_behavior = d.virtual_behavior;
         sound.concurrency = d.concurrency;
         sound.bus = d.bus;
+        sound.streamed = false;
+        sound.prefetch_frames = 0;
+        sound.underrun_frames.store(0, std::memory_order_relaxed);
         sound.generation = next_generation(sound.generation);
         sound.state = SOUND_LIVE;
         uint64_t id = make_id(index, sound.generation);
@@ -3283,6 +4474,21 @@ extern "C"
         uint64_t sequence = mixer->render_sequence.load();
         slot.retire_sequence = sequence + 2 + (sequence & 1);
         slot.state = SOUND_RETIRED;
+    }
+
+    uint64_t apaudio_sound_get_underrun_frames(apaudio_mixer mixer, APAUDIO_SOUND sound)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return 0;
+        if (APRI_STALE(mixer, "apaudio_sound_get_underrun_frames", "mixer"))
+            return 0;
+        if (!split_id(sound, mixer->max_sounds, index, generation))
+            return 0;
+        const Sound &slot = mixer->sounds[index];
+        if (slot.live_id.load(std::memory_order_acquire) != sound)
+            return 0;
+        return slot.underrun_frames.load(std::memory_order_relaxed);
     }
 
     // ---- Voices -------------------------------------------------------------

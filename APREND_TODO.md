@@ -2581,6 +2581,40 @@ Later, noted: **pipeline caches** in SpudGPU (Vulkan's `VkPipelineCache`,
 D3D12's pipeline library, Metal's binary archives), the bytes handed to
 the caller to keep, so a second launch compiles nothing.
 
+**Decided 2026-10-31 with the user (card A29): the source language is
+Slang**, for Aprend's, trellislib's and Latran's shaders.
+
+1. **One compiler, three outputs.** Slang (`slangc` at build time,
+   `libslang` in ApShaderc) writes SPIR-V itself, DXIL through DXC, and
+   Metal source that Apple's `metal` compiler turns into a `.metallib`.
+   Item 22's shader package is built from a `.slang` file per shader.
+2. **A fallback route for Metal**, chosen per shader at build time: Slang
+   to SPIR-V, then SPIRV-Cross to Metal source (today's route). Slang's
+   own Metal output is the default; a shader whose Slang Metal output is
+   wrong or doesn't compile takes the fallback, named in the build, with
+   the reason beside it. As of 2026-10-31 Slang's Metal ray queries are
+   young (inline `RayQuery` to `intersection_query` asked for in
+   2025, issue 6614; flags and candidate kinds still being fixed, issues
+   13408, 13609, 13688; its own Metal ray query test never built an
+   acceleration structure, 13860), so card S12's first test runs both
+   routes; mesh shaders are in Slang's Metal guide, task shaders aren't.
+3. **Modules, not includes.** The `.glslh` files become Slang modules
+   (`import`); interfaces and generics where a shader has variants
+   (materials, the lit surface's paths), parameter blocks for each binding
+   space.
+4. **One conversion, before 1.0**, with A9's native formats: Aprend's 45
+   shaders, trellislib's and Latran's (`latran/core/shaders/`), each
+   checked against its SPIR-V output by the existing tests and
+   `../apricottests` on all three backends. glslang and glslc leave the
+   build; SPIRV-Cross stays only as the Metal fallback and for
+   reflection where the native format has none.
+
+Not GLSL (no modules; DXIL through two translations, weakest exactly for
+ray queries and mesh shaders) and not HLSL (Metal either a translation or
+Apple's Metal Shader Converter, closed and imposing its own binding layout
+on SpudGPU's Metal backend). Compared: Unreal HLSL, Godot and Hazel GLSL,
+NVIDIA's Falcor and RTX Remix Slang.
+
 ### 23. No 2D, line, text or debug drawing
 
 Hazel: `Renderer2D` (batched quads, lines, circles, MSDF text), `DebugRenderer`.
@@ -2831,8 +2865,26 @@ Left:
       structures from what it draws (memory through item 35's allocator),
       adds ray-traced reflections as an opt-in command over SSR's normal
       and roughness target, tracing where SSR misses or roughness is low,
-      then ray-traced sun shadows. Inline queries only; a path tracer for
-      finished renderings is a caller's, on the same queries, in compute.
+      then ray-traced sun shadows. Inline queries only.
+      **A path tracer (card T16, decided 2026-10-31 with the user):**
+      Aprend's, not a caller's, since nothing in it is any one
+      application's: a progressive path-traced target made from an
+      `aprend_lit_scene` and its draws, whose step call adds N samples per
+      pixel to an accumulation buffer and reports how many it holds. The
+      caller drives it (samples or a time budget, when to stop, output).
+      It renders the lit material model as it is (glTF metallic-roughness,
+      emission, opacity, item 24's transmission and volume), so it agrees
+      with the raster path; lights are the sun with an angular size, the
+      sky as an importance-sampled environment, emissive surfaces, and
+      point, spot and area lights as the scene has them (IES later). One
+      compute megakernel per sample pass with inline ray queries, the
+      material a Slang interface (card A29), its stages separate functions
+      so a wavefront split stays possible when measured. Geometry relative
+      to the eye, as the raster path's. On a device without ray queries it
+      is refused (`APRESULT_UNSUPPORTED`); no software traversal. Denoising
+      is not Aprend's: Intel Open Image Denoise, CPU first, as an optional
+      ApricotFields module of its own (its GPU devices sit outside
+      SpudGPU). After S12's SpudGPU half. Not started.
       If ray tracing pipelines come (two sibling SpudGPU EXTs, one on
       Vulkan and D3D12, one translating Metal's function tables; spudlib's
       `SPUDGPU_DEVICE_TODO.md`), Aprend writes that work once per EXT, and

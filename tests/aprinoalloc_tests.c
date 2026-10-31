@@ -13,7 +13,7 @@
 // ../apricottests measures it.
 //
 // Written in C, as the other tests of C headers are. Takes ApText's data
-// folder as its argument.
+// folder as its argument, and ApAudio's as its second.
 
 #include "audio/apaudio.h"
 #include "jobs/apjobs.h"
@@ -141,18 +141,184 @@ static void test_audio(void)
     // The warm-up: the queue drained, the voices started.
     for (int f = 0; f < 4; f++)
     {
-        apaudio_mixer_update(mixer);
+        CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
         apaudio_mixer_render(mixer, out, 512, NULL);
     }
     start_counting();
     for (int f = 0; f < FRAMES; f++)
     {
-        apaudio_mixer_update(mixer);
+        CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
         apaudio_mixer_render(mixer, out, 512, NULL);
     }
     stop_counting();
     report("ApAudio's update and render, three looping voices resampled, the limiter on");
     apaudio_mixer_destroy(mixer);
+}
+
+// ApAudio's streamed voices (APAUDIO_TODO.md item 15): a voice of a
+// streamed sound playing, looped, past its prefetch, update, render and
+// collect; with no scheduler, so the decoding runs inside the update on this
+// thread, and on a pool of four (this thread counted as it waits). The
+// stream's start - its one allocation, its decoder's open and first fill -
+// is counted apart and reported, not checked. Pending while the mixer
+// refuses streams (APRESULT_NOT_IMPLEMENTED).
+
+static bool read_file(const char *dir, const char *name, unsigned char **out, uint64_t *out_size)
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", dir ? dir : ".", name);
+    FILE *file = fopen(path, "rb");
+    CHECK(file != NULL);
+    if (!file)
+        return false;
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    *out = (unsigned char *)malloc(size > 0 ? (size_t)size : 1);
+    bool read = *out && size > 0 && fread(*out, 1, (size_t)size, file) == (size_t)size;
+    fclose(file);
+    CHECK(read);
+    *out_size = (uint64_t)size;
+    return read;
+}
+
+typedef struct memory_bytes
+{
+    const unsigned char *bytes;
+    uint64_t size;
+} memory_bytes;
+
+static bool memory_read(void *user, uint64_t offset, void *buffer, uint64_t count)
+{
+    const memory_bytes *memory = (const memory_bytes *)user;
+    if (offset > memory->size || count > memory->size - offset)
+        return false;
+    memcpy(buffer, memory->bytes + offset, (size_t)count);
+    return true;
+}
+
+static void stream_scenario(const char *dir, const char *name, APAUDIO_STREAM_CODEC codec, const char *codec_name,
+                            const APJOBS_SCHEDULER *scheduler)
+{
+    unsigned char *bytes = NULL;
+    uint64_t size = 0;
+    if (!read_file(dir, name, &bytes, &size))
+    {
+        free(bytes);
+        return;
+    }
+    memory_bytes memory = {bytes, size};
+    APAUDIO_MIXER_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC;
+    desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+    desc.format.sample_rate = 48000;
+    desc.format.channel_count = 2;
+    desc.format.interleaved = true;
+    desc.format.positions = stereo;
+    desc.max_frames = 512;
+    desc.max_voices = 16;
+    desc.max_real_voices = 4;
+    desc.max_fading_voices = 2;
+    desc.transition_fade_us = 10000;
+    desc.max_sounds = 4;
+    desc.queue_capacity = 16;
+    desc.resampler = APAUDIO_RESAMPLER_SINC;
+    desc.limiter = APAUDIO_LIMITER_OFF;
+    desc.gain = 1.0f;
+    desc.max_streams = 2;
+    desc.scheduler = scheduler;
+    apaudio_mixer mixer = NULL;
+    APRESULT result = apaudio_mixer_create(&desc, &mixer, NULL);
+    if (result == APRESULT_NOT_IMPLEMENTED)
+    {
+        printf("aprinoalloc_tests: ApAudio's streamed %s voice: pending (not implemented yet)\n", codec_name);
+        free(bytes);
+        return;
+    }
+    CHECK(result == APRESULT_OK);
+    APAUDIO_SOUND_DESC sd;
+    memset(&sd, 0, sizeof(sd));
+    sd.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
+    sd.virtual_behavior = APAUDIO_VIRTUAL_CONTINUE;
+    sd.stream_codec = codec;
+    sd.stream_source.user = &memory;
+    sd.stream_source.size = size;
+    sd.stream_source.read = memory_read;
+    sd.stream_ring_us = 100000;
+    APAUDIO_SOUND sound = 0;
+    CHECK(mixer && apaudio_sound_create(mixer, &sd, &sound, NULL) == APRESULT_OK);
+    if (sound)
+    {
+        APAUDIO_PLAY_DESC play;
+        memset(&play, 0, sizeof(play));
+        play.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
+        play.gain = 1.0f;
+        play.rate = 1.0f;
+        play.priority = 128;
+        play.loop = true;
+        APAUDIO_VOICE voice = 0;
+        CHECK(apaudio_play(mixer, sound, &play, &voice) == APRESULT_OK);
+        // The start, apart: the first render (the prefetch), and the update
+        // that opens the stream and fills its ring.
+        start_counting();
+        apaudio_mixer_render(mixer, out, 512, NULL);
+        CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+        stop_counting();
+        printf("aprinoalloc_tests: ApAudio's streamed %s voice's start%s: %lu allocation(s) of ours (the stream's "
+               "block%s), not checked\n",
+               codec_name, scheduler ? " on a pool" : "", alloc_trace_ours(),
+               codec == APAUDIO_STREAM_CODEC_OPUS ? ", and opusfile's and libopus's own" : "");
+        // The warm-up: past the prefetch, the ring wrapping.
+        for (int f = 0; f < 8; f++)
+        {
+            apaudio_mixer_render(mixer, out, 512, NULL);
+            CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+            apaudio_mixer_collect(mixer);
+        }
+        start_counting();
+        for (int f = 0; f < FRAMES; f++)
+        {
+            apaudio_mixer_render(mixer, out, 512, NULL);
+            CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+            apaudio_mixer_collect(mixer);
+        }
+        stop_counting();
+        char what[160];
+        snprintf(what, sizeof(what), "ApAudio's streamed %s voice, update, render and collect%s", codec_name,
+                 scheduler ? ", decoding on a pool of four" : ", decoding in the update");
+        report(what);
+        CHECK(apaudio_sound_get_underrun_frames(mixer, sound) == 0);
+    }
+    apaudio_mixer_destroy(mixer);
+    free(bytes);
+}
+
+static void test_audio_streams(const char *dir)
+{
+    static const char *const names[3] = {"stream.flac", "stream.ogg", "stream.opus"};
+    static const APAUDIO_STREAM_CODEC codecs[3] = {APAUDIO_STREAM_CODEC_FLAC, APAUDIO_STREAM_CODEC_VORBIS,
+                                                   APAUDIO_STREAM_CODEC_OPUS};
+    static const char *const codec_names[3] = {"FLAC", "Ogg Vorbis", "Ogg Opus"};
+    APJOBS_POOL_DESC pd;
+    memset(&pd, 0, sizeof(pd));
+    pd.base.type = APRI_STRUCT_TYPE_APJOBS_POOL_DESC;
+    pd.thread_count = 3;
+    pd.max_tasks = 4;
+    apjobs_pool pool = NULL;
+    CHECK(apjobs_pool_create(&pd, &pool, NULL) == APRESULT_OK);
+    APJOBS_SCHEDULER scheduler;
+    memset(&scheduler, 0, sizeof(scheduler));
+    scheduler.base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER;
+    if (pool)
+        CHECK(apjobs_pool_get_scheduler(pool, &scheduler) == APRESULT_OK);
+    for (int c = 0; c < 3; c++)
+    {
+        stream_scenario(dir, names[c], codecs[c], codec_names[c], NULL);
+        if (pool)
+            stream_scenario(dir, names[c], codecs[c], codec_names[c], &scheduler);
+    }
+    apjobs_pool_destroy(pool);
 }
 
 // ---- ApMath ----------------------------------------------------------------------
@@ -318,6 +484,7 @@ int main(int argc, char **argv)
     }
     test_hook_counts();
     test_audio();
+    test_audio_streams(argc > 2 ? argv[2] : NULL);
     test_bvh();
     test_jobs();
     test_text(argc > 1 ? argv[1] : NULL);

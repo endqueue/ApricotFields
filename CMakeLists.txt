@@ -55,6 +55,8 @@ add_library(ApricotFields STATIC
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio_internal.hpp
+        src/audio/apaudio_stream.hpp
+        src/audio/apaudio_stream_reader.h
         src/audio/apaudio.cpp
         src/audio/apaudio_decode.cpp
         src/audio/apaudiocues.cpp
@@ -478,6 +480,36 @@ declare_vendored_or_fetch_sources(dr_libs dr_libs
 FetchContent_MakeAvailable(dr_libs)
 file(READ "${dr_libs_SOURCE_DIR}/dr_flac.h" APAUDIO_DRFLAC)
 string(REPLACE "    drflac__init_cpu_caps();" "    /* ApricotFields: no CPU capability flags written. */" APAUDIO_DRFLAC "${APAUDIO_DRFLAC}")
+# Seeking, which only a streamed sound does, guesses byte offsets in floats
+# from what the file states and a ratio that can divide by zero, casts them
+# to an unsigned 64-bit offset and adds a base: an infinite, NaN, negative or
+# too large one is undefined, and a sum that wraps lands below the search's
+# range, which dr_flac asserts it never does (both found by apaudio_fuzz's
+# streamed mode, 2026-10-31). Each of the three is a sum that clamps
+# instead, never below its base; the search then clamps it to its range's
+# end as before. The offset is only a guess the search checks.
+string(REPLACE "static drflac_bool32 drflac__seek_to_pcm_frame__binary_search_internal("
+        "static drflac_uint64 drflac__apricot_offset(drflac_uint64 base, float guess) /* ApricotFields */\n{\n    drflac_uint64 offset;\n    if (!(guess > 0.0f)) return base;\n    if (guess >= 18446744073709551615.0f) return ~(drflac_uint64)0;\n    offset = (drflac_uint64)guess;\n    return offset > ~(drflac_uint64)0 - base ? ~(drflac_uint64)0 : base + offset;\n}\n\nstatic drflac_bool32 drflac__seek_to_pcm_frame__binary_search_internal("
+        APAUDIO_DRFLAC "${APAUDIO_DRFLAC}")
+string(REPLACE "targetByte = byteRangeLo + (drflac_uint64)(((drflac_int64)((pcmFrameIndex - pFlac->currentPCMFrame)"
+        "targetByte = drflac__apricot_offset(byteRangeLo, ((drflac_int64)((pcmFrameIndex - pFlac->currentPCMFrame)"
+        APAUDIO_DRFLAC "${APAUDIO_DRFLAC}")
+string(REPLACE "targetByte = lastSuccessfulSeekOffset + (drflac_uint64)(((drflac_int64)((pcmFrameIndex-pcmRangeLo)"
+        "targetByte = drflac__apricot_offset(lastSuccessfulSeekOffset, ((drflac_int64)((pcmFrameIndex-pcmRangeLo)"
+        APAUDIO_DRFLAC "${APAUDIO_DRFLAC}")
+string(REPLACE "byteRangeHi = pFlac->firstFLACFramePosInBytes + (drflac_uint64)((drflac_int64)(pFlac->totalPCMFrameCount"
+        "byteRangeHi = drflac__apricot_offset(pFlac->firstFLACFramePosInBytes, (drflac_int64)(pFlac->totalPCMFrameCount"
+        APAUDIO_DRFLAC "${APAUDIO_DRFLAC}")
+foreach (_fix "/* ApricotFields: no CPU capability flags written. */"
+        "static drflac_uint64 drflac__apricot_offset(drflac_uint64 base, float guess) /* ApricotFields */"
+        "targetByte = drflac__apricot_offset(byteRangeLo, ((drflac_int64)((pcmFrameIndex - pFlac->currentPCMFrame)"
+        "targetByte = drflac__apricot_offset(lastSuccessfulSeekOffset, ((drflac_int64)((pcmFrameIndex-pcmRangeLo)"
+        "byteRangeHi = drflac__apricot_offset(pFlac->firstFLACFramePosInBytes, (drflac_int64)(pFlac->totalPCMFrameCount")
+    string(FIND "${APAUDIO_DRFLAC}" "${_fix}" _at)
+    if (_at EQUAL -1)
+        message(FATAL_ERROR "dr_flac.h changed: ApricotFields' fix \"${_fix}\" no longer applies (CMakeLists.txt)")
+    endif ()
+endforeach ()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/dr_flac.h" "${APAUDIO_DRFLAC}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/apaudio_drflac.c"
         "#define DR_FLAC_IMPLEMENTATION\n#define DR_FLAC_NO_SIMD\n#define DR_FLAC_NO_STDIO\n#define DR_FLAC_NO_OGG\n#include \"dr_flac.h\"\n")
@@ -523,18 +555,64 @@ string(REPLACE "static uint8 vorbis[6] = " "static const uint8 vorbis[6] = " APA
 string(REPLACE "   for (i=0; i < p->comment_list_length; ++i) {\n      setup_free(p, p->comment_list[i]);"
         "   for (i=0; p->comment_list && i < p->comment_list_length; ++i) { /* ApricotFields */\n      setup_free(p, p->comment_list[i]);"
         APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+# Streamed sounds (APAUDIO_TODO.md item 15) read a caller's source as they
+# play, and stb_vorbis reads only memory or a FILE *: its FILE * path is kept
+# (no STB_VORBIS_NO_STDIO) and FILE made ApAudio's reader of a source
+# (src/audio/apaudio_stream_reader.h), its fgetc, fread, fseek and ftell the
+# reader's calls, so a stream decodes with stb_vorbis's own pull decoder and
+# seeks exactly. Opening a file by name is refused (fopen gives NULL).
+string(PREPEND APAUDIO_STB_VORBIS
+        "/* ApricotFields: FILE is a reader of a caller's source (apaudio_stream_reader.h). */\n"
+        "#include <assert.h>\n#include <limits.h>\n#include <math.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
+        "#include \"apaudio_stream_reader.h\"\n"
+        "#define FILE apaudio_stream_reader\n#define fgetc apaudio_vorbis_fgetc\n#define fread apaudio_vorbis_fread\n"
+        "#define fseek apaudio_vorbis_fseek\n#define ftell apaudio_vorbis_ftell\n#define fclose apaudio_vorbis_fclose\n"
+        "#define fopen apaudio_vorbis_fopen\n#define fopen_s apaudio_vorbis_fopen_s\n")
+# Seeking, which only a stream does, asserts on what the file's pages say:
+# each is an error return instead, as for any other bad file (the same day).
+string(REPLACE "   right = f->p_last;\n   assert(right.last_decoded_sample != ~0U);"
+        "   right = f->p_last;\n   if (right.last_decoded_sample == ~0U) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "      assert(left.page_end < right.page_start);"
+        "      if (left.page_end >= right.page_start) goto error; /* ApricotFields */"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "         assert(mid.page_start < right.page_start);"
+        "         if (mid.page_start >= right.page_start) goto error; /* ApricotFields */"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "   end_pos = f->end_seg_with_known_loc;\n   assert(end_pos >= 0);"
+        "   end_pos = f->end_seg_with_known_loc;\n   if (end_pos < 0) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "   assert(f->current_loc_valid);\n   assert(f->current_loc <= sample_number);"
+        "   if (!f->current_loc_valid || f->current_loc > sample_number) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
+string(REPLACE "      assert(sample_number > frame_start);\n      assert(f->channel_buffer_start + (int) (sample_number-frame_start) <= f->channel_buffer_end);"
+        "      if (sample_number <= frame_start || f->channel_buffer_start + (int) (sample_number-frame_start) > f->channel_buffer_end) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        APAUDIO_STB_VORBIS "${APAUDIO_STB_VORBIS}")
 foreach (_fix "if (sz < 0 || sz > 0x7FFFFFF0) return NULL; /* ApricotFields */" "if (len < 0) return error(f, VORBIS_invalid_setup); /* ApricotFields */"
         "p->comment_list && i < p->comment_list_length; ++i) { /* ApricotFields */"
-        "if (entries <= 0 || dim <= 0) return -1; /* ApricotFields */" "static const uint8 vorbis[6] = ")
+        "if (entries <= 0 || dim <= 0) return -1; /* ApricotFields */" "static const uint8 vorbis[6] = "
+        "if (right.last_decoded_sample == ~0U) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        "if (left.page_end >= right.page_start) goto error; /* ApricotFields */"
+        "if (mid.page_start >= right.page_start) goto error; /* ApricotFields */"
+        "if (end_pos < 0) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        "if (!f->current_loc_valid || f->current_loc > sample_number) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        "if (sample_number <= frame_start || f->channel_buffer_start + (int) (sample_number-frame_start) > f->channel_buffer_end) return error(f, VORBIS_seek_failed); /* ApricotFields */"
+        "   int c = fgetc(z->f);" "   if (fread(data, n, 1, z->f) == 1)" "      fseek(z->f, x+n, SEEK_SET);"
+        "   if (!fseek(f->f, loc, SEEK_SET))" "   return (unsigned int) (ftell(f->f) - f->f_start);")
     string(FIND "${APAUDIO_STB_VORBIS}" "${_fix}" _at)
     if (_at EQUAL -1)
         message(FATAL_ERROR "stb_vorbis.c changed: ApricotFields' fix \"${_fix}\" no longer applies (CMakeLists.txt)")
     endif ()
 endforeach ()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/stb_vorbis.c" "${APAUDIO_STB_VORBIS}")
+# The reader is ApricotFields' own code, built at its warning level as a
+# library of its own, which stb_vorbis's FILE * path links.
+add_library(apaudio_stream_reader STATIC src/audio/apaudio_stream_reader.c)
+set_target_properties(apaudio_stream_reader PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(apaudio_stb_vorbis STATIC "${CMAKE_CURRENT_BINARY_DIR}/apaudio_decoders/stb_vorbis.c")
 target_include_directories(apaudio_stb_vorbis PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/audio")
-target_compile_definitions(apaudio_stb_vorbis PUBLIC STB_VORBIS_NO_STDIO STB_VORBIS_NO_PUSHDATA_API)
+target_compile_definitions(apaudio_stb_vorbis PUBLIC STB_VORBIS_NO_PUSHDATA_API)
+target_link_libraries(apaudio_stb_vorbis PUBLIC apaudio_stream_reader)
 
 # libogg 1.3.6 (BSD): Ogg pages and packets, from its two sources; its
 # config_types.h, which its own build generates, is written here from
@@ -664,7 +742,8 @@ if (APRICOTFIELDS_BUILD_TESTS)
     # state under the platform's allocation hook.
     add_executable(aprinoalloc_tests tests/aprinoalloc_tests.c)
     target_link_libraries(aprinoalloc_tests PRIVATE ApricotFields)
-    add_test(NAME aprinoalloc_tests COMMAND aprinoalloc_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext)
+    add_test(NAME aprinoalloc_tests COMMAND aprinoalloc_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext
+             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/apaudio)
 
     add_executable(apri_misuse_tests tests/apri_misuse_tests.c)
     target_link_libraries(apri_misuse_tests PRIVATE ApricotFields)

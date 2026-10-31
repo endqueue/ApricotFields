@@ -6,6 +6,7 @@
 // test says so and passes.
 
 #include "../src/aprioverlap.hpp"
+#include "../src/audio/apaudio_internal.hpp"
 
 #include <atomic>
 #include <stdio.h>
@@ -103,6 +104,49 @@ int main()
         tb.join();
         CHECK(a.reports.load() == 0);
         CHECK(b.reports.load() == 0);
+    }
+    // A mixer's control calls (apaudio.h, "Threads"): an update while
+    // another control call is inside is reported; the underrun count, an
+    // "any" call, isn't.
+    {
+        const SPUDAUDIO_CHANNEL_POSITION stereo[2] = {SPUDAUDIO_CHANNEL_POSITION_FL, SPUDAUDIO_CHANNEL_POSITION_FR};
+        APAUDIO_MIXER_DESC desc{};
+        desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC;
+        desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+        desc.format.sample_rate = 48000;
+        desc.format.channel_count = 2;
+        desc.format.interleaved = true;
+        desc.format.positions = stereo;
+        desc.max_frames = 256;
+        desc.max_voices = 4;
+        desc.max_real_voices = 2;
+        desc.max_sounds = 2;
+        desc.queue_capacity = 4;
+        desc.resampler = APAUDIO_RESAMPLER_LINEAR;
+        desc.limiter = APAUDIO_LIMITER_OFF;
+        desc.gain = 1.0f;
+        apaudio_mixer mixer = nullptr;
+        CHECK(apaudio_mixer_create(&desc, &mixer, nullptr) == APRESULT_OK);
+        if (mixer)
+        {
+            apri_overlap &guard = apaudio_mixer_control_guard(mixer);
+            std::atomic<bool> inside{false};
+            std::atomic<bool> release{false};
+            std::thread holder(hold, &guard, &inside, &release);
+            while (!inside.load())
+                std::this_thread::yield();
+            std::thread reader([mixer] { (void)apaudio_sound_get_underrun_frames(mixer, 0); });
+            reader.join();
+            CHECK(guard.reports.load() == 0);
+            printf("aprioverlap_tests: one overlap report is expected next\n");
+            fflush(stdout);
+            std::thread updater([mixer] { (void)apaudio_mixer_update(mixer, nullptr); });
+            updater.join();
+            release.store(true);
+            holder.join();
+            CHECK(guard.reports.load() == 1);
+            apaudio_mixer_destroy(mixer);
+        }
     }
     if (failures)
     {

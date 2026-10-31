@@ -147,7 +147,7 @@ static void test_null_arguments(void)
 
     // Calls returning nothing accept a null mixer and stale or 0 IDs.
     apaudio_mixer_destroy(NULL);
-    apaudio_mixer_update(NULL);
+    CHECK(apaudio_mixer_update(NULL, NULL) == APRESULT_INVALID_ARGUMENT);
     apaudio_bus_destroy(NULL, 0);
     apaudio_modifier_destroy(NULL, 0);
     apaudio_concurrency_destroy(NULL, 0);
@@ -452,7 +452,7 @@ static void test_mixer_create(void)
     CHECK(apaudio_mixer_get_master_bus(NULL) == 0);
     render(mixer, 64);
     CHECK(frames_are(0, 63, 0.0f, 0.0f)); /* silence when nothing plays */
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     apaudio_mixer_destroy(mixer);
 }
 
@@ -887,7 +887,7 @@ static void test_prioritization(void)
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.3f * CENTRE, 0.3f * CENTRE));
     /* A voice never loses its slot to a lower priority, however loud. */
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.3f * CENTRE, 0.3f * CENTRE));
 
@@ -896,7 +896,7 @@ static void test_prioritization(void)
     apaudio_voice_stop(mixer, second, 0);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.1f * CENTRE, 0.1f * CENTRE));
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.5f * CENTRE, 0.5f * CENTRE));
     apaudio_voice_set_gain(mixer, killed, 1.0f); /* stale: nothing */
@@ -913,7 +913,7 @@ static void test_prioritization(void)
     CHECK(frames_are(0, 15, 0.15f * CENTRE, 0.15f * CENTRE));
     play(mixer, keeps, 0.6f, 5, true); /* louder, same priority */
     render(mixer, 16);
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.7f * CENTRE, 0.7f * CENTRE)); /* 0.6 and 0.1, over 0.05 and 0.4 (priority 1) */
     apaudio_mixer_destroy(mixer);
@@ -927,7 +927,7 @@ static void test_prioritization(void)
     CHECK(frames_are(0, 15, 0.0f, 0.0f));
     apaudio_voice_set_gain(mixer, quiet, 1.0f);
     render(mixer, 16);
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, CENTRE, CENTRE));
     apaudio_mixer_destroy(mixer);
@@ -950,7 +950,7 @@ static void test_prioritization(void)
     apaudio_voice_stop(mixer, over, 0);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.0f, 0.0f));
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 64);
     CHECK(close_to(out[0], 0.5f / 48.0f * CENTRE) && close_to(out[2 * 23], 0.25f * CENTRE));
     CHECK(frames_are(47, 63, 0.5f * CENTRE, 0.5f * CENTRE));
@@ -1146,10 +1146,10 @@ static void test_buses(void)
     render(mixer, 16);
     CHECK(frames_are(0, 15, CENTRE, CENTRE));
     CHECK(apaudio_bus_set_muted(mixer, music, false, 0) == APRESULT_OK);
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, CENTRE, CENTRE)); /* open, but not ranked yet */
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 2.5f * CENTRE, 2.5f * CENTRE));
     /* Pausing works the same way, from the top of the tree down. */
@@ -1159,7 +1159,7 @@ static void test_buses(void)
     CHECK(frames_are(0, 15, 0.0f, 0.0f));
     CHECK(apaudio_bus_set_paused(mixer, master, false, 0) == APRESULT_OK);
     render(mixer, 16);
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 2.5f * CENTRE, 2.5f * CENTRE));
 
@@ -1281,13 +1281,13 @@ static void test_modifiers(void)
     APAUDIO_VOICE line = play_on(mixer, sound, 0.5f, dialogue);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.9f * CENTRE, 0.9f * CENTRE));
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.6f * CENTRE, 0.6f * CENTRE)); /* 0.4 x 0.25, and the line */
     apaudio_voice_stop(mixer, line, 0);
     render(mixer, 16);
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
@@ -1307,7 +1307,7 @@ static void test_modifiers(void)
     apaudio_bus_destroy(mixer, music);
     apaudio_bus_destroy(mixer, dialogue);
     render(mixer, 16);
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 16);
     CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
     apaudio_mixer_destroy(mixer);
@@ -1542,7 +1542,7 @@ static void test_cues_playing(void)
     APAUDIO_VOICE voice = 0;
     CHECK(apaudio_cues_play(cues, tick, NULL, &voice) == APRESULT_OK && voice != 0);
     CHECK(!apaudio_cues_is_playing(cues, voice));
-    apaudio_mixer_update(mixer);
+    CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
     render(mixer, 32);
     CHECK(any_sound(32));
     render(mixer, 64); /* the rest of it */
@@ -2013,6 +2013,1149 @@ static void test_decoders(void)
     apaudio_pcm_free(&wav);
 }
 
+/* ---- Streamed sounds (APAUDIO_TODO.md item 15) ----
+ *
+ * Written from apaudiostream_draft.h before the implementation, and not to
+ * be edited by it. A call that returns APRESULT_NOT_IMPLEMENTED marks its
+ * test pending and ends it; anything else is checked (as
+ * tests/aptext_tests.c does), so the implementation turns them on call by
+ * call. The files are tests/data/apaudio/stream*.{flac,ogg,opus}, made by
+ * make_stream_data.py there: 2 s of stereo at 48 kHz, 0.7 s of mono at
+ * 44.1 kHz (48 kHz for Opus) to loop, and stream.* corrupted at 60 %. */
+
+static bool test_pending = false;
+
+/* Marks the current test pending: a call it needs returned
+ * APRESULT_NOT_IMPLEMENTED. */
+static void mark_pending(int line)
+{
+    if (!test_pending)
+        printf("PENDING %s (%s:%d): not implemented yet\n", current_test, __FILE__, line);
+    test_pending = true;
+}
+
+/* True if [result] is from a built call; marks the test pending if not. */
+static bool built(APRESULT result, int line)
+{
+    if (result == APRESULT_NOT_IMPLEMENTED)
+    {
+        mark_pending(line);
+        return false;
+    }
+    return true;
+}
+
+#define BUILT(result) built((result), __LINE__)
+
+/* A file's bytes, read through APAUDIO_SOURCE. The counters are written
+ * only by a read that should never have been made, so reads on many
+ * workers at once share nothing. */
+typedef struct file_source
+{
+    unsigned char *bytes;
+    uint64_t size;
+    /* A read reaching past this offset fails: size for none. */
+    uint64_t fail_from;
+    /* Set by a test once nothing may read the source any more. */
+    bool closed;
+    int reads_after_close;
+    int reads_past_size;
+} file_source;
+
+static bool file_source_read(void *user, uint64_t offset, void *buffer, uint64_t count)
+{
+    file_source *source = (file_source *)user;
+    if (source->closed)
+    {
+        source->reads_after_close++;
+        return false;
+    }
+    if (offset > source->size || count > source->size - offset)
+    {
+        source->reads_past_size++;
+        return false;
+    }
+    if (offset + count > source->fail_from)
+        return false;
+    memcpy(buffer, source->bytes + offset, (size_t)count);
+    return true;
+}
+
+/* Reads tests/data/apaudio/[name] whole; false, with nothing held, if it
+ * can't. */
+static bool file_source_load(file_source *source, const char *name)
+{
+    memset(source, 0, sizeof(*source));
+    if (!data_dir)
+        return false;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", data_dir, name);
+    FILE *file = fopen(path, "rb");
+    if (!file)
+    {
+        printf("FAIL %s: can't open %s\n", current_test, path);
+        failures++;
+        return false;
+    }
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    source->bytes = (unsigned char *)malloc(size > 0 ? (size_t)size : 1);
+    bool read = source->bytes && size > 0 && fread(source->bytes, 1, (size_t)size, file) == (size_t)size;
+    fclose(file);
+    if (!read)
+    {
+        free(source->bytes);
+        source->bytes = NULL;
+        printf("FAIL %s: can't read %s\n", current_test, path);
+        failures++;
+        return false;
+    }
+    source->size = (uint64_t)size;
+    source->fail_from = source->size;
+    return true;
+}
+
+static void file_source_free(file_source *source)
+{
+    CHECK(source->reads_past_size == 0);
+    free(source->bytes);
+    source->bytes = NULL;
+}
+
+static APAUDIO_SOURCE source_of(file_source *source)
+{
+    APAUDIO_SOURCE result;
+    result.user = source;
+    result.size = source->size;
+    result.read = file_source_read;
+    return result;
+}
+
+static const APAUDIO_STREAM_CODEC stream_codecs[3] = {APAUDIO_STREAM_CODEC_FLAC, APAUDIO_STREAM_CODEC_VORBIS,
+                                                      APAUDIO_STREAM_CODEC_OPUS};
+static const char *const stream_files[3] = {"stream.flac", "stream.ogg", "stream.opus"};
+static const char *const loop_files[3] = {"stream_loop.flac", "stream_loop.ogg", "stream_loop.opus"};
+static const char *const corrupt_files[3] = {"stream_corrupt.flac", "stream_corrupt.ogg", "stream_corrupt.opus"};
+static const char *const codec_names[3] = {"FLAC", "Vorbis", "Opus"};
+
+/* The whole-file decode of [source], as the codec's decode call reads it. */
+static APRESULT whole_decode(APAUDIO_STREAM_CODEC codec, const file_source *source, APAUDIO_PCM *pcm)
+{
+    switch (codec)
+    {
+    case APAUDIO_STREAM_CODEC_FLAC:
+        return apaudio_flac_decode(source->bytes, source->size, 100000000, pcm, NULL);
+    case APAUDIO_STREAM_CODEC_VORBIS:
+        return apaudio_vorbis_decode(source->bytes, source->size, 100000000, pcm, NULL);
+    default:
+        return apaudio_opus_decode(source->bytes, source->size, 100000000, pcm, NULL);
+    }
+}
+
+/* Each test's ring: 0.1 s, past 8 renders of 480 frames at 48 kHz (80 ms). */
+#define STREAM_RING_US 100000
+
+/* A stereo 48 kHz mixer that renders at most 480 frames, with no
+ * transition fades, so what plays is exact samples. */
+static APAUDIO_MIXER_DESC stream_mixer_desc(uint32_t max_streams, const APJOBS_SCHEDULER *scheduler,
+                                            APAUDIO_RESAMPLER resampler)
+{
+    APAUDIO_MIXER_DESC desc = valid_mixer_desc();
+    desc.max_frames = 480;
+    desc.transition_fade_us = 0;
+    desc.max_fading_voices = 0;
+    desc.resampler = resampler;
+    desc.max_streams = max_streams;
+    desc.scheduler = scheduler;
+    return desc;
+}
+
+/* A streamed mixer, or NULL with the test pending or failed. */
+static apaudio_mixer make_stream_mixer(const APAUDIO_MIXER_DESC *desc)
+{
+    apaudio_mixer mixer = NULL;
+    APAUDIO_ERROR error;
+    APRESULT result = apaudio_mixer_create(desc, &mixer, &error);
+    if (!BUILT(result))
+        return NULL;
+    if (result != APRESULT_OK)
+        printf("FAIL %s: apaudio_mixer_create: %s\n", current_test, error.message);
+    CHECK(result == APRESULT_OK && mixer != NULL);
+    return mixer;
+}
+
+static APAUDIO_SOUND_DESC stream_sound_desc(APAUDIO_STREAM_CODEC codec, file_source *source, uint32_t ring_us,
+                                            APAUDIO_VIRTUAL_BEHAVIOR behavior)
+{
+    APAUDIO_SOUND_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
+    desc.virtual_behavior = behavior;
+    desc.stream_codec = codec;
+    desc.stream_source = source_of(source);
+    desc.stream_ring_us = ring_us;
+    return desc;
+}
+
+/* A streamed sound, or 0 with the test pending or failed. */
+static APAUDIO_SOUND make_streamed(apaudio_mixer mixer, APAUDIO_STREAM_CODEC codec, file_source *source, uint32_t ring_us,
+                                   APAUDIO_VIRTUAL_BEHAVIOR behavior)
+{
+    APAUDIO_SOUND_DESC desc = stream_sound_desc(codec, source, ring_us, behavior);
+    APAUDIO_SOUND sound = 0;
+    APAUDIO_ERROR error;
+    APRESULT result = apaudio_sound_create(mixer, &desc, &sound, &error);
+    if (!BUILT(result))
+        return 0;
+    if (result != APRESULT_OK)
+        printf("FAIL %s: apaudio_sound_create (%s): %s\n", current_test, codec_names[codec - 1], error.message);
+    CHECK(result == APRESULT_OK && sound != 0);
+    return sound;
+}
+
+/* A play desc for these tests: [direction] NULL for none. */
+static APAUDIO_VOICE play_streamed(apaudio_mixer mixer, APAUDIO_SOUND sound, float gain, float rate, uint8_t priority,
+                                   bool loop, const APAUDIO_DIRECTION *direction)
+{
+    APAUDIO_PLAY_DESC desc = play_desc(gain);
+    desc.rate = rate;
+    desc.priority = priority;
+    desc.loop = loop;
+    desc.direction = direction;
+    APAUDIO_VOICE voice = 0;
+    CHECK(apaudio_play(mixer, sound, &desc, &voice) == APRESULT_OK);
+    return voice;
+}
+
+/* An update that must succeed; false with the test pending. */
+static bool update_ok(apaudio_mixer mixer)
+{
+    APAUDIO_ERROR error;
+    APRESULT result = apaudio_mixer_update(mixer, &error);
+    if (!BUILT(result))
+        return false;
+    if (result != APRESULT_OK)
+        printf("FAIL %s: apaudio_mixer_update: %s\n", current_test, error.message);
+    CHECK(result == APRESULT_OK);
+    return result == APRESULT_OK;
+}
+
+/* Interleaved stereo output of a second mixer, to compare with out[]. */
+static float reference_out[2 * 2048];
+
+static void render_into(apaudio_mixer mixer, float *buffer, uint32_t frames)
+{
+    for (uint32_t i = 0; i < 2 * frames; i++)
+        buffer[i] = 99.0f;
+    apaudio_mixer_render(mixer, buffer, frames, NULL);
+}
+
+static const APAUDIO_DIRECTION hard_left = {-1.5707963267948966, 0.0};
+static const APAUDIO_DIRECTION hard_right = {1.5707963267948966, 0.0};
+
+/* A reference pool's scheduler: [threads] threads beside the waiting
+ * thread, so [threads] + 1 workers. */
+static apjobs_pool make_pool(uint32_t threads, APJOBS_SCHEDULER *scheduler)
+{
+    APJOBS_POOL_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APJOBS_POOL_DESC;
+    desc.thread_count = threads;
+    desc.max_tasks = 4;
+    desc.debug_name = "apaudio_tests";
+    apjobs_pool pool = NULL;
+    CHECK(apjobs_pool_create(&desc, &pool, NULL) == APRESULT_OK);
+    memset(scheduler, 0, sizeof(*scheduler));
+    scheduler->base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER;
+    if (pool)
+        CHECK(apjobs_pool_get_scheduler(pool, scheduler) == APRESULT_OK);
+    return pool;
+}
+
+/* The largest difference in a looped Opus voice's first frames (card A34). */
+static float opus_tail_worst = 0.0f;
+/* Measured 2026-10-31: 0.0042 for a loop's first frames; after a return
+ * mid-file 0.042-0.050 in the first 10 ms, under 0.003 by 90-100 ms. A
+ * voice one frame out of place stays about 0.02 out (a 440 Hz tone at 0.4
+ * moves that much a frame), so the last 10 ms tell the two apart. */
+#define OPUS_SEEK_TOLERANCE 0.1f
+#define OPUS_SEEK_SETTLED 0.005f
+
+/* One file played streamed and from its whole-file decode, on two mixers
+ * rendering alike: bit for bit the same, render after render, with an
+ * update between (the draft's "The same samples" and "At once"). True if it
+ * ran to its end (not pending). */
+static bool same_samples(const char *name, int codec_index, bool loop, float rate, uint32_t render_frames,
+                         const APJOBS_SCHEDULER *scheduler)
+{
+    APAUDIO_STREAM_CODEC codec = stream_codecs[codec_index];
+    file_source source;
+    if (!file_source_load(&source, name))
+        return false;
+    APAUDIO_PCM pcm;
+    CHECK(whole_decode(codec, &source, &pcm) == APRESULT_OK);
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(2, scheduler, APAUDIO_RESAMPLER_SINC);
+    apaudio_mixer streamed = make_stream_mixer(&desc);
+    APAUDIO_MIXER_DESC reference_desc = stream_mixer_desc(0, NULL, APAUDIO_RESAMPLER_SINC);
+    apaudio_mixer reference = make_mixer(&reference_desc);
+    APAUDIO_SOUND sound = streamed ? make_streamed(streamed, codec, &source, STREAM_RING_US, APAUDIO_VIRTUAL_CONTINUE) : 0;
+    bool ran = false;
+    if (sound && reference && pcm.samples)
+    {
+        APAUDIO_SOUND whole = make_sound(reference, pcm.samples, pcm.frame_count, pcm.channel_count, pcm.sample_rate,
+                                         APAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        play_streamed(streamed, sound, 1.0f, rate, 128, loop, NULL);
+        play_streamed(reference, whole, 1.0f, rate, 128, loop, NULL);
+        /* Past the end (and round a loop), at most 2.5 s of output. */
+        double seconds = (double)pcm.frame_count / pcm.sample_rate / rate * (loop ? 1.6 : 1.0) + 0.05;
+        uint64_t total = (uint64_t)((seconds < 2.5 ? seconds : 2.5) * 48000.0);
+        uint64_t frame = 0;
+        bool same = true;
+        while (frame < total && same)
+        {
+            render_into(streamed, out, render_frames);
+            render_into(reference, reference_out, render_frames);
+            if (frame == 0)
+            {
+                /* At once: the prefetch is playing in the very first render. */
+                bool heard = false;
+                for (uint32_t i = 0; i < 2 * render_frames; i++)
+                    heard = heard || out[i] != 0.0f;
+                CHECK(heard);
+            }
+            /* A looped Opus voice's first frames read the file's last ones,
+             * found at create by a seek: within A34's tolerance (card A34,
+             * DECISIONS.md), and bit for bit from frame 64 on. */
+            uint32_t from = 0;
+            if (frame == 0 && loop && codec == APAUDIO_STREAM_CODEC_OPUS)
+            {
+                from = 2 * 64;
+                for (uint32_t i = 0; i < from; i++)
+                {
+                    float difference = fabsf(out[i] - reference_out[i]);
+                    opus_tail_worst = difference > opus_tail_worst ? difference : opus_tail_worst;
+                }
+            }
+            if (memcmp(out + from, reference_out + from, (2 * render_frames - from) * sizeof(float)) != 0)
+            {
+                uint32_t at = from;
+                while (at < 2 * render_frames && memcmp(&out[at], &reference_out[at], sizeof(float)) == 0)
+                    at++;
+                printf("FAIL %s: %s, loop %d, rate %g, renders of %u, %s scheduler: frame %llu is %.9g, not %.9g\n",
+                       current_test, name, (int)loop, (double)rate, render_frames,
+                       scheduler ? (scheduler->worker_count == 1 ? "a 1-worker" : "a 4-worker") : "no",
+                       (unsigned long long)(frame + at / 2), (double)out[at], (double)reference_out[at]);
+                failures++;
+                same = false;
+            }
+            frame += render_frames;
+            if (!update_ok(streamed))
+                break;
+            CHECK(apaudio_mixer_update(reference, NULL) == APRESULT_OK);
+            apaudio_mixer_collect(streamed);
+        }
+        ran = !test_pending;
+        CHECK(apaudio_sound_get_underrun_frames(streamed, sound) == 0);
+    }
+    apaudio_mixer_destroy(streamed);
+    apaudio_mixer_destroy(reference);
+    apaudio_pcm_free(&pcm);
+    file_source_free(&source);
+    return ran;
+}
+
+/* The draft's "The same samples": each file, streamed and whole, at 64-
+ * and 480-frame renders, looped and not, at rates 1, 0.5 and 2, with no
+ * scheduler; and on ApJobs' pool at 1 and 4 workers. Linear interpolation
+ * reads one frame ahead and windowed sinc up to 64 either side (this mixer
+ * resamples with sinc), so the joins from prefetch to ring, and each ring's
+ * wrap, are read across. */
+static void test_stream_same_samples(void)
+{
+    current_test = "stream_same_samples";
+    test_pending = false;
+    static const float rates[3] = {1.0f, 0.5f, 2.0f};
+    static const uint32_t sizes[2] = {64, 480};
+    for (int file = 0; file < 2; file++)
+        for (int c = 0; c < 3; c++)
+            for (int loop = 0; loop < 2; loop++)
+                for (int r = 0; r < 3; r++)
+                    for (int s = 0; s < 2; s++)
+                    {
+                        const char *name = file ? loop_files[c] : stream_files[c];
+                        if (!same_samples(name, c, loop != 0, rates[r], sizes[s], NULL))
+                            return;
+                    }
+    APJOBS_SCHEDULER one, four;
+    apjobs_pool pool_one = make_pool(0, &one);
+    apjobs_pool pool_four = make_pool(3, &four);
+    for (int file = 0; file < 2 && pool_one && pool_four; file++)
+        for (int c = 0; c < 3; c++)
+        {
+            const char *name = file ? loop_files[c] : stream_files[c];
+            if (!same_samples(name, c, true, 2.0f, 64, &one) || !same_samples(name, c, true, 2.0f, 64, &four) ||
+                !same_samples(name, c, false, 0.5f, 480, &one) || !same_samples(name, c, false, 0.5f, 480, &four))
+                break;
+        }
+    apjobs_pool_destroy(pool_one);
+    apjobs_pool_destroy(pool_four);
+    printf("     stream_same_samples: a looped Opus voice's first frames, at most %.9g from the whole file's "
+           "(card A34)\n",
+           (double)opus_tail_worst);
+    CHECK(opus_tail_worst <= OPUS_SEEK_TOLERANCE);
+}
+
+/* Renders with no update between, past the ring: silence, the sound's count
+ * exactly the frames short, another sound's untouched, and the voice back in
+ * time after the next update. A mono FLAC loop hard left, beside an Ogg
+ * Vorbis one hard right whose ring (1 s) outlasts the stretch. */
+static void test_stream_underrun(void)
+{
+    current_test = "stream_underrun";
+    test_pending = false;
+    file_source a_source, b_source;
+    if (!file_source_load(&a_source, "stream_loop.flac") || !file_source_load(&b_source, "stream_loop.ogg"))
+        return;
+    APAUDIO_PCM pcm;
+    CHECK(whole_decode(APAUDIO_STREAM_CODEC_FLAC, &a_source, &pcm) == APRESULT_OK);
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(2, NULL, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer mixer = make_stream_mixer(&desc);
+    APAUDIO_MIXER_DESC reference_desc = stream_mixer_desc(0, NULL, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer reference = make_mixer(&reference_desc);
+    APAUDIO_SOUND a = mixer ? make_streamed(mixer, APAUDIO_STREAM_CODEC_FLAC, &a_source, STREAM_RING_US,
+                                            APAUDIO_VIRTUAL_CONTINUE)
+                            : 0;
+    APAUDIO_SOUND b = a ? make_streamed(mixer, APAUDIO_STREAM_CODEC_VORBIS, &b_source, 1000000, APAUDIO_VIRTUAL_CONTINUE)
+                        : 0;
+    if (a && b && reference && pcm.samples)
+    {
+        APAUDIO_SOUND whole = make_sound(reference, pcm.samples, pcm.frame_count, 1, pcm.sample_rate,
+                                         APAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        play_streamed(mixer, a, 1.0f, 1.0f, 128, true, &hard_left);
+        play_streamed(mixer, b, 1.0f, 1.0f, 128, true, &hard_right);
+        play_streamed(reference, whole, 1.0f, 1.0f, 128, true, &hard_left);
+        render_into(mixer, out, 480);
+        render_into(reference, reference_out, 480);
+        if (update_ok(mixer))
+        {
+            /* 0.4 s without an update: the 0.1 s prefetch and the 0.1 s
+             * ring run out, B's 1 s don't. */
+            uint64_t silent = 0, frame = 0;
+            int64_t first_silent = -1;
+            bool left_same_until_silent = true, silent_after = true;
+            for (int r = 0; r < 40; r++)
+            {
+                render_into(mixer, out, 480);
+                render_into(reference, reference_out, 480);
+                for (uint32_t i = 0; i < 480; i++, frame++)
+                {
+                    float left = out[2 * i], expected = reference_out[2 * i];
+                    if (first_silent < 0 && left == 0.0f && expected != 0.0f)
+                        first_silent = (int64_t)frame;
+                    if (first_silent < 0)
+                        left_same_until_silent = left_same_until_silent && left == expected;
+                    else
+                    {
+                        silent_after = silent_after && left == 0.0f;
+                        silent++;
+                    }
+                }
+            }
+            CHECK(first_silent > 0);
+            CHECK(left_same_until_silent);
+            CHECK(silent_after);
+            CHECK(apaudio_sound_get_underrun_frames(mixer, a) == silent);
+            CHECK(apaudio_sound_get_underrun_frames(mixer, b) == 0);
+            /* B played on through it all, from its own ring. */
+            bool b_heard = false;
+            for (uint32_t i = 0; i < 480; i++)
+                b_heard = b_heard || out[2 * i + 1] != 0.0f;
+            CHECK(b_heard);
+            /* An update, and the voice is where the clock says. */
+            CHECK(update_ok(mixer));
+            for (int r = 0; r < 20; r++)
+            {
+                render_into(mixer, out, 480);
+                render_into(reference, reference_out, 480);
+                bool same = true;
+                for (uint32_t i = 0; i < 480; i++)
+                    same = same && out[2 * i] == reference_out[2 * i];
+                CHECK(same);
+                if (!update_ok(mixer))
+                    break;
+                apaudio_mixer_collect(mixer);
+            }
+            CHECK(apaudio_sound_get_underrun_frames(mixer, a) == silent);
+        }
+    }
+    CHECK(apaudio_sound_get_underrun_frames(NULL, a) == 0);
+    CHECK(apaudio_sound_get_underrun_frames(mixer, 0) == 0);
+    apaudio_mixer_destroy(mixer);
+    apaudio_mixer_destroy(reference);
+    apaudio_pcm_free(&pcm);
+    file_source_free(&a_source);
+    file_source_free(&b_source);
+}
+
+/* Virtual and back, on a mixer of one real voice: a streamed voice playing
+ * past its prefetch is pushed out by a higher-priority one, which is then
+ * stopped. CONTINUE comes back where the clock says, RESTART from 0 in the
+ * first render after the update that ranks it real, PAUSE from where it
+ * stopped (both of those after the update that opens its stream); KILL
+ * ends. Opus after a seek is compared within [tolerance] (DECISIONS.md, card
+ * A34: its decoder's state after a seek's pre-roll isn't the continuous
+ * decode's bits); the rest bit for bit. */
+static void virtual_and_back(int codec_index, APAUDIO_VIRTUAL_BEHAVIOR behavior, float tolerance)
+{
+    APAUDIO_STREAM_CODEC codec = stream_codecs[codec_index];
+    file_source source;
+    if (!file_source_load(&source, stream_files[codec_index]))
+        return;
+    APAUDIO_PCM pcm;
+    CHECK(whole_decode(codec, &source, &pcm) == APRESULT_OK);
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(1, NULL, APAUDIO_RESAMPLER_LINEAR);
+    desc.max_real_voices = 1;
+    apaudio_mixer mixer = make_stream_mixer(&desc);
+    APAUDIO_SOUND sound = mixer ? make_streamed(mixer, codec, &source, STREAM_RING_US, behavior) : 0;
+    static float zeros[480];
+    if (sound && pcm.samples)
+    {
+        APAUDIO_SOUND quiet = make_sound(mixer, zeros, 480, 1, 48000, APAUDIO_VIRTUAL_KILL, 0, 0);
+        APAUDIO_VOICE voice = play_streamed(mixer, sound, 1.0f, 1.0f, 10, false, NULL);
+        /* 20 renders: 9,600 frames, past the 4,800 of the prefetch. */
+        uint64_t clock = 0;
+        bool ok = true;
+        for (int r = 0; r < 20 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            clock += 480;
+            ok = update_ok(mixer);
+        }
+        uint64_t played = clock;
+        APAUDIO_VOICE pusher = play_streamed(mixer, quiet, 1.0f, 1.0f, 200, true, NULL);
+        for (int r = 0; r < 6 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            clock += 480;
+            for (uint32_t i = 0; i < 960; i++)
+                CHECK(out[i] == 0.0f);
+            ok = update_ok(mixer);
+            apaudio_mixer_collect(mixer);
+        }
+        if (behavior == APAUDIO_VIRTUAL_KILL)
+        {
+            CHECK(!apaudio_voice_is_live(mixer, voice));
+        }
+        else if (ok)
+        {
+            apaudio_voice_stop(mixer, pusher, 0);
+            render_into(mixer, out, 480);
+            clock += 480;
+            /* Back within a few updates; then every frame is the whole
+             * file's, from where the behavior says. */
+            int back = -1;
+            uint64_t start = 0;
+            for (int r = 0; r < 6 && back < 0 && ok; r++)
+            {
+                ok = update_ok(mixer);
+                apaudio_mixer_collect(mixer);
+                render_into(mixer, out, 480);
+                bool heard = false;
+                for (uint32_t i = 0; i < 960; i++)
+                    heard = heard || out[i] != 0.0f;
+                if (heard)
+                {
+                    back = r;
+                    start = behavior == APAUDIO_VIRTUAL_CONTINUE ? clock
+                            : behavior == APAUDIO_VIRTUAL_PAUSE  ? played
+                                                                 : 0;
+                }
+                clock += 480;
+            }
+            CHECK(back >= 0);
+            /* RESTART plays its prefetch at once; the others wait for the
+             * update after the one that ranks them real. */
+            if (behavior == APAUDIO_VIRTUAL_RESTART)
+                CHECK(back == 0);
+            /* The worst over 100 ms, and over its last 10 ms: a decoder
+             * converging after a seek gets close, one in the wrong place
+             * never does. */
+            float worst = 0.0f, last = 0.0f;
+            for (int r = 0; r < 10 && back >= 0 && ok; r++)
+            {
+                for (uint32_t i = 0; i < 960; i++)
+                {
+                    uint64_t at = 2 * start + i;
+                    float expected = at < 2 * pcm.frame_count ? pcm.samples[at] : 0.0f;
+                    float difference = fabsf(out[i] - expected);
+                    worst = difference > worst ? difference : worst;
+                    if (r == 9)
+                        last = difference > last ? difference : last;
+                }
+                start += 480;
+                ok = update_ok(mixer);
+                render_into(mixer, out, 480);
+            }
+            bool exact = behavior == APAUDIO_VIRTUAL_RESTART || tolerance == 0.0f;
+            if (worst > (exact ? 0.0f : tolerance) || last > (exact ? 0.0f : OPUS_SEEK_SETTLED))
+            {
+                printf("FAIL %s: %s, behavior %u: a frame %.9g from the whole file's, %.9g in its last 10 ms\n",
+                       current_test, codec_names[codec_index], behavior, (double)worst, (double)last);
+                failures++;
+            }
+            CHECK(apaudio_voice_is_live(mixer, voice));
+        }
+    }
+    apaudio_mixer_destroy(mixer);
+    apaudio_pcm_free(&pcm);
+    file_source_free(&source);
+}
+
+static void test_stream_virtual(void)
+{
+    current_test = "stream_virtual";
+    test_pending = false;
+    static const APAUDIO_VIRTUAL_BEHAVIOR behaviors[4] = {APAUDIO_VIRTUAL_CONTINUE, APAUDIO_VIRTUAL_RESTART,
+                                                          APAUDIO_VIRTUAL_PAUSE, APAUDIO_VIRTUAL_KILL};
+    for (int c = 0; c < 3 && !test_pending; c++)
+        for (int b = 0; b < 4 && !test_pending; b++)
+            virtual_and_back(c, behaviors[b], c == 2 ? OPUS_SEEK_TOLERANCE : 0.0f);
+}
+
+/* max_streams: three voices of one sound on a mixer of two streams. The
+ * two that rank highest each get a stream of their own and play exactly
+ * what one in-memory voice each would; the third is virtual; when the
+ * first ends, the third takes its stream and comes back where the clock
+ * says, exactly what an in-memory voice of it would play. */
+static void test_stream_max_streams(void)
+{
+    current_test = "stream_max_streams";
+    test_pending = false;
+    file_source source;
+    if (!file_source_load(&source, "stream_loop.flac"))
+        return;
+    APAUDIO_PCM pcm;
+    CHECK(whole_decode(APAUDIO_STREAM_CODEC_FLAC, &source, &pcm) == APRESULT_OK);
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(2, NULL, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer mixer = make_stream_mixer(&desc);
+    APAUDIO_MIXER_DESC reference_desc = stream_mixer_desc(0, NULL, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer pair = make_mixer(&reference_desc);
+    apaudio_mixer third = make_mixer(&reference_desc);
+    APAUDIO_SOUND sound = mixer ? make_streamed(mixer, APAUDIO_STREAM_CODEC_FLAC, &source, STREAM_RING_US,
+                                                APAUDIO_VIRTUAL_CONTINUE)
+                                : 0;
+    static float third_out[2 * 480];
+    if (sound && pair && third && pcm.samples)
+    {
+        APAUDIO_SOUND pair_sound = make_sound(pair, pcm.samples, pcm.frame_count, 1, pcm.sample_rate,
+                                              APAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        APAUDIO_SOUND third_sound = make_sound(third, pcm.samples, pcm.frame_count, 1, pcm.sample_rate,
+                                               APAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        APAUDIO_VOICE first = play_streamed(mixer, sound, 1.0f, 1.0f, 30, true, &hard_left);
+        play_streamed(mixer, sound, 1.0f, 1.0f, 20, true, &hard_right);
+        play_streamed(mixer, sound, 0.5f, 1.0f, 10, true, &hard_left);
+        APAUDIO_VOICE pair_first = play_streamed(pair, pair_sound, 1.0f, 1.0f, 30, true, &hard_left);
+        play_streamed(pair, pair_sound, 1.0f, 1.0f, 20, true, &hard_right);
+        play_streamed(third, third_sound, 0.5f, 1.0f, 10, true, &hard_left);
+        render_into(mixer, out, 480);
+        render_into(pair, reference_out, 480);
+        render_into(third, third_out, 480);
+        bool ok = update_ok(mixer);
+        /* Two streams for one sound, the third voice virtual: 1.5 s, past
+         * two loops. */
+        for (int r = 0; r < 150 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            render_into(pair, reference_out, 480);
+            render_into(third, third_out, 480);
+            if (memcmp(out, reference_out, sizeof(float) * 960) != 0)
+            {
+                printf("FAIL %s: render %d isn't the two in-memory voices'\n", current_test, r);
+                failures++;
+                break;
+            }
+            ok = update_ok(mixer);
+            apaudio_mixer_collect(mixer);
+        }
+        /* The first ends; the third takes its stream. */
+        apaudio_voice_stop(mixer, first, 0);
+        apaudio_voice_stop(pair, pair_first, 0);
+        int back = -1;
+        for (int r = 0; r < 40 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            render_into(pair, reference_out, 480);
+            render_into(third, third_out, 480);
+            bool heard = false;
+            for (uint32_t i = 0; i < 480; i++)
+                heard = heard || out[2 * i] != 0.0f;
+            if (heard && back < 0)
+                back = r;
+            if (back >= 0)
+            {
+                bool same = true;
+                for (uint32_t i = 0; i < 480; i++)
+                    same = same && out[2 * i] == third_out[2 * i] && out[2 * i + 1] == reference_out[2 * i + 1];
+                CHECK(same);
+            }
+            ok = update_ok(mixer);
+            apaudio_mixer_collect(mixer);
+        }
+        CHECK(back >= 0 && back < 8);
+    }
+    apaudio_mixer_destroy(mixer);
+    apaudio_mixer_destroy(pair);
+    apaudio_mixer_destroy(third);
+    apaudio_pcm_free(&pcm);
+    file_source_free(&source);
+}
+
+/* A create that's refused: its code, a message, no sound. */
+static void refused(apaudio_mixer mixer, const APAUDIO_SOUND_DESC *desc, APRESULT expected, const char *must_name)
+{
+    APAUDIO_SOUND sound = 99;
+    APAUDIO_ERROR error;
+    error.message[0] = '\0';
+    APRESULT result = apaudio_sound_create(mixer, desc, &sound, &error);
+    if (!BUILT(result))
+        return;
+    if (result != expected)
+        printf("FAIL %s: apaudio_sound_create gave %d, not %d (%s)\n", current_test, (int)result, (int)expected,
+               error.message);
+    CHECK(result == expected);
+    CHECK(sound == 0);
+    CHECK(error.message[0] != '\0');
+    if (must_name && !strstr(error.message, must_name))
+    {
+        printf("FAIL %s: \"%s\" doesn't name %s\n", current_test, error.message, must_name);
+        failures++;
+    }
+}
+
+/* Every refusal at create, each with its code and a message naming the
+ * part; none leaves a sound or takes a slot. */
+static void test_stream_refusals(void)
+{
+    current_test = "stream_refusals";
+    test_pending = false;
+    file_source sources[3];
+    for (int c = 0; c < 3; c++)
+        if (!file_source_load(&sources[c], stream_files[c]))
+            return;
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(2, NULL, APAUDIO_RESAMPLER_LINEAR);
+    desc.max_sounds = 2;
+    apaudio_mixer mixer = make_stream_mixer(&desc);
+    APAUDIO_MIXER_DESC plain = stream_mixer_desc(0, NULL, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer no_streams = make_mixer(&plain);
+    if (mixer && no_streams)
+    {
+        /* A mixer made with no streams refuses every streamed sound. */
+        APAUDIO_SOUND_DESC d = stream_sound_desc(APAUDIO_STREAM_CODEC_FLAC, &sources[0], STREAM_RING_US,
+                                                 APAUDIO_VIRTUAL_KILL);
+        refused(no_streams, &d, APRESULT_UNSUPPORTED, "max_streams");
+        /* Every argument. */
+        d.stream_codec = 4;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "stream_codec");
+        d = stream_sound_desc(APAUDIO_STREAM_CODEC_FLAC, &sources[0], STREAM_RING_US, APAUDIO_VIRTUAL_KILL);
+        d.samples = ones;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "samples");
+        d.samples = NULL;
+        d.frame_count = 10;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "frame_count");
+        d.frame_count = 0;
+        d.channel_count = 2;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "channel_count");
+        d.channel_count = 0;
+        d.sample_rate = 48000;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "sample_rate");
+        d.sample_rate = 0;
+        d.virtual_behavior = 0;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "virtual_behavior");
+        d.virtual_behavior = APAUDIO_VIRTUAL_KILL;
+        d.stream_source.read = NULL;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "read");
+        d.stream_source.read = file_source_read;
+        d.stream_ring_us = 0;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "stream_ring_us");
+        /* At least one render's take at the fastest rate: 8 x 480 frames at
+         * 48 kHz is 80 ms. */
+        d.stream_ring_us = 79999;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "stream_ring_us");
+        d.stream_ring_us = 10000001;
+        refused(mixer, &d, APRESULT_INVALID_ARGUMENT, "stream_ring_us");
+        d.stream_ring_us = 80000;
+        APAUDIO_SOUND fits = 0;
+        APRESULT result = apaudio_sound_create(mixer, &d, &fits, NULL);
+        if (BUILT(result))
+        {
+            CHECK(result == APRESULT_OK);
+            apaudio_sound_destroy(mixer, fits);
+            /* Its slot is free once a render has let go of it. */
+            render_into(mixer, out, 480);
+            apaudio_mixer_collect(mixer);
+        }
+
+        for (int c = 0; c < 3 && !test_pending; c++)
+        {
+            file_source *source = &sources[c];
+            d = stream_sound_desc(stream_codecs[c], source, STREAM_RING_US, APAUDIO_VIRTUAL_KILL);
+            /* Empty. */
+            d.stream_source.size = 0;
+            refused(mixer, &d, APRESULT_CORRUPT_DATA, codec_names[c]);
+            /* Truncated headers: its first 16 bytes. */
+            d.stream_source.size = 16;
+            refused(mixer, &d, APRESULT_CORRUPT_DATA, codec_names[c]);
+            /* Another codec's file, and garbage. */
+            d = stream_sound_desc(stream_codecs[c], &sources[(c + 1) % 3], STREAM_RING_US, APAUDIO_VIRTUAL_KILL);
+            refused(mixer, &d, APRESULT_CORRUPT_DATA, codec_names[c]);
+            file_source garbage = *source;
+            unsigned char noise[4096];
+            for (int i = 0; i < 4096; i++)
+                noise[i] = (unsigned char)(i * 131 + 7);
+            garbage.bytes = noise;
+            garbage.size = sizeof(noise);
+            garbage.fail_from = garbage.size;
+            d = stream_sound_desc(stream_codecs[c], &garbage, STREAM_RING_US, APAUDIO_VIRTUAL_KILL);
+            refused(mixer, &d, APRESULT_CORRUPT_DATA, codec_names[c]);
+            /* A read failing: in the header, and in the prefetch. */
+            source->fail_from = 8;
+            d = stream_sound_desc(stream_codecs[c], source, STREAM_RING_US, APAUDIO_VIRTUAL_KILL);
+            refused(mixer, &d, APRESULT_IO, "read");
+            source->fail_from = source->size / 40;
+            refused(mixer, &d, APRESULT_IO, "read");
+            source->fail_from = source->size;
+        }
+        /* Nothing refused took a slot: both are still free. */
+        if (!test_pending)
+        {
+            d = stream_sound_desc(APAUDIO_STREAM_CODEC_OPUS, &sources[2], STREAM_RING_US, APAUDIO_VIRTUAL_KILL);
+            APAUDIO_SOUND first = 0, second = 0;
+            CHECK(apaudio_sound_create(mixer, &d, &first, NULL) == APRESULT_OK);
+            CHECK(apaudio_sound_create(mixer, &d, &second, NULL) == APRESULT_OK);
+            CHECK(first != 0 && second != 0);
+            CHECK(apaudio_sound_get_underrun_frames(mixer, first) == 0);
+        }
+        /* An in-memory sound's count is 0. */
+        float samples[64] = {0};
+        APAUDIO_SOUND memory = 0;
+        APAUDIO_SOUND_DESC m;
+        memset(&m, 0, sizeof(m));
+        m.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
+        m.samples = samples;
+        m.frame_count = 64;
+        m.channel_count = 1;
+        m.sample_rate = 48000;
+        m.virtual_behavior = APAUDIO_VIRTUAL_KILL;
+        CHECK(apaudio_sound_create(no_streams, &m, &memory, NULL) == APRESULT_OK);
+        CHECK(apaudio_sound_get_underrun_frames(no_streams, memory) == 0);
+    }
+    /* A mixer's streams: at most max_real_voices, and a scheduler checked. */
+    APAUDIO_MIXER_DESC bad = stream_mixer_desc(17, NULL, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer refused_mixer = (apaudio_mixer)(uintptr_t)1;
+    APAUDIO_ERROR error;
+    APRESULT result = apaudio_mixer_create(&bad, &refused_mixer, &error);
+    if (BUILT(result))
+    {
+        CHECK(result == APRESULT_INVALID_ARGUMENT && refused_mixer == NULL && strstr(error.message, "max_streams"));
+        APJOBS_SCHEDULER broken;
+        memset(&broken, 0, sizeof(broken));
+        broken.base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER;
+        bad = stream_mixer_desc(2, &broken, APAUDIO_RESAMPLER_LINEAR);
+        CHECK(apaudio_mixer_create(&bad, &refused_mixer, &error) == APRESULT_INVALID_ARGUMENT);
+        CHECK(refused_mixer == NULL && strstr(error.message, "scheduler"));
+    }
+    apaudio_mixer_destroy(mixer);
+    apaudio_mixer_destroy(no_streams);
+    for (int c = 0; c < 3; c++)
+        file_source_free(&sources[c]);
+}
+
+/* Updates and renders until the update reports a failure or [limit] renders
+ * pass. Its result, with [error] its message. */
+static APRESULT play_until_failure(apaudio_mixer mixer, int limit, APAUDIO_ERROR *error)
+{
+    for (int r = 0; r < limit; r++)
+    {
+        render_into(mixer, out, 480);
+        APRESULT result = apaudio_mixer_update(mixer, error);
+        if (!BUILT(result))
+            return result;
+        if (result != APRESULT_OK)
+            return result;
+        apaudio_mixer_collect(mixer);
+    }
+    return APRESULT_OK;
+}
+
+/* A voice's ID in decimal, as the update's message names it. */
+static bool names_voice(const APAUDIO_ERROR *error, APAUDIO_VOICE voice)
+{
+    char id[32];
+    snprintf(id, sizeof(id), "%llu", (unsigned long long)voice);
+    return strstr(error->message, id) != NULL;
+}
+
+/* Mid-stream failures: a file corrupted past its prefetch, and a read that
+ * fails half way. The update after the decoding that met it reports it, the
+ * first as its result, naming the voice, the codec and the part, and how
+ * many more failed; the voice ends; another voice plays on. */
+static void stream_failures(const APJOBS_SCHEDULER *scheduler)
+{
+    file_source good, corrupt[3], failing;
+    if (!file_source_load(&good, "stream_loop.flac"))
+        return;
+    for (int c = 0; c < 3; c++)
+        if (!file_source_load(&corrupt[c], corrupt_files[c]))
+            return;
+    /* FLAC: its header states its length, where stb_vorbis and opusfile read
+     * the file's end to find it, so only FLAC's read can fail past its
+     * create. */
+    if (!file_source_load(&failing, "stream.flac"))
+        return;
+    failing.fail_from = failing.size / 2;
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(4, scheduler, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer mixer = make_stream_mixer(&desc);
+    APAUDIO_SOUND keeps = mixer ? make_streamed(mixer, APAUDIO_STREAM_CODEC_FLAC, &good, STREAM_RING_US,
+                                                APAUDIO_VIRTUAL_CONTINUE)
+                                : 0;
+    for (int c = 0; c < 3 && keeps && !test_pending; c++)
+    {
+        APAUDIO_SOUND broken = make_streamed(mixer, stream_codecs[c], &corrupt[c], STREAM_RING_US,
+                                             APAUDIO_VIRTUAL_CONTINUE);
+        APAUDIO_VOICE survivor = play_streamed(mixer, keeps, 1.0f, 1.0f, 128, true, &hard_right);
+        APAUDIO_VOICE victim = play_streamed(mixer, broken, 1.0f, 1.0f, 128, false, &hard_left);
+        APAUDIO_ERROR error;
+        APRESULT result = play_until_failure(mixer, 250, &error);
+        if (test_pending)
+            break;
+        if (result != APRESULT_CORRUPT_DATA)
+            printf("FAIL %s: %s: the corrupted stream's update gave %d (%s)\n", current_test, codec_names[c],
+                   (int)result, error.message);
+        CHECK(result == APRESULT_CORRUPT_DATA);
+        CHECK(names_voice(&error, victim));
+        CHECK(strstr(error.message, codec_names[c]) != NULL);
+        render_into(mixer, out, 480);
+        render_into(mixer, out, 480);
+        CHECK(!apaudio_voice_is_live(mixer, victim));
+        CHECK(apaudio_voice_is_live(mixer, survivor));
+        bool heard = false;
+        for (uint32_t i = 0; i < 480; i++)
+            heard = heard || out[2 * i + 1] != 0.0f;
+        CHECK(heard);
+        apaudio_voice_stop(mixer, survivor, 0);
+        render_into(mixer, out, 480);
+        CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+        apaudio_mixer_collect(mixer);
+        apaudio_sound_destroy(mixer, broken);
+    }
+    /* Two voices of a source whose read fails half way: one result, naming
+     * the first, and one more. */
+    APAUDIO_SOUND unreadable = keeps && !test_pending
+                                   ? make_streamed(mixer, APAUDIO_STREAM_CODEC_FLAC, &failing, STREAM_RING_US,
+                                                   APAUDIO_VIRTUAL_CONTINUE)
+                                   : 0;
+    if (unreadable)
+    {
+        APAUDIO_VOICE one = play_streamed(mixer, unreadable, 1.0f, 1.0f, 128, false, NULL);
+        APAUDIO_VOICE two = play_streamed(mixer, unreadable, 1.0f, 1.0f, 128, false, NULL);
+        APAUDIO_ERROR error;
+        APRESULT result = play_until_failure(mixer, 250, &error);
+        if (!test_pending)
+        {
+            if (result != APRESULT_IO)
+                printf("FAIL %s: the failing read's update gave %d (%s)\n", current_test, (int)result,
+                       error.message);
+            CHECK(result == APRESULT_IO);
+            CHECK(names_voice(&error, one) || names_voice(&error, two));
+            CHECK(strstr(error.message, "FLAC") != NULL);
+            CHECK(strstr(error.message, "read") != NULL);
+            CHECK(strstr(error.message, "1 more") != NULL);
+            render_into(mixer, out, 480);
+            render_into(mixer, out, 480);
+            CHECK(!apaudio_voice_is_live(mixer, one));
+            CHECK(!apaudio_voice_is_live(mixer, two));
+        }
+    }
+    apaudio_mixer_destroy(mixer);
+    file_source_free(&good);
+    for (int c = 0; c < 3; c++)
+        file_source_free(&corrupt[c]);
+    file_source_free(&failing);
+}
+
+static void test_stream_failures(void)
+{
+    current_test = "stream_failures";
+    test_pending = false;
+    stream_failures(NULL);
+    if (test_pending)
+        return;
+    APJOBS_SCHEDULER four;
+    apjobs_pool pool = make_pool(3, &four);
+    if (pool)
+        stream_failures(&four);
+    apjobs_pool_destroy(pool);
+}
+
+/* The render loop of the two-thread test, on a pool's own thread. */
+typedef struct render_loop
+{
+    apaudio_mixer mixer;
+    int renders;
+    float buffer[2 * 480];
+} render_loop;
+
+static void render_loop_task(uint32_t first, uint32_t end, uint32_t worker, void *data)
+{
+    (void)first;
+    (void)end;
+    (void)worker;
+    render_loop *loop = (render_loop *)data;
+    for (int r = 0; r < loop->renders; r++)
+        apaudio_mixer_render(loop->mixer, loop->buffer, 480, NULL);
+}
+
+/* Two threads: one renders in a loop (a one-thread pool's worker, so this
+ * C test starts no thread of its own) while this one plays, stops and
+ * destroys streamed voices and their sounds, updates and collects, decoding
+ * on a pool of four. No read of a freed ring (ASan sees one; TSan on a
+ * platform that has it), every stopped voice gone after the next update and
+ * collect. */
+static void test_stream_threads(void)
+{
+    current_test = "stream_threads";
+    test_pending = false;
+    file_source sources[3];
+    for (int c = 0; c < 3; c++)
+        if (!file_source_load(&sources[c], loop_files[c]))
+            return;
+    APJOBS_SCHEDULER decoding, rendering;
+    apjobs_pool decode_pool = make_pool(3, &decoding);
+    apjobs_pool render_pool = make_pool(1, &rendering);
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(4, &decoding, APAUDIO_RESAMPLER_SINC);
+    desc.transition_fade_us = 5000;
+    desc.max_fading_voices = 4;
+    desc.max_real_voices = 6;
+    desc.max_sounds = 8;
+    apaudio_mixer mixer = decode_pool && render_pool ? make_stream_mixer(&desc) : NULL;
+    APAUDIO_SOUND sounds[3] = {0, 0, 0};
+    for (int c = 0; c < 3 && mixer; c++)
+        sounds[c] = make_streamed(mixer, stream_codecs[c], &sources[c], STREAM_RING_US, APAUDIO_VIRTUAL_CONTINUE);
+    static render_loop loop;
+    if (mixer && sounds[0] && sounds[1] && sounds[2])
+    {
+        loop.mixer = mixer;
+        loop.renders = 3000;
+        void *task = rendering.enqueue(render_loop_task, 1, 1, &loop, rendering.user);
+        APAUDIO_VOICE stopped[64];
+        int stopped_count = 0;
+        APAUDIO_VOICE playing[8] = {0};
+        int failed_updates = 0;
+        int played = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            int c = i % 3;
+            /* The render thread may be done, or behind: a full queue is a
+             * play's to refuse (APRESULT_LIMIT). */
+            APAUDIO_PLAY_DESC desc = play_desc(0.2f);
+            desc.rate = 0.75f + 0.25f * (float)(i % 4);
+            desc.priority = (uint8_t)(i % 5);
+            desc.loop = i % 2 == 0;
+            APAUDIO_VOICE voice = 0;
+            APRESULT played_result = apaudio_play(mixer, sounds[c], &desc, &voice);
+            CHECK(played_result == APRESULT_OK || played_result == APRESULT_LIMIT || sounds[c] == 0);
+            if (played_result != APRESULT_OK)
+                continue;
+            played++;
+            if (playing[i % 8] && stopped_count < 64)
+            {
+                apaudio_voice_stop(mixer, playing[i % 8], i % 3 == 0 ? 0 : 240);
+                stopped[stopped_count++] = playing[i % 8];
+            }
+            playing[i % 8] = voice;
+            if (apaudio_mixer_update(mixer, NULL) != APRESULT_OK)
+                failed_updates++;
+            apaudio_mixer_collect(mixer);
+            if (i % 97 == 96)
+            {
+                /* A sound destroyed under its playing voices, and made again. */
+                apaudio_sound_destroy(mixer, sounds[c]);
+                apaudio_mixer_collect(mixer);
+                sounds[c] = make_streamed(mixer, stream_codecs[c], &sources[c], STREAM_RING_US,
+                                          APAUDIO_VIRTUAL_CONTINUE);
+            }
+        }
+        if (task)
+            rendering.wait(task, rendering.user);
+        CHECK(played > 0);
+        CHECK(failed_updates == 0);
+        CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+        apaudio_mixer_render(mixer, out, 480, NULL);
+        apaudio_mixer_render(mixer, out, 480, NULL);
+        apaudio_mixer_collect(mixer);
+        for (int i = 0; i < stopped_count; i++)
+            CHECK(!apaudio_voice_is_live(mixer, stopped[i]));
+    }
+    apaudio_mixer_destroy(mixer);
+    apjobs_pool_destroy(render_pool);
+    apjobs_pool_destroy(decode_pool);
+    for (int c = 0; c < 3; c++)
+        file_source_free(&sources[c]);
+}
+
+/* A source's lifetime: a sound destroyed while its voice streams, then a
+ * collect; from then on no read of its source, with decoding on a pool and
+ * with none. */
+static void stream_lifetime(const APJOBS_SCHEDULER *scheduler)
+{
+    file_source source;
+    if (!file_source_load(&source, "stream.flac"))
+        return;
+    APAUDIO_MIXER_DESC desc = stream_mixer_desc(2, scheduler, APAUDIO_RESAMPLER_LINEAR);
+    apaudio_mixer mixer = make_stream_mixer(&desc);
+    APAUDIO_SOUND sound = mixer ? make_streamed(mixer, APAUDIO_STREAM_CODEC_FLAC, &source, STREAM_RING_US,
+                                                APAUDIO_VIRTUAL_CONTINUE)
+                                : 0;
+    if (sound)
+    {
+        APAUDIO_VOICE voice = play_streamed(mixer, sound, 1.0f, 1.0f, 128, true, NULL);
+        for (int r = 0; r < 30; r++)
+        {
+            render_into(mixer, out, 480);
+            CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+        }
+        /* A decoding is in flight (with a scheduler) as the sound goes. */
+        apaudio_sound_destroy(mixer, sound);
+        apaudio_mixer_collect(mixer);
+        source.closed = true;
+        for (int r = 0; r < 10; r++)
+        {
+            CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+            render_into(mixer, out, 480);
+            apaudio_mixer_collect(mixer);
+        }
+        CHECK(source.reads_after_close == 0);
+        CHECK(!apaudio_voice_is_live(mixer, voice));
+    }
+    apaudio_mixer_destroy(mixer);
+    file_source_free(&source);
+}
+
+static void test_stream_lifetime(void)
+{
+    current_test = "stream_lifetime";
+    test_pending = false;
+    stream_lifetime(NULL);
+    if (test_pending)
+        return;
+    APJOBS_SCHEDULER four;
+    apjobs_pool pool = make_pool(3, &four);
+    if (pool)
+        stream_lifetime(&four);
+    apjobs_pool_destroy(pool);
+}
+
 int main(int argc, char **argv)
 {
     test_format_from_spudaudio();
@@ -2038,6 +3181,14 @@ int main(int argc, char **argv)
     test_folded();
     data_dir = argc > 1 ? argv[1] : NULL;
     test_decoders();
+    test_stream_same_samples();
+    test_stream_underrun();
+    test_stream_virtual();
+    test_stream_max_streams();
+    test_stream_refusals();
+    test_stream_failures();
+    test_stream_threads();
+    test_stream_lifetime();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);

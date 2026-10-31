@@ -38,6 +38,14 @@ and RelWithDebInfo, and under both `-asan` presets; `apaudio_fuzz` ran
 10 minutes there for the first time (558,633 runs): nothing found.
 `aprinoalloc_tests`' update and render make no allocation there either.
 **Linux has built none of it.**
+**Windows, 2026-10-31** (the same machine; item 15's streamed voices):
+the contract, then the implementation, build with no warning and pass
+every suite on `windows-d3d12` and `windows-vulkan`, Debug and Release (36
+ctests), and under both `-asan` presets, the streamed tests and the
+two-thread test among them; the misuse harness ten times; no allocation in
+any streamed steady state; `apaudio_fuzz`'s streamed mode 15 minutes
+clean after two fixes (item 15). **macOS and Linux haven't built streams,
+and ThreadSanitizer (none on Windows) hasn't seen them.**
 
 ## Wrong things: design bugs in the draft
 
@@ -343,7 +351,113 @@ apaudio_mixer_update() starts on the caller's scheduler, and the update
 returns APRESULT for a stream that failed; `max_streams`, `scheduler`;
 `apaudio_sound_get_underrun_frames()`), with what it decides that no card
 has (D1-D7, compared with Unreal Engine and with Wwise and FMOD under
-CryEngine), the ABI breaks and the tests to write first. Not built.
+CryEngine), the ABI breaks and the tests to write first.
+
+**Decided 2026-10-31 with the user:** all seven of the draft's calls, as
+its second version states them. D1, a stream is a kind of sound, not of
+play: the source and codec in `APAUDIO_SOUND_DESC`, no new handle, play
+call or voice type, each voice decoding on its own. D2, decoding is one
+task per `apaudio_mixer_update()` on the caller's `APJOBS_SCHEDULER`
+(none: inside the update), waited for by the next update, collect,
+set_format and the mixer's destroy; a stream's decoder and ring are one
+system-heap block opened when its voice is first real. D3, a voice holds a
+stream only while real or fading; CONTINUE seeks to where the clock says
+when real again, RESTART comes back at 0, PAUSE and a held bus keep their
+place; a voice starting at 0 plays the sound's prefetch at once;
+`max_streams` caps streams as `max_real_voices` caps real slots. D4,
+`apaudio_mixer_update()` returns `APRESULT` and takes an `APAUDIO_ERROR`
+for a stream that failed, naming its voice, codec and part, and how many
+more. D5, a streamed voice is ranked by its gain alone (loudness 1); a
+loudness the caller measured when it cooked a file, for either kind of
+sound, is card A33 (`../DECISIONS.md`). D6, the caller's bytes through
+`APAUDIO_SOURCE`, random access, read on the scheduler's workers. D7,
+underruns counted per sound (`apaudio_sound_get_underrun_frames()`). The
+draft stays at the repo root as the record.
+
+**The contract, 2026-10-31** (the draft's [ADDED] and [CHANGED]
+declarations, as written, in `include/audio/apaudio.h`; Windows 11,
+ThinkPad P1 Gen 5): `APAUDIO_SOURCE` (frozen), `APAUDIO_STREAM_CODEC`,
+the sound desc's `stream_codec`, `stream_source` and `stream_ring_us`, the
+mixer desc's `max_streams` and `scheduler`, `apaudio_mixer_update()`'s
+result and error, `apaudio_sound_get_underrun_frames()`; the header's
+"Streamed sounds" section and its fourth role, the decoding. `abi.txt`'s
+breaks are the draft's three (the update's signature, both descs grown at
+their ends). Every caller takes the update's result and its error, this
+repo's own tests among them. The tests the draft lists are
+written, reporting themselves pending until the calls exist:
+`apaudio_tests.c`'s `test_stream_*`, `aprinoalloc_tests`' streamed
+scenarios, `apaudio_fuzz`'s streamed mode (bit 2 of the first byte; bit 3
+loops), and the mixer's case in `aprioverlap_tests.cpp`; their data,
+`tests/data/apaudio/stream*`, from `make_stream_data.py` there.
+
+**Built 2026-10-31** (Windows 11, ThinkPad P1 Gen 5; the workspace's
+`claude_made_decisions.md` has the calls made building it):
+- **A streamed sound** reads its header and decodes its prefetch through a
+  decoder on the heap at create, and keeps the prefetch, the sound's last
+  128 frames (what a looping voice's resampler reads before its first;
+  best effort) and its source. A file the prefetch holds whole is an
+  in-memory sound. Loudness 1 (D5).
+- **Streams:** `max_streams` records (`Stream`, five cache lines: the
+  decoding's line, the render's, three cold), in an `eq::array` made with
+  the mixer. The update gives a stream to each streamed voice it ranks real
+  (one with none free is virtual), already requested at the prefetch's end
+  for a voice at its start; the render takes it, or requests it at a
+  voice's place coming back mid-file, which then waits, virtual, for the
+  update after. One task per update (`APJOBS_SCHEDULER`, or inside the
+  update): an item per requested stream, which opens it (one `malloc`: the
+  decoder's room and the ring) and fills the ring to a ring's length past
+  what the render may still read, a run at a time, through the decoders'
+  own block reads. The join at the prefetch's end is decoded from the start
+  (the whole file's frames, any file); a loop starts its decoder over at 0;
+  a return mid-file seeks. The render reads the prefetch, the tail and the
+  ring with the same resampling arithmetic as an in-memory voice; a frame
+  not yet written is silence for the rest of the render, counted on the
+  sound, the voice's place moving on (and the decoding seeking past it).
+  Let go when the voice goes virtual, ends or is cut; freed by a collect
+  once the render after has finished.
+- **Decoders** (`src/audio/apaudio_decode.cpp`, `apaudio_stream.hpp`):
+  dr_flac through its callbacks, its one allocation bumped into the block
+  (sized at create); stb_vorbis through its FILE * path, which its changed
+  copy makes ApAudio's reader (`apaudio_stream_reader.c`, compiled into its
+  library), its 2 MiB arena and a 16 KiB read buffer in the block; opusfile
+  through `op_open_callbacks`, on the system heap, decoding whole packets
+  into the block so `op_read_float` never allocates. Failures: a read
+  (`APRESULT_IO`), a packet or a seek a decoder refuses, or data ending
+  before its stated length (`APRESULT_CORRUPT_DATA`), no memory for the
+  block (`APRESULT_OUT_OF_MEMORY`).
+- **Fuzzing** (`apaudio_fuzz`'s streamed mode, `apricotfields-windows-d3d12-fuzz`,
+  2026-10-31): the first run stopped at 260,558 inputs on dr_flac's binary
+  search seek, which cast an infinite float to an offset and, clamped, let
+  a sum wrap below its range, which it asserts against: its three offsets
+  are now clamped sums, in its changed copy (`CMakeLists.txt`, named and
+  checked to apply, as stb_vorbis's six seek asserts, now error returns,
+  are). The second, at 9,052, on a broken FLAC file whose seek to the
+  prefetch's end landed elsewhere than a decode in order: the join is now
+  decoded from the start. The third ran its 15 minutes: 458,395 inputs,
+  nothing found. Both inputs are kept in
+  `tests/fuzz/regressions/apaudio_fuzz/flac_stream_*` (the first minimized
+  to 2,255 bytes; the second as found, 12,613, since it no longer fails to
+  minimize against).
+- **Opus after a seek** isn't the whole file's bits (card A34): a return
+  mid-file starts up to 0.05 out and converges, under 0.003 by 100 ms; a
+  loop's first frames up to 0.0042. FLAC and Vorbis: exact.
+- **Allocation:** none in the steady state (`aprinoalloc_tests`, each codec,
+  decoding in the update and on a pool of four: 0 of ours). A stream's
+  start: one block (FLAC, Vorbis), plus opusfile's and libopus's own (23
+  allocations of ours in all for Opus, its block among them).
+- **Numbers** (Release, the ThinkPad, three runs; stereo 48 kHz test files,
+  a 0.1 s ring): the render of 32 in-memory voices, 44.1 kHz resampled,
+  512 frames, 53-55 us linear and 553-557 us sinc (before: 53-55 and
+  546-557: no change from `Voice` growing from 272 to 288 bytes); the
+  update with them and no stream 0.53-0.56 us (before 0.43-0.46: the
+  published sound and flags read in ranking); with 8 FLAC streams, 54-56 us
+  decoding inside it, 4.8-5.0 us of its own on a pool of four. Decoding per
+  second of audio: FLAC 0.63-0.69 ms, Vorbis 1.05-1.15 ms, Opus
+  1.76-1.79 ms. A stream's start (its block, its open, the join decoded
+  from the start, its first fill): FLAC 153-203 us, Vorbis 502-584 us,
+  Opus 421-460 us. Bytes a stream: FLAC 78,088 (37,632 its decoder's, 40,456
+  the ring), Vorbis 2,154,248 (2,113,792: the 2 MiB arena), Opus 86,792
+  (46,336, and opusfile's and libopus's own on the heap).
 
 ### 16. Spatial audio beyond angles at play time
 

@@ -8,6 +8,7 @@
 #define APAUDIO_H
 
 #include "../apricore.h"
+#include "../jobs/apjobs.h"
 #include <spudaudio.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -48,15 +49,18 @@ extern "C" {
  * (apaudio_mixer_render()), so a mixer runs without any device at all - e.g.
  * in tests, rendering into a buffer and checking the samples.
  *
- * Out of scope: streaming (sounds are whole, in memory), effects (filters,
- * reverb), distance attenuation (the caller sets the gain), and decoding
- * anything but WAV. Binaural (HRTF) rendering for headphones is a possible
- * later addition.
+ * A sound is decoded samples in memory, or streamed: decoded from an
+ * encoded source as its voices play (this file's "Streamed sounds").
+ *
+ * Out of scope: effects (filters, reverb), distance attenuation (the caller
+ * sets the gain), and decoding formats other than WAV, FLAC, Ogg Vorbis and
+ * Ogg Opus. Binaural (HRTF) rendering for headphones is a possible later
+ * addition.
  *
  * @par Threads
  * apricore.h's rule ("Threads"), with a mixer shared on purpose between
- * three roles that may overlap each other. Every call names its role on its
- * "Thread:" line:
+ * three roles that may overlap each other, and a fourth, the decoding, that
+ * no call makes. Every call names its role on its "Thread:" line:
  * - control: one caller at a time across the mixer's control calls - the
  *   mixer's owner (e.g. a UI loop, a game's main loop), from whichever
  *   thread it calls, as long as no two control calls overlap. Creating and
@@ -71,24 +75,40 @@ extern "C" {
  *   whichever thread the stream calls it from - "the audio thread" below -
  *   overlapping control and any calls. Never blocks, never allocates,
  *   never frees.
+ * - decoding: the streamed voices' decoding (this file's "Streamed
+ *   sounds"), one task that each apaudio_mixer_update() starts on the
+ *   caller's scheduler (APAUDIO_MIXER_DESC `scheduler`), or runs itself
+ *   with none. It runs beside every other role, on the scheduler's workers,
+ *   touching only the streams' rings and decoders and the sources' `read`,
+ *   never what a call reads or writes. Every control call that frees or
+ *   changes what it touches waits for it first: apaudio_mixer_update(),
+ *   apaudio_mixer_collect(), apaudio_mixer_set_format() and
+ *   apaudio_mixer_destroy().
  *
- * ApAudio starts no thread: the audio thread is the stream's.
+ * ApAudio starts no thread: the audio thread is the stream's, and the
+ * decoding runs on the caller's scheduler.
  *
  * @par Results
  * Calls return APRESULT (apricore.h). The general codes mean, here:
  * - APRESULT_INVALID_ARGUMENT: also a format the mixer can't render (no
  *   full channel layout, planar with more channels than it can address),
  *   or a bus parent that would make a cycle.
- * - APRESULT_OUT_OF_MEMORY: only when creating something, or in
- *   apaudio_mixer_set_format() - rendering and playing never allocate.
+ * - APRESULT_OUT_OF_MEMORY: only when creating something, in
+ *   apaudio_mixer_set_format(), or for a streamed voice's decoder that
+ *   couldn't be opened (apaudio_mixer_update()) - rendering and playing
+ *   never allocate.
+ * - APRESULT_IO: a streamed sound's source failed to read
+ *   (apaudio_sound_create(), apaudio_mixer_update()).
  * - APRESULT_LIMIT: too many plays waiting for the next render
  *   (apaudio_play() - a stop never fails), or every slot of its kind in use
  *   (apaudio_sound_create(), apaudio_concurrency_create(),
  *   apaudio_bus_create(), apaudio_modifier_create()).
  * - APRESULT_NOT_FOUND: a sound that's 0 or destroyed (apaudio_play()).
  * - APRESULT_UNSUPPORTED: a sound or WAV file this module doesn't handle
- *   (channel count, sample encoding).
- * - APRESULT_CORRUPT_DATA: a malformed WAV file.
+ *   (channel count, sample encoding), or a streamed sound on a mixer made
+ *   with no `max_streams`.
+ * - APRESULT_CORRUPT_DATA: a malformed WAV file, or a streamed sound's
+ *   bytes its codec can't read.
  *
  * @par Error messages
  * Calls that can fail for a reason worth a sentence take an APAUDIO_ERROR
@@ -161,6 +181,38 @@ extern "C" {
  * would reject; then nothing changes. A voice that's stopping, finished
  * or unknown: APRESULT_OK, nothing to do - a stopping voice keeps the
  * values it's fading out with.
+ *
+ * @par Streamed sounds
+ * A streamed sound is a sound: APAUDIO_SOUND_DESC names an encoded source
+ * (APAUDIO_SOURCE) and its codec (APAUDIO_STREAM_CODEC) in place of decoded
+ * samples, and the caller plays it with apaudio_play() like any other, with
+ * every voice setting, bus, group and virtual behavior it has.
+ * apaudio_sound_create() reads the file's header and decodes its start (the
+ * prefetch), which every voice of it plays first, so a voice starts at once.
+ * Each voice decodes its own way through the rest, and only while it is
+ * real: each apaudio_mixer_update() hands the decoding of every real
+ * streamed voice to the caller's scheduler as one task, to run while the
+ * caller's frame goes on, and the next update waits for it before it ranks;
+ * with no scheduler the update decodes before it returns. The render reads
+ * the prefetch and the rings and nothing else, so the audio thread never
+ * decodes, allocates or waits. A ring that runs dry plays silence and is
+ * counted on its sound (apaudio_sound_get_underrun_frames()). A voice going
+ * virtual, ending or being stopped lets its decoder go, freed by
+ * apaudio_mixer_collect() once a render has confirmed it no longer reads
+ * the ring.
+ * @par
+ * A streamed voice holds a stream - a decoder and a ring - only while it is
+ * real or fading. A virtual one holds none and costs no decoding: CONTINUE
+ * moves its place on by the clock, as an in-memory voice's, and its decoder
+ * seeks there when it is real again; RESTART comes back at 0; PAUSE, and a
+ * voice on a held bus, keep their place and seek back to it. A voice
+ * starting at frame 0 (a new play, a RESTART) plays the sound's prefetch at
+ * once, while its stream opens to carry on from the prefetch's end; one
+ * coming back elsewhere (CONTINUE, PAUSE) is silent until the update after,
+ * and fades in from there. `max_streams` caps streams as `max_real_voices`
+ * caps real slots: a streamed voice ranked real with every stream taken is
+ * virtual. Each voice decodes on its own, so one streamed sound plays any
+ * number of times at once.
  */
 
 /* ---- Conventions ----------------------------------------------------- */
@@ -413,6 +465,22 @@ typedef struct APAUDIO_MIXER_DESC {
 	 * (0, 1]; 1 is full scale. Not read with it off.
 	 */
 	float limiter_ceiling;
+	/**
+	 * How many streamed voices decode at once: each holds a decoder and a
+	 * ring while it is real or fading (this file's "Streamed sounds"). A
+	 * streamed voice ranked real with every stream taken is virtual, as
+	 * one with no real slot is. 0: none - streamed sounds are refused, as
+	 * before. At most #max_real_voices.
+	 */
+	uint32_t max_streams;
+	/**
+	 * Where streamed voices are decoded: each apaudio_mixer_update() starts
+	 * one task on it and the next waits for it (apjobs.h). Copied, as
+	 * apjobs.h asks; its `user` must outlive the mixer. NULL: decoded
+	 * inside each update, on its caller's thread. Not read with no
+	 * #max_streams.
+	 */
+	const APJOBS_SCHEDULER *scheduler;
 } APAUDIO_MIXER_DESC;
 
 /**
@@ -436,7 +504,8 @@ APRESULT apaudio_mixer_create(
 /**
  * @brief Destroys a mixer and every sound made from it.
  *
- * Thread: control.
+ * Thread: control. Waits for the decoding the last apaudio_mixer_update()
+ * started, then frees every stream.
  *
  * @warning Stop (or destroy) the stream rendering it first: nothing may be
  * rendering it, or about to.
@@ -452,7 +521,8 @@ void apaudio_mixer_destroy(apaudio_mixer mixer);
  * Thread: control. The same rules apply as to APAUDIO_MIXER_DESC's `format`
  * and `max_frames`. Sounds are kept (they hold their own rate), and so are
  * voices: one playing carries on from where it was, at the new rate. On
- * failure the mixer is unchanged.
+ * failure the mixer is unchanged. Waits for the decoding the last
+ * apaudio_mixer_update() started.
  *
  * @warning Nothing may be rendering the mixer, or about to: call it between
  * stopping the old stream and starting the new one.
@@ -472,28 +542,57 @@ APRESULT apaudio_mixer_set_format(
     APAUDIO_ERROR *error);
 
 /**
- * @brief Ranks every voice and decides which are real (this file's
- * "Prioritization"), applies concurrency groups' limits, and starts and
- * ends triggered modifiers (ducking).
+ * @brief Waits for the decoding the last update started, ranks every voice
+ * and decides which are real (this file's "Prioritization"), applies
+ * concurrency groups' limits, starts and ends triggered modifiers
+ * (ducking), and starts decoding every real streamed voice's next frames.
  *
- * Thread: control. Call it once a frame - a main loop, a render loop.
- * Without it, new plays still start at once (the render's fast path), but
- * virtual voices never come back. Never blocks on the audio thread. It
- * frees nothing: apaudio_mixer_collect() does.
+ * Thread: control. Call it once a frame - a main loop, a render loop - and
+ * more often than any streamed sound's `stream_ring_us`. Without it, new
+ * plays still start at once (the render's fast path; a streamed one plays
+ * its prefetch), but virtual voices never come back and streamed voices
+ * never play past their prefetch. Never blocks on the audio thread. With a
+ * scheduler (APAUDIO_MIXER_DESC `scheduler`), the decoding runs on it after
+ * the update returns, and the next update, or apaudio_mixer_collect(),
+ * apaudio_mixer_set_format() or apaudio_mixer_destroy(), waits for it; with
+ * none, it runs before the update returns. The decoding opens the decoder of
+ * each streamed voice newly real, from the system heap: the one allocation
+ * a stream makes. Frees nothing: apaudio_mixer_collect() does.
  *
- * @param[in] mixer Mixer to update.
+ * A streamed voice whose stream fails (a read, bytes its codec can't decode
+ * past the prefetch, a decoder that couldn't be opened) ends with a short
+ * fade; the others play on. The failure is told by the update that waits
+ * for the decoding that met it: the next one with a scheduler, this one
+ * without.
+ *
+ * @param[in]  mixer Mixer to update.
+ * @param[out] error Why a stream failed, if one did: the first of those this
+ *                   update learnt of, naming its voice's ID, the codec and
+ *                   the part, and how many more failed. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a null @p mixer; for
+ *         the first stream failure this update learnt of, APRESULT_IO (its
+ *         read failed), APRESULT_CORRUPT_DATA (its bytes) or
+ *         APRESULT_OUT_OF_MEMORY (its decoder couldn't be opened). The
+ *         ranking and every other voice's decoding are done either way.
  */
-void apaudio_mixer_update(apaudio_mixer mixer);
+APRESULT apaudio_mixer_update(
+    apaudio_mixer mixer,
+    APAUDIO_ERROR *error);
 
 /**
- * @brief Frees the memory of destroyed sounds the audio thread has let go
- * of.
+ * @brief Frees the memory of destroyed sounds, and of streams, the audio
+ * thread has let go of.
  *
  * A destroyed sound's samples stay until a render that began after its
- * destroy has finished, since a render may be reading them; this frees
- * those that have, and nothing else does but apaudio_sound_create() when it
- * finds every sound slot taken, and the mixer's destroy. Call it from the
- * same loop as apaudio_mixer_update(), or whenever memory matters.
+ * destroy has finished, since a render may be reading them; a stream's
+ * decoder and ring, until a render after the one that stopped reading it
+ * has finished. This waits for the decoding the last apaudio_mixer_update()
+ * started, then frees those, and nothing else does but
+ * apaudio_sound_create() when it finds every sound slot taken, and the
+ * mixer's destroy. Call it from the same loop as apaudio_mixer_update(), or
+ * whenever memory matters. Once it returns, no read is made of the source
+ * of a sound destroyed before it was called (APAUDIO_SOURCE).
  *
  * Thread: control. Never blocks on the audio thread.
  *
@@ -922,6 +1021,56 @@ void apaudio_concurrency_destroy(apaudio_mixer mixer, APAUDIO_CONCURRENCY group)
 typedef uint64_t APAUDIO_SOUND;
 
 /**
+ * @brief Where a streamed sound's encoded bytes come from: random access,
+ * read as its voices need them.
+ *
+ * ApAudio does no I/O of its own: a file, a mapped pack entry or memory the
+ * caller keeps alive are all a #read the caller writes.
+ *
+ * Thread: #read is called by apaudio_sound_create(), on its caller's
+ * thread, and by the decoding each apaudio_mixer_update() starts: on the
+ * scheduler's workers (APAUDIO_MIXER_DESC `scheduler`), several at once,
+ * for one source too, and beside the caller's own calls; or, with no
+ * scheduler, inside the update. Never on the audio thread. It may block: a
+ * worker waits, not the frame.
+ *
+ * Lifetime: the source, and whatever #user points at, must stay valid from
+ * apaudio_sound_create() until the sound is destroyed and a later
+ * apaudio_mixer_collect() has returned, or the mixer is destroyed: until then
+ * a voice of it may still read.
+ */
+/* Frozen: held by value in APAUDIO_SOUND_DESC. It never changes; a new need gets a new type. */
+typedef struct APAUDIO_SOURCE {
+	/** Passed to #read as its `user`. May be NULL. */
+	void *user;
+	/** The encoded bytes' size, in bytes. Not 0. */
+	uint64_t size;
+	/**
+	 * Copies exactly `count` bytes at `offset` into `buffer` and returns
+	 * true; false on any failure, a short read included, which fails what
+	 * was reading (APRESULT_IO). `offset + count` is never past #size. Never
+	 * NULL.
+	 */
+	bool (*read)(void *user, uint64_t offset, void *buffer, uint64_t count);
+} APAUDIO_SOURCE;
+
+/**
+ * @brief Which decoder a streamed sound is read with.
+ */
+typedef uint32_t APAUDIO_STREAM_CODEC;
+enum {
+	/** Not streamed: the sound's samples are in the desc, decoded. */
+	APAUDIO_STREAM_CODEC_NONE = 0,
+	/** FLAC (dr_flac), as apaudio_flac_decode() reads it. */
+	APAUDIO_STREAM_CODEC_FLAC = 1,
+	/** Ogg Vorbis (stb_vorbis), as apaudio_vorbis_decode() reads it. */
+	APAUDIO_STREAM_CODEC_VORBIS = 2,
+	/** Ogg Opus (libopus, opusfile), as apaudio_opus_decode() reads it: at
+	 * 48,000 frames a second always. */
+	APAUDIO_STREAM_CODEC_OPUS = 3,
+};
+
+/**
  * @brief Configuration descriptor for a sound.
  */
 typedef struct APAUDIO_SOUND_DESC {
@@ -929,20 +1078,24 @@ typedef struct APAUDIO_SOUND_DESC {
 	APRI_STRUCT_BASE base;
 	/**
 	 * #frame_count frames of #channel_count interleaved samples at
-	 * #sample_rate Hz, nominally in [-1, 1]. Copied.
+	 * #sample_rate Hz, nominally in [-1, 1]. Copied. NULL for a streamed
+	 * sound (#stream_codec not NONE).
 	 */
 	const float *samples;
-	/** How many frames #samples holds. */
+	/** How many frames #samples holds. 0 for a streamed sound: the file
+	 * says. */
 	uint64_t frame_count;
 	/**
 	 * 1: mono - can be played from a direction. 2: stereo (left, right) -
 	 * plays on the output's FL and FR, or mixed down on a mono output;
-	 * ignores direction. Others: APRESULT_UNSUPPORTED.
+	 * ignores direction. Others: APRESULT_UNSUPPORTED. 0 for a streamed
+	 * sound: the file says, and a file of other counts is UNSUPPORTED.
 	 */
 	uint32_t channel_count;
 	/**
 	 * The samples' own rate, kept: voices resample from it as they play
-	 * (APAUDIO_RESAMPLER). 1000 to 768000 Hz.
+	 * (APAUDIO_RESAMPLER). 1000 to 768000 Hz. 0 for a streamed sound: the
+	 * file says, and a rate outside that is UNSUPPORTED.
 	 */
 	uint32_t sample_rate;
 	/** What its voices do while not real; required. */
@@ -951,6 +1104,31 @@ typedef struct APAUDIO_SOUND_DESC {
 	APAUDIO_CONCURRENCY concurrency;
 	/** The bus its plays go to unless a play names another; 0 for the master. */
 	APAUDIO_BUS bus;
+	/**
+	 * NONE (0): the sound is #samples. Otherwise the sound is streamed:
+	 * #stream_source read with this codec as its voices play (this file's
+	 * "Streamed sounds"), and the mixer must have been made with
+	 * `max_streams` above 0 (APRESULT_UNSUPPORTED otherwise). A streamed
+	 * sound's voices are ranked by their gain alone: its loudness is taken
+	 * as 1, not measured.
+	 */
+	APAUDIO_STREAM_CODEC stream_codec;
+	/** A streamed sound's encoded bytes. Not read for NONE. */
+	APAUDIO_SOURCE stream_source;
+	/**
+	 * A streamed sound: how far ahead of what it plays each voice decodes,
+	 * in microseconds of the sound at its own rate - its ring's length - and
+	 * how much of its start is decoded at create and kept, so a voice
+	 * starting at its start plays at once. The ring must outlast the longest
+	 * time between two apaudio_mixer_update() calls, times the fastest rate
+	 * the voice plays at; past that, the voice plays silence until its
+	 * stream catches up (counted: apaudio_sound_get_underrun_frames()). Not
+	 * 0, and at least what one render can take at the fastest rate (8 x
+	 * `max_frames` output frames, in the sound's frames), else
+	 * APRESULT_INVALID_ARGUMENT; at most 10,000,000 (10 s). 100,000 to
+	 * 500,000 is usual. Not read for NONE.
+	 */
+	uint32_t stream_ring_us;
 } APAUDIO_SOUND_DESC;
 
 /**
@@ -959,12 +1137,25 @@ typedef struct APAUDIO_SOUND_DESC {
  * Thread: control. Its loudness, for ranking voices, is measured here,
  * once.
  *
+ * A streamed sound (`stream_codec` not NONE): reads the stream's header
+ * through `stream_source.read` - its channel count, rate and length - and
+ * decodes its first `stream_ring_us`, the prefetch every voice of it starts
+ * with. It keeps the source and the prefetch, not the rest of the bytes.
+ * Each voice opens a decoder of its own when it is first real (this file's
+ * "Streamed sounds").
+ *
  * @param[in]  mixer     Mixer to create it in.
  * @param[in]  desc      Sound configuration. Only read during the call.
  * @param[out] out_sound The new sound; set to 0 on failure.
  * @param[out] error     Why it failed, if it did. May be NULL.
  *
- * @return APRESULT_OK, or the failure (this file's "Results").
+ * @return APRESULT_OK, or the failure (this file's "Results"). For a
+ *         streamed sound, also: APRESULT_UNSUPPORTED on a mixer with no
+ *         `max_streams`, or for a file of a channel count or rate the mixer
+ *         doesn't play; APRESULT_CORRUPT_DATA for bytes the codec can't read
+ *         as its format, an empty source included; APRESULT_IO for a read
+ *         that failed. The message names the codec and the part (the
+ *         header, a packet of the prefetch, a read at an offset).
  *
  * @see apaudio_sound_destroy()
  */
@@ -986,6 +1177,25 @@ APRESULT apaudio_sound_create(
  * @param[in] sound Sound to destroy. A stale or 0 one does nothing.
  */
 void apaudio_sound_destroy(apaudio_mixer mixer, APAUDIO_SOUND sound);
+
+/**
+ * @brief How many frames of silence a streamed sound's voices have played,
+ * since it was made, because a ring had run dry.
+ *
+ * Thread: any. Counted by the render, in the mixer's output frames, summed
+ * over the sound's voices. Nonzero means the sound's `stream_ring_us` is
+ * too short for how often apaudio_mixer_update() runs, or its source's reads
+ * too slow. Never reset; compare two reads.
+ *
+ * @param[in] mixer Mixer it belongs to.
+ * @param[in] sound Sound to ask about.
+ *
+ * @return The count; 0 for an in-memory sound, a stale or 0 @p sound, or a
+ *         null @p mixer.
+ */
+uint64_t apaudio_sound_get_underrun_frames(
+    apaudio_mixer mixer,
+    APAUDIO_SOUND sound);
 
 /* ---- Voices ---------------------------------------------------------- */
 

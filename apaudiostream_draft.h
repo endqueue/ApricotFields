@@ -7,13 +7,17 @@
  * DRAFT, 2026-10-31; second version the same day, after comparing D1-D7
  * with Unreal Engine and with CryEngine's middleware (below), the changes
  * agreed: D2 decodes on the caller's scheduler, D3 gains a prefetch, D4's
- * message names the voice, D5 ranks by gain, D7 counts per sound. Not
- * built, not included anywhere, not in abi.txt, and not compilable as it
- * stands: it redeclares APAUDIO_SOUND_DESC, APAUDIO_MIXER_DESC and
- * apaudio_mixer_update() as they would change, beside apaudio.h's. When
- * approved, the declarations marked [ADDED] and [CHANGED] go into
- * include/audio/apaudio.h as written here, and this file becomes a record or
- * goes.
+ * message names the voice, D5 ranks by gain, D7 counts per sound.
+ *
+ * APPROVED 2026-10-31 by the user: D1-D7 as stated here (APAUDIO_TODO.md
+ * item 15; the workspace's DECISIONS.md, "Decided"). The declarations
+ * marked [ADDED] and [CHANGED] are in include/audio/apaudio.h as written
+ * here since the same day, and abi.txt lists the breaks below; this file is
+ * the record of what was decided and why, and is no longer to be built
+ * from. Not compilable as it stands: it redeclares APAUDIO_SOUND_DESC,
+ * APAUDIO_MIXER_DESC and apaudio_mixer_update(), which apaudio.h now
+ * declares. Where building it found the draft wrong or incomplete, a card
+ * says so (DECISIONS.md, card A34: Opus after a seek).
  *
  * ---------------------------------------------------------------------------
  * The shape, in one paragraph

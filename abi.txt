@@ -16,6 +16,10 @@ const APAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY = 4
 const APAUDIO_RESOLUTION_STOP_OLDEST = 2
 const APAUDIO_RESOLUTION_STOP_QUIETEST = 3
 const APAUDIO_RESOLUTION_UNSPECIFIED = 0
+const APAUDIO_STREAM_CODEC_FLAC = 1
+const APAUDIO_STREAM_CODEC_NONE = 0
+const APAUDIO_STREAM_CODEC_OPUS = 3
+const APAUDIO_STREAM_CODEC_VORBIS = 2
 const APAUDIO_VIRTUAL_CONTINUE = 2
 const APAUDIO_VIRTUAL_KILL = 1
 const APAUDIO_VIRTUAL_PAUSE = 4
@@ -408,7 +412,7 @@ fn apaudio_mixer_get_master_bus APAUDIO_BUS (apaudio_mixer)
 fn apaudio_mixer_render void (apaudio_mixer, void *, uint32_t, const SPUDAUDIO_CALLBACK_INFO *)
 fn apaudio_mixer_set_format APRESULT (apaudio_mixer, const APAUDIO_FORMAT *, uint32_t, APAUDIO_ERROR *)
 fn apaudio_mixer_stream_callback void (spudaudio_stream, void *, uint32_t, const SPUDAUDIO_CALLBACK_INFO *, void *)
-fn apaudio_mixer_update void (apaudio_mixer)
+fn apaudio_mixer_update APRESULT (apaudio_mixer, APAUDIO_ERROR *)
 fn apaudio_modifier_create APRESULT (apaudio_mixer, const APAUDIO_MODIFIER_DESC *, APAUDIO_MODIFIER *, APAUDIO_ERROR *)
 fn apaudio_modifier_destroy void (apaudio_mixer, APAUDIO_MODIFIER)
 fn apaudio_modifier_set_active APRESULT (apaudio_mixer, APAUDIO_MODIFIER, _Bool)
@@ -417,6 +421,7 @@ fn apaudio_pcm_free void (APAUDIO_PCM *)
 fn apaudio_play APRESULT (apaudio_mixer, APAUDIO_SOUND, const APAUDIO_PLAY_DESC *, APAUDIO_VOICE *)
 fn apaudio_sound_create APRESULT (apaudio_mixer, const APAUDIO_SOUND_DESC *, APAUDIO_SOUND *, APAUDIO_ERROR *)
 fn apaudio_sound_destroy void (apaudio_mixer, APAUDIO_SOUND)
+fn apaudio_sound_get_underrun_frames uint64_t (apaudio_mixer, APAUDIO_SOUND)
 fn apaudio_voice_is_folded _Bool (apaudio_mixer, APAUDIO_VOICE)
 fn apaudio_voice_is_live _Bool (apaudio_mixer, APAUDIO_VOICE)
 fn apaudio_voice_set_direction APRESULT (apaudio_mixer, APAUDIO_VOICE, const APAUDIO_DIRECTION *)
@@ -931,7 +936,7 @@ field APAUDIO_FORMAT.sample_rate @4 uint32_t
 field APAUDIO_FORMAT.channel_count @8 uint32_t
 field APAUDIO_FORMAT.interleaved @12 _Bool
 field APAUDIO_FORMAT.positions @16 const SPUDAUDIO_CHANNEL_POSITION *
-struct APAUDIO_MIXER_DESC size=112 align=8
+struct APAUDIO_MIXER_DESC size=128 align=8
 field APAUDIO_MIXER_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_MIXER_DESC.format @16 APAUDIO_FORMAT
 field APAUDIO_MIXER_DESC.max_frames @40 uint32_t
@@ -952,6 +957,8 @@ field APAUDIO_MIXER_DESC.limiter @96 APAUDIO_LIMITER
 field APAUDIO_MIXER_DESC.limiter_lookahead_us @100 uint32_t
 field APAUDIO_MIXER_DESC.limiter_release_us @104 uint32_t
 field APAUDIO_MIXER_DESC.limiter_ceiling @108 float
+field APAUDIO_MIXER_DESC.max_streams @112 uint32_t
+field APAUDIO_MIXER_DESC.scheduler @120 const APJOBS_SCHEDULER *
 struct APAUDIO_MODIFIER_DESC size=48 align=8
 field APAUDIO_MODIFIER_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_MODIFIER_DESC.targets @16 const APAUDIO_MODIFIER_TARGET *
@@ -979,7 +986,7 @@ field APAUDIO_PLAY_DESC.rate @48 float
 field APAUDIO_PLAY_DESC.direction @56 const APAUDIO_DIRECTION *
 field APAUDIO_PLAY_DESC.start_time_ns @64 uint64_t
 field APAUDIO_PLAY_DESC.loop @72 _Bool
-struct APAUDIO_SOUND_DESC size=64 align=8
+struct APAUDIO_SOUND_DESC size=104 align=8
 field APAUDIO_SOUND_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_SOUND_DESC.samples @16 const float *
 field APAUDIO_SOUND_DESC.frame_count @24 uint64_t
@@ -988,6 +995,13 @@ field APAUDIO_SOUND_DESC.sample_rate @36 uint32_t
 field APAUDIO_SOUND_DESC.virtual_behavior @40 APAUDIO_VIRTUAL_BEHAVIOR
 field APAUDIO_SOUND_DESC.concurrency @48 APAUDIO_CONCURRENCY
 field APAUDIO_SOUND_DESC.bus @56 APAUDIO_BUS
+field APAUDIO_SOUND_DESC.stream_codec @64 APAUDIO_STREAM_CODEC
+field APAUDIO_SOUND_DESC.stream_source @72 APAUDIO_SOURCE
+field APAUDIO_SOUND_DESC.stream_ring_us @96 uint32_t
+struct APAUDIO_SOURCE size=24 align=8
+field APAUDIO_SOURCE.user @0 void *
+field APAUDIO_SOURCE.size @8 uint64_t
+field APAUDIO_SOURCE.read @16 _Bool (*)(void *, uint64_t, void *, uint64_t)
 struct APJOBS_ERROR size=256 align=1
 field APJOBS_ERROR.message @0 char[256]
 struct APJOBS_POOL_DESC size=32 align=8
@@ -2002,6 +2016,8 @@ typedef APAUDIO_RESAMPLER = uint32_t
 typedef APAUDIO_RESOLUTION = uint32_t
 typedef APAUDIO_SOUND = uint64_t
 typedef APAUDIO_SOUND_DESC = struct APAUDIO_SOUND_DESC
+typedef APAUDIO_SOURCE = struct APAUDIO_SOURCE
+typedef APAUDIO_STREAM_CODEC = uint32_t
 typedef APAUDIO_VIRTUAL_BEHAVIOR = uint32_t
 typedef APAUDIO_VOICE = uint64_t
 typedef APJOBS_ENQUEUE_FUNCTION = void *(*)(APJOBS_TASK_FUNCTION, uint32_t, uint32_t, void *, void *)

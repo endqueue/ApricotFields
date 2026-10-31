@@ -545,10 +545,7 @@ static void calls_with_destroyed_handles(void)
         if (!dead)
             factory_missing("apaudio_mixer_update");
         else
-        {
-            apaudio_mixer_update(dead);
-            destroyed_calls++;
-        }
+            expect_refused("apaudio_mixer_update", apaudio_mixer_update(dead, (APAUDIO_ERROR *){0}));
     }
     {
         apaudio_mixer dead = dead_apaudio_mixer();
@@ -596,6 +593,17 @@ static void calls_with_destroyed_handles(void)
         {
             apaudio_sound_destroy(dead, (APAUDIO_SOUND){0});
             destroyed_calls++;
+        }
+    }
+    {
+        uint64_t for_null = apaudio_sound_get_underrun_frames((apaudio_mixer){0}, (APAUDIO_SOUND){0});
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_sound_get_underrun_frames");
+        else
+        {
+            uint64_t got = apaudio_sound_get_underrun_frames(dead, (APAUDIO_SOUND){0});
+            expect_null_fallback("apaudio_sound_get_underrun_frames", &got, &for_null, sizeof(got));
         }
     }
     {
@@ -1209,7 +1217,7 @@ int main(void)
     calls++;
     apaudio_mixer_stream_callback((spudaudio_stream){0}, (void *){0}, (uint32_t){0}, (const SPUDAUDIO_CALLBACK_INFO *){0}, (void *){0});
     calls++;
-    apaudio_mixer_update((apaudio_mixer){0});
+    expect_error("apaudio_mixer_update", apaudio_mixer_update((apaudio_mixer){0}, (APAUDIO_ERROR *){0}));
     calls++;
     expect_error("apaudio_modifier_create", apaudio_modifier_create((apaudio_mixer){0}, (const APAUDIO_MODIFIER_DESC *){0}, (APAUDIO_MODIFIER *){0}, (APAUDIO_ERROR *){0}));
     calls++;
@@ -1226,6 +1234,8 @@ int main(void)
     expect_error("apaudio_sound_create", apaudio_sound_create((apaudio_mixer){0}, (const APAUDIO_SOUND_DESC *){0}, (APAUDIO_SOUND *){0}, (APAUDIO_ERROR *){0}));
     calls++;
     apaudio_sound_destroy((apaudio_mixer){0}, (APAUDIO_SOUND){0});
+    calls++;
+    (void)apaudio_sound_get_underrun_frames((apaudio_mixer){0}, (APAUDIO_SOUND){0});
     calls++;
     (void)apaudio_voice_is_folded((apaudio_mixer){0}, (APAUDIO_VOICE){0});
     calls++;
@@ -1774,7 +1784,7 @@ int main(void)
     // Each refusal below prints a line on stderr: they are expected.
     const int zero_failures = failures;
     calls_with_destroyed_handles();
-    printf("apri_misuse_tests: %d calls with a destroyed handle (of 116 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
+    printf("apri_misuse_tests: %d calls with a destroyed handle (of 117 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
 #elif _DEBUG
     printf("apri_misuse_tests: calls with a destroyed handle skipped: under a sanitizer, whose heap reports the read of freed memory itself\n");
 #else
