@@ -335,7 +335,15 @@ Debug, ASan and UBSan) found nothing. Not run on Windows or Linux.
 Each input is kept in `tests/fuzz/regressions/apaudio_fuzz/` and replayed
 by every build. Not done: streamed voices (decoding into a ring the owner's
 update fills, so the audio thread never decodes or allocates) - a design
-of its own, next.
+of its own, next. **Drafted 2026-10-31 for review:**
+`apaudiostream_draft.h` at the repo root (a streamed sound is a sound whose
+desc names an encoded source and codec, its start decoded at create so a
+voice plays at once; each voice decodes the rest while real, as a task each
+apaudio_mixer_update() starts on the caller's scheduler, and the update
+returns APRESULT for a stream that failed; `max_streams`, `scheduler`;
+`apaudio_sound_get_underrun_frames()`), with what it decides that no card
+has (D1-D7, compared with Unreal Engine and with Wwise and FMOD under
+CryEngine), the ABI breaks and the tests to write first. Not built.
 
 ### 16. Spatial audio beyond angles at play time
 
