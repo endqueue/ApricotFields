@@ -13,7 +13,7 @@ and triangulation).
   answers, a mesh BVH's overlaps and within): `apmathbvh_tests` (400
   random volumes against a brute force), `aprinoalloc_tests` (no
   allocation) and `aprioverlap_tests` (two threads, every build) pass in
-  Debug, Release, `-asan` and `-tsan`, built inside trellislib's presets.
+  Debug, Release, `-asan` and `-tsan`, built inside a caller's presets.
   Windows and Linux not built. Card T22 holds one sentence of the
   contract: triangles with no area, which the BVH drops.
 - **2026-10-30, Windows 11** (ThinkPad P1 Gen 5, MSVC 14.51): the first

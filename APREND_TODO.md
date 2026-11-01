@@ -3112,11 +3112,10 @@ Left:
         validation and GPU-assisted validation, silent but GPU-AV's notices
         of its own settings. The ray tracing tests pending on the A2000 and
         WARP, refused as designed on the Iris Xe and every bare device.
-        trellislib (`trellislib-windows-d3d12`, `-vulkan`, Debug, 47 ctests)
-        and Latran (`latran-windows-d3d12`, `-vulkan`, Debug, 66 ctests),
-        passing. `check.sh`: clean but `dep-locks` (trellis's and latran's
-        locks name the commits before Phases 1-6; `--update-locks` waits for
-        this phase's commit) and the two this machine can't run
+        The callers' suites (both on their D3D12 and Vulkan presets, Debug,
+        47 and 66 ctests), passing. `check.sh`: clean but `dep-locks` (the
+        callers' locks named the commits before Phases 1-6, until
+        `--update-locks` after this phase's commit) and the two this machine can't run
         (`mutable-globals`, `doxygen`). Not run this phase: the `-asan`
         presets (no ApricotFields code path ran but the stubs). Metal and
         Linux not built; ThreadSanitizer hasn't seen it.
