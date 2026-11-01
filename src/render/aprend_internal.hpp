@@ -142,8 +142,10 @@ inline ApriMat4 from_glm(const glm::mat4 &m) {
  * pool unusual without reserving much for a layout that has one set. */
 #define APREND_BINDING_SETS_PER_POOL 32
 
-/* How many SPUDGPU_DESCRIPTOR_TYPE values there are; they are 0 to this - 1. */
-#define APREND_DESCRIPTOR_TYPE_COUNT (SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE + 1)
+/* How many SPUDGPU_DESCRIPTOR_TYPE values there are; they are 0 to this - 1.
+ * The last, a top level (SPUDGPU_EXT_RAY_QUERY), is in no caller's layout:
+ * only Aprend's own traced passes declare one (aprendraytracing_internal.hpp). */
+#define APREND_DESCRIPTOR_TYPE_COUNT (SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE + 1)
 
 struct aprend_binding_layout_core;
 
@@ -324,6 +326,9 @@ typedef struct aprend_instance_t {
 	/* What Aprend draws with itself (aprendbuiltin_internal.hpp), made as
 	 * first needed. */
 	aprend_builtins builtins{};
+	/* Ray tracing's tables (aprendraytracing_internal.hpp), made by the first
+	 * BLAS, TLAS or lit material of a device with ray queries. */
+	struct aprend_rt_state *rt{nullptr};
 	/* Render targets a built-in effect's command takes at compile
 	 * (aprendrendertargets_internal.hpp). */
 	aprend_render_target_pool render_targets{};
@@ -448,6 +453,26 @@ template <typename T> void aprend_release_handle(void *object) {
 	handle->~T();
 	free(handle);
 }
+/* An aprend_shader of one of Aprend's own packages: aprend_shader_create()
+ * but that its entry point may use a top level (SPUDGPU_EXT_RAY_QUERY),
+ * which a caller's shader may not: only Aprend's traced passes bind one. */
+APRESULT aprend_shader_create_own(
+    aprend_instance instance,
+    const APREND_SHADER_PACKAGE *package,
+    aprend_shader *out_shader,
+    APREND_ERROR *out_error);
+
+/* aprend_binding_set_create() for a layout of Aprend's own traced passes,
+ * whose one SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE entry (its
+ * resource unread) holds [top_level], a top level of the set's life. */
+APRESULT aprend_binding_set_create_traced(
+    aprend_binding_layout layout,
+    const APREND_BINDING_SET_ENTRY *entries,
+    uint32_t entry_count,
+    spudgpu_acceleration_structure top_level,
+    aprend_binding_set *out_set,
+    APREND_ERROR *out_error);
+
 /* Release functions for SpudGPU objects retired on their own, apart from the
  * handle that owned them. */
 inline void aprend_release_spudgpu_buffer(void *object) { spudgpu_destroy_buffer((spudgpu_buffer)object); }
@@ -455,6 +480,9 @@ inline void aprend_release_spudgpu_image(void *object) { spudgpu_destroy_image((
 inline void aprend_release_spudgpu_image_view(void *object) { spudgpu_destroy_image_view((spudgpu_image_view)object); }
 inline void aprend_release_spudgpu_command_list(void *object) { spudgpu_destroy_command_list((spudgpu_command_list)object); }
 inline void aprend_release_spudgpu_command_allocator(void *object) { spudgpu_destroy_command_allocator((spudgpu_command_allocator)object); }
+inline void aprend_release_spudgpu_acceleration_structure(void *object) {
+	spudgpu_destroy_acceleration_structure((spudgpu_acceleration_structure)object);
+}
 
 /* The most lists one aprend_instance_submit takes from its caller: a command
  * list's upload list and its own. The upload batch is added to them. */
@@ -649,8 +677,9 @@ static inline uint64_t aprend_subresource_hash(spudgpu_image image, uint32_t mip
 }
 
 /* One copy a submission records ahead of its list: [size] bytes from
- * [source] at [source_offset] into [destination], a uniform buffer, at
- * [destination_offset]. [*dirty] is cleared once the submission has gone in. */
+ * [source] at [source_offset] into [destination] at [destination_offset],
+ * which is left in [after] (VERTEX_BUFFER for a uniform buffer).
+ * [*dirty] is cleared once the submission has gone in. */
 struct aprend_upload_copy {
 	spudgpu_buffer source;
 	uint64_t source_offset;
@@ -658,6 +687,7 @@ struct aprend_upload_copy {
 	uint64_t destination_offset;
 	uint64_t size;
 	bool *dirty;
+	SPUDGPU_RESOURCE_STATE after;
 };
 APRI_PLAIN_DATA(aprend_upload_copy);
 
@@ -691,6 +721,16 @@ struct aprend_pass_store {
 	bool written;
 };
 APRI_PLAIN_DATA(aprend_pass_store);
+
+/* An acceleration structure's access as a compile walks the list
+ * (SpudGPU's SPUDGPU_ACCELERATION_STRUCTURE_ACCESS), from the first point the
+ * list uses it: NONE until then, which a barrier out of orders after every
+ * earlier submission. */
+struct aprend_rt_access {
+	spudgpu_acceleration_structure structure;
+	uint32_t access;
+};
+APRI_PLAIN_DATA(aprend_rt_access);
 
 /* Appends [item] to [array], or throws std::bad_alloc: for the compile's
  * and submit's code, which turns that into APRESULT_OUT_OF_MEMORY where it
@@ -814,6 +854,17 @@ typedef struct aprend_command_list_t {
 	eq::array<aprend_upload_copy> upload_copies{};
 	eq::array<aprend_material> lit_materials{};
 	eq::array<uint8_t> open_labels{};
+	/* - rt_accesses: each acceleration structure's access as the compile
+	 *   walks the list (aprendraytracing.h's commands).
+	 * - rt_builds, rt_geometries: one run of build commands' SpudGPU builds
+	 *   and their geometries. */
+	eq::array<aprend_rt_access> rt_accesses{};
+	eq::array<spudgpu_acceleration_structure_build> rt_builds{};
+	eq::array<spudgpu_acceleration_structure_inputs> rt_inputs{};
+	eq::array<spudgpu_acceleration_structure_geometry> rt_geometries{};
+	/* The last compile holds a path trace, which reads the instance's
+	 * lit-material table: its submission copies the entries staged since. */
+	bool rt_reads_lit{false};
 	/* For each command in [commands], the aprend_command_list_send it came from,
 	 * counted from the last reset: what a compile's message names, since a
 	 * send that stands for others (BEGIN_RENDER_PASS, SET_COMPUTE_PASS,
@@ -1272,6 +1323,10 @@ typedef struct aprend_material_t {
 	 * compile that binds it makes sure the scene's environment has been
 	 * written (aprend_lit_scene_prepare_list). */
 	struct aprend_lit_scene_t *lit_scene{nullptr};
+	/* A lit material's slot in the instance's lit-material table
+	 * (aprendraytracing_internal.hpp, D4), on a device with ray queries; 0
+	 * for any other material. */
+	uint32_t rt_lit_slot{0};
 } aprend_material_t;
 
 /* For a compile: builds [material]'s binding set if it has none, or again if
@@ -1295,6 +1350,20 @@ void aprend_material_arena_destroy(aprend_instance instance);
 APRESULT aprend_buffer_create_device_uniform(
     aprend_instance instance,
     uint32_t size,
+    aprend_buffer *out_buffer,
+    APREND_ERROR *out_error);
+
+/* A storage buffer of [size] bytes in the device's own memory, never mapped,
+ * written only by the GPU (copies and Aprend's shaders): the tables and
+ * arenas of ray tracing (aprendraytracing_internal.hpp). Its usage is
+ * STORAGE, TRANSFER_DST and TRANSFER_SRC and [extra_usage]; its store's
+ * use_state UNORDERED_ACCESS. Destroyed with aprend_buffer_destroy(), whose
+ * retire is promised here. */
+APRESULT aprend_buffer_create_device_storage(
+    aprend_instance instance,
+    uint64_t size,
+    SPUDGPU_BUFFER_USAGE extra_usage,
+    const char *debug_name,
     aprend_buffer *out_buffer,
     APREND_ERROR *out_error);
 

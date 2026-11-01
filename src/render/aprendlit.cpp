@@ -1,6 +1,7 @@
 #include "render/aprendlit.h"
 #include "render/aprendpost.h"
 #include "aprend_internal.hpp"
+#include "aprendraytracing_internal.hpp"
 #include "aprendbuiltin_internal.hpp"
 #include "aprendimages_internal.hpp"
 #include "aprendlit_internal.hpp"
@@ -1034,7 +1035,12 @@ APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *o
 	for (int i = 0; i < 3; ++i)
 		block.attenuation[i] = 1.0f;
 	memcpy(slot->bytes, &block, sizeof(block));
-	slot->dirty   = true;
+	slot->dirty = true;
+	// Its entry in the lit-material table, on a device with ray queries (D4).
+	if (const APRESULT taken = aprend_rt_lit_take(instance, &block, &material->rt_lit_slot, out_error)) {
+		aprend_material_destroy(material);
+		return taken;
+	}
 	*out_material = material;
 	return APRESULT_OK;
 }
@@ -1080,6 +1086,8 @@ APRESULT aprend_lit_material_set_values(aprend_material material, const APREND_L
 	memcpy(block.uv_transform, rows, sizeof(rows));
 	memcpy(slot->bytes, &block, sizeof(block));
 	slot->dirty = true;
+	// Staged for the next submission that reads the lit-material table (D4).
+	aprend_rt_lit_stage(material->instance, material->rt_lit_slot, &block);
 	return APRESULT_OK;
 }
 
@@ -1483,7 +1491,28 @@ static void aprend_lit_scene_commit(aprend_lit_scene scene) {
 	aprend_lit_write_block(scene->cull_material, "u_lit_scene", &scene->block, sizeof(scene->block));
 }
 
+aprend_binding_set aprend_lit_scene_rt_set(aprend_lit_scene scene, aprend_binding_layout layout) {
+	if (scene->rt_set)
+		return scene->rt_set;
+	// The block's range of the material arena, which is the scene's for its
+	// life and copied into by every submission that binds the scene.
+	aprend_material_slot *slot = aprend_lit_block_slot(scene->material, "u_lit_scene");
+	APREND_BINDING_SET_ENTRY entry{};
+	entry._binding                    = 0;
+	entry._type                       = SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	entry._resource._uniform._buffer  = slot->arena->buffer;
+	entry._resource._uniform._offset  = slot->offset;
+	entry._resource._uniform._range   = slot->block_size;
+	APREND_ERROR error;
+	if (aprend_binding_set_create(layout, &entry, 1, &scene->rt_set, &error) != APRESULT_OK) {
+		aprend_report(scene->instance, APRESULT_APREND_GPU_FAILURE, "the scene's set for a trace can't be made: %s", error.message);
+		return nullptr;
+	}
+	return scene->rt_set;
+}
+
 static void aprend_lit_scene_free(aprend_lit_scene scene) {
+	aprend_binding_set_destroy(scene->rt_set);
 	if (scene->material)
 		scene->material->lit_scene = nullptr;
 	aprend_material_destroy(scene->material);
@@ -1568,6 +1597,7 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 	ok                = ok && aprend_material_set_sampler(m, "environment_sampler", 0, lit.environment_sampler, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_texture(m, "ambient_occlusion", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_texture(m, "scene_color", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "sun_mask", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_lit_block_slot(m, "u_lit_scene") && aprend_lit_block_slot(scene->cull_material, "u_lit_scene");
 	if (!ok) {
@@ -1831,6 +1861,11 @@ APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LI
 	b.sun_shadow_params[1] = s.normal_offset;
 	b.sun_shadow_params[2] = s.softness;
 	b.sun_shadow_params[3] = s.strength;
+	// Light 0's one shadow (aprend_lit_scene_set_light_shadow()): cascades
+	// replace a mask set before, whose borrowed view the scene lets go of.
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_mask", 0, scene->instance->builtins.lit.placeholder_2d_view, out_error))
+		return set;
+	b.flags &= ~APREND_LIT_SCENE_FLAG_SUN_MASK;
 	b.flags |= APREND_LIT_SCENE_FLAG_SUN_SHADOW;
 	if (s.reversed_depth)
 		b.flags |= APREND_LIT_SCENE_FLAG_SUN_REVERSED;
@@ -1850,11 +1885,45 @@ APRESULT aprend_lit_scene_set_light_shadow(aprend_lit_scene scene, uint32_t ligh
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_light_shadow");
 	if (light != 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light %u names no directional light: the scene has one, light 0 (the sun), until card A35", light);
-	if (shadow) {
-		if (const APRESULT base = aprend_base_check(out_error, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW))
-			return base;
+	aprend_lit_scene_block &b = scene->block;
+	if (!shadow) {
+		// No shadow at all: neither a mask nor cascades.
+		if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_mask", 0, scene->instance->builtins.lit.placeholder_2d_view, out_error))
+			return set;
+		b.flags &= ~(APREND_LIT_SCENE_FLAG_SUN_MASK | APREND_LIT_SCENE_FLAG_SUN_SHADOW | APREND_LIT_SCENE_FLAG_SUN_REVERSED);
+		b.sun_cascade_count = 0;
+		aprend_lit_scene_commit(scene);
+		return APRESULT_OK;
 	}
-	return aprend_fail(out_error, APRESULT_NOT_IMPLEMENTED, "aprend_lit_scene_set_light_shadow is not implemented yet");
+	if (const APRESULT base = aprend_base_check(out_error, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW))
+		return base;
+	const APREND_LIT_LIGHT_SHADOW &s = *shadow;
+	if (s._kind == APREND_LIT_SHADOW_KIND_NONE)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind is APREND_LIT_SHADOW_KIND_NONE");
+	if (s._kind == APREND_LIT_SHADOW_KIND_CASCADES)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind is APREND_LIT_SHADOW_KIND_CASCADES, which aprend_lit_scene_set_sun_shadow() sets until card A35");
+	if (s._kind != APREND_LIT_SHADOW_KIND_MASK)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind %u is not an APREND_LIT_SHADOW_KIND", (unsigned)s._kind);
+	if (!finite(s._strength) || s._strength < 0.0f || s._strength > 1.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_strength is not a number from 0 to 1");
+	if (!s._mask)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is NULL");
+	if (APRI_STALE(s._mask, "aprend_lit_scene_set_light_shadow", "shadow->_mask"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is destroyed");
+	if (s._mask->instance != scene->instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is of another instance");
+	if (s._mask->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || s._mask->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
+	    s._mask->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is not a SHADER_RESOURCE 2D view of color");
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_mask", 0, s._mask, out_error))
+		return set;
+	// Light 0's one shadow: the mask replaces cascades set before, whose map
+	// stays bound and unread.
+	b.flags &= ~(APREND_LIT_SCENE_FLAG_SUN_SHADOW | APREND_LIT_SCENE_FLAG_SUN_REVERSED);
+	b.flags |= APREND_LIT_SCENE_FLAG_SUN_MASK;
+	b.sun_shadow_params[3] = s._strength;
+	aprend_lit_scene_commit(scene);
+	return APRESULT_OK;
 }
 
 APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LIGHT *lights, uint32_t count, APREND_ERROR *out_error) {

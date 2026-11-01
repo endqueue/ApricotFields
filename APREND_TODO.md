@@ -3119,39 +3119,166 @@ Left:
         (`mutable-globals`, `doxygen`). Not run this phase: the `-asan`
         presets (no ApricotFields code path ran but the stubs). Metal and
         Linux not built; ThreadSanitizer hasn't seen it.
-      **Phase 7b, the implementation: not started.** What reading the code
-      for it found, none of it a change to the draft's contract:
-      - Aprend's binding machinery has no acceleration structure
-        descriptor: `APREND_DESCRIPTOR_TYPE_COUNT` ends at
-        `SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE`, and the SPIR-V reflection
-        (`aprendreflect.cpp`) knows no `OpTypeAccelerationStructureKHR`. The
-        mask, the instance writer's neighbours and the path tracer bind a
-        TLAS, so the binding layout, set, pool budget and reflection take
-        `SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE` first (refused, as
-        SpudGPU refuses it, on a device without ray queries).
-      - Vertex and index buffers need `SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT`
-        (card S23 allows it on every device) and, for A41's arena copy,
-        `_TRANSFER_SRC`, added in `aprend_buffer_spud_usage()`; a build
-        moves them from their use state to BUILD_INPUT and back, as the
-        list's multi-state buffers are moved.
-      - The barriers and layout tracking a traced command needs
-        (`aprend_cmd_transition_view`, `aprend_cmd_ready_set_resources`)
-        are static in `aprendcommands.cpp`: the four commands' compile
-        functions live there, beside LIT_CULL_LIGHTS's, calling into
-        `aprendraytracing.cpp` for the tables and structures.
-      - T6's seal check and D6's residency need the slots a set names
-        *now*, which a bitset set by writes alone can't give once a record
-        is overwritten or a BLAS destroyed: the TLAS keeps a CPU copy of
-        its records (a second memcpy of the range) and a count of records
-        naming each slot, within `_instance_count`, kept by writes and
-        count changes; the seal copies the live bitset (count > 0) into the
-        set's. T7's check keeps, per mask bit, a count of records whose
-        range reaches a NULL entry, rebuilt when an entry's NULL-ness
-        changes.
-      - A sealed set is free once the submission that built from it has
-        completed (the instance's frame fence), read at the next write,
-        seal or info, so a caller who waits for its work (a readback) need
-        not turn the frame; `_sets_in_use` counts by the same rule.
+      **Phase 7b, the implementation: built 2026-11-01 on the ThinkPad**
+      (Windows 11, ThinkPad P1 Gen 5: Intel Iris Xe, NVIDIA RTX A2000, WARP
+      under D3D12; `prompts/ray_tracing_phase7b.md`). Every 7a test turned
+      on unedited and passes; none had to change. The calls made alone are
+      in `../claude_made_decisions.md` (2026-11-01, "Phase 7b"), open for
+      review. Step by step:
+      - **0, the infrastructure.** The acceleration structure is descriptor
+        type 6 (`APREND_DESCRIPTOR_TYPE_COUNT`): reflected
+        (`aprendreflect.cpp`), counted in the pools, written in a set. Only
+        Aprend's traced shaders and sets hold one: a caller's shader that uses
+        one is still refused at `aprend_shader_create()`, a caller's layout
+        refuses the type, and a caller's set has no entry for it
+        (`aprend_shader_create_own()`, `aprend_binding_set_create_traced()`,
+        internal). Vertex and index buffers gain BUILD_INPUT and TRANSFER_SRC
+        (card S23). Internal device storage buffers
+        (`aprend_buffer_create_device_storage()`) are multi-state, tracked
+        by the list like an indirect argument buffer.
+      - **1, the tables** (`aprend_rt_state`, made by an instance's first
+        BLAS, TLAS or lit material on a device with ray queries). The BLAS
+        table is a structure of arrays on the CPU (per index: 8-bit
+        generation, live, built-sent, Debug's 32-bit generation, current
+        structure, geometry count; index 0 never handed out) and one 16-byte
+        GPU entry per index (reference, arena word, geometry count). The
+        lit-material table holds a 48-byte entry per lit material (base
+        color, emission, roughness, metalness, specular), a slot for the
+        material's life, staged on the CPU and copied through transient
+        memory by the next submission of a list holding a path trace (D4).
+        Both, and the geometry arena, start at 256 entries (64K units of 16
+        bytes) and double when full: an allocation at the create that fills
+        them, the old contents copied through the upload batch.
+      - **2, BLAS.** `aprend_blas_create()` checks in the header's order,
+        sizes and creates the structure (T3's flags), takes its arena range
+        (card A41: the geometries' headers, then each one's
+        `APREND_LIT_VERTEX`es, card A42, and 32-bit indices) and its slot.
+        BUILD_BLAS records, in its run: the table entry and the headers
+        (through transient memory), the vertices (and at a BUILD the
+        indices) into the arena, the builds and refits in one SpudGPU call,
+        and for a static BLAS its compacted size into a buffer read back
+        once the build's submission has completed and the frame moved on.
+        COMPACT makes a structure of that size at the compile and copies
+        into it; a BUILD of a compacted BLAS makes full-size storage again
+        (T4); the structure given up is released once that frame has
+        completed. Allocated per create: the handle, its geometries, the
+        structure (2,816 bytes for the test square on the A2000, 216 on
+        WARP), a 16-byte size buffer and a READBACK one.
+      - **3, TLAS.** `_max_instance_sets` sets, each records and a material
+        table in UPLOAD memory mapped for life; per TLAS one device copy of
+        each (the current records and table), the device's instances, the
+        emitter table; the CPU's copy of the records and table as the writes
+        left them, the written-block bitsets, per-index slot counts (one
+        generation and others), per-record NULL reach and per-mask-bit
+        counts (T7). A write checks each slot against two arrays, copies the
+        range into the CPU's copy and fills each block it touches whole into
+        the set being prepared; nothing else per record. The send of
+        BUILD_TLAS seals the set into the record's padding (T6 checked from
+        the counts, the bottom levels listed); a reset or destroyed list's
+        unsubmitted seals carry their blocks into the next set; a set is free
+        once its build's submission has completed. T5 at submit names both
+        lists.
+      - **4, BUILD_TLAS.** The set's written blocks copied into the current
+        records and table (a region per run of blocks; the rest carried over
+        in place), the instance writer (`aprend_rt_instances_row64_comp`:
+        the record's transform, its material base as the 24-bit user index,
+        its mask, triangle culling disabled (D8), its BLAS's reference from
+        the table) one dispatch a TLAS, then every TLAS of the run in one
+        build call, after one barrier between the BLASes and the TLASes (T8);
+        a run building one TLAS twice is two calls. Metal's 72-byte writer
+        (`aprend_rt_instances_col72_comp`) is written and built here, run on
+        the Mac. The bottom-level list SpudGPU makes resident on Metal is the
+        seal's.
+      - **5, LIT_SHADOW_MASK** (`aprend_rt_shadow_mask.slang`, two entry
+        points by the target's format). A texel's point from the depth and
+        the inverse view-projection, its normal from the nearer neighbour on
+        each axis, `_ray_count` rays over the sun's disc in R2 directions
+        turned by interleaved gradient noise, the hits from
+        `RayQuery<ACCEPT_FIRST_HIT_AND_END_SEARCH>`; the filter over a
+        group's tile with an apron of the radius, weights Gaussian, by
+        normal and by depth. `aprend_lit_scene_set_light_shadow()` sets the
+        scene's `sun_mask` (binding 13 of set 0, flag 512), and
+        `aprend_lit_scene_set_sun_shadow()` and it each replace light 0's
+        one shadow. The lit surface reads the mask at its fragment.
+      - **6, LIT_PATH_TRACE** (`aprend_rt_path_trace.slang`, four entry
+        points by the guides' formats). The emitter table
+        (`aprend_rt_emitters_comp`) first when a seal with writes, a material
+        table change or a lit material's values changed since it was built
+        (D6). One thread a pixel: NEE with the power heuristic for the
+        environment, the sun over its disc and one emissive triangle chosen
+        uniformly; point and spot lights without MIS, falling off as the
+        raster surface does; Burley's Owen-scrambled Sobol; Russian roulette
+        from half the bounces; the clamp; Ray Tracing Gems' offsets; a
+        material interface (`IRtBsdf`) with the lit model's Lambert and GGX
+        lobes. **Not built here:** the environment's cubes (the hemisphere
+        of `APREND_LIT_AMBIENT` is the environment, sampled with the cosine;
+        nothing is importance-sampled by luminance), recorded to come with
+        the environment's own sampling table. T7 refuses a cull mask that lets in
+        an instance reaching a NULL entry, naming it.
+      - **Gaps:** the review of the diff (a second reader, the
+        same day) found thirteen; fixed: a BLAS destroy's table writes racing
+        the instance's calls (queued and taken in by them, and a send's reads
+        under the release mutex), unwritten device tables read (the first set
+        writes every block, slot 0 is an inactive instance), one BLAS twice in
+        a run (a run of its own), the scratch shared by two runs and BLASes
+        built in an earlier run (barriers), an instance count change not
+        rebuilding the emitter table, the path tracer's material reads
+        unbounded, the compacted size not read again after a rebuild, a
+        retiring structure overwritten, the arena past 4 GiB, the mask view
+        kept bound after set_sun_shadow, the absent guide's texture leaked,
+        set_materials failing after writing. **Kept, each recorded:** a
+        compaction or a rebuild compiled in a list that is then reset is not
+        undone; a set's BLAS counts as built when a BUILD_BLAS of it was sent
+        in any list, not only earlier in the same one, and stays so if that
+        list is reset; a reset list's seal leaves the TLAS's "built" and its
+        count, and blocks it carries into a set another list has compiled
+        don't reach that list; T7's check and the emitter table follow the
+        writes as sent, not GPU order, for a path trace sent before a
+        BUILD_TLAS in its list; `aprend_blas_create()` and
+        `aprend_tlas_create()` can return OUT_OF_MEMORY (the instance's tables
+        made) before their later argument checks. Card A44:
+        compiling a submitted BUILD_TLAS again is refused, a refusal no
+        header lists yet.
+      - **Card A43's measure:** the Dragon of SpudGPUMeshShaders takes
+        7,279,648 bytes of the arena (4,855,968 of vertices, 2,423,664 of
+        indices); positions alone would make the vertices 1,213,992.
+      Runs (Windows 11, ThinkPad P1 Gen 5, MSVC 14.51, Vulkan SDK 1.4.363.0),
+      on the final code: ApricotFields `apricotfields-windows-d3d12` and
+      `-vulkan`, Debug and Release, and both `-asan` presets, 36 ctests each,
+      passing; `apri_misuse_tests` ten times on each preset, passing.
+      apricottests, Debug, every test passing: D3D12 on the Iris Xe (every
+      ray tracing call and command refused as designed), the RTX A2000 and
+      WARP under the debug layer, silent, and once each under GPU-based
+      validation (the A2000 and WARP silent; the Iris Xe's 26 `[942]`, the
+      validator's, as before); Vulkan on the Iris Xe and the A2000 under the
+      validation layer, synchronization validation and GPU-assisted
+      validation, silent but GPU-AV's notices of its own settings. The ray
+      tracing tests read the same on the A2000 (both APIs) and WARP: the mask
+      0 and 127 (128 on WARP) as the cascades, the penumbra 0 texels with no
+      disc and 6 with 0.2, the furnace 1.0000 (worst texel 0.0000), 8 steps
+      of 1 equal to 1 of 8, the emitter's ground 0.05005 against Lambert's
+      0.05004, the two geometries exact. `test_frame_allocations`' ray-traced
+      frame: none of ours. `test_destroyed_handles`: 177 calls refused.
+      The callers' suites: passing, but for one caller's no-allocation
+      scenario that fails in its own code on both presets, which this phase
+      doesn't reach (`../ROADMAP.md`, section 2, names it). `check.sh` clean but `dep-locks` (ApricotFields'
+      uncommitted work) and the two this machine can't run (`mutable-globals`,
+      `doxygen`). Metal written, not compiled; Linux not built;
+      ThreadSanitizer hasn't seen it.
+      Measured (Release, RTX A2000, D3D12 / Vulkan; `test_rt_measure` with
+      `APRICOTTESTS_MEASURE`, times on the CPU's clock until the device is
+      idle): 100,000 instances writing 1% a frame: the write 20 / 14 us, the
+      compile and submit 118 / 72 us, the frame 2.28 / 2.16 ms; 10%: 216 /
+      108 us, 203 / 76 us, 2.54 / 2.25 ms; 100%: 1,873 / 1,653 us, 237 /
+      134 us, 3.04 / 2.79 ms. The test square's BLAS 2,816 bytes, compacted
+      to 1,152 in 0.34 / 0.32 ms; the Dragon's built in 5.0 / 5.7 ms,
+      14,150,784 bytes, compacted in 0.58 / 0.54 ms to 5,932,928 (Phase 5's
+      SpudGPU numbers: 7.24 / 7.85 ms, the same sizes). The path tracer at
+      1920x1080, 4 samples a step over two instances: 13.2 / 12.2 ms a step,
+      627 / 678 million samples a second; a step building the emitter table
+      again costs no measurable more over two instances. Not measured: the
+      mask against the cascaded pass at a common size (the test kit renders
+      at 64x64), and the emitter table over many emissive instances.
       **Directional lights (card A35, decided 2026-10-31 with the user,
       option b; not built):** the sun becomes a light type. The lit scene's
       lights gain directional ones, up to a fixed count (Hazel's 4 the

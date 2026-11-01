@@ -188,8 +188,15 @@ static bool aprend_binding_range_valid(uint64_t offset, uint64_t range, uint64_t
 
 // Whether entry [index] of a set holds what its _type reads. The type has
 // already been checked against the layout's.
-static APRESULT aprend_binding_set_entry_resource_valid(APREND_ERROR *error, aprend_instance instance, const APREND_BINDING_SET_ENTRY &entry, uint32_t index) {
+static APRESULT aprend_binding_set_entry_resource_valid(APREND_ERROR *error, aprend_instance instance, const APREND_BINDING_SET_ENTRY &entry, uint32_t index,
+                                                       spudgpu_acceleration_structure top_level) {
 	switch (entry._type) {
+	case SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE:
+		// Only a set of Aprend's own traced passes, which hands the top level
+		// over beside the entries (aprend_binding_set_create_traced).
+		if (!top_level)
+			return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "entry %u (binding %u) is a top level, which no caller's binding set holds", index, entry._binding);
+		return APRESULT_OK;
 	case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER: {
 		const auto &r = entry._resource._uniform;
 		if (!r._buffer)
@@ -711,6 +718,7 @@ static APRESULT aprend_shader_make(
     const APREND_SHADER_PACKAGE *package,
     const void *code,
     uint64_t code_size,
+    bool own,
     aprend_shader *out_shader,
     APREND_ERROR *error) {
 	APREND_MALLOC__T(result, aprend_shader_t);
@@ -721,6 +729,20 @@ static APRESULT aprend_shader_make(
 	if (const APRESULT reflected = aprend_shader_reflect(result, package->spirv, package->spirv_size, package->stage, error)) {
 		APREND_DESTRUCT__T(result, aprend_shader_t);
 		return reflected;
+	}
+	// A top level is bound only by Aprend's own traced passes
+	// (aprendraytracing.h): no binding set entry of a caller's holds one, so a
+	// caller's shader that uses one is refused as before the type was known.
+	if (!own) {
+		for (uint32_t i = 0; i < result->reflection.view.resource_count; ++i) {
+			const APREND_SHADER_RESOURCE &resource = result->reflection.view.resources[i];
+			if (resource.type != SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE || !resource.used)
+				continue;
+			APREND_DESTRUCT__T(result, aprend_shader_t);
+			return aprend_fail(error, APRESULT_INVALID_ARGUMENT,
+			                   "the shader can't be reflected: the entry point uses \"%s\", an acceleration structure, which Aprend has no binding for",
+			                   resource.name ? resource.name : "");
+		}
 	}
 	// A compute or mesh shader's workgroup size is the module's (SpudGPU
 	// needs it on every backend); one set by a specialization constant
@@ -751,9 +773,14 @@ static APRESULT aprend_shader_make(
 
 extern "C" {
 
-APRESULT aprend_shader_create(
+} // extern "C"
+
+/* aprend_shader_create(), and aprend_shader_create_own() for Aprend's own
+ * shaders with [own]. */
+static APRESULT aprend_shader_create_from(
     aprend_instance instance,
     const APREND_SHADER_PACKAGE *package,
+    bool own,
     aprend_shader *out_shader,
     APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
@@ -822,7 +849,25 @@ APRESULT aprend_shader_create(
 	if (!code)
 		return aprend_fail(out_error, APRESULT_UNSUPPORTED, "the %s shader's package has no %s, the format this device takes",
 		                   aprend_stage_name(package->stage), aprend_shader_format_name(instance->shader_format));
-	return aprend_shader_make(instance, package, code, code_size, out_shader, out_error);
+	return aprend_shader_make(instance, package, code, code_size, own, out_shader, out_error);
+}
+
+APRESULT aprend_shader_create_own(
+    aprend_instance instance,
+    const APREND_SHADER_PACKAGE *package,
+    aprend_shader *out_shader,
+    APREND_ERROR *out_error) {
+	return aprend_shader_create_from(instance, package, true, out_shader, out_error);
+}
+
+extern "C" {
+
+APRESULT aprend_shader_create(
+    aprend_instance instance,
+    const APREND_SHADER_PACKAGE *package,
+    aprend_shader *out_shader,
+    APREND_ERROR *out_error) {
+	return aprend_shader_create_from(instance, package, false, out_shader, out_error);
 }
 
 void aprend_shader_destroy(aprend_shader shader) {
@@ -1419,6 +1464,10 @@ APRESULT aprend_binding_layout_create(
 	for (uint32_t i = 0; i < binding_count; ++i) {
 		if (bindings[i]._type >= APREND_DESCRIPTOR_TYPE_COUNT)
 			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entry %u has a _type that is not a SPUDGPU_DESCRIPTOR_TYPE", i);
+		// Only Aprend's own traced passes bind a top level: no binding set
+		// entry of a caller's holds one.
+		if (bindings[i]._type == SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entry %u has _type SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE, which no binding set entry holds", i);
 		if (bindings[i]._count == 0)
 			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entry %u has a _count of 0", i);
 		if (bindings[i]._stages == SPUDGPU_SHADER_STAGE_NONE)
@@ -1699,10 +1748,16 @@ void aprend_binding_layout_destroy(aprend_binding_layout layout) {
 	aprend_instance_retire(layout->instance, layout, &aprend_release_handle<aprend_binding_layout_t>);
 }
 
-APRESULT aprend_binding_set_create(
+} // extern "C"
+
+/* aprend_binding_set_create(), and aprend_binding_set_create_traced() with
+ * [top_level] for its one SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE
+ * entry (NULL for a caller's set, which holds none). */
+static APRESULT aprend_binding_set_build(
     aprend_binding_layout layout,
     const APREND_BINDING_SET_ENTRY *entries,
     uint32_t entry_count,
+    spudgpu_acceleration_structure top_level,
     aprend_binding_set *out_set,
     APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
@@ -1734,7 +1789,7 @@ APRESULT aprend_binding_set_create(
 			if (entries[j]._binding == entry._binding && entries[j]._array_element == entry._array_element)
 				return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entries %u and %u both fill binding %u element %u", j, i, entry._binding, entry._array_element);
 		}
-		if (const APRESULT valid = aprend_binding_set_entry_resource_valid(out_error, layout->instance, entry, i))
+		if (const APRESULT valid = aprend_binding_set_entry_resource_valid(out_error, layout->instance, entry, i, top_level))
 			return valid;
 		if (aprend_descriptor_type_reads_view(entry._type))
 			++image_use_count;
@@ -1838,6 +1893,10 @@ APRESULT aprend_binding_set_create(
 			write.descriptor_count                = 1;
 			write.descriptor_type                 = entry._type;
 
+			if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE) {
+				write.acceleration_structures = &top_level;
+				continue;
+			}
 			if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
 				const auto &r                  = entry._resource._uniform;
 				const aprend_buffer_part *part = aprend_buffer_part_of(r._buffer, frame);
@@ -1890,6 +1949,27 @@ APRESULT aprend_binding_set_create(
 	*out_set = result;
 	return APRESULT_OK;
 }
+
+APRESULT aprend_binding_set_create_traced(
+    aprend_binding_layout layout,
+    const APREND_BINDING_SET_ENTRY *entries,
+    uint32_t entry_count,
+    spudgpu_acceleration_structure top_level,
+    aprend_binding_set *out_set,
+    APREND_ERROR *out_error) {
+	return aprend_binding_set_build(layout, entries, entry_count, top_level, out_set, out_error);
+}
+
+extern "C" {
+
+APRESULT aprend_binding_set_create(
+    aprend_binding_layout layout,
+    const APREND_BINDING_SET_ENTRY *entries,
+    uint32_t entry_count,
+    aprend_binding_set *out_set,
+    APREND_ERROR *out_error) {
+	return aprend_binding_set_build(layout, entries, entry_count, nullptr, out_set, out_error);
+}
 APRESULT aprend_binding_set_update(
     aprend_binding_set set,
     const APREND_BINDING_SET_ENTRY *entries,
@@ -1923,7 +2003,7 @@ APRESULT aprend_binding_set_update(
 			if (entries[j]._binding == entry._binding && entries[j]._array_element == entry._array_element)
 				return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "entries %u and %u both fill binding %u element %u", j, i, entry._binding, entry._array_element);
 		}
-		if (const APRESULT valid = aprend_binding_set_entry_resource_valid(out_error, layout->instance, entry, i))
+		if (const APRESULT valid = aprend_binding_set_entry_resource_valid(out_error, layout->instance, entry, i, nullptr))
 			return valid;
 	}
 

@@ -297,12 +297,16 @@ static void aprend_buffer_spud_usage(APREND_BUFFER_USAGE usage, SPUDGPU_BUFFER_U
 		spud_usage |= SPUDGPU_BUFFER_USAGE_INDIRECT;
 		state = SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT;
 	}
+	// A vertex or index buffer may also be a BLAS's geometry
+	// (aprendraytracing.h): read by its builds, and copied from into the
+	// geometry arena a path trace reads (card A41). SpudGPU allows the build
+	// input usage on every device (card S23).
 	if (usage & APREND_BUFFER_USAGE_VERTEX) {
-		spud_usage |= SPUDGPU_BUFFER_USAGE_VERTEX;
+		spud_usage |= SPUDGPU_BUFFER_USAGE_VERTEX | SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT | SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
 		state = SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER;
 	}
 	if (usage & APREND_BUFFER_USAGE_INDEX) {
-		spud_usage |= SPUDGPU_BUFFER_USAGE_INDEX;
+		spud_usage |= SPUDGPU_BUFFER_USAGE_INDEX | SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT | SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
 		state = SPUDGPU_RESOURCE_STATE_INDEX_BUFFER;
 	}
 	if (usage & APREND_BUFFER_USAGE_UNIFORM) {
@@ -449,6 +453,48 @@ APRESULT aprend_buffer_create_device_uniform(
 		store.buffer = nullptr;
 		aprend_buffer_abandon(result, false);
 		return aprend_fail_spud(out_error, sr, "a uniform buffer of %u bytes in the device's memory can't be created", size);
+	}
+	*out_buffer = result;
+	return APRESULT_OK;
+}
+
+APRESULT aprend_buffer_create_device_storage(
+    aprend_instance instance,
+    uint64_t size,
+    SPUDGPU_BUFFER_USAGE extra_usage,
+    const char *debug_name,
+    aprend_buffer *out_buffer,
+    APREND_ERROR *out_error) {
+	*out_buffer          = nullptr;
+	aprend_buffer result = nullptr;
+	APRESULT ar          = aprend_buffer_begin(instance, debug_name, true, &result, out_error);
+	if (ar != APRESULT_OK)
+		return ar;
+	result->desc.base          = apri_struct_base(APRI_STRUCT_TYPE_APREND_BUFFER_DESC);
+	result->desc.size          = size;
+	result->desc.usage         = APREND_BUFFER_USAGE_STORAGE;
+	result->desc.writes        = APREND_BUFFER_WRITES_ONCE;
+	result->part_count         = 1;
+	aprend_buffer_store &store = result->parts[0].store;
+	store.instance             = instance;
+	store.size                 = size;
+	store.use_state            = SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS;
+	store.written_once         = true;
+	// Copied into, built from, read as a size's destination as well as a
+	// storage slot: a command list tracks its state and moves it.
+	store.multi_state = true;
+
+	spudgpu_buffer_desc bd{};
+	bd.base.type = SPUD_STRUCT_TYPE_GPU_BUFFER_DESC;
+	// Written by the GPU alone (copies and Aprend's shaders), never mapped.
+	bd.memory_kind = SPUDGPU_MEMORY_KIND_DEVICE;
+	bd.size        = size;
+	bd.usage       = SPUDGPU_BUFFER_USAGE_STORAGE | SPUDGPU_BUFFER_USAGE_TRANSFER_DST | SPUDGPU_BUFFER_USAGE_TRANSFER_SRC | extra_usage;
+	SPUDRESULT sr  = spudgpu_create_buffer(instance->desc.device, &bd, &store.buffer);
+	if (SPUDFAIL(sr)) {
+		store.buffer = nullptr;
+		aprend_buffer_abandon(result, true);
+		return aprend_fail_spud(out_error, sr, "a storage buffer of %llu bytes in the device's memory can't be created", (unsigned long long)size);
 	}
 	*out_buffer = result;
 	return APRESULT_OK;

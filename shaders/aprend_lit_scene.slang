@@ -29,6 +29,7 @@ public static const uint APREND_LIT_SCENE_SPOT_REVERSED  = 32u; // spot shadows 
 public static const uint APREND_LIT_SCENE_BENT_NORMALS   = 64u; // ambient_occlusion's gba is a bent normal, read for diffuse ambient light
 public static const uint APREND_LIT_SCENE_POINT_REVERSED = 128u; // point shadows rendered near at 1
 public static const uint APREND_LIT_SCENE_SCENE_COLOR    = 256u; // scene_color holds the opaque picture behind
+public static const uint APREND_LIT_SCENE_SUN_MASK       = 512u; // the sun's shadow is sun_mask, at sun_shadow_params.w's strength
 
 // Every matrix is column-major in memory, as the CPU writes it.
 public struct AprendLitScene {

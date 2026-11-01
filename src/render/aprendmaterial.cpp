@@ -2,6 +2,7 @@
 #include "render/aprendmaterial.h"
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
+#include "aprendraytracing_internal.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -121,6 +122,9 @@ aprend_material_t::~aprend_material_t() {
 	// GPU done with whatever was submitted while the material lived, so the
 	// ranges go straight back.
 	aprend_binding_set_destroy(this->set);
+	// A lit material's entry in the lit-material table, its generation
+	// advanced (D4).
+	aprend_rt_lit_give(this->instance, this->rt_lit_slot);
 	for (uint32_t i = 0; i < this->slot_count; ++i) {
 		aprend_material_slot &slot = this->slots[i];
 		if (slot.arena)
@@ -285,7 +289,8 @@ bool aprend_material_stage_uploads(aprend_material material, eq::array<aprend_up
 		}
 		memcpy(span.data, slot.bytes, slot.block_size);
 		const aprend_transient_chunk *chunk = (const aprend_transient_chunk *)span._chunk;
-		aprend_push(copies, aprend_upload_copy{chunk->buffer, span._offset, slot.arena->buffer->parts[0].store.buffer, slot.offset, slot.block_size, &slot.dirty});
+		aprend_push(copies, aprend_upload_copy{chunk->buffer, span._offset, slot.arena->buffer->parts[0].store.buffer, slot.offset, slot.block_size, &slot.dirty,
+		                                       SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER});
 	}
 	return true;
 }

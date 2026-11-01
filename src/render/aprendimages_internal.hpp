@@ -361,6 +361,14 @@ typedef struct aprend_texture_view_t
 	 * this view and the environment sampler, in a layout a compute shader
 	 * sees. */
 	aprend_binding_set cull_depth_set{nullptr};
+	/* The output set of a trace into this view (aprendraytracing.h's
+	 * LIT_SHADOW_MASK and LIT_PATH_TRACE; aprend_rt_output_set): of
+	 * [rt_set_layout], with the other views it was made with and their
+	 * serials, made again when they change. */
+	aprend_binding_set rt_set{nullptr};
+	const void *rt_set_layout{nullptr};
+	const void *rt_set_views[2]{};
+	uint64_t rt_set_serials[2]{};
 	/* The same for Aprend's present shader (APREND_COMMAND_DRAW_TEXTURE,
 	 * PRESENT_TEXTURE's draw modes; aprend_texture_view_present_set): one for
 	 * each filter, [SPUDGPU_FILTER_NEAREST] and [SPUDGPU_FILTER_LINEAR]. */

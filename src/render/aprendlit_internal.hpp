@@ -72,6 +72,7 @@ enum : uint32_t {
 	APREND_LIT_SCENE_FLAG_BENT_NORMALS  = 64u,
 	APREND_LIT_SCENE_FLAG_POINT_REVERSED = 128u,
 	APREND_LIT_SCENE_FLAG_SCENE_COLOR   = 256u,
+	APREND_LIT_SCENE_FLAG_SUN_MASK      = 512u,
 };
 
 /* AprendLitShadowPass in shaders/aprend_lit_shadow_pass.slang. */
@@ -417,6 +418,10 @@ typedef struct aprend_lit_scene_t {
 	uint32_t point_shadow_count{0};
 	/* What the ambient light names, or NULL. */
 	aprend_lit_environment environment{nullptr};
+	/* The scene's block alone, as Aprend's traced passes read it (their set
+	 * 0; aprendraytracing_internal.hpp): made by the first trace of the
+	 * scene. */
+	aprend_binding_set rt_set{nullptr};
 	APRI_STALE_TAG
 } aprend_lit_scene_t;
 

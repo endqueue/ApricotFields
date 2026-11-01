@@ -27,6 +27,10 @@ module aprend_lit_bindings;
 // The opaque picture behind, mipped, for transmission
 // (APREND_COMMAND_COPY_SCENE_COLOR): what the surfaces wrote, exposed.
 [[vk::binding(12, 0)]] public Texture2D<float4> scene_color : register(t12, space0);
+// Light 0's traced shadow, when its shadow is a mask
+// (aprend_lit_scene_set_light_shadow(), APREND_COMMAND_LIT_SHADOW_MASK): red
+// 1 lit, 0 in shadow, at the view's target size.
+[[vk::binding(13, 0)]] public Texture2D<float4> sun_mask : register(t13, space0);
 
 // Element [i] of the tiles' lists.
 public uint tile_lights(uint i) {

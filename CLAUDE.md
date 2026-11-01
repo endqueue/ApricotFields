@@ -304,6 +304,18 @@ heap.
 - `aprendbuffers.h` is one `aprend_buffer` for every use (card A14, rewritten
   2026-10-30): a usage mask, `APREND_BUFFER_WRITES`, and per-frame copies in
   place of buffer sets. Mesh types are a caller's, never Aprend's.
+- Ray tracing (`aprendraytracing.h`, the approved
+  `aprend_raytracing_draft.h`; built 2026-11-01 on Windows, `APREND_TODO.md`
+  item 24): BLASes and TLASes are resources, named in instances by slot;
+  the four commands record the builds and the traced passes. The
+  acceleration structure is a descriptor type of Aprend's own traced
+  layouts and sets only (`aprend_shader_create_own()`,
+  `aprend_binding_set_create_traced()`): a caller's shader, layout or set
+  still refuses it. Its state is `aprend_rt_state`
+  (`src/render/aprendraytracing_internal.hpp`, which says who writes each
+  GPU-visible buffer and when); its shaders are `shaders/aprend_rt_*.slang`,
+  the traced ones built for shader model 6.5 and SPIR-V's ray queries
+  (`APRICOTFIELDS_TRACE_SHADERS`).
 
 ## Reference: Hazel
 

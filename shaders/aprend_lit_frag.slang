@@ -182,11 +182,16 @@ float shadow_visibility(Texture2DArray<float4> map, uint layer, float4x4 view_pr
 // blended into the next (the last into no shadow).
 static const float CASCADE_BLEND = 0.1;
 
-// How much of the sun reaches [position]: the cascade its distance along
-// the view falls in, blended into the next over the last tenth of the
+// How much of the sun reaches [position], at [frag] on the target: its
+// traced mask there, if its shadow is one; or the cascade its distance
+// along the view falls in, blended into the next over the last tenth of the
 // cascade's stretch so no seam shows between them, the last faded out to
 // no shadow over its own.
-float sun_visibility(float3 position, float3 n) {
+float sun_visibility(float3 position, float3 n, float2 frag) {
+    if ((u_lit_scene.flags & APREND_LIT_SCENE_SUN_MASK) != 0u) {
+        float m = sun_mask.Load(int3(int2(frag), 0)).r;
+        return 1.0 - u_lit_scene.sun_shadow_params.w * (1.0 - m);
+    }
     uint count = min(u_lit_scene.sun_cascade_count, uint(APREND_LIT_MAX_CASCADES));
     if ((u_lit_scene.flags & APREND_LIT_SCENE_SUN_SHADOW) == 0u || count == 0u)
         return 1.0;
@@ -367,7 +372,7 @@ float4 aprend_lit_frag(LitFragmentInput input) : SV_Target0 {
     float3 color = float3(0.0);
     float3 sun   = u_lit_scene.sun_radiance.rgb;
     if (any(sun > float3(0.0)))
-        color += shade(s, u_lit_scene.sun_direction.xyz, sun * sun_visibility(in_position, s.geometric));
+        color += shade(s, u_lit_scene.sun_direction.xyz, sun * sun_visibility(in_position, s.geometric, input.frag_coord.xy));
 
     if ((u_lit_scene.flags & APREND_LIT_SCENE_TILES) != 0u) {
         uint2 tile = min(uint2(input.frag_coord.xy) / max(u_lit_scene.tile_size, 1u), uint2(u_lit_scene.tiles_x, u_lit_scene.tiles_y) - 1u);

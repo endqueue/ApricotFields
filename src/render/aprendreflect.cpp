@@ -529,7 +529,9 @@ struct aprend_reflector {
 			out_resource.name = keep(instance_name);
 		}
 
-		if (type != SPUDGPU_DESCRIPTOR_TYPE_SAMPLER && !is_buffer) {
+		// A sampler or a top level is neither a buffer nor an image: nothing
+		// more to read.
+		if (type != SPUDGPU_DESCRIPTOR_TYPE_SAMPLER && type != SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE && !is_buffer) {
 			const spirv_cross::SPIRType::ImageType &image = base_type.image;
 			if (image.ms)
 				return unsupported(resource, "a multisampled image");
@@ -611,8 +613,11 @@ struct aprend_reflector {
 		for (const spirv_cross::Resource &r : resources.subpass_inputs)
 			if (!unsupported(r, "an input attachment"))
 				return false;
+		// A top level, bound only by Aprend's own traced passes: a caller's
+		// shader that uses one is refused when the shader is made
+		// (aprend_shader_create()).
 		for (const spirv_cross::Resource &r : resources.acceleration_structures)
-			if (!unsupported(r, "an acceleration structure"))
+			if (!add_resource(r, SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE))
 				return false;
 		for (const spirv_cross::Resource &r : resources.atomic_counters)
 			if (!unsupported(r, "an atomic counter"))

@@ -242,6 +242,9 @@ set(APRICOTFIELDS_SHADERS
         aprend_batch_circle_frag
         aprend_batch_line_frag
         aprend_batch_glyph_frag
+        aprend_rt_instances_row64_comp
+        aprend_rt_instances_col72_comp
+        aprend_rt_emitters_comp
 )
 # The modules the shaders import, from shaders/: every shader is compiled
 # again when one of them changes.
@@ -255,6 +258,21 @@ set(APRICOTFIELDS_SHADER_MODULES
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_shadow_pass.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch_inputs.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_rt_common.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_rt_trace.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_rt_shadow_mask.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_rt_path_trace.slang
+)
+# The shaders that trace (aprendraytracing.h): inline ray queries, SPIR-V's
+# ray query capability (SPV_KHR_ray_query) and DXIL's shader model 6.5. Made
+# only on a device with SPUDGPU_FEATURE_RAY_QUERY.
+set(APRICOTFIELDS_TRACE_SHADERS
+        aprend_rt_shadow_mask_r8_comp
+        aprend_rt_shadow_mask_r16f_comp
+        aprend_rt_path_trace_f32_f32_comp
+        aprend_rt_path_trace_f32_f16_comp
+        aprend_rt_path_trace_f16_f32_comp
+        aprend_rt_path_trace_f16_f16_comp
 )
 foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
     aprend_add_slang_shader(APRICOTFIELDS_SHADER_OUTPUTS
@@ -262,6 +280,15 @@ foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
             OUT_DIR ${APRICOTFIELDS_SHADER_INC_DIR}
             INCLUDE_DIRS shaders
             DEPENDS ${APRICOTFIELDS_SHADER_MODULES})
+endforeach ()
+foreach (shader IN LISTS APRICOTFIELDS_TRACE_SHADERS)
+    aprend_add_slang_shader(APRICOTFIELDS_SHADER_OUTPUTS
+            SOURCE shaders/${shader}.slang
+            OUT_DIR ${APRICOTFIELDS_SHADER_INC_DIR}
+            INCLUDE_DIRS shaders
+            DEPENDS ${APRICOTFIELDS_SHADER_MODULES}
+            DXIL_PROFILE cs_6_5
+            SPIRV_CAPABILITIES spvRayQueryKHR)
 endforeach ()
 add_custom_target(apricotfields_shaders DEPENDS ${APRICOTFIELDS_SHADER_OUTPUTS})
 add_dependencies(ApricotFields apricotfields_shaders)

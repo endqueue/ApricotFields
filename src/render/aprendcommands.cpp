@@ -252,7 +252,7 @@ static SPUDRESULT aprend_cmd_record_uploads(
 		if (known)
 			continue;
 		aprend_push(before, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
-		aprend_push(after, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COPY_DEST, SPUDGPU_RESOURCE_STATE_VERTEX_BUFFER});
+		aprend_push(after, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, copy.destination, SPUDGPU_RESOURCE_STATE_COPY_DEST, copy.after});
 	}
 	for (aprend_buffer_store *store : cmd_list->staged_stores) {
 		if (store->uploads.empty())
@@ -266,6 +266,13 @@ static SPUDRESULT aprend_cmd_record_uploads(
 	for (const auto &tracked : cmd_list->buffer_states) {
 		aprend_buffer_store *store = tracked.store;
 		if (store->staged && !store->uploads.empty())
+			continue;
+		// A copy into it leaves it in its use_state already.
+		bool copied = false;
+		for (const aprend_upload_copy &copy : copies)
+			if (copy.destination == store->buffer)
+				copied = true;
+		if (copied)
 			continue;
 		aprend_push(before, spudgpu_buffer_barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, store->use_state});
 	}
@@ -390,6 +397,8 @@ void aprend_command_list_destroy(aprend_command_list cmd_list) {
 		return;
 	if (APRI_STALE(cmd_list, "aprend_command_list_destroy", "cmd_list"))
 		return;
+	// Its BUILD_TLAS seals, never submitted, are given back (T5).
+	aprend_rt_abandon(cmd_list);
 	// A compile it never submitted gives back what it took from the render
 	// target pool. Here and not in its release, which may come after the
 	// instance's destructor has freed the pool.
@@ -410,6 +419,8 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	// Off the compiled lists before what it uses is cleared: a destroy call
 	// on another thread may be reading it.
 	aprend_cmd_list_unlist(cmd_list);
+	// Its BUILD_TLAS seals, never submitted, are given back (T5).
+	aprend_rt_abandon(cmd_list);
 	const size_t preserve_size = cmd_list->commands.size();
 	cmd_list->commands.clear();
 	cmd_list->commands.reserve(preserve_size);
@@ -500,9 +511,10 @@ static void aprend_send_command_recorded(
 			cmd_list->recording_error = true;
 			return;
 		}
-		aprend_cmd_report(cmd_list, APRESULT_NOT_IMPLEMENTED, "%s is not implemented yet", aprend_rt_command_name(cmd._type));
-		cmd_list->recording_error = true;
-		return;
+		if (!aprend_rt_send_checks(cmd_list, cmd)) {
+			cmd_list->recording_error = true;
+			return;
+		}
 	}
 
 	// The three commands that stand for others are expanded into them here,
@@ -1458,6 +1470,16 @@ static void aprend_send_command_recorded(
 		}
 	}
 
+	// Ray tracing's commands change what they name only once the command can
+	// be kept: room is made first, so nothing below can fail after the seal.
+	if (cmd._type == APREND_COMMAND_BUILD_BLAS || cmd._type == APREND_COMMAND_BUILD_TLAS) {
+		cmd_list->commands.reserve(cmd_list->commands.size() + 1);
+		cmd_list->command_sends.reserve(cmd_list->command_sends.size() + 1);
+		if (!aprend_rt_send_commit(cmd_list, &cmd)) {
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
 	if (has_copy)
 		cmd_list->side_refs.push_back({(uint32_t)cmd_list->commands.size(), copy_offset});
 	// The send first: if the command can't follow it, it is taken back.
@@ -3194,6 +3216,827 @@ static bool aprend_cmd_auto_exposure(aprend_command_list cmd_list, const APREND_
 	return true;
 }
 
+
+/* ---- Ray tracing's commands (aprendraytracing.h) -------------------------- */
+
+/* Moves [structure] to [after] in [cmd_list], with SpudGPU's barrier from
+ * where the walk has it (NONE before its first use in the list). A write
+ * after a write gets one too. Throws std::bad_alloc. */
+static void aprend_cmd_rt_access(aprend_command_list cmd_list, spudgpu_acceleration_structure structure, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS after) {
+	SPUDGPU_ACCELERATION_STRUCTURE_ACCESS before = SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_NONE;
+	aprend_rt_access *known                      = nullptr;
+	for (aprend_rt_access &access : cmd_list->rt_accesses)
+		if (access.structure == structure)
+			known = &access;
+	if (known)
+		before = known->access;
+	else
+		aprend_push(cmd_list->rt_accesses, aprend_rt_access{structure, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_NONE});
+	if (before == after && after != SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE) {
+		return;
+	}
+	spudgpu_acceleration_structure_barrier barrier{{SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BARRIER, nullptr}, structure, before, after};
+	spudgpu_cmd_acceleration_structure_barrier(cmd_list->cmd_list, &barrier, 1);
+	for (aprend_rt_access &access : cmd_list->rt_accesses)
+		if (access.structure == structure)
+			access.access = after;
+}
+
+/* A geometry's buffer moved to [state] for a build or a copy: a buffer in
+ * UPLOAD memory (one written directly) is never given a barrier, and reads
+ * as it is (spudgpu.h). */
+static void aprend_cmd_rt_source(aprend_command_list cmd_list, aprend_buffer_store *store, SPUDGPU_RESOURCE_STATE state) {
+	aprend_cmd_use_store(cmd_list, store);
+	if (store->staged)
+		aprend_cmd_transition_store(cmd_list, store, state);
+}
+
+/* [bytes] of [data] copied by the GPU, in the list's place, into [store] at
+ * [offset], through the current frame's transient memory. [store] is in
+ * COPY_DEST. False, reported, if the memory can't be taken. */
+static bool aprend_cmd_rt_put(aprend_command_list cmd_list, aprend_buffer_store *store, uint64_t offset, const void *data, uint64_t bytes) {
+	APREND_TRANSIENT_SPAN span{};
+	if (aprend_transient_allocate(cmd_list->instance, bytes, 16, &span, nullptr) != APRESULT_OK) {
+		aprend_cmd_report(cmd_list, APRESULT_APREND_GPU_FAILURE, "BUILD_BLAS: transient memory can't be taken for the BLAS table");
+		return false;
+	}
+	memcpy(span.data, data, (size_t)bytes);
+	const aprend_transient_chunk *chunk = (const aprend_transient_chunk *)span._chunk;
+	spudgpu_cmd_copy_buffer(cmd_list->cmd_list, chunk->buffer, store->buffer, span._offset, offset, bytes);
+	return true;
+}
+
+/* The scratch a run of build commands needs, [first] to [last] (exclusive),
+ * each build's range at the device's alignment. */
+static uint64_t aprend_cmd_rt_run_scratch(aprend_command_list cmd_list, size_t first, size_t last) {
+	const aprend_rt_state *rt = cmd_list->instance->rt;
+	const uint64_t alignment  = rt->limits.scratch_offset_alignment ? rt->limits.scratch_offset_alignment : 256;
+	uint64_t total            = 0;
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		uint64_t size                 = 0;
+		if (command._type == APREND_COMMAND_BUILD_BLAS) {
+			const auto &p = command._params._build_blas;
+			if (p._mode == APREND_BUILD_MODE_BUILD)
+				size = p._blas->build_scratch;
+			else if (p._mode == APREND_BUILD_MODE_REFIT)
+				size = p._blas->update_scratch;
+		} else {
+			size = command._params._build_tlas._tlas->build_scratch;
+		}
+		total = (total + alignment - 1) / alignment * alignment + size;
+	}
+	return total;
+}
+
+/* Where the run of build commands that starts at [first] ends: at the
+ * first command that isn't one, or a BUILD_BLAS of a BLAS the run already
+ * builds, whose second build goes after the first in a run of its own. */
+static size_t aprend_cmd_rt_run_end(aprend_command_list cmd_list, size_t first) {
+	size_t last = first;
+	while (last < cmd_list->commands.size() &&
+	       (cmd_list->commands[last]._type == APREND_COMMAND_BUILD_BLAS || cmd_list->commands[last]._type == APREND_COMMAND_BUILD_TLAS)) {
+		const APREND_COMMAND &command = cmd_list->commands[last];
+		bool repeated                 = false;
+		for (size_t k = first; k < last && command._type == APREND_COMMAND_BUILD_BLAS; ++k)
+			if (cmd_list->commands[k]._type == APREND_COMMAND_BUILD_BLAS && cmd_list->commands[k]._params._build_blas._blas == command._params._build_blas._blas)
+				repeated = true;
+		if (repeated)
+			break;
+		++last;
+	}
+	return last;
+}
+
+/* Before anything of a list is recorded: the builds' scratch grown to what
+ * its largest run needs. False, reported, if it can't be. */
+static bool aprend_cmd_rt_prepare(aprend_command_list cmd_list) {
+	uint64_t largest = 0;
+	for (size_t i = 0; i < cmd_list->commands.size();) {
+		const APREND_COMMAND_TYPE type = cmd_list->commands[i]._type;
+		if (type != APREND_COMMAND_BUILD_BLAS && type != APREND_COMMAND_BUILD_TLAS) {
+			++i;
+			continue;
+		}
+		const size_t last    = aprend_cmd_rt_run_end(cmd_list, i);
+		const uint64_t total = aprend_cmd_rt_run_scratch(cmd_list, i, last);
+		largest              = total > largest ? total : largest;
+		i                    = last;
+	}
+	if (largest == 0)
+		return true;
+	return aprend_rt_prepare_scratch(cmd_list->instance, largest);
+}
+
+/* The BUILD_TLAS commands of [first] to [last] (exclusive), none of one
+ * TLAS twice: each set's written blocks copied into its TLAS's current
+ * records and material table, the instance writers, then the builds in one
+ * call, each its own range of the scratch from [*scratch_at]. False,
+ * reported, if one can't be recorded. Throws std::bad_alloc. */
+static bool aprend_cmd_rt_tlas_group(aprend_command_list cmd_list, size_t first, size_t last, uint64_t *scratch_at) {
+	aprend_instance instance = cmd_list->instance;
+	aprend_rt_state *rt      = instance->rt;
+	spudgpu_command_list cmd = cmd_list->cmd_list;
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_TLAS)
+			continue;
+		aprend_tlas tlas = command._params._build_tlas._tlas;
+		aprend_cmd_use_store(cmd_list, &tlas->records->parts[0].store);
+		aprend_cmd_use_store(cmd_list, &tlas->materials->parts[0].store);
+		aprend_cmd_transition_store(cmd_list, &tlas->records->parts[0].store, SPUDGPU_RESOURCE_STATE_COPY_DEST);
+		aprend_cmd_transition_store(cmd_list, &tlas->materials->parts[0].store, SPUDGPU_RESOURCE_STATE_COPY_DEST);
+	}
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type == APREND_COMMAND_BUILD_TLAS) {
+			// The set's written blocks, a copy region per run of them (D3);
+			// the rest stay as the builds before left them (carried over).
+			aprend_tlas tlas          = command._params._build_tlas._tlas;
+			const aprend_rt_seal seal = aprend_rt_seal_of(command);
+			const aprend_rt_set &set  = tlas->sets[seal.set];
+			const struct {
+				const uint64_t *blocks;
+				uint32_t words;
+				uint32_t total;
+				size_t element;
+				spudgpu_buffer from;
+				spudgpu_buffer to;
+			} parts[2] = {
+			    {tlas->record_blocks + (size_t)seal.set * tlas->record_words, tlas->record_words, tlas->max_instances, sizeof(APREND_RAY_INSTANCE), set.records,
+			     tlas->records->parts[0].store.buffer},
+			    {tlas->material_blocks + (size_t)seal.set * tlas->material_words, tlas->material_words, tlas->max_materials, sizeof(uint32_t), set.materials,
+			     tlas->materials->parts[0].store.buffer},
+			};
+			for (const auto &part : parts) {
+				const uint32_t blocks = (part.total + APREND_RT_BLOCK - 1) / APREND_RT_BLOCK;
+				uint32_t b            = 0;
+				while (b < blocks) {
+					if (!((part.blocks[b / 64] >> (b % 64)) & 1)) {
+						++b;
+						continue;
+					}
+					uint32_t end = b;
+					while (end < blocks && ((part.blocks[end / 64] >> (end % 64)) & 1))
+						++end;
+					const uint64_t begin_element = (uint64_t)b * APREND_RT_BLOCK;
+					uint64_t end_element         = (uint64_t)end * APREND_RT_BLOCK;
+					if (end_element > part.total)
+						end_element = part.total;
+					spudgpu_cmd_copy_buffer(cmd, part.from, part.to, begin_element * part.element, begin_element * part.element,
+					                        (end_element - begin_element) * part.element);
+					b = end;
+				}
+			}
+			continue;
+		}
+	}
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_TLAS)
+			continue;
+		aprend_tlas tlas = command._params._build_tlas._tlas;
+		aprend_cmd_transition_store(cmd_list, &tlas->records->parts[0].store, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+		aprend_cmd_transition_store(cmd_list, &tlas->materials->parts[0].store, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	}
+	// The instance writers: each TLAS's current records in the device's
+	// layout, a slot resolved to its BLAS's current structure (D3).
+	aprend_compute_pipeline writer = aprend_rt_writer_pipeline(instance);
+	if (!writer)
+		return false;
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_TLAS)
+			continue;
+		cmd_list->report_send     = cmd_list->command_sends[i];
+		aprend_tlas tlas          = command._params._build_tlas._tlas;
+		const aprend_rt_seal seal = aprend_rt_seal_of(command);
+		const aprend_rt_set &set  = tlas->sets[seal.set];
+		if (set.instance_count == 0)
+			continue;
+		aprend_binding_set writer_set = aprend_rt_tlas_writer_set(tlas);
+		if (!writer_set)
+			return false;
+		eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+		eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+		images.clear();
+		stores.clear();
+		if (!aprend_pass_images_add_set(cmd_list, images, writer_set, 0, writer->storage_writes))
+			return false;
+		aprend_storage_stores_add_set(stores, writer_set, cmd_list->compiled_frame, 0, writer->storage_writes);
+		aprend_cmd_ready_set_resources(cmd_list, images, stores);
+		aprend_cmd_use_handle(cmd_list, writer_set);
+		spudgpu_cmd_bind_compute_pipeline(cmd, writer->pipeline);
+		spudgpu_cmd_bind_descriptor_sets_compute(cmd, writer->pipeline, 0, &writer_set->sets[0], 1);
+		aprend_rt_writer_params params{};
+		params.count         = set.instance_count;
+		params.instance_size = rt->instance_layout.size;
+		spudgpu_cmd_push_constants_compute(cmd, writer->pipeline, 0, sizeof(params), &params);
+		spudgpu_cmd_dispatch(cmd, (set.instance_count + APREND_RT_WRITER_GROUP - 1) / APREND_RT_WRITER_GROUP, 1, 1);
+	}
+	// The builds, over each set's count and the BLASes its set named at the
+	// seal (residency, D6), each TLAS's from its own array.
+	aprend_buffer_store *scratch = &rt->scratch->parts[0].store;
+	const uint64_t alignment     = rt->limits.scratch_offset_alignment ? rt->limits.scratch_offset_alignment : 256;
+	eq::array<spudgpu_acceleration_structure_build> &builds  = cmd_list->rt_builds;
+	eq::array<spudgpu_acceleration_structure_inputs> &inputs = cmd_list->rt_inputs;
+	builds.clear();
+	inputs.clear();
+	// The builds point into [inputs]: room for all of them first.
+	if (inputs.reserve(last - first) != EQ_SUCCESS || builds.reserve(last - first) != EQ_SUCCESS)
+		throw std::bad_alloc();
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_TLAS)
+			continue;
+		aprend_tlas tlas                      = command._params._build_tlas._tlas;
+		const aprend_rt_seal seal             = aprend_rt_seal_of(command);
+		const aprend_rt_set &set              = tlas->sets[seal.set];
+		aprend_buffer_store *device_instances = &tlas->device_instances->parts[0].store;
+		aprend_cmd_use_store(cmd_list, device_instances);
+		aprend_cmd_transition_store(cmd_list, device_instances, SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT);
+		const uint32_t *levels = tlas->bottom_levels + (size_t)seal.set * tlas->max_instances;
+		for (uint32_t l = 0; l < set.bottom_level_count; ++l)
+			tlas->build_levels[l] = rt->blas_structure[levels[l]];
+		spudgpu_acceleration_structure_inputs in{};
+		in.base.type          = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_INPUTS;
+		in.level              = SPUDGPU_ACCELERATION_STRUCTURE_LEVEL_TOP;
+		in.flags              = SPUDGPU_ACCELERATION_STRUCTURE_BUILD_PREFER_FAST_BUILD;
+		in.instances          = device_instances->buffer;
+		in.instance_count     = set.instance_count;
+		in.bottom_levels      = set.bottom_level_count ? tlas->build_levels : nullptr;
+		in.bottom_level_count = set.bottom_level_count;
+		aprend_push(inputs, in);
+		aprend_cmd_rt_access(cmd_list, tlas->structure, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE);
+		*scratch_at = (*scratch_at + alignment - 1) / alignment * alignment;
+		spudgpu_acceleration_structure_build build{};
+		build.base.type      = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD;
+		build.mode           = SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_BUILD;
+		build.inputs         = &inputs[inputs.size() - 1];
+		build.destination    = tlas->structure;
+		build.scratch        = scratch->buffer;
+		build.scratch_offset = *scratch_at;
+		aprend_push(builds, build);
+		*scratch_at += tlas->build_scratch;
+	}
+	if (builds.empty())
+		return true;
+	const SPUDRESULT sr = spudgpu_cmd_build_acceleration_structures(cmd, builds.data, (uint32_t)builds.size());
+	if (SPUDFAIL(sr)) {
+		aprend_cmd_report(cmd_list, aprend_result_from_spud(sr), "BUILD_TLAS: the builds can't be recorded (%s)", spudresult_str(sr));
+		return false;
+	}
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type == APREND_COMMAND_BUILD_TLAS)
+			aprend_cmd_rt_access(cmd_list, command._params._build_tlas._tlas->structure, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE);
+	}
+	return true;
+}
+
+/* One run of BUILD_BLAS and BUILD_TLAS commands, [first] to [last]
+ * (exclusive), outside a pass, as one build call to the device (T8): the
+ * copies first (each BLAS's table entry and arena range, each TLAS's written
+ * blocks), the BLASes' builds and compactions, one barrier, the instance
+ * writers, the TLASes' builds. False, reported, if a command can't run. */
+static bool aprend_cmd_rt_builds(aprend_command_list cmd_list, size_t first, size_t last) {
+	aprend_instance instance = cmd_list->instance;
+	aprend_rt_state *rt      = instance->rt;
+	spudgpu_command_list cmd = cmd_list->cmd_list;
+	aprend_buffer_store *table = &rt->blas_table->parts[0].store;
+	aprend_buffer_store *arena = &rt->arena->parts[0].store;
+
+	// What each command needs before anything is recorded: a REFIT of a
+	// BLAS built, a COMPACT of one whose compacted size is known, a
+	// BUILD_TLAS whose seal still holds its set.
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		cmd_list->report_send         = cmd_list->command_sends[i];
+		if (command._type == APREND_COMMAND_BUILD_TLAS) {
+			aprend_tlas tlas         = command._params._build_tlas._tlas;
+			const aprend_rt_seal seal = aprend_rt_seal_of(command);
+			const aprend_rt_set &set  = tlas->sets[seal.set];
+			if (set.state != APREND_RT_SET_SEALED || set.sequence != seal.sequence) {
+				aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT,
+				                  "BUILD_TLAS was submitted once already: its set is built and free; send BUILD_TLAS again (card A44)");
+				return false;
+			}
+			aprend_cmd_use_handle(cmd_list, tlas);
+			continue;
+		}
+		aprend_blas blas = command._params._build_blas._blas;
+		aprend_cmd_use_handle(cmd_list, blas);
+		aprend_rt_blas_settle(blas);
+		const APREND_BUILD_MODE mode = command._params._build_blas._mode;
+		if (mode == APREND_BUILD_MODE_REFIT && !blas->built && blas->built_serial == 0 &&
+		    !rt->blas_built[aprend_rt_slot_index(blas->slot)]) {
+			aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "BUILD_BLAS: APREND_BUILD_MODE_REFIT of a BLAS never built");
+			return false;
+		}
+		if (mode == APREND_BUILD_MODE_COMPACT && blas->compacted_size == 0) {
+			aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "BUILD_BLAS: APREND_BUILD_MODE_COMPACT of a BLAS whose compacted size isn't known yet (aprend_blas_get_info)");
+			return false;
+		}
+		if (mode == APREND_BUILD_MODE_COMPACT && !blas->full) {
+			aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "BUILD_BLAS: APREND_BUILD_MODE_COMPACT of a BLAS already compacted");
+			return false;
+		}
+	}
+
+	// The structures each command writes: a COMPACT's compacted one, and a
+	// full-size one again for a BUILD of a compacted BLAS (T4), made now.
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_BLAS)
+			continue;
+		cmd_list->report_send = cmd_list->command_sends[i];
+		aprend_blas blas      = command._params._build_blas._blas;
+		const uint32_t index  = aprend_rt_slot_index(blas->slot);
+		switch (command._params._build_blas._mode) {
+		case APREND_BUILD_MODE_COMPACT:
+			if (!aprend_rt_blas_retire_pending(blas) || !aprend_rt_blas_make_compact(blas))
+				return false;
+			blas->retiring            = blas->full;
+			blas->retiring_serial     = 0;
+			blas->full                = nullptr;
+			rt->blas_structure[index] = blas->compact;
+			break;
+		case APREND_BUILD_MODE_BUILD:
+			// Its compacted size is this build's, read back once it has run.
+			if (!blas->deforms)
+				blas->compacted_size = 0;
+			if (!blas->full) {
+				if (!aprend_rt_blas_retire_pending(blas) || !aprend_rt_blas_make_full(blas))
+					return false;
+				blas->retiring            = blas->compact;
+				blas->retiring_serial     = 0;
+				blas->compact             = nullptr;
+				rt->blas_structure[index] = blas->full;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	// The copies: the BLAS table and the arena, and each TLAS's current
+	// records and material table, into COPY_DEST; the geometries' buffers
+	// into COPY_SOURCE.
+	aprend_cmd_use_store(cmd_list, table);
+	aprend_cmd_use_store(cmd_list, arena);
+	aprend_cmd_transition_store(cmd_list, table, SPUDGPU_RESOURCE_STATE_COPY_DEST);
+	aprend_cmd_transition_store(cmd_list, arena, SPUDGPU_RESOURCE_STATE_COPY_DEST);
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type == APREND_COMMAND_BUILD_TLAS)
+			continue;
+		const auto &p = command._params._build_blas;
+		if (p._mode == APREND_BUILD_MODE_COMPACT)
+			continue;
+		for (uint32_t g = 0; g < p._blas->geometry_count; ++g) {
+			const aprend_rt_geometry &geometry = p._blas->geometries[g];
+			aprend_cmd_rt_source(cmd_list, &geometry.vertices->parts[0].store, SPUDGPU_RESOURCE_STATE_COPY_SOURCE);
+			if (geometry.indices)
+				aprend_cmd_rt_source(cmd_list, &geometry.indices->parts[0].store, SPUDGPU_RESOURCE_STATE_COPY_SOURCE);
+		}
+	}
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		cmd_list->report_send         = cmd_list->command_sends[i];
+		if (command._type == APREND_COMMAND_BUILD_TLAS)
+			continue;
+		const auto &p = command._params._build_blas;
+		aprend_blas blas     = p._blas;
+		const uint32_t index = aprend_rt_slot_index(blas->slot);
+		// The table entry: the structure every TLAS built after this reads,
+		// and where the BLAS's geometries are in the arena (D5).
+		if (p._mode != APREND_BUILD_MODE_REFIT) {
+			uint64_t reference = 0;
+			(void)spudgpu_get_acceleration_structure_reference(rt->blas_structure[index], &reference);
+			aprend_rt_blas_entry entry{};
+			entry.reference[0]   = (uint32_t)reference;
+			entry.reference[1]   = (uint32_t)(reference >> 32);
+			entry.arena_word     = (uint32_t)((uint64_t)blas->arena_offset * APREND_RT_ARENA_UNIT / 4);
+			entry.geometry_count = blas->geometry_count;
+			if (!aprend_cmd_rt_put(cmd_list, table, (uint64_t)index * sizeof(entry), &entry, sizeof(entry)))
+				return false;
+		}
+		if (p._mode == APREND_BUILD_MODE_COMPACT)
+			continue;
+		// The arena (card A41): the headers at a BUILD, the vertices at a BUILD
+		// or a REFIT, the indices at a BUILD.
+		if (p._mode == APREND_BUILD_MODE_BUILD) {
+			aprend_rt_geometry_header headers[16];
+			const uint64_t header_base = (uint64_t)blas->arena_offset * APREND_RT_ARENA_UNIT;
+			for (uint32_t g = 0; g < blas->geometry_count; g += 16) {
+				const uint32_t n = blas->geometry_count - g < 16 ? blas->geometry_count - g : 16;
+				for (uint32_t k = 0; k < n; ++k) {
+					const aprend_rt_geometry &geometry = blas->geometries[g + k];
+					headers[k].vertex_word             = (uint32_t)(geometry.arena_vertices / 4);
+					headers[k].index_word              = geometry.indices ? (uint32_t)(geometry.arena_indices / 4) : UINT32_MAX;
+					headers[k].triangle_count          = geometry.triangle_count;
+					headers[k].indexed                 = geometry.indices ? 1u : 0u;
+				}
+				if (!aprend_cmd_rt_put(cmd_list, arena, header_base + (uint64_t)g * sizeof(aprend_rt_geometry_header), headers, n * sizeof(aprend_rt_geometry_header)))
+					return false;
+			}
+		}
+		for (uint32_t g = 0; g < blas->geometry_count; ++g) {
+			const aprend_rt_geometry &geometry = blas->geometries[g];
+			spudgpu_cmd_copy_buffer(cmd, geometry.vertices->parts[0].store.buffer, arena->buffer, geometry.vertex_offset, geometry.arena_vertices,
+			                        (uint64_t)geometry.vertex_count * APREND_RT_VERTEX_STRIDE);
+			if (geometry.indices && p._mode == APREND_BUILD_MODE_BUILD)
+				spudgpu_cmd_copy_buffer(cmd, geometry.indices->parts[0].store.buffer, arena->buffer, geometry.index_offset, geometry.arena_indices,
+				                        (uint64_t)geometry.index_count * 4);
+		}
+	}
+
+	// The builds read the geometries; scratch is a build's.
+	aprend_buffer_store *scratch = &rt->scratch->parts[0].store;
+	aprend_cmd_use_store(cmd_list, scratch);
+	// A run before this one in the list wrote the same scratch ranges: a
+	// SCRATCH to SCRATCH barrier orders the two (card S25).
+	bool scratch_tracked = false;
+	for (const auto &tracked : cmd_list->buffer_states)
+		if (tracked.store == scratch && tracked.state == SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH)
+			scratch_tracked = true;
+	if (scratch_tracked) {
+		spudgpu_buffer_barrier barrier{{SPUD_STRUCT_TYPE_GPU_BUFFER_BARRIER, nullptr}, scratch->buffer, SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH,
+		                               SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH};
+		spudgpu_cmd_pipeline_barrier(cmd, &barrier, 1, nullptr, 0);
+	}
+	aprend_cmd_transition_store(cmd_list, scratch, SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SCRATCH);
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_BLAS || command._params._build_blas._mode == APREND_BUILD_MODE_COMPACT)
+			continue;
+		const aprend_blas blas = command._params._build_blas._blas;
+		for (uint32_t g = 0; g < blas->geometry_count; ++g) {
+			aprend_cmd_rt_source(cmd_list, &blas->geometries[g].vertices->parts[0].store, SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT);
+			if (blas->geometries[g].indices)
+				aprend_cmd_rt_source(cmd_list, &blas->geometries[g].indices->parts[0].store, SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_BUILD_INPUT);
+		}
+	}
+
+	// The compactions, from structures built by earlier submissions.
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_BLAS || command._params._build_blas._mode != APREND_BUILD_MODE_COMPACT)
+			continue;
+		aprend_blas blas = command._params._build_blas._blas;
+		aprend_cmd_rt_access(cmd_list, blas->retiring, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ);
+		aprend_cmd_rt_access(cmd_list, blas->compact, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE);
+		cmd_list->report_send = cmd_list->command_sends[i];
+		const SPUDRESULT sr = spudgpu_cmd_copy_acceleration_structure(cmd, blas->retiring, blas->compact, SPUDGPU_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+		if (SPUDFAIL(sr)) {
+			aprend_cmd_report(cmd_list, aprend_result_from_spud(sr), "BUILD_BLAS: the compaction can't be recorded (%s)", spudresult_str(sr));
+			return false;
+		}
+	}
+
+	// Every BLAS build and refit of the run in one call (T8), each its own
+	// range of the scratch.
+	const uint64_t alignment = rt->limits.scratch_offset_alignment ? rt->limits.scratch_offset_alignment : 256;
+	uint64_t scratch_at      = 0;
+	eq::array<spudgpu_acceleration_structure_build> &builds     = cmd_list->rt_builds;
+	eq::array<spudgpu_acceleration_structure_inputs> &inputs    = cmd_list->rt_inputs;
+	eq::array<spudgpu_acceleration_structure_geometry> &geometries = cmd_list->rt_geometries;
+	builds.clear();
+	inputs.clear();
+	geometries.clear();
+	// Room for every input and geometry of the run first: the builds point
+	// into these arrays.
+	size_t geometry_total = 0;
+	for (size_t i = first; i < last; ++i)
+		if (cmd_list->commands[i]._type == APREND_COMMAND_BUILD_BLAS)
+			geometry_total += cmd_list->commands[i]._params._build_blas._blas->geometry_count;
+	if (inputs.reserve(last - first) != EQ_SUCCESS || builds.reserve(last - first) != EQ_SUCCESS || geometries.reserve(geometry_total) != EQ_SUCCESS)
+		throw std::bad_alloc();
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_BLAS || command._params._build_blas._mode == APREND_BUILD_MODE_COMPACT)
+			continue;
+		aprend_blas blas         = command._params._build_blas._blas;
+		const bool refit         = command._params._build_blas._mode == APREND_BUILD_MODE_REFIT;
+		const size_t first_geom  = geometries.size();
+		(void)geometries.resize(first_geom + blas->geometry_count);
+		spudgpu_acceleration_structure_inputs in{};
+		aprend_rt_blas_describe(blas, geometries.data + first_geom, &in);
+		aprend_push(inputs, in);
+		aprend_cmd_rt_access(cmd_list, blas->full, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_WRITE);
+		scratch_at = (scratch_at + alignment - 1) / alignment * alignment;
+		spudgpu_acceleration_structure_build build{};
+		build.base.type      = SPUD_STRUCT_TYPE_GPU_ACCELERATION_STRUCTURE_BUILD;
+		build.mode           = refit ? SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_UPDATE : SPUDGPU_ACCELERATION_STRUCTURE_BUILD_MODE_BUILD;
+		build.inputs         = &inputs[inputs.size() - 1];
+		build.source         = refit ? blas->full : nullptr;
+		build.destination    = blas->full;
+		build.scratch        = scratch->buffer;
+		build.scratch_offset = scratch_at;
+		aprend_push(builds, build);
+		scratch_at += refit ? blas->update_scratch : blas->build_scratch;
+	}
+	if (!builds.empty()) {
+		const SPUDRESULT sr = spudgpu_cmd_build_acceleration_structures(cmd, builds.data, (uint32_t)builds.size());
+		if (SPUDFAIL(sr)) {
+			aprend_cmd_report(cmd_list, aprend_result_from_spud(sr), "BUILD_BLAS: the builds can't be recorded (%s)", spudresult_str(sr));
+			return false;
+		}
+	}
+	const size_t blas_build_count = builds.size();
+
+	// A static BLAS's compacted size, written once its build is done and
+	// read back once its submission has completed (T4).
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_BLAS || command._params._build_blas._mode != APREND_BUILD_MODE_BUILD)
+			continue;
+		aprend_blas blas = command._params._build_blas._blas;
+		if (blas->deforms)
+			continue;
+		aprend_buffer_store *sizes = &blas->size_device->parts[0].store;
+		aprend_cmd_use_store(cmd_list, sizes);
+		aprend_cmd_rt_access(cmd_list, blas->full, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ);
+		aprend_cmd_transition_store(cmd_list, sizes, SPUDGPU_RESOURCE_STATE_ACCELERATION_STRUCTURE_SIZE_DEST);
+		SPUDRESULT sr = spudgpu_cmd_write_acceleration_structure_compacted_sizes(cmd, &blas->full, 1, sizes->buffer, 0);
+		if (SPUDFAIL(sr)) {
+			aprend_cmd_report(cmd_list, aprend_result_from_spud(sr), "BUILD_BLAS: the compacted size can't be written (%s)", spudresult_str(sr));
+			return false;
+		}
+		aprend_cmd_transition_store(cmd_list, sizes, SPUDGPU_RESOURCE_STATE_COPY_SOURCE);
+		spudgpu_cmd_copy_buffer(cmd, sizes->buffer, blas->size_readback, 0, 0, sizeof(uint64_t));
+	}
+
+	// The tables are read now: by the writers, and by later traces.
+	aprend_cmd_transition_store(cmd_list, table, table->use_state);
+	aprend_cmd_transition_store(cmd_list, arena, arena->use_state);
+	bool any_tlas = false;
+	for (size_t i = first; i < last; ++i)
+		if (cmd_list->commands[i]._type == APREND_COMMAND_BUILD_TLAS)
+			any_tlas = true;
+	if (any_tlas) {
+		// A structure built earlier in the list and traced since is read by
+		// these builds as a bottom level: ordered after its build.
+		for (size_t k = 0; k < cmd_list->rt_accesses.size(); ++k)
+			if (cmd_list->rt_accesses[k].access == SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE)
+				aprend_cmd_rt_access(cmd_list, cmd_list->rt_accesses[k].structure, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ);
+		// One barrier between the BLASes and the TLASes (T8).
+		for (size_t i = first; i < last; ++i) {
+			const APREND_COMMAND &command = cmd_list->commands[i];
+			if (command._type == APREND_COMMAND_BUILD_BLAS) {
+				aprend_blas blas = command._params._build_blas._blas;
+				aprend_cmd_rt_access(cmd_list, blas->full ? blas->full : blas->compact, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_BUILD_READ);
+			}
+		}
+		// The TLASes in groups in which none repeats: a TLAS built twice in
+		// a run writes its current records and its structure twice, in the
+		// order sent, so its second build is a group of its own. A group is
+		// one build call (T8).
+		size_t at = first;
+		while (at < last) {
+			size_t end = at;
+			for (; end < last; ++end) {
+				const APREND_COMMAND &command = cmd_list->commands[end];
+				if (command._type != APREND_COMMAND_BUILD_TLAS)
+					continue;
+				bool repeated = false;
+				for (size_t k = at; k < end; ++k)
+					if (cmd_list->commands[k]._type == APREND_COMMAND_BUILD_TLAS &&
+					    cmd_list->commands[k]._params._build_tlas._tlas == command._params._build_tlas._tlas)
+						repeated = true;
+				if (repeated)
+					break;
+			}
+			if (!aprend_cmd_rt_tlas_group(cmd_list, at, end, &scratch_at))
+				return false;
+			at = end;
+		}
+	}
+	// What was built is traced from here on; the geometries' buffers go
+	// back to the state their draws read them in.
+	for (size_t i = first; i < last; ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type != APREND_COMMAND_BUILD_BLAS)
+			continue;
+		aprend_blas blas = command._params._build_blas._blas;
+		aprend_cmd_rt_access(cmd_list, blas->full ? blas->full : blas->compact, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE);
+		if (command._params._build_blas._mode == APREND_BUILD_MODE_COMPACT)
+			continue;
+		for (uint32_t g = 0; g < blas->geometry_count; ++g) {
+			aprend_buffer_store *vertices = &blas->geometries[g].vertices->parts[0].store;
+			aprend_cmd_rt_source(cmd_list, vertices, vertices->use_state);
+			if (blas->geometries[g].indices) {
+				aprend_buffer_store *indices = &blas->geometries[g].indices->parts[0].store;
+				aprend_cmd_rt_source(cmd_list, indices, indices->use_state);
+			}
+		}
+	}
+	(void)blas_build_count;
+	return true;
+}
+
+
+/* [view]'s size at its mip. */
+static void aprend_cmd_rt_view_size(aprend_texture_view view, uint32_t *out_width, uint32_t *out_height) {
+	*out_width  = aprend_mip_size(view->texture._t2d->desc.width, view->desc.base_mip);
+	*out_height = aprend_mip_size(view->texture._t2d->desc.height, view->desc.base_mip);
+}
+
+/* What a trace of [scene] through [tlas] at [width] by [height] needs before
+ * it is recorded, [who] the command: a TLAS built, the scene's view of that
+ * target size with a view_projection that can be inverted, and the scene's
+ * block copied by the submission. False, reported, if not. */
+static bool aprend_cmd_rt_trace_ready(aprend_command_list cmd_list, const char *who, aprend_lit_scene scene, aprend_tlas tlas, uint32_t width, uint32_t height) {
+	if (!tlas->sent_build) {
+		aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the TLAS has never been built (no BUILD_TLAS of it sent)", who);
+		return false;
+	}
+	if ((float)width != scene->block.target_size[0] || (float)height != scene->block.target_size[1]) {
+		aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the target is %ux%u, and the scene's view's target %gx%g", who, width, height,
+		                  (double)scene->block.target_size[0], (double)scene->block.target_size[1]);
+		return false;
+	}
+	// aprend_lit_scene_set_view() leaves the inverse 0 where the matrix has
+	// none.
+	bool inverse = false;
+	for (float v : scene->block.inverse_view_projection)
+		inverse = inverse || v != 0.0f;
+	if (!inverse) {
+		aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the scene's view_projection can't be inverted", who);
+		return false;
+	}
+	aprend_cmd_use_handle(cmd_list, tlas);
+	return aprend_cmd_use_material(cmd_list, scene->material);
+}
+
+/* One traced dispatch of [pipeline] over [sets] (the scene's, the TLAS's,
+ * the outputs'), [push] its parameters, [groups] its groups: each set's
+ * resources made ready as any dispatch's are, the TLAS moved to be traced.
+ * False, reported, if a set can't be read. Throws std::bad_alloc. */
+static bool aprend_cmd_rt_dispatch(aprend_command_list cmd_list, aprend_compute_pipeline pipeline, aprend_tlas tlas, aprend_binding_set const (&sets)[3],
+                                   const void *push, uint32_t push_size, uint32_t groups_x, uint32_t groups_y) {
+	eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+	eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+	images.clear();
+	stores.clear();
+	for (uint32_t slot = 0; slot < 3; ++slot) {
+		if (!aprend_pass_images_add_set(cmd_list, images, sets[slot], slot, pipeline->storage_writes))
+			return false;
+		aprend_storage_stores_add_set(stores, sets[slot], cmd_list->compiled_frame, slot, pipeline->storage_writes);
+		aprend_cmd_use_handle(cmd_list, sets[slot]);
+	}
+	for (const aprend_pass_store &store : stores)
+		aprend_cmd_use_store(cmd_list, store.store);
+	aprend_cmd_ready_set_resources(cmd_list, images, stores);
+	aprend_cmd_rt_access(cmd_list, tlas->structure, SPUDGPU_ACCELERATION_STRUCTURE_ACCESS_TRACE);
+	spudgpu_command_list cmd = cmd_list->cmd_list;
+	spudgpu_cmd_bind_compute_pipeline(cmd, pipeline->pipeline);
+	for (uint32_t slot = 0; slot < 3; ++slot)
+		spudgpu_cmd_bind_descriptor_sets_compute(cmd, pipeline->pipeline, slot, &sets[slot]->sets[aprend_binding_set_frame_slot(sets[slot], cmd_list->compiled_frame)], 1);
+	spudgpu_cmd_push_constants_compute(cmd, pipeline->pipeline, 0, push_size, push);
+	spudgpu_cmd_dispatch(cmd, groups_x, groups_y, 1);
+	return true;
+}
+
+/* LIT_SHADOW_MASK, outside a pass (T9): the mask traced over the depth and
+ * written into the target, its write ordered before a later read of it.
+ * False, reported, if the depth has nothing in it, the scene's view doesn't
+ * fit it, the TLAS was never built, or a pipeline or set can't be made. */
+static bool aprend_cmd_rt_shadow_mask(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p            = command._params._lit_shadow_mask;
+	aprend_instance instance = cmd_list->instance;
+	aprend_rt_state *rt      = instance->rt;
+	if (!aprend_cmd_range_written(cmd_list, aprend_texture_view_range(p._depth))) {
+		aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "LIT_SHADOW_MASK: the depth has nothing in it, from before the list or earlier in it");
+		return false;
+	}
+	uint32_t width = 0, height = 0;
+	aprend_cmd_rt_view_size(p._depth, &width, &height);
+	if (!aprend_cmd_rt_trace_ready(cmd_list, "LIT_SHADOW_MASK", p._scene, p._tlas, width, height))
+		return false;
+	aprend_compute_pipeline pipeline = aprend_rt_mask_pipeline(instance, p._target->texture._t2d->desc.format);
+	if (!pipeline)
+		return false;
+	APREND_BINDING_SET_ENTRY outputs[2]{};
+	outputs[0]._binding                 = 0;
+	outputs[0]._type                    = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	outputs[0]._resource._image._view   = p._depth;
+	outputs[1]._binding                 = 1;
+	outputs[1]._type                    = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	outputs[1]._resource._image._view   = p._target;
+	const aprend_texture_view others[2] = {p._depth, nullptr};
+	aprend_binding_set sets[3]          = {aprend_lit_scene_rt_set(p._scene, rt->scene_layout), aprend_rt_tlas_trace_set(p._tlas),
+	                                       aprend_rt_output_set(p._target, rt->mask_output_layout, others, outputs, 2)};
+	if (!sets[0] || !sets[1] || !sets[2])
+		return false;
+	aprend_rt_mask_params params{};
+	params.size[0]       = width;
+	params.size[1]       = height;
+	params.ray_count     = p._ray_count;
+	params.filter_radius = p._filter_radius;
+	params.cull_mask     = p._cull_mask;
+	params.normal_offset = p._normal_offset;
+	params.max_distance  = p._max_distance;
+	params.light         = p._light;
+	return aprend_cmd_rt_dispatch(cmd_list, pipeline, p._tlas, sets, &params, sizeof(params), (width + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP,
+	                              (height + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP);
+}
+
+
+/* LIT_PATH_TRACE, outside a pass (T10, T11): the TLAS's emitter table built
+ * first if anything it reads changed since it was (D6), then one dispatch
+ * adding _samples paths a pixel to the target's running mean, and the
+ * guides'. False, reported, if the cull mask lets in an instance that
+ * reaches a NULL material table entry (T7), the scene's view doesn't fit
+ * the target, the TLAS was never built, or a pipeline or set can't be
+ * made. */
+static bool aprend_cmd_rt_path_trace(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p            = command._params._lit_path_trace;
+	aprend_instance instance = cmd_list->instance;
+	aprend_rt_state *rt      = instance->rt;
+	aprend_tlas tlas         = p._tlas;
+	uint32_t width = 0, height = 0;
+	aprend_cmd_rt_view_size(p._target, &width, &height);
+	if (!aprend_cmd_rt_trace_ready(cmd_list, "LIT_PATH_TRACE", p._scene, tlas, width, height))
+		return false;
+	const uint32_t null_instance = aprend_rt_null_instance(tlas, p._cull_mask);
+	if (null_instance != UINT32_MAX) {
+		aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT,
+		                  "LIT_PATH_TRACE: instance %u reaches a NULL entry of the TLAS's material table (one only shadows see), and _cull_mask 0x%x lets it in",
+		                  null_instance, p._cull_mask);
+		return false;
+	}
+	aprend_texture_view albedo = p._albedo ? p._albedo : aprend_rt_no_guide(instance);
+	aprend_texture_view normal = p._normal ? p._normal : aprend_rt_no_guide(instance);
+	if (!albedo || !normal)
+		return false;
+	aprend_compute_pipeline pipeline = aprend_rt_path_pipeline(instance, albedo->texture._t2d->desc.format, normal->texture._t2d->desc.format);
+	if (!pipeline)
+		return false;
+	// A path trace reads the lit-material table: its submission copies the
+	// entries staged since (D4).
+	cmd_list->rt_reads_lit = true;
+	aprend_cmd_use_store(cmd_list, &rt->lit_table->parts[0].store);
+
+	// The emitter table, rebuilt only when what it reads changed (D6); taken
+	// as current once this list is submitted.
+	if (tlas->emitters_content != tlas->content_version || tlas->emitters_lit != rt->lit_version) {
+		aprend_compute_pipeline emitters = aprend_rt_emitter_pipeline(instance);
+		if (!emitters)
+			return false;
+		aprend_binding_set set = aprend_rt_tlas_emitter_set(tlas);
+		if (!set)
+			return false;
+		eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+		eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+		images.clear();
+		stores.clear();
+		aprend_storage_stores_add_set(stores, set, cmd_list->compiled_frame, 0, emitters->storage_writes);
+		for (const aprend_pass_store &store : stores)
+			aprend_cmd_use_store(cmd_list, store.store);
+		aprend_cmd_ready_set_resources(cmd_list, images, stores);
+		aprend_cmd_use_handle(cmd_list, set);
+		spudgpu_command_list cmd = cmd_list->cmd_list;
+		spudgpu_cmd_bind_compute_pipeline(cmd, emitters->pipeline);
+		spudgpu_cmd_bind_descriptor_sets_compute(cmd, emitters->pipeline, 0, &set->sets[0], 1);
+		aprend_rt_emitter_params params{};
+		params.count          = tlas->built_count;
+		params.material_count = tlas->max_materials;
+		spudgpu_cmd_push_constants_compute(cmd, emitters->pipeline, 0, sizeof(params), &params);
+		spudgpu_cmd_dispatch(cmd, 1, 1, 1);
+		tlas->emitters_pending_content = tlas->content_version;
+		tlas->emitters_pending_lit     = rt->lit_version;
+		tlas->emitters_pending_list    = cmd_list;
+	}
+
+	APREND_BINDING_SET_ENTRY outputs[3]{};
+	const aprend_texture_view views[3] = {p._target, albedo, normal};
+	for (uint32_t i = 0; i < 3; ++i) {
+		outputs[i]._binding               = i;
+		outputs[i]._type                  = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		outputs[i]._resource._image._view = views[i];
+	}
+	const aprend_texture_view others[2] = {albedo, normal};
+	aprend_binding_set sets[3]          = {aprend_lit_scene_rt_set(p._scene, rt->scene_layout), aprend_rt_tlas_trace_set(tlas),
+	                                       aprend_rt_output_set(p._target, rt->path_output_layout, others, outputs, 3)};
+	if (!sets[0] || !sets[1] || !sets[2])
+		return false;
+	aprend_rt_trace_params params{};
+	params.size[0]        = width;
+	params.size[1]        = height;
+	params.samples        = p._samples;
+	params.accumulated    = p._accumulated;
+	params.seed           = p._seed;
+	params.max_bounces    = p._max_bounces;
+	params.cull_mask      = p._cull_mask;
+	params.clamp          = p._clamp;
+	params.guides         = (p._albedo ? 1u : 0u) | (p._normal ? 2u : 0u);
+	params.instance_count = tlas->built_count;
+	params.material_count = tlas->max_materials;
+	return aprend_cmd_rt_dispatch(cmd_list, pipeline, tlas, sets, &params, sizeof(params), (width + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP,
+	                              (height + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP);
+}
+
 /* Whether [cmd_list] holds a LIT_CULL_LIGHTS of [scene], which then culls
  * its lights where it stands, in place of the cull at the list's top. */
 static bool aprend_cmd_list_culls(aprend_command_list cmd_list, aprend_lit_scene scene) {
@@ -3508,8 +4351,10 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 	// Every vector of the list and of this walk can throw std::bad_alloc,
 	// which must not leave the C entry point: the list is closed below and
 	// the compile fails.
+	cmd_list->rt_accesses.clear();
+	cmd_list->rt_reads_lit = false;
 	try {
-		ok = aprend_cmd_prepare_lit_scenes(cmd_list);
+		ok = (!instance->rt || aprend_cmd_rt_prepare(cmd_list)) && aprend_cmd_prepare_lit_scenes(cmd_list);
 
 		// Nothing more is recorded once something has failed, the top of the
 		// list (aprend_cmd_prepare_lit_scenes) included.
@@ -4000,6 +4845,35 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 				bound_compute_pipeline = nullptr;
 				break;
 			}
+			case APREND_COMMAND_BUILD_BLAS:
+			case APREND_COMMAND_BUILD_TLAS: {
+				if (in_pass) {
+					aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s inside a rendering pass", aprend_rt_command_name(command._type));
+					ok = false;
+					break;
+				}
+				// The run of build commands that starts here, as one build call
+				// (T8); the walk goes on after it.
+				const size_t run_end = aprend_cmd_rt_run_end(cmd_list, command_index);
+				ok                   = aprend_cmd_rt_builds(cmd_list, command_index, run_end);
+				command_index        = run_end - 1;
+				bound_compute_pipeline = nullptr;
+				break;
+			}
+			case APREND_COMMAND_LIT_SHADOW_MASK:
+			case APREND_COMMAND_LIT_PATH_TRACE: {
+				if (in_pass) {
+					aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s inside a rendering pass", aprend_rt_command_name(command._type));
+					ok = false;
+					break;
+				}
+				if (command._type == APREND_COMMAND_LIT_SHADOW_MASK)
+					ok = aprend_cmd_rt_shadow_mask(cmd_list, command);
+				else
+					ok = aprend_cmd_rt_path_trace(cmd_list, command);
+				bound_compute_pipeline = nullptr;
+				break;
+			}
 			case APREND_COMMAND_BEGIN_LABEL:
 				try {
 					aprend_push(open_labels, (uint8_t)in_pass);
@@ -4133,6 +5007,10 @@ APRESULT aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_comman
 		}
 	}
 
+	// Builds of one TLAS go in the order they were sent (T5).
+	if (cmd_list->instance->rt && !aprend_rt_submit_order_ok(cmd_list))
+		return scope.failed(APRESULT_INVALID_ARGUMENT, "the list's BUILD_TLAS was sent after another list's, not yet submitted");
+
 	// Whatever was written to the list's staged buffers since they were last
 	// copied goes across first, in the same submission, so the list's own
 	// commands read what the caller last wrote; and so do the uniform blocks
@@ -4145,6 +5023,10 @@ APRESULT aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_comman
 		for (aprend_material material : cmd_list->materials)
 			if (!aprend_material_stage_uploads(material, copies))
 				return scope.failed(APRESULT_APREND_GPU_FAILURE, "a material's uniform blocks can't be staged");
+		// A path trace reads the lit-material table: the entries staged since
+		// it was last copied go across ahead of it (D4).
+		if (cmd_list->rt_reads_lit && !aprend_rt_stage_lit(cmd_list->instance, copies))
+			return scope.failed(APRESULT_APREND_GPU_FAILURE, "the lit-material table's entries can't be staged");
 		SPUDRESULT sr = aprend_cmd_record_uploads(cmd_list, copies, &upload);
 		if (SPUDFAIL(sr)) {
 			return aprend_fail_spud(out_error, sr, "taking a SpudGPU command list for the list's uploads failed");
@@ -4164,10 +5046,15 @@ APRESULT aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_comman
 	// frame without being told which that was. With a swap chain the
 	// submission also waits for the acquire to finish and signals
 	// presentation.
-	if (const APRESULT submitted = aprend_instance_submit(cmd_list->instance, queue, lists, list_count, sc ? sc->swap_chain : nullptr, nullptr, out_error))
+	uint64_t serial = 0;
+	if (const APRESULT submitted = aprend_instance_submit(cmd_list->instance, queue, lists, list_count, sc ? sc->swap_chain : nullptr, &serial, out_error))
 		return submitted;
 	if (sc)
 		sc->submitted = true;
+	// Its builds' sets, BLASes and staged lit-material entries are this
+	// submission's now.
+	if (cmd_list->instance->rt)
+		aprend_rt_submitted(cmd_list, serial);
 
 	// Copied only now that the submission is in: a failed one leaves the
 	// uploads for the next. A buffer an upload owns is retired, released

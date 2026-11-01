@@ -1,6 +1,7 @@
 
 #include "render/aprendcontext.h"
 #include "aprend_internal.hpp"
+#include "aprendraytracing_internal.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -62,6 +63,7 @@ aprend_instance_t::~aprend_instance_t() {
 	}
 	// Onto the release queue first, so the loop below releases them in
 	// order with everything else.
+	aprend_rt_state_destroy(this);
 	aprend_builtins_destroy(this);
 	aprend_render_target_pool_destroy(this);
 	// Whatever is still queued goes now: the instance is the last thing that
@@ -78,7 +80,9 @@ aprend_instance_t::~aprend_instance_t() {
 		entry.release(entry.object);
 	}
 	// Every material has been released with the queue, and given its range
-	// back: the arena's buffers are all that is left of it.
+	// back: the arena's buffers are all that is left of it. Each lit material
+	// has given its slot back to ray tracing's tables, which go now.
+	aprend_rt_state_free(this);
 	aprend_material_arena_destroy(this);
 	// Nothing reads a transient span any more.
 	aprend_transient_arena_destroy(this);
