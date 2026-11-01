@@ -25,6 +25,9 @@ const APAUDIO_VIRTUAL_KILL = 1
 const APAUDIO_VIRTUAL_PAUSE = 4
 const APAUDIO_VIRTUAL_RESTART = 3
 const APAUDIO_VIRTUAL_UNSPECIFIED = 0
+const APMATH_OVERLAP_NONE = 0
+const APMATH_OVERLAP_PARTIAL = 1
+const APMATH_OVERLAP_WHOLE = 2
 const APMATH_POLY_DEFECT_EDGES_MEET = 4
 const APMATH_POLY_DEFECT_HOLE_OUTSIDE = 6
 const APMATH_POLY_DEFECT_NONE = 0
@@ -437,6 +440,7 @@ fn apjobs_pool_destroy void (apjobs_pool)
 fn apjobs_pool_get_scheduler APRESULT (apjobs_pool, APJOBS_SCHEDULER *)
 fn apjobs_run APRESULT (const APJOBS_SCHEDULER *, APJOBS_TASK_FUNCTION, uint32_t, uint32_t, void *)
 fn apjobs_scheduler_check APRESULT (const APJOBS_SCHEDULER *, APJOBS_ERROR *)
+fn apmath_aabb_test_volume APMATH_OVERLAP (const APMATH_AABB *, const ApriDMat4 *, const APMATH_VOLUME *)
 fn apmath_instance_bvh_cast _Bool (apmath_instance_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_INSTANCE_HIT *)
 fn apmath_instance_bvh_cast_all uint32_t (apmath_instance_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_INSTANCE_HIT *, uint32_t)
 fn apmath_instance_bvh_create APRESULT (const APMATH_INSTANCE_BVH_DESC *, apmath_instance_bvh *)
@@ -448,6 +452,8 @@ fn apmath_mesh_bvh_create APRESULT (const APMATH_MESH_BVH_DESC *, apmath_mesh_bv
 fn apmath_mesh_bvh_destroy void (apmath_mesh_bvh)
 fn apmath_mesh_bvh_get_bounds APMATH_AABB (apmath_mesh_bvh)
 fn apmath_mesh_bvh_get_triangle_count uint32_t (apmath_mesh_bvh)
+fn apmath_mesh_bvh_overlaps_volume _Bool (apmath_mesh_bvh, const ApriDMat4 *, const APMATH_VOLUME *)
+fn apmath_mesh_bvh_within_volume _Bool (apmath_mesh_bvh, const ApriDMat4 *, const APMATH_VOLUME *)
 fn apmath_poly_boolean APRESULT (const APMATH_POLY_BOOLEAN_DESC *, apmath_poly *, APMATH_ERROR *)
 fn apmath_poly_destroy void (apmath_poly)
 fn apmath_poly_get_set APMATH_POLY_SET (apmath_poly)
@@ -1054,6 +1060,9 @@ field APMATH_MESH_HIT.back_face @4 _Bool
 field APMATH_MESH_HIT.t @8 double
 field APMATH_MESH_HIT.point @16 ApriDVec3
 field APMATH_MESH_HIT.normal @40 ApriDVec3
+struct APMATH_PLANE size=32 align=8
+field APMATH_PLANE.normal @0 ApriDVec3
+field APMATH_PLANE.d @24 double
 struct APMATH_POLY_BOOLEAN_DESC size=120 align=8
 field APMATH_POLY_BOOLEAN_DESC.base @0 APRI_STRUCT_BASE
 field APMATH_POLY_BOOLEAN_DESC.op @16 APMATH_POLY_OP
@@ -1092,6 +1101,11 @@ field APMATH_RAY.origin @0 ApriDVec3
 field APMATH_RAY.direction @24 ApriDVec3
 field APMATH_RAY.t_min @48 double
 field APMATH_RAY.t_max @56 double
+struct APMATH_VOLUME size=32 align=8
+field APMATH_VOLUME.planes @0 const APMATH_PLANE *
+field APMATH_VOLUME.plane_count @8 uint32_t
+field APMATH_VOLUME.clip_planes @16 const APMATH_PLANE *
+field APMATH_VOLUME.clip_plane_count @24 uint32_t
 struct APREND_BATCH_CIRCLE size=64 align=4
 field APREND_BATCH_CIRCLE.center @0 float[3]
 field APREND_BATCH_CIRCLE.radius_x @12 float[3]
@@ -2045,6 +2059,8 @@ typedef APMATH_INSTANCE_BVH_DESC = struct APMATH_INSTANCE_BVH_DESC
 typedef APMATH_INSTANCE_HIT = struct APMATH_INSTANCE_HIT
 typedef APMATH_MESH_BVH_DESC = struct APMATH_MESH_BVH_DESC
 typedef APMATH_MESH_HIT = struct APMATH_MESH_HIT
+typedef APMATH_OVERLAP = enum APMATH_OVERLAP
+typedef APMATH_PLANE = struct APMATH_PLANE
 typedef APMATH_POLY_BOOLEAN_DESC = struct APMATH_POLY_BOOLEAN_DESC
 typedef APMATH_POLY_DEFECT = enum APMATH_POLY_DEFECT
 typedef APMATH_POLY_DEFECT_INFO = struct APMATH_POLY_DEFECT_INFO
@@ -2057,6 +2073,7 @@ typedef APMATH_POLY_POINT = struct APMATH_POLY_POINT
 typedef APMATH_POLY_SET = struct APMATH_POLY_SET
 typedef APMATH_POLY_SKELETON_DESC = struct APMATH_POLY_SKELETON_DESC
 typedef APMATH_RAY = struct APMATH_RAY
+typedef APMATH_VOLUME = struct APMATH_VOLUME
 typedef APREND_BATCH_CAP = enum APREND_BATCH_CAP
 typedef APREND_BATCH_CIRCLE = struct APREND_BATCH_CIRCLE
 typedef APREND_BATCH_DEPTH = enum APREND_BATCH_DEPTH

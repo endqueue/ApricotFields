@@ -4,9 +4,13 @@
 // thread entering again, not a call from another thread once the last has
 // returned, not two objects at once. Release builds check nothing, and this
 // test says so and passes.
+//
+// Before those, in every build so ThreadSanitizer sees it: reads a header
+// lets overlap, from two threads at once.
 
 #include "../src/aprioverlap.hpp"
 #include "../src/audio/apaudio_internal.hpp"
+#include "math/apmathbvh.h"
 
 #include <atomic>
 #include <stdio.h>
@@ -38,10 +42,66 @@ static void enter_once(apri_overlap *guard)
     APRI_ENTER(*guard, "test", "enter_once", "object");
 }
 
+// ApMath's volume tests and casts on one mesh BVH from two threads at once
+// (apmathbvh.h, "Threads"): each gets the answers the main thread got.
+static void test_volume_reads()
+{
+    const ApriDVec3 positions[8] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1}};
+    const uint32_t indices[36] = {0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5, 0, 1, 5, 0, 5, 4,
+                                  2, 6, 7, 2, 7, 3, 0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6};
+    APMATH_MESH_BVH_DESC desc{};
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
+    desc.positions = positions;
+    desc.position_count = 8;
+    desc.indices = indices;
+    desc.index_count = 36;
+    apmath_mesh_bvh bvh = nullptr;
+    CHECK(apmath_mesh_bvh_create(&desc, &bvh) == APRESULT_OK);
+    if (!bvh)
+        return;
+    // x >= edge, for edges across and beside the cube.
+    auto answers = [bvh](int step, bool &overlaps, bool &within, bool &hit) {
+        APMATH_PLANE plane = {{1, 0, 0}, -(double)(step % 7) * 0.25};
+        APMATH_VOLUME volume = {&plane, 1, nullptr, 0};
+        overlaps = apmath_mesh_bvh_overlaps_volume(bvh, nullptr, &volume);
+        within = apmath_mesh_bvh_within_volume(bvh, nullptr, &volume);
+        APMATH_RAY ray = {{0.5, 0.5, 5.0}, {0.0, 0.0, -1.0}, 0.0, 10.0};
+        hit = apmath_mesh_bvh_cast(bvh, &ray, nullptr);
+    };
+    bool expected[7][3];
+    for (int step = 0; step < 7; step++)
+        answers(step, expected[step][0], expected[step][1], expected[step][2]);
+    std::atomic<int> wrong{0};
+    auto run = [&]() {
+        for (int i = 0; i < 2000; i++)
+        {
+            bool got[3];
+            answers(i, got[0], got[1], got[2]);
+            for (int k = 0; k < 3; k++)
+                if (got[k] != expected[i % 7][k])
+                    wrong++;
+        }
+    };
+    std::thread a(run), b(run);
+    a.join();
+    b.join();
+    CHECK(wrong.load() == 0);
+    // The answers themselves: x >= 0 holds it all, x >= 1.5 none of it.
+    CHECK(expected[0][0] && expected[0][1]);
+    CHECK(!expected[6][0] && !expected[6][1]);
+    apmath_mesh_bvh_destroy(bvh);
+}
+
 int main()
 {
+    test_volume_reads();
 #if !_DEBUG
-    printf("aprioverlap_tests: Release build, which checks nothing: skipped\n");
+    printf("aprioverlap_tests: Release build, which checks no overlaps: those skipped\n");
+    if (failures)
+    {
+        printf("aprioverlap_tests: %d failure(s)\n", failures);
+        return 1;
+    }
     return 0;
 #else
     // Two threads inside one object at once: one report, by the second.

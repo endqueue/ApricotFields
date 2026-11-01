@@ -775,6 +775,28 @@ static void calls_with_destroyed_handles(void)
         }
     }
     {
+        _Bool for_null = apmath_mesh_bvh_overlaps_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_overlaps_volume");
+        else
+        {
+            _Bool got = apmath_mesh_bvh_overlaps_volume(dead, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+            expect_null_fallback("apmath_mesh_bvh_overlaps_volume", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        _Bool for_null = apmath_mesh_bvh_within_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_within_volume");
+        else
+        {
+            _Bool got = apmath_mesh_bvh_within_volume(dead, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+            expect_null_fallback("apmath_mesh_bvh_within_volume", &got, &for_null, sizeof(got));
+        }
+    }
+    {
         apmath_poly dead = dead_apmath_poly();
         if (!dead)
             factory_missing("apmath_poly_destroy");
@@ -1269,6 +1291,8 @@ int main(void)
     calls++;
     expect_error("apjobs_scheduler_check", apjobs_scheduler_check((const APJOBS_SCHEDULER *){0}, (APJOBS_ERROR *){0}));
     calls++;
+    (void)apmath_aabb_test_volume((const APMATH_AABB *){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+    calls++;
     (void)apmath_instance_bvh_cast((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0});
     calls++;
     (void)apmath_instance_bvh_cast_all((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0}, (uint32_t){0});
@@ -1290,6 +1314,10 @@ int main(void)
     (void)apmath_mesh_bvh_get_bounds((apmath_mesh_bvh){0});
     calls++;
     (void)apmath_mesh_bvh_get_triangle_count((apmath_mesh_bvh){0});
+    calls++;
+    (void)apmath_mesh_bvh_overlaps_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+    calls++;
+    (void)apmath_mesh_bvh_within_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
     calls++;
     expect_error("apmath_poly_boolean", apmath_poly_boolean((const APMATH_POLY_BOOLEAN_DESC *){0}, (apmath_poly *){0}, (APMATH_ERROR *){0}));
     calls++;
@@ -1794,7 +1822,7 @@ int main(void)
     _CrtSetDbgFlag(_CrtSetDbgFlag(_CRTDBG_REPORT_FLAG) | _CRTDBG_DELAY_FREE_MEM_DF);
 #endif
     calls_with_destroyed_handles();
-    printf("apri_misuse_tests: %d calls with a destroyed handle (of 117 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
+    printf("apri_misuse_tests: %d calls with a destroyed handle (of 119 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
 #elif _DEBUG
     printf("apri_misuse_tests: calls with a destroyed handle skipped: under a sanitizer, whose heap reports the read of freed memory itself\n");
 #else

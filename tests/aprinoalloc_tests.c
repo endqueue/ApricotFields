@@ -374,6 +374,34 @@ static void test_bvh(void)
     stop_counting();
     CHECK(hits == FRAMES * 64);
     report("ApMath's ray casts, 64 a frame");
+
+    // Volume tests over the same grid: a box over part of it, its bounds,
+    // then both mesh tests, placed by a transform, with a clip plane.
+    APMATH_PLANE planes[6] = {
+        {{1, 0, 0}, -2.0}, {{-1, 0, 0}, 9.0}, {{0, 1, 0}, -2.0}, {{0, -1, 0}, 9.0}, {{0, 0, 1}, 5.0}, {{0, 0, -1}, 5.0},
+    };
+    APMATH_PLANE clip = {{0, 0, -1}, 0.3};
+    APMATH_VOLUME volume;
+    volume.planes = planes;
+    volume.plane_count = 6;
+    volume.clip_planes = &clip;
+    volume.clip_plane_count = 1;
+    ApriDMat4 move;
+    memset(&move, 0, sizeof(move));
+    move.m[0] = move.m[5] = move.m[10] = move.m[15] = 1.0;
+    APMATH_AABB bounds = apmath_mesh_bvh_get_bounds(bvh);
+    unsigned long found = 0;
+    start_counting();
+    for (int f = 0; f < FRAMES; f++)
+    {
+        move.m[12] = (double)(f % 8) - 4.0;
+        found += apmath_aabb_test_volume(&bounds, &move, &volume) == APMATH_OVERLAP_PARTIAL;
+        found += apmath_mesh_bvh_overlaps_volume(bvh, &move, &volume);
+        found += !apmath_mesh_bvh_within_volume(bvh, &move, &volume);
+    }
+    stop_counting();
+    CHECK(found == FRAMES * 3);
+    report("ApMath's volume tests, a box, its mesh's overlap and within, a frame");
     apmath_mesh_bvh_destroy(bvh);
 }
 

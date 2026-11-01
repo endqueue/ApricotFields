@@ -17,6 +17,12 @@
  *   Built once per set of instances; a mesh used a thousand times is built
  *   once and instanced.
  *
+ * Beside casts, a mesh can be tested against a convex volume - a set of
+ * planes, such as a camera's frustum or a box: whether any of it, or all of
+ * it, lies inside (apmath_mesh_bvh_overlaps_volume(),
+ * apmath_mesh_bvh_within_volume()), with apmath_aabb_test_volume() as the
+ * quick test on bounds before it.
+ *
  * Both are immutable once created: a change is a new BVH. Rebuilding an
  * instance BVH doesn't rebuild its meshes, so changing one mesh among many
  * costs that mesh's build plus a build over boxes.
@@ -31,9 +37,9 @@
  *
  * @par Threads
  * apricore.h's rule ("Threads"), with one exception: a BVH never changes
- * once created, so the casts and get_ calls on one BVH may overlap each
- * other, from any number of threads, and never block or allocate; the
- * casts are marked. Destroying a BVH may overlap none of them, nor the
+ * once created, so the casts, volume tests and get_ calls on one BVH may
+ * overlap each other, from any number of threads, and never block or
+ * allocate; the casts and tests are marked. Destroying a BVH may overlap none of them, nor the
  * creation of an instance BVH over it, which only reads it. A create call
  * takes no other object, so creates may run at once. A filter callback runs
  * inside the cast, on the thread that made it.
@@ -49,6 +55,8 @@
  * @par
  * Casts can't fail: they return whether, or how many times, the ray hit. A
  * cast given a NULL BVH, a NULL ray or a ray that isn't finite hits nothing.
+ * Volume tests can't fail either: given arguments they can't use, they
+ * answer as for a mesh that isn't there.
  *
  * @par Struct bases
  * Descs start with a `base` (apricore.h, "Struct bases"): the caller sets
@@ -56,8 +64,8 @@
  * NULL. A create given a wrong type returns APRESULT_STRUCT_WRONG_TYPE, and
  * one given a chained struct APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing
  * chains onto any of them yet. A cast given either hits nothing.
- * APMATH_AABB, APMATH_RAY, APMATH_BVH_INSTANCE and the hit structs are
- * frozen: they never grow (a new need gets a new type).
+ * APMATH_AABB, APMATH_RAY, APMATH_PLANE, APMATH_VOLUME, APMATH_BVH_INSTANCE
+ * and the hit structs are frozen: they never grow (a new need gets a new type).
  *
  * @par Geometry
  * Right-handed coordinates; a triangle's front is the side its points run
@@ -125,6 +133,87 @@ typedef struct APMATH_RAY {
  * @return true if part of @p ray is inside @p box, false if none of it is.
  */
 bool apmath_ray_clip_aabb(APMATH_RAY *ray, const APMATH_AABB *box);
+
+/**
+ * @brief A plane, and the side of it that is inside: the points p with
+ * dot(`normal`, p) + `d` >= 0.
+ *
+ * `normal` needn't be unit length; it mustn't be zero. Points on the plane
+ * are inside.
+ */
+/* Frozen: a value, an array element. It never changes; a new need gets a new type. */
+typedef struct APMATH_PLANE {
+	/** Points into the inside. Not zero. */
+	ApriDVec3 normal;
+	/** The plane's offset: dot(`normal`, p) + `d` is 0 on it. */
+	double d;
+} APMATH_PLANE;
+
+/**
+ * @brief A convex volume - the points inside every one of `planes` - and
+ * the part of what is tested that counts: what lies inside every one of
+ * `clip_planes`.
+ *
+ * Tested against a mesh, the mesh is first cut down to its part inside the
+ * clip planes, and that part is what lies inside, outside or across the
+ * volume. With no clip planes the whole mesh counts. A clip plane only
+ * cuts: what it removes is neither inside nor outside, so a mesh entirely
+ * clipped away overlaps nothing and is within nothing.
+ *
+ * Neither array may hold a plane with a zero or non-finite normal, or a
+ * non-finite `d`, and the two may hold at most 32 planes between them; a
+ * test given one that breaks this answers as for a mesh that isn't there
+ * (APMATH_OVERLAP_NONE, false). No planes at all is all of space.
+ */
+/* Frozen: a value, passed on every test. It never changes; a new need gets a new type. */
+typedef struct APMATH_VOLUME {
+	/** The volume's planes. Only read during the call. NULL when #plane_count is 0. */
+	const APMATH_PLANE *planes;
+	/** How many #planes holds. */
+	uint32_t plane_count;
+	/** Planes the mesh is cut by first. Only read during the call. NULL when #clip_plane_count is 0. */
+	const APMATH_PLANE *clip_planes;
+	/** How many #clip_planes holds. */
+	uint32_t clip_plane_count;
+} APMATH_VOLUME;
+
+/**
+ * @brief How much of something lies in a volume.
+ */
+typedef enum APMATH_OVERLAP APRI_ENUM_BASE {
+	/** None of it. */
+	APMATH_OVERLAP_NONE = 0,
+	/** Some of it, or, for a box, maybe some: see apmath_aabb_test_volume(). */
+	APMATH_OVERLAP_PARTIAL = 1,
+	/** All of it - all of what the clip planes keep, and that isn't empty. */
+	APMATH_OVERLAP_WHOLE = 2,
+} APMATH_OVERLAP;
+
+/**
+ * @brief Tests a box against a volume, from its corners: the quick test
+ * before a mesh's.
+ *
+ * NONE and WHOLE are exact: NONE when the box lies outside one of the
+ * volume's planes or one of its clip planes (nothing of a mesh inside it
+ * can count), WHOLE when it lies inside every plane of both (everything
+ * inside it is in the volume). Otherwise PARTIAL, which only says the box
+ * straddles a plane: the mesh inside it needs its own test.
+ *
+ * Thread: any - it reads only its arguments.
+ *
+ * @param[in] box       The box. An empty one is NONE.
+ * @param[in] transform Box coordinates to the volume's, as an instance's
+ *                      (APMATH_BVH_INSTANCE::transform); NULL for none. The
+ *                      box is placed by it, and tested by its eight corners.
+ * @param[in] volume    The volume, in its own coordinates.
+ *
+ * @return NONE, PARTIAL or WHOLE as above. NONE for a NULL @p box or
+ *         @p volume, a box that isn't finite, a transform that isn't finite
+ *         or can't be inverted or whose last row isn't 0, 0, 0, 1, or a bad
+ *         plane.
+ */
+APMATH_OVERLAP apmath_aabb_test_volume(const APMATH_AABB *box, const ApriDMat4 *transform,
+                                       const APMATH_VOLUME *volume);
 
 /* ---- Mesh BVH -------------------------------------------------------- */
 
@@ -234,6 +323,53 @@ typedef struct APMATH_MESH_HIT {
  * @return true if the ray hits the mesh.
  */
 bool apmath_mesh_bvh_cast(apmath_mesh_bvh bvh, const APMATH_RAY *ray, APMATH_MESH_HIT *out_hit);
+
+/**
+ * @brief Whether any part of a mesh lies in a volume: a triangle, cut down to
+ * the clip planes, with a point inside the volume or on its boundary.
+ *
+ * Exact against the triangles, in double precision, walking the BVH: a node
+ * outside a plane is skipped, a node inside every plane answers at once.
+ * Stops at the first triangle found. A triangle with no area counts, as a
+ * segment or a point. Only the mesh's surface is tested: a volume wholly
+ * inside a closed mesh, touching none of its triangles, is not found.
+ *
+ * Thread: may overlap any other test, cast or get_ call on @p bvh, from any
+ * thread; not its destroy. Allocates nothing.
+ *
+ * @param[in] bvh       The mesh. NULL is a mesh with no triangles.
+ * @param[in] transform Mesh coordinates to the volume's, as an instance's
+ *                      (APMATH_BVH_INSTANCE::transform); NULL for none.
+ * @param[in] volume    The volume, in its own coordinates.
+ *
+ * @return true if some part of the mesh the clip planes keep is in the
+ *         volume. false for a NULL @p volume, a transform that isn't finite
+ *         or can't be inverted or whose last row isn't 0, 0, 0, 1, or a bad
+ *         plane.
+ */
+bool apmath_mesh_bvh_overlaps_volume(apmath_mesh_bvh bvh, const ApriDMat4 *transform, const APMATH_VOLUME *volume);
+
+/**
+ * @brief Whether all of a mesh lies in a volume: every triangle, cut down to
+ * the clip planes, inside the volume or on its boundary, and at least one
+ * left after the cut.
+ *
+ * Exact, as apmath_mesh_bvh_overlaps_volume(). A node inside every plane
+ * passes without its triangles being read; a node wholly clipped away is
+ * skipped. Stops at the first point found outside.
+ *
+ * Thread: as apmath_mesh_bvh_overlaps_volume(). Allocates nothing.
+ *
+ * @param[in] bvh       The mesh. NULL is a mesh with no triangles.
+ * @param[in] transform As apmath_mesh_bvh_overlaps_volume().
+ * @param[in] volume    The volume, in its own coordinates.
+ *
+ * @return true if the part of the mesh the clip planes keep is not empty and
+ *         lies wholly in the volume. false for a mesh with no triangles, or
+ *         none left by the clip planes, and in every failure case
+ *         apmath_mesh_bvh_overlaps_volume() names.
+ */
+bool apmath_mesh_bvh_within_volume(apmath_mesh_bvh bvh, const ApriDMat4 *transform, const APMATH_VOLUME *volume);
 
 /* ---- Instance BVH ---------------------------------------------------- */
 

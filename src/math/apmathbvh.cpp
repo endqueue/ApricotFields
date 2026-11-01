@@ -541,9 +541,346 @@ static void walk_instances(const apmath_instance_bvh_t &bvh, const ray_t &ray, d
     });
 }
 
+// ---- Volumes ------------------------------------------------------------------
+
+// The most planes a volume test takes, its volume's and clip planes together
+// (apmathbvh.h, APMATH_VOLUME): they're carried into a mesh's coordinates in
+// an array on the stack, and a triangle clipped by all of them has at most
+// three points more than there are planes.
+static const uint32_t VOLUME_MAX_PLANES = 32;
+static const uint32_t CLIPPED_MAX_POINTS = 3 + VOLUME_MAX_PLANES;
+
+namespace
+{
+// Inside where dot(normal, p) + d >= 0.
+struct plane_t
+{
+    glm::dvec3 normal;
+    double d;
+};
+
+// A volume as the tests read it: the volume's planes, then its clip planes.
+struct volume_t
+{
+    plane_t planes[VOLUME_MAX_PLANES];
+    uint32_t volume_count{0};
+    uint32_t count{0}; // volume_count and the clip planes after them
+};
+
+// Mesh (or box) coordinates to the volume's: p' = linear * p + translation.
+struct placement_t
+{
+    bool placed{false};
+    glm::dmat3 linear{1.0};
+    glm::dvec3 translation{0.0};
+};
+} // namespace
+
+static bool read_planes(const APMATH_PLANE *planes, uint32_t count, volume_t &out)
+{
+    if (count && !planes)
+        return false;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        glm::dvec3 normal = to_glm(planes[i].normal);
+        if (!is_finite(normal))
+            return false;
+        if (normal == glm::dvec3(0.0))
+            return false;
+        if (!std::isfinite(planes[i].d))
+            return false;
+        out.planes[out.count++] = plane_t{normal, planes[i].d};
+    }
+    return true;
+}
+
+// False if [volume] can't be read: a test then answers as for no mesh.
+static bool read_volume(const APMATH_VOLUME *volume, volume_t &out)
+{
+    if (!volume)
+        return false;
+    if (volume->plane_count > VOLUME_MAX_PLANES)
+        return false;
+    if (volume->clip_plane_count > VOLUME_MAX_PLANES - volume->plane_count)
+        return false;
+    out.count = 0;
+    if (!read_planes(volume->planes, volume->plane_count, out))
+        return false;
+    out.volume_count = out.count;
+    return read_planes(volume->clip_planes, volume->clip_plane_count, out);
+}
+
+// As an instance's transform is checked (apmath_instance_bvh_create()):
+// finite, its last row 0, 0, 0, 1, and invertible. NULL places nothing.
+static bool read_placement(const ApriDMat4 *transform, placement_t &out)
+{
+    out = placement_t{};
+    if (!transform)
+        return true;
+    const double *m = transform->m; // column-major
+    for (int i = 0; i < 16; i++)
+        if (!std::isfinite(m[i]))
+            return false;
+    // The last row 0, 0, 0, 1.
+    for (int i : {3, 7, 11})
+        if (m[i] != 0.0)
+            return false;
+    if (m[15] != 1.0)
+        return false;
+    glm::dmat3 linear(m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]);
+    double det = glm::determinant(linear);
+    if (!(det != 0.0))
+        return false;
+    if (!std::isfinite(det))
+        return false;
+    glm::dmat3 inverse = glm::inverse(linear);
+    for (int column = 0; column < 3; column++)
+        if (!is_finite(inverse[column]))
+            return false;
+    out.placed = true;
+    out.linear = linear;
+    out.translation = glm::dvec3(m[12], m[13], m[14]);
+    return true;
+}
+
+static double plane_at(const plane_t &plane, const glm::dvec3 &point)
+{
+    return glm::dot(plane.normal, point) + plane.d;
+}
+
+// [in]'s planes as seen from the coordinates [placement] places: a point p
+// there is at linear * p + translation in the volume's, so
+// dot(n, linear * p + translation) + d = dot(transpose(linear) * n, p) +
+// (dot(n, translation) + d). A linear part that can be inverted never makes
+// a normal zero.
+static void place_planes(const volume_t &in, const placement_t &placement, volume_t &out)
+{
+    out.volume_count = in.volume_count;
+    out.count = in.count;
+    glm::dmat3 transposed = glm::transpose(placement.linear);
+    for (uint32_t i = 0; i < in.count; i++)
+        out.planes[i] = plane_t{transposed * in.planes[i].normal,
+                                glm::dot(in.planes[i].normal, placement.translation) + in.planes[i].d};
+}
+
+// Where a box lies against one plane.
+enum class side_t
+{
+    outside,   // every point of it outside
+    straddles, // some in, some out
+    inside,    // every point of it inside (or on the plane)
+};
+
+// From the corners nearest and furthest along the normal, which are the
+// box's least and greatest values of the plane's function.
+static side_t box_side(const plane_t &plane, const glm::dvec3 &lo, const glm::dvec3 &hi)
+{
+    glm::dvec3 least, greatest;
+    for (int axis = 0; axis < 3; axis++)
+    {
+        bool rising = plane.normal[axis] >= 0.0;
+        least[axis] = rising ? lo[axis] : hi[axis];
+        greatest[axis] = rising ? hi[axis] : lo[axis];
+    }
+    if (plane_at(plane, greatest) < 0.0)
+        return side_t::outside;
+    if (plane_at(plane, least) >= 0.0)
+        return side_t::inside;
+    return side_t::straddles;
+}
+
+// Where a box lies against planes [first, end) together: outside if it's
+// outside any, inside if it's inside all.
+static side_t box_side(const volume_t &volume, uint32_t first, uint32_t end, const glm::dvec3 &lo,
+                       const glm::dvec3 &hi)
+{
+    side_t side = side_t::inside;
+    for (uint32_t i = first; i < end; i++)
+    {
+        side_t one = box_side(volume.planes[i], lo, hi);
+        if (one == side_t::outside)
+            return side_t::outside;
+        if (one == side_t::straddles)
+            side = side_t::straddles;
+    }
+    return side;
+}
+
+// A convex polygon, as a triangle clipped by planes leaves it.
+struct polygon_t
+{
+    glm::dvec3 points[CLIPPED_MAX_POINTS];
+    uint32_t count{0};
+};
+
+// [polygon] cut down to its part inside [plane] (Sutherland-Hodgman); points
+// on the plane are kept, so a polygon touching it keeps that point or edge.
+// A convex polygon gains at most one point.
+static void clip_polygon(polygon_t &polygon, const plane_t &plane)
+{
+    polygon_t out;
+    for (uint32_t i = 0; i < polygon.count; i++)
+    {
+        const glm::dvec3 &a = polygon.points[i];
+        const glm::dvec3 &b = polygon.points[(i + 1) % polygon.count];
+        double da = plane_at(plane, a), db = plane_at(plane, b);
+        // A convex polygon gains at most a point a plane, but rounding can leave one a hair
+        // short of convex: never past the array, whatever comes in.
+        if (da >= 0.0 && out.count < CLIPPED_MAX_POINTS)
+            out.points[out.count++] = a;
+        if ((da >= 0.0) != (db >= 0.0) && out.count < CLIPPED_MAX_POINTS)
+            out.points[out.count++] = a + (b - a) * (da / (da - db));
+    }
+    polygon = out;
+}
+
+static void triangle_polygon(const triangle_t &triangle, polygon_t &out)
+{
+    out.points[0] = triangle.v0;
+    out.points[1] = triangle.v0 + triangle.e1;
+    out.points[2] = triangle.v0 + triangle.e2;
+    out.count = 3;
+}
+
+// Calls node(index) for nodes of [tree], from the root, each node's
+// children only if node() returns true for it; stops when [stop] is set.
+template <typename Node>
+static void walk_nodes(const bvh_tree_t &tree, const bool &stop, Node &&node)
+{
+    if (tree.nodes.empty())
+        return;
+    uint32_t stack[STACK_SIZE];
+    uint32_t top = 0;
+    stack[top++] = 0;
+    while (top && !stop)
+    {
+        uint32_t index = stack[--top];
+        if (!node(index))
+            continue;
+        const bvh_node_t &n = tree.nodes[index];
+        if (n.count)
+            continue;
+        stack[top++] = n.first + 1;
+        stack[top++] = n.first;
+    }
+}
+
+// apmath_mesh_bvh_overlaps_volume(), with [volume] in the mesh's coordinates.
+static bool mesh_overlaps(const apmath_mesh_bvh_t &mesh, const volume_t &volume)
+{
+    bool found = false;
+    walk_nodes(mesh.tree, found, [&](uint32_t index) {
+        const bvh_node_t &node = mesh.tree.nodes[index];
+        side_t side = box_side(volume, 0, volume.count, node.lo, node.hi);
+        if (side == side_t::outside)
+            return false;
+        if (side == side_t::inside)
+        {
+            found = true; // every node holds a triangle
+            return false;
+        }
+        if (!node.count)
+            return true;
+        for (uint32_t slot = node.first; slot < node.first + node.count && !found; slot++)
+        {
+            polygon_t polygon;
+            triangle_polygon(mesh.triangles[slot], polygon);
+            for (uint32_t i = 0; i < volume.count && polygon.count; i++)
+                clip_polygon(polygon, volume.planes[i]);
+            found = polygon.count != 0;
+        }
+        return false;
+    });
+    return found;
+}
+
+// apmath_mesh_bvh_within_volume(), likewise.
+static bool mesh_within(const apmath_mesh_bvh_t &mesh, const volume_t &volume)
+{
+    bool kept = false, outside = false;
+    walk_nodes(mesh.tree, outside, [&](uint32_t index) {
+        const bvh_node_t &node = mesh.tree.nodes[index];
+        side_t clip = box_side(volume, volume.volume_count, volume.count, node.lo, node.hi);
+        if (clip == side_t::outside)
+            return false; // clipped away
+        side_t side = box_side(volume, 0, volume.volume_count, node.lo, node.hi);
+        if (clip == side_t::inside && side == side_t::inside)
+        {
+            kept = true;
+            return false;
+        }
+        if (clip == side_t::inside && side == side_t::outside)
+        {
+            outside = true; // kept whole, and out
+            return false;
+        }
+        if (!node.count)
+            return true;
+        for (uint32_t slot = node.first; slot < node.first + node.count && !outside; slot++)
+        {
+            polygon_t polygon;
+            triangle_polygon(mesh.triangles[slot], polygon);
+            for (uint32_t i = volume.volume_count; i < volume.count && polygon.count; i++)
+                clip_polygon(polygon, volume.planes[i]);
+            if (!polygon.count)
+                continue;
+            kept = true;
+            for (uint32_t p = 0; p < polygon.count && !outside; p++)
+                for (uint32_t i = 0; i < volume.volume_count && !outside; i++)
+                    outside = plane_at(volume.planes[i], polygon.points[p]) < 0.0;
+        }
+        return false;
+    });
+    return kept && !outside;
+}
+
 extern "C"
 {
     // ---- Rays and boxes ---------------------------------------------------------
+
+    APMATH_OVERLAP apmath_aabb_test_volume(const APMATH_AABB *box, const ApriDMat4 *transform,
+                                           const APMATH_VOLUME *volume)
+    {
+        if (!box)
+            return APMATH_OVERLAP_NONE;
+        glm::dvec3 lo = to_glm(box->lo), hi = to_glm(box->hi);
+        if (!is_finite(lo) || !is_finite(hi))
+            return APMATH_OVERLAP_NONE;
+        if (!(lo.x <= hi.x && lo.y <= hi.y && lo.z <= hi.z))
+            return APMATH_OVERLAP_NONE; // empty
+        placement_t placement;
+        if (!read_placement(transform, placement))
+            return APMATH_OVERLAP_NONE;
+        volume_t planes;
+        if (!read_volume(volume, planes))
+            return APMATH_OVERLAP_NONE;
+        // A placed box is a parallelepiped, whose corners are where a
+        // plane's function is least and greatest; a box's are its own.
+        glm::dvec3 corners[8];
+        for (int corner = 0; corner < 8; corner++)
+        {
+            glm::dvec3 point(corner & 1 ? hi.x : lo.x, corner & 2 ? hi.y : lo.y, corner & 4 ? hi.z : lo.z);
+            corners[corner] = placement.placed ? placement.linear * point + placement.translation : point;
+            if (!is_finite(corners[corner]))
+                return APMATH_OVERLAP_NONE; // placed out of double's range
+        }
+        APMATH_OVERLAP overlap = APMATH_OVERLAP_WHOLE;
+        for (uint32_t i = 0; i < planes.count; i++)
+        {
+            double least = INF, greatest = -INF;
+            for (const glm::dvec3 &corner : corners)
+            {
+                double at = plane_at(planes.planes[i], corner);
+                least = std::min(least, at);
+                greatest = std::max(greatest, at);
+            }
+            if (greatest < 0.0)
+                return APMATH_OVERLAP_NONE;
+            if (least < 0.0)
+                overlap = APMATH_OVERLAP_PARTIAL;
+        }
+        return overlap;
+    }
 
     bool apmath_ray_clip_aabb(APMATH_RAY *ray, const APMATH_AABB *box)
     {
@@ -685,6 +1022,44 @@ extern "C"
             out_hit->normal = from_glm(triangle_normal(bvh->triangles[hit.slot]));
         }
         return true;
+    }
+
+    bool apmath_mesh_bvh_overlaps_volume(apmath_mesh_bvh bvh, const ApriDMat4 *transform, const APMATH_VOLUME *volume)
+    {
+        if (!bvh)
+            return false; // no triangles
+        if (APRI_STALE(bvh, "apmath_mesh_bvh_overlaps_volume", "bvh"))
+            return false;
+        placement_t placement;
+        if (!read_placement(transform, placement))
+            return false;
+        volume_t planes;
+        if (!read_volume(volume, planes))
+            return false;
+        if (!placement.placed)
+            return mesh_overlaps(*bvh, planes);
+        volume_t placed;
+        place_planes(planes, placement, placed);
+        return mesh_overlaps(*bvh, placed);
+    }
+
+    bool apmath_mesh_bvh_within_volume(apmath_mesh_bvh bvh, const ApriDMat4 *transform, const APMATH_VOLUME *volume)
+    {
+        if (!bvh)
+            return false; // no triangles
+        if (APRI_STALE(bvh, "apmath_mesh_bvh_within_volume", "bvh"))
+            return false;
+        placement_t placement;
+        if (!read_placement(transform, placement))
+            return false;
+        volume_t planes;
+        if (!read_volume(volume, planes))
+            return false;
+        if (!placement.placed)
+            return mesh_within(*bvh, planes);
+        volume_t placed;
+        place_planes(planes, placement, placed);
+        return mesh_within(*bvh, placed);
     }
 
     // ---- Instance BVH -------------------------------------------------------------
