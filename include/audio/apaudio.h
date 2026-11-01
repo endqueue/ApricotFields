@@ -1025,23 +1025,23 @@ typedef uint64_t APAUDIO_SOUND;
  * read as its voices need them.
  *
  * ApAudio does no I/O of its own: a file, a mapped pack entry or memory the
- * caller keeps alive are all a #read the caller writes.
+ * caller keeps alive are all a `read` the caller writes.
  *
- * Thread: #read is called by apaudio_sound_create(), on its caller's
+ * Thread: `read` is called by apaudio_sound_create(), on its caller's
  * thread, and by the decoding each apaudio_mixer_update() starts: on the
  * scheduler's workers (APAUDIO_MIXER_DESC `scheduler`), several at once,
  * for one source too, and beside the caller's own calls; or, with no
  * scheduler, inside the update. Never on the audio thread. It may block: a
  * worker waits, not the frame.
  *
- * Lifetime: the source, and whatever #user points at, must stay valid from
+ * Lifetime: the source, and whatever `user` points at, must stay valid from
  * apaudio_sound_create() until the sound is destroyed and a later
  * apaudio_mixer_collect() has returned, or the mixer is destroyed: until then
  * a voice of it may still read.
  */
 /* Frozen: held by value in APAUDIO_SOUND_DESC. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_SOURCE {
-	/** Passed to #read as its `user`. May be NULL. */
+	/** Passed to `read` as its `user`. May be NULL. */
 	void *user;
 	/** The encoded bytes' size, in bytes. Not 0. */
 	uint64_t size;
@@ -1437,7 +1437,8 @@ APRESULT apaudio_voice_set_rate(
  */
 /* Frozen: decoded samples, as a value. It never changes; a new need gets a new type. */
 typedef struct APAUDIO_PCM {
-	/** #frame_count frames of #channel_count samples, interleaved. */
+	/** #frame_count frames of #channel_count samples, interleaved. May be
+	 * NULL when #frame_count is 0 (a file whose audio is empty). */
 	float *samples;
 	/** How many frames #samples holds. */
 	uint64_t frame_count;

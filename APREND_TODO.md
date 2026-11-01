@@ -2751,6 +2751,28 @@ NVIDIA's Falcor and RTX Remix Slang.
   and both devices here draw correctly regardless; a package's SPIR-V
   costs D3D12 and Metal builds its bytes (P1), not measured.
 
+**Metal, 2026-11-01** (Apple M5 Pro, macOS 27.0.1, Xcode 27.2 and its Metal
+toolchain 32023.922, Slang 2026.18.3-2; `../prompts/ray_tracing_mac.md`):
+every one of Aprend's 45 shaders compiled to a `.metallib` by
+`spudgpu_msl`'s route, card S21's default; none takes Slang's. Each was made
+by both routes and their bindings read: the tool's is S17's layout (each
+set's argument buffer at 26 + set, the push constants at 30); Slang's has no
+argument buffer, puts the push constants and a set's first resource both at
+`[[buffer(0)]]`, and 15 of the 45 don't compile from it (two resources at one
+index), the six traced ones, the two instance writers and the emitter pass
+among them. The `.metallib` step names this build's SDK (`macosx`,
+`iphoneos`, `iphonesimulator`) and deployment target, and an iOS build runs
+`spudgpu_msl` built for the Mac (spudlib's ExternalProject,
+`${SPUDGPU_MSL_EXECUTABLE}`): Aprend's shaders built for the iOS device
+and the simulator, in a caller's iOS build. **Found:** card S27 (`../DECISIONS.md`): Slang keeps
+only the bindings an entry point reads, and Metal lays out a shader's
+argument buffer from what it declares, so the sky (`aprend_lit_sky_frag`),
+histogram exposure (`aprend_exposure_histogram_comp`, `_adapt_histogram_frag`)
+and glyph (`aprend_batch_glyph_frag`) shaders read the wrong members on
+Metal: `apricottests`' `test_lit_sky`, `test_auto_exposure` and
+`test_batch_aptext_glyph` fail there (11 checks a device), and wait on it.
+
+
 ### 23. No 2D, line, text or debug drawing
 
 Hazel: `Renderer2D` (batched quads, lines, circles, MSDF text), `DebugRenderer`.
@@ -3955,6 +3977,40 @@ LOD.
 
 What SpudGPU exposes follows from the GPU APIs it translates and is decided
 there, not by this list. These are what Aprend can't do until it does.
+
+**Phase 7 on Metal, 2026-11-01** (Apple M5 Pro, macOS 27.0.1, Xcode 27.2;
+`../prompts/ray_tracing_mac.md`): built and run as 7b left it, with no change
+to Aprend's ray tracing code. `apricottests`, Debug and Release, Metal API and
+shader validation with warnings fatal: every ray tracing test passes, reading
+as on the RTX A2000 and WARP: the mask 0 and 128 against the cascades' 0 and
+128, the penumbra 0 texels with no disc and 6 with 0.2, the furnace 1.0000
+(worst texel 0.0000), 8 steps of 1 equal to 1 of 8 (the same bits), the
+emitter's ground 0.05005 against Lambert's 0.05004, the two geometries exact,
+instance sets, build order, a BLAS's life (compacted 640 to 528 bytes) and
+materials as designed; `test_rt_unsupported` refuses everything on a device
+without ray queries. The Metal instance writer
+(`aprend_rt_instances_col72_comp`) ran for the first time, its records read
+by Metal's builds (SpudGPU asserts the 72-byte descriptor field by field);
+residency is the seal's bottom levels, made resident by SpudGPU in one call
+per encoder. `test_frame_allocations`' ray-traced frame: none of ours; 133 a
+frame of Metal's own without the debug layer (the AGX driver's: 50 in the
+builds, its scratch allocator and resource tracker; 18 in the encoders; 18
+in blit copies; 17 in the compute sets' residency; 10 in the size queries;
+the rest the command buffer and submit). `test_destroyed_handles` 177 of
+177. Failing, not ray tracing: the three tests card S27 holds (item 22).
+Measured (Release, no validation layer, `test_rt_measure`, beside the A2000's
+D3D12 / Vulkan above): 1% of 100,000 written a frame: the write 16.4 us, the
+compile and submit 101.7 us, the frame 4.73 ms; 10%: 111.8 us, 121.6 us,
+4.52 ms; 100%: 692.1 us, 76.6 us, 3.13 ms (the GPU's clock falls with the
+lighter frames, so the frame time isn't the work's). The test square's BLAS
+built in 4.25 ms, 640 bytes, compacted to 528 in 0.96 ms; the Dragon's built in
+4.09 ms, 19,236,096 bytes, compacted in 1.45 ms to 10,831,312 (Metal's sizes,
+larger than D3D12's and Vulkan's). The path tracer at 1920x1080, 4 samples a
+step: 14.69 ms a step, 564.7 million samples a second; a step building the
+emitter table again 14.35 ms. Not measured, as on the ThinkPad: the mask
+against the cascaded pass at a common size. ThreadSanitizer: every
+ApricotFields suite clean (`-tsan`), which runs no GPU work of Aprend's.
+
 
 ### 25. Multiple render targets per pipeline
 

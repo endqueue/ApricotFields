@@ -201,11 +201,14 @@ APRESULT apaudio_flac_decode(const void *data, uint64_t size, uint64_t max_frame
             drflac_close(flac);
             return fail(error, APRESULT_OUT_OF_MEMORY, "no memory for %llu frames", (unsigned long long)frames.capacity * 2);
         }
-        drflac_uint64 got = drflac_read_pcm_frames_f32(flac, frames.capacity - frames.count,
-                                                       frames.samples + (size_t)frames.count * frames.channels);
-        if (got == 0)
-            break;
+        drflac_uint64 asked = frames.capacity - frames.count;
+        drflac_uint64 got = drflac_read_pcm_frames_f32(flac, asked, frames.samples + (size_t)frames.count * frames.channels);
         frames.count += got;
+        // Short only where dr_flac couldn't decode the next frame: the end,
+        // as a stream of the same bytes takes it (StreamDecoder::flac_ended),
+        // whatever a later read would find.
+        if (got < asked)
+            break;
     }
     uint32_t rate = flac->sampleRate;
     drflac_close(flac);
@@ -699,6 +702,7 @@ bool apaudio_stream_open(StreamDecoder &decoder, APAUDIO_STREAM_CODEC codec, con
     decoder.reader.size = source.size;
     decoder.reader.read = source.read;
     decoder.heap = memory == nullptr;
+    decoder.flac_ended = false;
     unsigned char *room = memory ? (unsigned char *)memory + line_round(sizeof(StreamDecoder)) : nullptr;
     bool opened = codec == APAUDIO_STREAM_CODEC_FLAC     ? open_flac(decoder, room, info, failure)
                   : codec == APAUDIO_STREAM_CODEC_VORBIS ? open_vorbis(decoder, room, failure)
@@ -725,7 +729,10 @@ uint32_t apaudio_stream_read(StreamDecoder &decoder, float *out, uint32_t frames
     switch (decoder.info.codec)
     {
     case APAUDIO_STREAM_CODEC_FLAC:
+        if (decoder.flac_ended)
+            break;
         done = (uint32_t)drflac_read_pcm_frames_f32(static_cast<drflac *>(decoder.state), frames, out);
+        decoder.flac_ended = done < frames;
         break;
     case APAUDIO_STREAM_CODEC_VORBIS: {
         uint64_t floats = (uint64_t)frames * channels;
@@ -765,6 +772,7 @@ bool apaudio_stream_seek(StreamDecoder &decoder, uint64_t frame, StreamFailure &
 {
     decoder.pending = 0;
     decoder.pending_at = 0;
+    decoder.flac_ended = false;
     switch (decoder.info.codec)
     {
     case APAUDIO_STREAM_CODEC_FLAC:

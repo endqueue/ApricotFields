@@ -356,7 +356,7 @@ void aprend_tlas_destroy(aprend_tlas tlas);
  * VkTransformMatrixKHR); the rest is Aprend's, translated on the GPU at each
  * build into the device's own layout. From a column-major 4x4 `m`
  * (`m[column][row]`, as APREND_LIT_INSTANCE has it), row r of
- * #_transform is (`m[0][r]`, `m[1][r]`, `m[2][r]`, `m[3][r]`) for r = 0, 1,
+ * `_transform` is (`m[0][r]`, `m[1][r]`, `m[2][r]`, `m[3][r]`) for r = 0, 1,
  * 2: its last row dropped, once, where the caller makes the transform.
  */
 /* Frozen: an array element of aprend_tlas_write_instances(); its transform in the devices' order, the rest Aprend's. */

@@ -459,6 +459,25 @@ loops), and the mixer's case in `aprioverlap_tests.cpp`; their data,
   the ring), Vorbis 2,154,248 (2,113,792: the 2 MiB arena), Opus 86,792
   (46,336, and opusfile's and libopus's own on the heap).
 
+**macOS, 2026-11-01** (Apple M5 Pro, macOS 27.0.1, Apple clang 21; the ray
+tracing session's Phase 4): every ApricotFields suite passes in Debug,
+Release, `-asan` and `-tsan`, the two-thread test of streamed voices
+included, with no report; libc++'s build of the changed decoders compiles
+clean. `apaudio_fuzz` on `apricotfields-macos-metal-fuzz` found two things:
+- **A FLAC stream decoded a different length from the whole file:** dr_flac,
+  when it can't decode a frame, returns fewer frames than asked and leaves
+  its reader inside that frame, and a later read can find a false header
+  there and decode what isn't the file's; so how a caller asked decided where
+  the file ended. Now a short read is the data's end until a seek, in the
+  stream (`StreamDecoder::flac_ended`) and in `apaudio_flac_decode()` alike.
+  Kept as `regressions/apaudio_fuzz/flac_read_after_failed_frame`.
+- **A WAV whose data chunk is empty** decodes to 0 frames with no samples,
+  which the target refused; `APAUDIO_PCM` now says `samples` may be NULL when
+  `frame_count` is 0, as every decoder already left it. Kept as
+  `regressions/apaudio_fuzz/wav_empty_data_chunk`.
+After both, `apaudio_fuzz` ran 15 minutes clean (963,718 inputs).
+
+
 ### 16. Spatial audio beyond angles at play time
 
 **Wanted by a second caller (2026-10-28):** a game engine's listener and

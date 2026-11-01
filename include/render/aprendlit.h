@@ -877,7 +877,7 @@ typedef enum APREND_LIT_SHADOW_KIND APRI_ENUM_BASE {
 
 /**
  * @brief One light's shadow: its kind, and that kind's fields. A mask's
- * are here; card A35 adds the cascades' as a struct chained on #base.
+ * are here; card A35 adds the cascades' as a struct chained on `base`.
  */
 typedef struct APREND_LIT_LIGHT_SHADOW {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW, and its chain (apricore.h, "Struct bases"). */

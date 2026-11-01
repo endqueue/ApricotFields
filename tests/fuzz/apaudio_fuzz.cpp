@@ -212,7 +212,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     APRIFUZZ_CHECK(pcm.channel_count > 0);
     APRIFUZZ_CHECK(pcm.sample_rate > 0);
-    APRIFUZZ_CHECK(pcm.samples != nullptr);
+    // A file whose audio is empty decodes to no frames, and may have no
+    // samples (APAUDIO_PCM).
+    APRIFUZZ_CHECK(pcm.samples != nullptr || pcm.frame_count == 0);
     // Every sample the PCM claims is there to read (ASan sees one that
     // isn't); what a broken file decodes to is its own business.
     uint64_t samples = pcm.frame_count * pcm.channel_count;

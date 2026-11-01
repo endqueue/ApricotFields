@@ -79,6 +79,12 @@ struct StreamDecoder
     uint32_t pending;
     // The sound frame decoded next.
     uint64_t position;
+    // FLAC: a read came back short, which dr_flac does only when it can't
+    // decode the next frame. Its reader is then left inside that frame,
+    // where a later read can find a false header and decode what isn't the
+    // file's, so the data has ended until a seek (apaudio_flac_decode()
+    // stops at the same frame).
+    bool flac_ended;
     // Made on the system heap (a sound's create): close frees what open
     // took.
     bool heap;
