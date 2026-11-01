@@ -51,6 +51,15 @@ static SPUDRESULT aprend_command_pool_reset(aprend_instance_t::command_pool &poo
 }
 
 aprend_instance_t::~aprend_instance_t() {
+	// A batch of updates and clears never submitted is closed before
+	// anything it recorded is released: a list still recording when an
+	// object it uses goes can't be ended (Vulkan's command buffer is then
+	// invalid), and a Metal encoder is ended before it goes. It is dropped
+	// with the lists, which go before their allocators.
+	if (this->upload_batch && this->upload_batch_open) {
+		spudgpu_end_command_list(this->upload_batch);
+		this->upload_batch_open = false;
+	}
 	// Onto the release queue first, so the loop below releases them in
 	// order with everything else.
 	aprend_builtins_destroy(this);
@@ -73,14 +82,9 @@ aprend_instance_t::~aprend_instance_t() {
 	aprend_material_arena_destroy(this);
 	// Nothing reads a transient span any more.
 	aprend_transient_arena_destroy(this);
-	// An instance that failed to create may have neither. A batch that was
-	// never submitted is dropped with the lists, which go before their
-	// allocators.
+	// An instance that failed to create may have neither.
 	if (this->frame_fence)
 		spudgpu_destroy_fence(this->frame_fence);
-	// Closed first: a Metal encoder is ended before it goes.
-	if (this->upload_batch && this->upload_batch_open)
-		spudgpu_end_command_list(this->upload_batch);
 	for (command_frame &frame : this->frame_commands) {
 		aprend_command_pool_destroy(frame.recordings);
 		aprend_command_pool_destroy(frame.batches);
@@ -439,6 +443,9 @@ APRESULT aprend_instance_create(
 			goto failedattempt;
 		}
 		result->unified_memory         = properties.unified_memory;
+		for (SPUDGPU_SHADER_FORMAT format = SPUDGPU_SHADER_FORMAT_SPIRV; format <= SPUDGPU_SHADER_FORMAT_METALLIB; ++format)
+			if (properties.shader_formats & (1u << format))
+				result->shader_format = format;
 		result->device_mappable_memory = (result->features & SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY) != 0;
 		result->uniform_buffer_offset_alignment = properties.uniform_buffer_offset_alignment;
 		result->storage_buffer_offset_alignment = properties.storage_buffer_offset_alignment;

@@ -3,8 +3,9 @@
 
 /* Internal header - never included outside ApricotFields/src/render/.
  *
- * What Aprend draws with itself: shaders built into the library (GLSL in
- * shaders/, compiled to SPIR-V and embedded by the build), and the objects
+ * What Aprend draws with itself: shaders built into the library (Slang in
+ * shaders/, compiled to each API's own format and embedded by the build as
+ * packages), and the objects
  * made of them. Each is made through the same create calls a caller uses,
  * the first time something needs it, and kept by the instance until it is
  * destroyed. Made and used on the thread using the instance, under the
@@ -19,10 +20,10 @@
 
 /* An instance's built-in objects; each NULL, or empty, until first needed. */
 struct aprend_builtins {
-	/* aprend_fullscreen.vert: one triangle over the whole target, drawn with
+	/* aprend_fullscreen_vert.slang: one triangle over the whole target, drawn with
 	 * 3 vertices and no vertex buffer. */
 	aprend_shader fullscreen_vert{nullptr};
-	/* aprend_downsample.frag: a mip level from the one above, through a
+	/* aprend_downsample_frag.slang: a mip level from the one above, through a
 	 * view of that level (binding 0) and a sampler (binding 1). */
 	aprend_shader downsample_frag{nullptr};
 	/* Set 0 of downsample_frag. */
@@ -52,7 +53,7 @@ struct aprend_builtins {
 	};
 	std::vector<bloom_pipeline> bloom_pipelines{};
 
-	/* aprend_present.frag: a source fitted into a whole target
+	/* aprend_present_frag.slang: a source fitted into a whole target
 	 * (APREND_COMMAND_DRAW_TEXTURE, PRESENT_TEXTURE's draw modes), and the
 	 * layout of its set 0: a texture at binding 0, a sampler at binding 1. */
 	aprend_shader present_frag{nullptr};
@@ -64,7 +65,7 @@ struct aprend_builtins {
 	};
 	std::vector<present_pipeline> present_pipelines{};
 
-	/* aprend_blur.frag: one direction of a separable Gaussian blur
+	/* aprend_blur_frag.slang: one direction of a separable Gaussian blur
 	 * (APREND_COMMAND_BLUR), whose set 0 is the bloom layout's shape, and a
 	 * pipeline for each target format it renders to. */
 	aprend_shader blur_frag{nullptr};
@@ -74,7 +75,7 @@ struct aprend_builtins {
 	};
 	std::vector<blur_pipeline> blur_pipelines{};
 
-	/* aprend_outline.frag: the seed, jump and composite passes of an outline
+	/* aprend_outline_frag.slang: the seed, jump and composite passes of an outline
 	 * (APREND_COMMAND_OUTLINE), set 0 of the bloom layout's shape, and a
 	 * pipeline for each target format and whether it blends (the
 	 * composite) or not (the seed and jumps, into places). */

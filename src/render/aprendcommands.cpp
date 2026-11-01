@@ -2893,8 +2893,14 @@ static bool aprend_cmd_tone_map(aprend_command_list cmd_list, const APREND_COMMA
 	params.encoding       = p._encoding;
 	params.automatic      = p._auto_exposure ? 1u : 0u;
 	aprend_cmd_transition_range(cmd_list, source, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	// The placeholder's texels aren't read, but its binding is, and a
+	// binding's image must be in the layout its descriptor names: the
+	// placeholder is never written, so until something moves it, it is
+	// still in UNDEFINED.
 	if (p._auto_exposure)
 		aprend_cmd_transition_view(cmd_list, exposure, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY);
+	else
+		aprend_cmd_transition_range(cmd_list, aprend_texture_view_range(exposure), SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
 	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	aprend_record_fullscreen_pass_sets(cmd_list->cmd_list, pipeline, p._target->image_view, width, height, SPUDGPU_LOAD_OP_DONT_CARE, sets, 2,
 	                                   cmd_list->compiled_frame, &params, sizeof(params));

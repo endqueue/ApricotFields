@@ -24,6 +24,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(_MSC_VER) && _DEBUG
+#include <crtdbg.h>
+#endif
+
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #define MISUSE_SANITIZED 1
 #elif defined(__has_feature)
@@ -1587,13 +1591,11 @@ int main(void)
     calls++;
     (void)aprend_sampler_get_spudgpu_sampler((aprend_sampler){0});
     calls++;
-    expect_error("aprend_shader_create_spirv", aprend_shader_create_spirv((aprend_instance){0}, (const void *){0}, (uint64_t){0}, (SPUDGPU_SHADER_STAGE){0}, (aprend_shader *){0}, (APREND_ERROR *){0}));
+    expect_error("aprend_shader_create", aprend_shader_create((aprend_instance){0}, (const APREND_SHADER_PACKAGE *){0}, (aprend_shader *){0}, (APREND_ERROR *){0}));
     calls++;
     aprend_shader_destroy((aprend_shader){0});
     calls++;
     (void)aprend_shader_get_stage((aprend_shader){0});
-    calls++;
-    expect_error("aprend_shader_read_from_file_spirv", aprend_shader_read_from_file_spirv((aprend_instance){0}, (const char *){0}, (SPUDGPU_SHADER_STAGE){0}, (aprend_shader *){0}, (APREND_ERROR *){0}));
     calls++;
     expect_error("aprend_swap_chain_acquire", aprend_swap_chain_acquire((aprend_swap_chain){0}, (APREND_ERROR *){0}));
     calls++;
@@ -1783,6 +1785,14 @@ int main(void)
 #if _DEBUG && !MISUSE_SANITIZED
     // Each refusal below prints a line on stderr: they are expected.
     const int zero_failures = failures;
+#if defined(_MSC_VER)
+    // The check reads a destroyed handle's memory. From here on the debug
+    // CRT keeps every block freed, filled and never given back to the
+    // Windows heap, which decommits freed pages: reading one faults (one
+    // run in about forty did, 2026-10-31). spudlib's harness keeps its
+    // freed blocks through its allocator; ApricotFields uses malloc.
+    _CrtSetDbgFlag(_CrtSetDbgFlag(_CRTDBG_REPORT_FLAG) | _CRTDBG_DELAY_FREE_MEM_DF);
+#endif
     calls_with_destroyed_handles();
     printf("apri_misuse_tests: %d calls with a destroyed handle (of 117 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
 #elif _DEBUG

@@ -165,10 +165,10 @@ endfunction()
 
 # SPIRV-Cross - SPIR-V reflection for Aprend's shaders
 # (src/render/aprendreflect.cpp): only its core, which reads SPIR-V and
-# writes nothing. SpudLib already builds it on the backends that
-# cross-compile SPIR-V (Metal from eqdev/.deps/SPIRV-Cross, D3D12 from its
-# Vulkan SDK tag); where it hasn't (Vulkan), it is built here from the same
-# vendored checkout as Metal's. Its core API is the same in both.
+# writes nothing. SpudLib already builds it for its spudgpu_msl tool (card
+# S20), which the shader build step runs, wherever it isn't cross-compiling;
+# where it hasn't, it is built here from the same tag. Its core API is the
+# same in both.
 if (NOT TARGET spirv-cross-core)
     include(FetchContent)
     set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
@@ -194,79 +194,73 @@ target_link_libraries(ApricotFields PRIVATE spirv-cross-core)
 find_package(Threads REQUIRED)
 target_link_libraries(ApricotFields PRIVATE Threads::Threads)
 
-# Aprend's own shaders (shaders/*.vert, *.frag, *.comp), compiled to SPIR-V at build
-# time and embedded in the library as C arrays (glslc -mfmt=c): there is
-# nothing to deploy or find at run time.
-# src/render/aprendbuiltin.cpp includes them. glslc is needed on every
-# platform, Apple included, since SpudGPU's Metal and D3D12 backends take
-# SPIR-V and cross-compile it.
-find_program(APRICOTFIELDS_GLSLC glslc
-        HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-        REQUIRED)
+# Aprend's own shaders (shaders/*_vert.slang, _frag, _comp), Slang compiled at
+# build time to SPIR-V, DXIL on Windows and a .metallib on Apple platforms
+# (cmake/aprend_slang.cmake), and embedded in the library as one package
+# each: there is nothing to deploy or find at run time, and nothing is
+# compiled at run time. src/render/aprendbuiltin.cpp, aprendbatch.cpp and
+# aprendlit.cpp include them.
+include(cmake/aprend_slang.cmake)
 set(APRICOTFIELDS_SHADER_INC_DIR ${CMAKE_CURRENT_BINARY_DIR}/aprend_shaders)
 set(APRICOTFIELDS_SHADERS
-        aprend_fullscreen.vert
-        aprend_downsample.frag
-        aprend_present.frag
-        aprend_bloom_prefilter.frag
-        aprend_bloom_downsample.frag
-        aprend_bloom_upsample.frag
-        aprend_bloom_composite.frag
-        aprend_tone_map.frag
-        aprend_blur.frag
-        aprend_outline.frag
-        aprend_lit.vert
-        aprend_lit.frag
-        aprend_lit_shadow.vert
-        aprend_lit_depth.frag
-        aprend_environment_from_cube.frag
-        aprend_environment_from_equirect.frag
-        aprend_environment_prefilter.frag
-        aprend_environment_irradiance.frag
-        aprend_environment_sky.frag
-        aprend_environment_hosek.frag
-        aprend_lit_depth_cutout.frag
-        aprend_lit_sky.frag
-        aprend_lit_cull.comp
-        aprend_lit_cull_bounded.comp
-        aprend_lit_brdf_lut.frag
-        aprend_lit_occlusion.frag
-        aprend_lit_occlusion_blur.frag
-        aprend_exposure_luminance.frag
-        aprend_exposure_adapt.frag
-        aprend_exposure_histogram.comp
-        aprend_exposure_adapt_histogram.frag
-        aprend_batch.vert
-        aprend_batch_quad.frag
-        aprend_batch_circle.frag
-        aprend_batch_line.frag
-        aprend_batch_glyph.frag
+        aprend_fullscreen_vert
+        aprend_downsample_frag
+        aprend_present_frag
+        aprend_bloom_prefilter_frag
+        aprend_bloom_downsample_frag
+        aprend_bloom_upsample_frag
+        aprend_bloom_composite_frag
+        aprend_tone_map_frag
+        aprend_blur_frag
+        aprend_outline_frag
+        aprend_lit_vert
+        aprend_lit_frag
+        aprend_lit_shadow_vert
+        aprend_lit_depth_frag
+        aprend_environment_from_cube_frag
+        aprend_environment_from_equirect_frag
+        aprend_environment_prefilter_frag
+        aprend_environment_irradiance_frag
+        aprend_environment_sky_frag
+        aprend_environment_hosek_frag
+        aprend_lit_depth_cutout_frag
+        aprend_lit_sky_frag
+        aprend_lit_cull_comp
+        aprend_lit_cull_bounded_comp
+        aprend_lit_brdf_lut_frag
+        aprend_lit_occlusion_frag
+        aprend_lit_occlusion_blur_frag
+        aprend_exposure_luminance_frag
+        aprend_exposure_adapt_frag
+        aprend_exposure_histogram_comp
+        aprend_exposure_adapt_histogram_frag
+        aprend_batch_vert
+        aprend_batch_quad_frag
+        aprend_batch_circle_frag
+        aprend_batch_line_frag
+        aprend_batch_glyph_frag
 )
-# What the shaders include (#include, GL_GOOGLE_include_directive), from
-# shaders/: every shader is compiled again when one of them changes.
-set(APRICOTFIELDS_SHADER_INCLUDES
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_scene.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_cull.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_vertex.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_environment.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_material.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_bindings.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_shadow_pass.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch.glslh
-        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch_inputs.glslh
+# The modules the shaders import, from shaders/: every shader is compiled
+# again when one of them changes.
+set(APRICOTFIELDS_SHADER_MODULES
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_scene.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_cull.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_vertex.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_environment.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_material.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_bindings.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_shadow_pass.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch_inputs.slang
 )
 foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
-    set(shader_inc ${APRICOTFIELDS_SHADER_INC_DIR}/${shader}.spv.inc)
-    add_custom_command(
-            OUTPUT ${shader_inc}
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${APRICOTFIELDS_SHADER_INC_DIR}
-            COMMAND ${APRICOTFIELDS_GLSLC} -mfmt=c -I ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader} -o ${shader_inc}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader} ${APRICOTFIELDS_SHADER_INCLUDES}
-            COMMENT "Compiling ${shader} to embedded SPIR-V"
-    )
-    list(APPEND APRICOTFIELDS_SHADER_INCS ${shader_inc})
+    aprend_add_slang_shader(APRICOTFIELDS_SHADER_OUTPUTS
+            SOURCE shaders/${shader}.slang
+            OUT_DIR ${APRICOTFIELDS_SHADER_INC_DIR}
+            INCLUDE_DIRS shaders
+            DEPENDS ${APRICOTFIELDS_SHADER_MODULES})
 endforeach ()
-add_custom_target(apricotfields_shaders DEPENDS ${APRICOTFIELDS_SHADER_INCS})
+add_custom_target(apricotfields_shaders DEPENDS ${APRICOTFIELDS_SHADER_OUTPUTS})
 add_dependencies(ApricotFields apricotfields_shaders)
 target_include_directories(ApricotFields PRIVATE ${APRICOTFIELDS_SHADER_INC_DIR})
 
@@ -801,7 +795,7 @@ if (APRICOTFIELDS_BUILD_TESTS)
     # SPIR-V reflection, and writing a member where the reflection lays it
     # out: no device either, so it sees src/render too.
     add_executable(aprendreflect_tests tests/aprendreflect_tests.cpp)
-    target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
+    target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render ${APRICOTFIELDS_SHADER_INC_DIR})
     target_link_libraries(aprendreflect_tests PRIVATE ApricotFields)
     add_test(NAME aprendreflect_tests COMMAND aprendreflect_tests)
     # The features Aprend's own code uses, from C.

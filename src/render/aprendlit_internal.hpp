@@ -16,7 +16,7 @@
 
 /* ---- The shaders' blocks ----------------------------------------------- */
 
-/* AprendLitLight in shaders/aprend_lit_scene.glslh. */
+/* AprendLitLight in shaders/aprend_lit_scene.slang. */
 struct aprend_lit_light_block {
 	float position_range[4];
 	float radiance_type[4];
@@ -24,7 +24,7 @@ struct aprend_lit_light_block {
 	float outer_shadow[4];
 };
 
-/* AprendLitScene in shaders/aprend_lit_scene.glslh, as std140 lays it out.
+/* AprendLitScene in shaders/aprend_lit_scene.slang, as std140 lays it out.
  * Checked member by member against the shader's reflection when the scene
  * layout is made. */
 struct aprend_lit_scene_block {
@@ -74,12 +74,12 @@ enum : uint32_t {
 	APREND_LIT_SCENE_FLAG_SCENE_COLOR   = 256u,
 };
 
-/* AprendLitShadowPass in shaders/aprend_lit_shadow_pass.glslh. */
+/* AprendLitShadowPass in shaders/aprend_lit_shadow_pass.slang. */
 struct aprend_lit_shadow_pass_block {
 	float view_projection[16];
 };
 
-/* AprendLitMaterial in shaders/aprend_lit_material.glslh. */
+/* AprendLitMaterial in shaders/aprend_lit_material.slang. */
 struct aprend_lit_material_block {
 	float base_color[4];
 	float emission[4];
@@ -104,7 +104,7 @@ struct aprend_lit_material_block {
 	float attenuation[4];
 };
 
-/* AprendOcclusionPass in shaders/aprend_lit_occlusion.frag. */
+/* AprendOcclusionPass in shaders/aprend_lit_occlusion_frag.slang. */
 struct aprend_occlusion_block {
 	float view_projection[16];
 	float inverse_view_projection[16];
@@ -113,7 +113,7 @@ struct aprend_occlusion_block {
 	float params[4];
 };
 
-/* EnvironmentParams in shaders/aprend_environment.glslh. Metal aligns a
+/* EnvironmentParams in shaders/aprend_environment.slang. Metal aligns a
  * block with a vec2 to 8 bytes: every push here is a multiple of 8. */
 struct aprend_environment_params {
 	float target_size[2];
@@ -125,7 +125,7 @@ struct aprend_environment_params {
 	float padding;
 };
 
-/* SkyParams in shaders/aprend_environment_sky.frag. */
+/* SkyParams in shaders/aprend_environment_sky_frag.slang. */
 struct aprend_sky_params {
 	float target_size[2];
 	uint32_t face;
@@ -134,7 +134,7 @@ struct aprend_sky_params {
 	float ground[4];
 };
 
-/* AprendHosekSky in shaders/aprend_environment_hosek.frag, std140: each
+/* AprendHosekSky in shaders/aprend_environment_hosek_frag.slang, std140: each
  * channel's nine coefficients (in the dataset's order) and radiance, in a
  * vec4's red, green and blue. */
 struct aprend_hosek_sky_block {
@@ -152,7 +152,7 @@ void aprend_lit_hosek_cook(const float sun[3], float turbidity, const float albe
  * isn't (the passes prepared). NULL, reported, if it can't be. */
 aprend_material aprend_lit_environment_sky_material(aprend_lit_environment environment);
 
-/* ToneMapParams in shaders/aprend_tone_map.frag. */
+/* ToneMapParams in shaders/aprend_tone_map_frag.slang. */
 struct aprend_tone_map_params {
 	float target_size[2];
 	float exposure;
@@ -161,7 +161,7 @@ struct aprend_tone_map_params {
 	uint32_t automatic;
 };
 
-/* AdaptParams in shaders/aprend_exposure_adapt.frag. */
+/* AdaptParams in shaders/aprend_exposure_adapt_frag.slang. */
 struct aprend_adapt_params {
 	float key;
 	float min_log;
@@ -173,7 +173,7 @@ struct aprend_adapt_params {
 	uint32_t first;
 };
 
-/* HistogramParams in shaders/aprend_exposure_histogram.comp. */
+/* HistogramParams in shaders/aprend_exposure_histogram_comp.slang. */
 struct aprend_histogram_params {
 	float min_log;
 	float max_log;
@@ -181,7 +181,7 @@ struct aprend_histogram_params {
 	uint32_t size;
 };
 
-/* AdaptParams in shaders/aprend_exposure_adapt_histogram.frag, 48 bytes. */
+/* AdaptParams in shaders/aprend_exposure_adapt_histogram_frag.slang, 48 bytes. */
 struct aprend_histogram_adapt_params {
 	float key;
 	float min_log;
@@ -206,7 +206,7 @@ struct aprend_size_params {
 /* ---- The instance's lit objects ---------------------------------------- */
 
 /* The full-target passes Aprend's lit and post work is made of, each a
- * fragment shader over aprend_fullscreen.vert. */
+ * fragment shader over aprend_fullscreen_vert.slang. */
 enum {
 	APREND_LIT_PASS_FROM_CUBE     = 0, /* a picture's cube into a radiance cube face */
 	APREND_LIT_PASS_FROM_EQUIRECT = 1, /* an equirectangular picture likewise */

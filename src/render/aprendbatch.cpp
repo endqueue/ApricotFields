@@ -13,7 +13,7 @@
 // The batcher (aprendbatch.h). A frame's records go straight into a
 // transient span taken at aprend_batch_begin(); the add calls check
 // everything first, then write, so a refused call adds nothing. What each
-// kind keeps in a record's eight vec4s (aprend_batch.vert reads them):
+// kind keeps in a record's eight vec4s (aprend_batch_vert.slang reads them):
 //
 //   quad:   r0 origin, r1 edge x, r2 edge y, r3.w flags, r4 color, r5 uv rect
 //   circle: r0 centre, r1 radius x, r2 radius y, r3.w flags, r4 color,
@@ -26,32 +26,31 @@
 //           rect, r6 outline color, r7 (outline width, layer)
 //
 // Flags are a float holding a small integer: the kind in the low two bits,
-// then the kind's own (shaders/aprend_batch.glslh).
+// then the kind's own (shaders/aprend_batch.slang).
 
 static const char *const s_name = "aprend_batch";
 
-static const uint32_t s_batch_vert_spv[] =
-#include "aprend_batch.vert.spv.inc"
-    ;
-static const uint32_t s_batch_quad_frag_spv[] =
-#include "aprend_batch_quad.frag.spv.inc"
-    ;
-static const uint32_t s_batch_circle_frag_spv[] =
-#include "aprend_batch_circle.frag.spv.inc"
-    ;
-static const uint32_t s_batch_line_frag_spv[] =
-#include "aprend_batch_line.frag.spv.inc"
-    ;
-static const uint32_t s_batch_glyph_frag_spv[] =
-#include "aprend_batch_glyph.frag.spv.inc"
-    ;
+// The packages of shaders/, embedded by the build (cmake/aprend_slang.cmake).
+#include "aprend_batch_vert.package.inc"
+#include "aprend_batch_quad_frag.package.inc"
+#include "aprend_batch_circle_frag.package.inc"
+#include "aprend_batch_line_frag.package.inc"
+#include "aprend_batch_glyph_frag.package.inc"
+
+// The fragment shaders, by kind.
+static const APREND_SHADER_PACKAGE *const s_frag_packages[APREND_BATCH_KINDS] = {
+    &aprend_batch_quad_frag_package,
+    &aprend_batch_circle_frag_package,
+    &aprend_batch_line_frag_package,
+    &aprend_batch_glyph_frag_package,
+};
 
 enum : uint32_t {
 	KIND_QUAD   = 0,
 	KIND_CIRCLE = 1,
 	KIND_LINE   = 2,
 	KIND_GLYPH  = 3,
-	// Above the kind (shaders/aprend_batch.glslh).
+	// Above the kind (shaders/aprend_batch.slang).
 	QUAD_TEXTURED   = 4,
 	LINE_HAS_PREV   = 4,
 	LINE_HAS_NEXT   = 8,
@@ -59,13 +58,15 @@ enum : uint32_t {
 	LINE_JOIN_SHIFT = 6,
 };
 
+// By the names of aprend_batch_vert's inputs: the fields of its record
+// parameter, each by its own name (APREND_SHADER_INPUT::name).
 static const APREND_VERTEX_ELEMENT s_record_elements[] = {
-    {"in_r0", APREND_VERTEX_ELEMENT_TYPE_VEC4, 0},   {"in_r1", APREND_VERTEX_ELEMENT_TYPE_VEC4, 16},
-    {"in_r2", APREND_VERTEX_ELEMENT_TYPE_VEC4, 32},  {"in_r3", APREND_VERTEX_ELEMENT_TYPE_VEC4, 48},
-    {"in_r4", APREND_VERTEX_ELEMENT_TYPE_VEC4, 64},  {"in_r5", APREND_VERTEX_ELEMENT_TYPE_VEC4, 80},
-    {"in_r6", APREND_VERTEX_ELEMENT_TYPE_VEC4, 96},  {"in_r7", APREND_VERTEX_ELEMENT_TYPE_VEC4, 112},
+    {"r0", APREND_VERTEX_ELEMENT_TYPE_VEC4, 0},   {"r1", APREND_VERTEX_ELEMENT_TYPE_VEC4, 16},
+    {"r2", APREND_VERTEX_ELEMENT_TYPE_VEC4, 32},  {"r3", APREND_VERTEX_ELEMENT_TYPE_VEC4, 48},
+    {"r4", APREND_VERTEX_ELEMENT_TYPE_VEC4, 64},  {"r5", APREND_VERTEX_ELEMENT_TYPE_VEC4, 80},
+    {"r6", APREND_VERTEX_ELEMENT_TYPE_VEC4, 96},  {"r7", APREND_VERTEX_ELEMENT_TYPE_VEC4, 112},
 };
-static_assert(sizeof(aprend_batch_record) == 128, "aprend_batch.vert reads eight vec4s a record");
+static_assert(sizeof(aprend_batch_record) == 128, "aprend_batch_vert.slang reads eight vec4s a record");
 static_assert(sizeof(aprend_batch_push) == 96, "AprendBatchPush's size");
 
 static bool finite_all(const float *v, size_t n) {
@@ -135,8 +136,8 @@ static aprend_graphics_pipeline aprend_batch_pipeline(aprend_batch batch, uint32
 	desc._blends[0]                            = aprend_blend_premultiplied();
 	desc.vertex_shader                         = batch->vert;
 	desc.fragment_shader                       = batch->frags[kind];
-	desc._vertex_entry_point                   = "main";
-	desc._fragment_entry_point                 = "main";
+	desc._vertex_entry_point                   = aprend_batch_vert_package.entry_point;
+	desc._fragment_entry_point                 = s_frag_packages[kind]->entry_point;
 	desc.color_attachment_formats[0]           = batch->color_format;
 	desc.color_attachment_count                = 1;
 	desc.depth_format                          = batch->depth_format;
@@ -200,7 +201,9 @@ static projected aprend_batch_project(const aprend_batch_t &batch, const float *
 			out.clip[r] = m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r];
 		const float w = out.clip[3] != 0.0f ? out.clip[3] : 1e-30f;
 		out.px[0]     = (out.clip[0] / w * 0.5f + 0.5f) * batch.frame.viewport_size[0];
-		out.px[1]     = (out.clip[1] / w * 0.5f + 0.5f) * batch.frame.viewport_size[1];
+		// Clip space is +Y up the target (card S19), pixels y down: y
+		// negated, as batch_pixel in shaders/aprend_batch.slang.
+		out.px[1]     = (-out.clip[1] / w * 0.5f + 0.5f) * batch.frame.viewport_size[1];
 	} else {
 		set4(out.clip, p[0], p[1], 0.0f, 1.0f);
 		out.px[0] = p[0];
@@ -393,17 +396,9 @@ APRESULT aprend_batch_create(aprend_instance instance, const APREND_BATCH_DESC *
 	}
 	batch->debug_name = batch->name_copy ? batch->name_copy : s_name;
 
-	struct shader_source {
-		const uint32_t *code;
-		size_t size;
-	};
-	const shader_source frags[APREND_BATCH_KINDS] = {{s_batch_quad_frag_spv, sizeof(s_batch_quad_frag_spv)},
-	                                                 {s_batch_circle_frag_spv, sizeof(s_batch_circle_frag_spv)},
-	                                                 {s_batch_line_frag_spv, sizeof(s_batch_line_frag_spv)},
-	                                                 {s_batch_glyph_frag_spv, sizeof(s_batch_glyph_frag_spv)}};
-	APRESULT result = aprend_shader_create_spirv(instance, s_batch_vert_spv, sizeof(s_batch_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX, &batch->vert, out_error);
+	APRESULT result = aprend_shader_create(instance, &aprend_batch_vert_package, &batch->vert, out_error);
 	for (uint32_t k = 0; k < APREND_BATCH_KINDS && result == APRESULT_OK; ++k)
-		result = aprend_shader_create_spirv(instance, frags[k].code, frags[k].size, SPUDGPU_SHADER_STAGE_FRAGMENT, &batch->frags[k], out_error);
+		result = aprend_shader_create(instance, s_frag_packages[k], &batch->frags[k], out_error);
 	if (result == APRESULT_OK)
 		result = aprend_binding_layout_create_from_shaders(instance, batch->frags, APREND_BATCH_KINDS, 0, &batch->layout, out_error);
 	const uint32_t modes = desc->depth_format == SPUDGPU_FORMAT_UNKNOWN ? 1 : APREND_BATCH_DEPTH_MODES;

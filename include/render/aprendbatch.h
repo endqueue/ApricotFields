@@ -180,7 +180,7 @@ typedef struct APREND_BATCH_FRAME {
 	 * #APREND_BATCH_DEPTH_OVER. */
 	APREND_BATCH_DEPTH depth;
 	/** World space's view_projection, column-major (SpudGPU's clip space:
-	 * depth 0 to 1, +Y down the target); not read in screen space. Every
+	 * depth 0 to 1, +Y up the target); not read in screen space. Every
 	 * value finite. */
 	float view_projection[16];
 	/** The target's size in pixels, which screen measures (widths, dashes)

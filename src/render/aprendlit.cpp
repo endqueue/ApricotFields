@@ -12,73 +12,29 @@
 #include <cstdlib>
 #include <cstring>
 
-// The SPIR-V of shaders/, embedded by the build (CMakeLists.txt).
-static const uint32_t s_lit_frag_spv[] =
-#include "aprend_lit.frag.spv.inc"
-    ;
-static const uint32_t s_lit_depth_frag_spv[] =
-#include "aprend_lit_depth.frag.spv.inc"
-    ;
-static const uint32_t s_lit_vert_spv[] =
-#include "aprend_lit.vert.spv.inc"
-    ;
-static const uint32_t s_lit_shadow_vert_spv[] =
-#include "aprend_lit_shadow.vert.spv.inc"
-    ;
-static const uint32_t s_lit_depth_cutout_frag_spv[] =
-#include "aprend_lit_depth_cutout.frag.spv.inc"
-    ;
-static const uint32_t s_lit_sky_frag_spv[] =
-#include "aprend_lit_sky.frag.spv.inc"
-    ;
-static const uint32_t s_lit_cull_comp_spv[] =
-#include "aprend_lit_cull.comp.spv.inc"
-    ;
-static const uint32_t s_lit_cull_bounded_comp_spv[] =
-#include "aprend_lit_cull_bounded.comp.spv.inc"
-    ;
-static const uint32_t s_environment_from_cube_frag_spv[] =
-#include "aprend_environment_from_cube.frag.spv.inc"
-    ;
-static const uint32_t s_environment_from_equirect_frag_spv[] =
-#include "aprend_environment_from_equirect.frag.spv.inc"
-    ;
-static const uint32_t s_environment_prefilter_frag_spv[] =
-#include "aprend_environment_prefilter.frag.spv.inc"
-    ;
-static const uint32_t s_environment_irradiance_frag_spv[] =
-#include "aprend_environment_irradiance.frag.spv.inc"
-    ;
-static const uint32_t s_environment_sky_frag_spv[] =
-#include "aprend_environment_sky.frag.spv.inc"
-    ;
-static const uint32_t s_environment_hosek_frag_spv[] =
-#include "aprend_environment_hosek.frag.spv.inc"
-    ;
-static const uint32_t s_lit_brdf_lut_frag_spv[] =
-#include "aprend_lit_brdf_lut.frag.spv.inc"
-    ;
-static const uint32_t s_lit_occlusion_frag_spv[] =
-#include "aprend_lit_occlusion.frag.spv.inc"
-    ;
-static const uint32_t s_lit_occlusion_blur_frag_spv[] =
-#include "aprend_lit_occlusion_blur.frag.spv.inc"
-    ;
-static const uint32_t s_exposure_luminance_frag_spv[] =
-#include "aprend_exposure_luminance.frag.spv.inc"
-    ;
-static const uint32_t s_exposure_adapt_frag_spv[] =
-#include "aprend_exposure_adapt.frag.spv.inc"
-    ;
-static const uint32_t s_exposure_histogram_comp_spv[] =
-#include "aprend_exposure_histogram.comp.spv.inc"
-    ;
-static const uint32_t s_exposure_adapt_histogram_frag_spv[] =
-#include "aprend_exposure_adapt_histogram.frag.spv.inc"
-    ;
-static const uint32_t s_tone_map_frag_spv[] =
-#include "aprend_tone_map.frag.spv.inc"
-    ;
+// The packages of shaders/, embedded by the build (cmake/aprend_slang.cmake).
+#include "aprend_lit_frag.package.inc"
+#include "aprend_lit_depth_frag.package.inc"
+#include "aprend_lit_vert.package.inc"
+#include "aprend_lit_shadow_vert.package.inc"
+#include "aprend_lit_depth_cutout_frag.package.inc"
+#include "aprend_lit_sky_frag.package.inc"
+#include "aprend_lit_cull_comp.package.inc"
+#include "aprend_lit_cull_bounded_comp.package.inc"
+#include "aprend_environment_from_cube_frag.package.inc"
+#include "aprend_environment_from_equirect_frag.package.inc"
+#include "aprend_environment_prefilter_frag.package.inc"
+#include "aprend_environment_irradiance_frag.package.inc"
+#include "aprend_environment_sky_frag.package.inc"
+#include "aprend_environment_hosek_frag.package.inc"
+#include "aprend_lit_brdf_lut_frag.package.inc"
+#include "aprend_lit_occlusion_frag.package.inc"
+#include "aprend_lit_occlusion_blur_frag.package.inc"
+#include "aprend_exposure_luminance_frag.package.inc"
+#include "aprend_exposure_adapt_frag.package.inc"
+#include "aprend_exposure_histogram_comp.package.inc"
+#include "aprend_exposure_adapt_histogram_frag.package.inc"
+#include "aprend_tone_map_frag.package.inc"
 
 static_assert(sizeof(APREND_LIT_VERTEX) == 48, "APREND_LIT_VERTEX is 48 bytes");
 static_assert(sizeof(APREND_LIT_INSTANCE) == 64, "APREND_LIT_INSTANCE is 64 bytes");
@@ -119,6 +75,15 @@ static uint32_t log2_of(uint32_t v) {
 	return l;
 }
 static glm::vec3 vec3_of(const float v[3]) { return glm::vec3(v[0], v[1], v[2]); }
+
+// [projection] with clip space's y negated. glm's projections put +Y up the
+// view, as SpudGPU's clip space has it on every backend (card S19); each
+// shadow map is rendered with y negated all the same, so it holds the image
+// (and the winding) it did when clip space was +Y down the target, and the
+// surface shader reads it by the same matrix either way.
+static glm::mat4 aprend_flip_clip_y(const glm::mat4 &projection) {
+	return glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, -1.0f, 1.0f)) * projection;
+}
 
 // One member a block must have, where the C++ mirror has it.
 struct expected_member {
@@ -250,23 +215,21 @@ static bool aprend_lit_check_occlusion_block(aprend_binding_layout layout) {
 // ---- Shaders, layouts and the objects every lit thing shares -------------------------
 
 static const struct {
-	const uint32_t *code;
-	uint64_t size;
-	SPUDGPU_SHADER_STAGE stage;
+	const APREND_SHADER_PACKAGE *package;
 	const char *name;
 } s_lit_shaders[6] = {
-    {s_lit_frag_spv, sizeof(s_lit_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, "surface fragment"},
-    {s_lit_depth_frag_spv, sizeof(s_lit_depth_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, "depth fragment"},
-    {s_lit_vert_spv, sizeof(s_lit_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX, "surface vertex"},
-    {s_lit_shadow_vert_spv, sizeof(s_lit_shadow_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX, "shadow vertex"},
-    {s_lit_depth_cutout_frag_spv, sizeof(s_lit_depth_cutout_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, "cut-out depth fragment"},
-    {s_lit_sky_frag_spv, sizeof(s_lit_sky_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, "sky fragment"},
+    {&aprend_lit_frag_package, "surface fragment"},
+    {&aprend_lit_depth_frag_package, "depth fragment"},
+    {&aprend_lit_vert_package, "surface vertex"},
+    {&aprend_lit_shadow_vert_package, "shadow vertex"},
+    {&aprend_lit_depth_cutout_frag_package, "cut-out depth fragment"},
+    {&aprend_lit_sky_frag_package, "sky fragment"},
 };
 
 static aprend_shader aprend_lit_shader(aprend_instance instance, uint32_t which) {
 	aprend_shader &shader = instance->builtins.lit.shaders[which];
 	if (!shader) {
-		(void)aprend_shader_create_spirv(instance, s_lit_shaders[which].code, s_lit_shaders[which].size, s_lit_shaders[which].stage, &shader, nullptr);
+		(void)aprend_shader_create(instance, s_lit_shaders[which].package, &shader, nullptr);
 		if (!shader)
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's lit %s shader can't be created", s_lit_shaders[which].name);
 	}
@@ -415,7 +378,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 	return lit.brdf_lut_view && lit.brdf_lut_target;
 }
 
-// A pipeline over aprend_fullscreen.vert with [fragment], rendering to
+// A pipeline over aprend_fullscreen_vert.slang with [fragment], rendering to
 // [format], [layouts] at its first slots, [push_size] bytes of push
 // constants (none if 0).
 static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance instance, aprend_shader fragment, const aprend_binding_layout *layouts,
@@ -433,8 +396,8 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
 	desc._depth_compare_op           = SPUDGPU_COMPARE_OP_NEVER;
 	desc.vertex_shader               = aprend_builtin_fullscreen_vert(instance);
 	desc.fragment_shader             = fragment;
-	desc._vertex_entry_point         = "main";
-	desc._fragment_entry_point       = "main";
+	desc._vertex_entry_point         = "aprend_fullscreen_vert";
+	desc._fragment_entry_point       = aprend_shader_get_reflection(fragment)->entry_point;
 	desc.color_attachment_formats[0] = format;
 	desc.color_attachment_count      = 1;
 	desc.depth_format                = SPUDGPU_FORMAT_UNKNOWN;
@@ -457,31 +420,30 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
 }
 
 static const struct {
-	const uint32_t *code;
-	uint64_t size;
+	const APREND_SHADER_PACKAGE *package;
 	SPUDGPU_FORMAT format;
 	uint32_t push_size;
 	const char *name;
 } s_passes[APREND_LIT_PASS_COUNT] = {
-    {s_environment_from_cube_frag_spv, sizeof(s_environment_from_cube_frag_spv), APREND_ENVIRONMENT_FORMAT, sizeof(aprend_environment_params),
+    {&aprend_environment_from_cube_frag_package, APREND_ENVIRONMENT_FORMAT, sizeof(aprend_environment_params),
      "environment from a cube"},
-    {s_environment_from_equirect_frag_spv, sizeof(s_environment_from_equirect_frag_spv), APREND_ENVIRONMENT_FORMAT,
+    {&aprend_environment_from_equirect_frag_package, APREND_ENVIRONMENT_FORMAT,
      sizeof(aprend_environment_params), "environment from a picture"},
-    {s_environment_prefilter_frag_spv, sizeof(s_environment_prefilter_frag_spv), APREND_ENVIRONMENT_FORMAT, sizeof(aprend_environment_params),
+    {&aprend_environment_prefilter_frag_package, APREND_ENVIRONMENT_FORMAT, sizeof(aprend_environment_params),
      "environment prefilter"},
-    {s_environment_irradiance_frag_spv, sizeof(s_environment_irradiance_frag_spv), APREND_ENVIRONMENT_FORMAT,
+    {&aprend_environment_irradiance_frag_package, APREND_ENVIRONMENT_FORMAT,
      sizeof(aprend_environment_params), "environment irradiance"},
-    {s_environment_sky_frag_spv, sizeof(s_environment_sky_frag_spv), APREND_ENVIRONMENT_FORMAT, sizeof(aprend_sky_params), "sky"},
-    {s_lit_brdf_lut_frag_spv, sizeof(s_lit_brdf_lut_frag_spv), APREND_BRDF_LUT_FORMAT, sizeof(aprend_size_params), "BRDF lookup"},
-    {s_lit_occlusion_frag_spv, sizeof(s_lit_occlusion_frag_spv), APREND_OCCLUSION_FORMAT, 0, "ambient occlusion"},
-    {s_lit_occlusion_blur_frag_spv, sizeof(s_lit_occlusion_blur_frag_spv), SPUDGPU_FORMAT_UNKNOWN, sizeof(aprend_size_params),
+    {&aprend_environment_sky_frag_package, APREND_ENVIRONMENT_FORMAT, sizeof(aprend_sky_params), "sky"},
+    {&aprend_lit_brdf_lut_frag_package, APREND_BRDF_LUT_FORMAT, sizeof(aprend_size_params), "BRDF lookup"},
+    {&aprend_lit_occlusion_frag_package, APREND_OCCLUSION_FORMAT, 0, "ambient occlusion"},
+    {&aprend_lit_occlusion_blur_frag_package, SPUDGPU_FORMAT_UNKNOWN, sizeof(aprend_size_params),
      "ambient occlusion blur"},
-    {s_exposure_luminance_frag_spv, sizeof(s_exposure_luminance_frag_spv), APREND_EXPOSURE_LUMINANCE_FORMAT, sizeof(aprend_size_params),
+    {&aprend_exposure_luminance_frag_package, APREND_EXPOSURE_LUMINANCE_FORMAT, sizeof(aprend_size_params),
      "exposure luminance"},
-    {s_exposure_adapt_frag_spv, sizeof(s_exposure_adapt_frag_spv), APREND_EXPOSURE_FORMAT, sizeof(aprend_adapt_params), "exposure adapt"},
-    {s_environment_hosek_frag_spv, sizeof(s_environment_hosek_frag_spv), APREND_ENVIRONMENT_FORMAT, sizeof(aprend_sky_params),
+    {&aprend_exposure_adapt_frag_package, APREND_EXPOSURE_FORMAT, sizeof(aprend_adapt_params), "exposure adapt"},
+    {&aprend_environment_hosek_frag_package, APREND_ENVIRONMENT_FORMAT, sizeof(aprend_sky_params),
      "Hosek-Wilkie sky"},
-    {s_exposure_adapt_histogram_frag_spv, sizeof(s_exposure_adapt_histogram_frag_spv), APREND_EXPOSURE_FORMAT,
+    {&aprend_exposure_adapt_histogram_frag_package, APREND_EXPOSURE_FORMAT,
      sizeof(aprend_histogram_adapt_params), "exposure adapt from a histogram"},
 };
 
@@ -495,7 +457,7 @@ static bool aprend_lit_prepare_passes(aprend_instance instance) {
 	for (uint32_t pass = 0; pass < APREND_LIT_PASS_COUNT; ++pass) {
 		if (lit.pass_frags[pass])
 			continue;
-		(void)aprend_shader_create_spirv(instance, s_passes[pass].code, s_passes[pass].size, SPUDGPU_SHADER_STAGE_FRAGMENT, &lit.pass_frags[pass], nullptr);
+		(void)aprend_shader_create(instance, s_passes[pass].package, &lit.pass_frags[pass], nullptr);
 		if (!lit.pass_frags[pass]) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's %s shader can't be created", s_passes[pass].name);
 			return false;
@@ -522,7 +484,7 @@ static bool aprend_lit_prepare_passes(aprend_instance instance) {
 		}
 	}
 	if (!lit.histogram_comp) {
-		(void)aprend_shader_create_spirv(instance, s_exposure_histogram_comp_spv, sizeof(s_exposure_histogram_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE, &lit.histogram_comp, nullptr);
+		(void)aprend_shader_create(instance, &aprend_exposure_histogram_comp_package, &lit.histogram_comp, nullptr);
 		if (!lit.histogram_comp) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's exposure histogram shader can't be created");
 			return false;
@@ -612,7 +574,7 @@ aprend_graphics_pipeline aprend_lit_tone_map_pipeline(aprend_instance instance, 
 	if (!aprend_builtin_bloom_prepare(instance) || !aprend_lit_prepare_passes(instance))
 		return nullptr;
 	if (!lit.tone_map_frag) {
-		(void)aprend_shader_create_spirv(instance, s_tone_map_frag_spv, sizeof(s_tone_map_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &lit.tone_map_frag, nullptr);
+		(void)aprend_shader_create(instance, &aprend_tone_map_frag_package, &lit.tone_map_frag, nullptr);
 		if (!lit.tone_map_frag) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's tone map shader can't be created");
 			return nullptr;
@@ -640,7 +602,7 @@ aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance) 
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend exposure histogram";
 	desc.compute_shader                       = lit.histogram_comp;
-	desc._entry_point                         = "main";
+	desc._entry_point                         = "aprend_exposure_histogram_comp";
 	desc._binding_layouts[0]                  = lit.histogram_layout;
 	desc._binding_layout_count                = 1;
 	desc._push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_COMPUTE;
@@ -658,7 +620,7 @@ aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 	if (lit.cull_pipeline)
 		return lit.cull_pipeline;
 	if (!lit.cull_comp) {
-		(void)aprend_shader_create_spirv(instance, s_lit_cull_comp_spv, sizeof(s_lit_cull_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE, &lit.cull_comp, nullptr);
+		(void)aprend_shader_create(instance, &aprend_lit_cull_comp_package, &lit.cull_comp, nullptr);
 		if (!lit.cull_comp) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling shader can't be created");
 			return nullptr;
@@ -677,7 +639,7 @@ aprend_compute_pipeline aprend_lit_cull_pipeline(aprend_instance instance) {
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend light culling";
 	desc.compute_shader        = lit.cull_comp;
-	desc._entry_point          = "main";
+	desc._entry_point          = "aprend_lit_cull_comp";
 	desc._binding_layouts[0]   = lit.cull_layout;
 	desc._binding_layout_count = 1;
 	(void)aprend_compute_pipeline_create(instance, &desc, &lit.cull_pipeline, nullptr);
@@ -693,7 +655,7 @@ aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instanc
 	if (!aprend_lit_cull_pipeline(instance) || !aprend_lit_prepare_passes(instance))
 		return nullptr;
 	if (!lit.cull_bounded_comp) {
-		(void)aprend_shader_create_spirv(instance, s_lit_cull_bounded_comp_spv, sizeof(s_lit_cull_bounded_comp_spv), SPUDGPU_SHADER_STAGE_COMPUTE, &lit.cull_bounded_comp, nullptr);
+		(void)aprend_shader_create(instance, &aprend_lit_cull_bounded_comp_package, &lit.cull_bounded_comp, nullptr);
 		if (!lit.cull_bounded_comp) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's light culling shader with depth bounds can't be created");
 			return nullptr;
@@ -713,7 +675,7 @@ aprend_compute_pipeline aprend_lit_cull_bounded_pipeline(aprend_instance instanc
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
 	desc._debug_name = "aprend light culling with depth bounds";
 	desc.compute_shader        = lit.cull_bounded_comp;
-	desc._entry_point          = "main";
+	desc._entry_point          = "aprend_lit_cull_bounded_comp";
 	desc._binding_layouts[0]   = lit.cull_layout;
 	desc._binding_layouts[1]   = lit.cull_depth_layout;
 	desc._binding_layout_count = 2;
@@ -727,14 +689,13 @@ aprend_binding_set aprend_texture_view_cull_depth_set(aprend_texture_view view) 
 	if (view->cull_depth_set)
 		return view->cull_depth_set;
 	aprend_instance instance = view->instance;
-	APREND_BINDING_SET_ENTRY entries[2]{};
+	// The depth alone: the shader loads texels, with no sampler, so its
+	// layout (made from it) has none.
+	APREND_BINDING_SET_ENTRY entries[1]{};
 	entries[0]._binding                  = 0;
 	entries[0]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	entries[0]._resource._image._view    = view;
-	entries[1]._binding                  = 1;
-	entries[1]._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
-	entries[1]._resource._image._sampler = instance->builtins.lit.environment_sampler;
-	(void)aprend_binding_set_create(instance->builtins.lit.cull_depth_layout, entries, 2, &view->cull_depth_set, nullptr);
+	(void)aprend_binding_set_create(instance->builtins.lit.cull_depth_layout, entries, 1, &view->cull_depth_set, nullptr);
 	if (!view->cull_depth_set)
 		aprend_report(view->instance, APRESULT_APREND_GPU_FAILURE, "the binding set that reads a depth view for light culling can't be created");
 	return view->cull_depth_set;
@@ -2238,8 +2199,8 @@ APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_L
 		const float back         = radius + f.caster_distance;
 		const glm::mat4 view     = glm::lookAtRH(centre + sun * back, centre, light_up);
 		const float depth        = back + radius;
-		glm::mat4 projection     = f.reversed_depth ? glm::orthoRH_ZO(-radius, radius, -radius, radius, depth, 0.0f)
-		                                            : glm::orthoRH_ZO(-radius, radius, -radius, radius, 0.0f, depth);
+		glm::mat4 projection     = aprend_flip_clip_y(f.reversed_depth ? glm::orthoRH_ZO(-radius, radius, -radius, radius, depth, 0.0f)
+		                                                               : glm::orthoRH_ZO(-radius, radius, -radius, radius, 0.0f, depth));
 		// Moved by whole texels: where the scene's origin lands, rounded.
 		glm::mat4 matrix        = projection * view;
 		const float half_texels = (float)f.map_size * 0.5f;
@@ -2285,8 +2246,8 @@ APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, 
 	// A margin past 90 degrees, as a spot's has past its cone, for the taps
 	// of a soft shadow near a face's edge.
 	const float fov            = 2.0f * std::atan(1.05f);
-	const glm::mat4 projection = reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
-	                                            : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range);
+	const glm::mat4 projection = aprend_flip_clip_y(reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
+	                                                               : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range));
 	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
 	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
 	return APRESULT_OK;
@@ -2306,8 +2267,8 @@ APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_LIGHT *light, f
 	const glm::vec3 up       = std::fabs(axis.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
 	// Wide enough for the cone, with a margin the softness reads into.
 	const float fov            = std::min(light->outer_angle * 2.0f * 1.05f, 3.1f);
-	const glm::mat4 projection = reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
-	                                            : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range);
+	const glm::mat4 projection = aprend_flip_clip_y(reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
+	                                                               : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range));
 	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
 	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
 	return APRESULT_OK;
@@ -2386,17 +2347,16 @@ APRESULT aprend_exposure_create(
 	}
 	if (ok && histogram) {
 		if (aprend_lit_storage_buffer(instance, APREND_EXPOSURE_BINS * sizeof(uint32_t), true, "aprend exposure histogram", &exposure->histogram, nullptr) == APRESULT_OK) {
-			APREND_BINDING_SET_ENTRY entries[3]{};
+			// The luminance and the bins: the histogram loads texels, with
+			// no sampler, so its layout (made from its shaders) has none.
+			APREND_BINDING_SET_ENTRY entries[2]{};
 			entries[0]._binding                   = 0;
 			entries[0]._type                      = SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 			entries[0]._resource._image._view     = exposure->luminance_view;
-			entries[1]._binding                   = 1;
-			entries[1]._type                      = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
-			entries[1]._resource._image._sampler  = instance->builtins.lit.environment_sampler;
-			entries[2]._binding                   = 2;
-			entries[2]._type                      = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-			entries[2]._resource._storage._buffer = exposure->histogram;
-			(void)aprend_binding_set_create(instance->builtins.lit.histogram_layout, entries, 3, &exposure->histogram_set, nullptr);
+			entries[1]._binding                   = 2;
+			entries[1]._type                      = SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			entries[1]._resource._storage._buffer = exposure->histogram;
+			(void)aprend_binding_set_create(instance->builtins.lit.histogram_layout, entries, 2, &exposure->histogram_set, nullptr);
 		}
 		ok = exposure->histogram_set != nullptr;
 	}

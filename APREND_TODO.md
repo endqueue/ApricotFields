@@ -2174,6 +2174,16 @@ the code"). Left over:
 - **A compiled list holds a pointer to each buffer it uses**, as it does
   to each texture. Destroying the buffer and then submitting the list is
   refused since 2026-10-18 (item 32).
+- **Done: a batch never submitted is closed before what it uses goes**
+  (2026-10-31). Destroying an instance with updates or clears recorded
+  and not submitted released every object first and ended the batch's
+  list after, which Vulkan's validation reports
+  (`VUID-vkEndCommandBuffer-commandBuffer-00059`: the list was invalidated
+  by the objects destroyed under it). `../apricottests`' `--only
+  test_resize_with_views` showed it (its mips are generated and never
+  submitted); a whole run submits the batch in the next test. Older than
+  the Slang change. The batch's list is ended first now, and still dropped
+  unsubmitted.
 - **How SpudGPU's memory kinds land**, for whoever touches this next. The
   contract of each is in `spudgpu.h` (`SPUDGPU_MEMORY_KIND`); this is only
   what is underneath:
@@ -2354,10 +2364,69 @@ the sets its draws read (see "State of the code").
 - **A list leaves a sampled texture in `SHADER_READ_ONLY` and a storage image
   in `GENERAL`.** Nothing puts it back. Right for most uses; written down
   because the immediate operations do put a texture back.
+- **Done: a placeholder a binding holds is moved too** (2026-10-31).
+  `TONE_MAP` without `_auto_exposure` binds the lit placeholder for its
+  exposure and moved it nowhere, so on Vulkan the descriptor named
+  `SHADER_READ_ONLY` while the image was still `UNDEFINED`
+  (`VUID-vkCmdDraw-None-09600`). A whole run hid it: an earlier test's lit
+  draw had moved the placeholder; `../apricottests`' `--only test_tone_map`
+  showed it, on both Vulkan devices. Older than the Slang change (the
+  shader always declared the binding). Now moved to `SHADER_READ_ONLY` like
+  any other read; run alone and in the whole suite, validation silent.
 
 ### 18. Shader reflection: what is left
 
-Written (see "State of the code"). Hazel:
+Written (see "State of the code"). Read from Slang's SPIR-V since 2026-10-31
+(item 22): what Slang writes differently is read back as the source
+declares it where it can be, so APREND_SHADER_REFLECTION is what it was
+for the GLSL (SPIR-V whose generator word is Slang's, tool 40):
+
+- **Block type names**: Slang names a uniform block's type `<name>_std140`
+  and a push constant block's `<name>_std430`; the suffix is dropped
+  (`AprendLitScene`).
+- **Arrays in a block**: Slang wraps each in a struct of its own,
+  `_Array_std140_<element><count> { data[count] }`; it is listed as the
+  member itself (`sun_shadow_view_projection`, 4 mat4s;
+  `lights[1].radiance_type`), its offset, size and strides the wrapped
+  array's.
+- **Matrices**: Slang's SPIR-V holds each transposed and decorates a
+  column-major one RowMajor; `row_major` is read inverted, so it is false
+  for a column-major matrix as before, its matrix stride between the
+  source's columns.
+- **Structured and byte address buffers**: their block is the buffer
+  type's own struct (`RWStructuredBuffer`, member `__member0`, an array
+  with no size); `block_name` is the variable's name (`AprendLitTiles`, as
+  the GLSL's block was). The members are what Slang wrote (`__member0`,
+  `block_size` 0, `runtime_array_stride` 4, where the GLSL's `bins[64]` had
+  256): not recoverable, and nothing in Aprend reads a storage block's
+  members.
+- **Vertex inputs** that are fields of a struct parameter are named
+  `<parameter>.<field>`; the field's own name is reported (`position`,
+  `transform0`, where the GLSL's were `in_position`...): not the old names,
+  which no Slang source has. The batcher's elements are named `r0` to `r7`
+  for it.
+- **`readonly` and `writeonly`** are lost on a Slang RW type not declared
+  `readonly` (no NonWritable or NonReadable), so `read_only` is now also
+  true for a storage buffer or image the module never writes through (a
+  scan of its stores, atomics, image writes and calls). What reads it: a
+  pipeline's storage writes, which order a later use after its draws; a
+  binding wrongly counted written would only add a barrier.
+- **Depth comparison**: Slang's image types leave depth unknown (Depth 2,
+  which SPIRV-Cross reads as false); `image_depth_compare` is also true
+  for an image the code samples with a comparison (a Dref sample or
+  gather). Nothing in Aprend reads it.
+- **What a shader doesn't use is absent** from Slang's SPIR-V (bindings,
+  inputs, push constants), where glslang declared it unused. Layouts made
+  from shaders already took used bindings only; the one change was the
+  samplers wrapped only round `texelFetch` in GLSL (item 22), whose sets
+  no longer write them. A caller that writes every binding of a layout
+  made from shaders writes only what some shader of it uses
+  (`../apricottests`' `make_sampled_pipeline` checks its layout for the
+  sampler).
+
+Tested by `aprendreflect_tests`' `test_slang_shaders` on the built-in
+shaders' SPIR-V, and by every `../apricottests` read-back on D3D12 and
+Vulkan (2026-10-31). Hazel:
 `Platform/Vulkan/ShaderCompiler/VulkanShaderCompiler.h` (`Reflect`),
 `Shader.h` (`ShaderBuffer`, `ShaderUniform`), `DescriptorSetManager::Validate`.
 Left over:
@@ -2582,7 +2651,7 @@ D3D12's pipeline library, Metal's binary archives), the bytes handed to
 the caller to keep, so a second launch compiles nothing.
 
 **Decided 2026-10-31 with the user (card A29): the source language is
-Slang**, for Aprend's, trellislib's and Latran's shaders.
+Slang**, for Aprend's shaders and its callers'.
 
 1. **One compiler, three outputs.** Slang (`slangc` at build time,
    `libslang` in ApShaderc) writes SPIR-V itself, DXIL through DXC, and
@@ -2603,7 +2672,7 @@ Slang**, for Aprend's, trellislib's and Latran's shaders.
    (materials, the lit surface's paths), parameter blocks for each binding
    space.
 4. **One conversion, before 1.0**, with A9's native formats: Aprend's 45
-   shaders, trellislib's and Latran's (`latran/core/shaders/`), each
+   shaders and every caller's, in the same change, each
    checked against its SPIR-V output by the existing tests and
    `../apricottests` on all three backends. glslang and glslc leave the
    build; SPIRV-Cross stays only as the Metal fallback and for
@@ -2614,6 +2683,73 @@ ray queries and mesh shaders) and not HLSL (Metal either a translation or
 Apple's Metal Shader Converter, closed and imposing its own binding layout
 on SpudGPU's Metal backend). Compared: Unreal HLSL, Godot and Hazel GLSL,
 NVIDIA's Falcor and RTX Remix Slang.
+
+#### Built 2026-10-31 on Windows (D3D12 and Vulkan): Aprend's shaders are Slang packages
+
+- **The build step** is `cmake/aprend_slang.cmake` (`aprend_add_slang_shader`,
+  with `cmake/aprend_embed.cmake`), the model of `../spudlib/cmake/spud_slang.cmake`:
+  per shader SPIR-V 1.5 (`-fvk-use-entrypoint-name -matrix-layout-column-major
+  -warnings-as-errors all`, then `spirv-val --target-env vulkan1.2`); on
+  Windows DXIL (Slang HLSL, `dxc -WX`, DXC's validator signing it); both
+  Metal sources (Slang's, and `spudgpu_msl`'s from the SPIR-V, card S20)
+  wherever SpudLib's `spudgpu_msl` target exists; on Apple a `.metallib`
+  from `spudgpu_msl`'s by default, `METAL_ROUTE SLANG <reason>` for Slang's
+  own (card S21, decided 2026-10-31 with the user: Slang's Metal output
+  can't take the Metal backend's layout from these sources; written, not
+  run on a Mac). Each binary is a `uint32_t` array
+  with a `_size` macro, and `<stem>.package.inc` defines `static const
+  APREND_SHADER_PACKAGE <stem>_package`. A caller's build may include the
+  file: `../apricottests` does. `APRICOTFIELDS_SHADERS` lists the 36 stage
+  files by stem, `APRICOTFIELDS_SHADER_MODULES` the 9 modules they import.
+  The GLSL is gone from `shaders/`; glslc and glslang left the build;
+  SPIRV-Cross stays, for reflection (and SpudLib's `spudgpu_msl`).
+- **Every built-in shader is made with `aprend_shader_create()`** from its
+  package (`aprendbuiltin.cpp`, `aprendbatch.cpp`, `aprendlit.cpp`), and
+  every built-in pipeline names its shaders' entry points (the stems:
+  `aprend_fullscreen_vert`...). Aprend's pipeline descs keep their entry
+  point fields, checked against the shader's reflection as before;
+  SpudGPU's went (each module has its one, F2), so they are no longer
+  passed down. `aprend_get_fullscreen_vertex_shader()`'s entry point is
+  `aprend_fullscreen_vert`, so a caller's pipeline over it names that.
+- **Clip space is +Y up (card S19).** The shaders that compute clip
+  positions were flipped in the conversion. Aprend's own matrices into clip
+  space are flipped to match: the sun's cascades
+  (`aprend_lit_fit_sun_cascades`), and the point and spot shadows'
+  (`aprend_lit_point_shadow_view_projection`,
+  `aprend_lit_spot_shadow_view_projection`), each with y negated, so a map
+  holds the picture (and winding) it did and the surface reads it the same
+  way; and the batcher's CPU projection of a world point to a pixel
+  (`aprend_batch_project`) negates clip y as the shader's `batch_pixel`
+  does. `aprendlit.h` and `aprendbatch.h` say +Y up.
+- **Samplers no shader reads are no longer written.** Where a GLSL shader
+  wrapped a sampler round `texelFetch`/`textureSize` only, the sampler was
+  used; Slang's `Load` reads none and its SPIR-V leaves the declaration
+  out, so a layout made from the shader has no binding for it. The two sets
+  Aprend wrote one into regardless, the light culling's depth set
+  (`aprend_texture_view_cull_depth_set`) and the exposure histogram's set,
+  write the texture (and the bins) alone. Every other built-in set's
+  sampler is read by a shader of its layout.
+- **Storage buffers a fragment shader reads are declared `readonly`**
+  (`AprendLitTiles` in `aprend_lit_bindings.slang`, `AprendExposureBins` in
+  the histogram's adapting pass): a Slang RW type is writable in SPIR-V,
+  and Vulkan refuses a fragment shader's writable storage buffer on a
+  device without `fragmentStoresAndAtomics`
+  (VUID-RuntimeSpirv-NonWritable-06340, found on both GPUs here).
+  `readonly` keeps the `u` register on D3D12.
+- **Run**: `aprend_contract_tests` and `aprendreflect_tests` with every
+  ctest, `apricotfields-windows-d3d12` and `-vulkan`, Debug; and
+  `../apricottests`' `aprend_gpu_tests` on D3D12 (Intel Iris Xe, NVIDIA RTX
+  A2000, WARP; debug layer silent) and Vulkan (Iris Xe, RTX A2000;
+  validation silent but for card S22's message below), every read-back
+  within its old tolerance, 2026-10-31.
+- **Not yet:** the Metal half (never built; Slang's own Metal output does
+  not have F4's argument-buffer layout, card S21); `aprend_fullscreen_vert`
+  and `aprend_batch_vert` read `SV_VertexID`, which Slang's SPIR-V turns
+  into the DrawParameters capability, and SpudGPU's Vulkan device doesn't
+  enable `shaderDrawParameters` (card S22): validation reports
+  VUID-VkShaderModuleCreateInfo-pCode-08740 at each of the two modules,
+  and both devices here draw correctly regardless; a package's SPIR-V
+  costs D3D12 and Metal builds its bytes (P1), not measured.
 
 ### 23. No 2D, line, text or debug drawing
 
@@ -2885,6 +3021,40 @@ Left:
       is not Aprend's: Intel Open Image Denoise, CPU first, as an optional
       ApricotFields module of its own (its GPU devices sit outside
       SpudGPU). After S12's SpudGPU half. Not started.
+      **The API, approved 2026-10-31 by the user:** `aprend_raytracing_draft.h`,
+      its eleventh version, as written: `aprend_blas` and `aprend_tlas`
+      (resources, slots with generations, 64-byte instance records, sets
+      translated on the GPU, staged material tables, builds of one TLAS in
+      the order sent), APREND_COMMAND_LIT_SHADOW_MASK and
+      APREND_COMMAND_LIT_PATH_TRACE, and `aprend_lit_scene_set_light_shadow()`.
+      Built in Phase 7 of `prompts/ray_tracing.md`.
+      **Directional lights (card A35, decided 2026-10-31 with the user,
+      option b; not built):** the sun becomes a light type. The lit scene's
+      lights gain directional ones, up to a fixed count (Hazel's 4 the
+      model), each a direction, a radiance and its angular radius; a shadow
+      attaches to a light by index, cascades or a traced mask, per light,
+      one or the other (setting one while the other is set refused);
+      APREND_COMMAND_LIT_SKY takes a mask of directional lights and draws a
+      disc for each, at its own angular radius (none, a sun, a sun and a
+      moon); nothing in Aprend is the sun. `APREND_LIT_SUN`,
+      `aprend_lit_scene_set_sun`, `_set_sun_shadow` and
+      `aprend_lit_fit_sun_cascades` become their per-light forms, and every
+      caller changes in the same change (Aprend's tests, trellislib,
+      Latran). Lights stay data; passes are commands naming the lights they
+      act on (no engine records lights as commands: Unreal, Unity, Godot,
+      Filament, Bevy and Hazel keep them as scene data). The ray tracing
+      commands are written per light from the start
+      (`aprend_raytracing_draft.h`), over today's one sun as directional
+      light 0 until this is built.
+      **Waiting on Metal's bindless (card A15, decided, not built),
+      recorded 2026-10-31 with the user** (`aprend_raytracing_draft.h`, T3
+      and T7): alpha-tested geometry in ray queries (a cut-out material's
+      holes letting rays through) and the path tracer reading material
+      maps. Both read a material's textures from one shader over every
+      draw, which needs bindless textures on every backend; Vulkan and D3D12
+      have them, Metal doesn't yet. Their API is in place (a lit material's
+      maps and `alpha_cutoff`, read from the draw list), so each is a change
+      inside Aprend once A15 is built.
       If ray tracing pipelines come (two sibling SpudGPU EXTs, one on
       Vulkan and D3D12, one translating Metal's function tables; spudlib's
       `SPUDGPU_DEVICE_TODO.md`), Aprend writes that work once per EXT, and

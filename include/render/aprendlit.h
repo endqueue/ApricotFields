@@ -696,7 +696,7 @@ typedef struct APREND_LIT_VIEW {
 	 * vertex shader draws through, the sky's rays are cast through, ambient
 	 * occlusion reads depth through, and lights are culled for. A caller
 	 * with a vertex shader of its own gives it too if it uses any of those.
-	 * SpudGPU's clip space: depth 0 to 1, +Y down the target.
+	 * SpudGPU's clip space: depth 0 to 1, +Y up the target (card S19).
 	 */
 	float view_projection[16];
 	/**
@@ -892,7 +892,8 @@ typedef struct APREND_LIT_CASCADE_FIT {
  * its size doesn't change as the view turns (a cascade after the first from
  * the last tenth of the stretch before it, which the surface blends over),
  * looks at it down the sun's
- * direction with a parallel projection, and is moved by whole texels of the
+ * direction with a parallel projection (its clip space's y negated, as
+ * aprend_lit_point_shadow_view_projection()'s), and is moved by whole texels of the
  * map, so as the view moves its shadows stay still: the stable cascades of
  * Valient's "Stable Rendering of Cascaded Shadow Maps", as Unreal and Hazel
  * have them. Depth runs 0 at the sun's end to 1 (or reversed).
@@ -1092,6 +1093,9 @@ aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scen
  * -Y, +Z, -Z for faces 0 to 5), from @p near_depth out to the light's range,
  * a little wider than 90 degrees (the tangent of its half angle is 1.05),
  * so a soft shadow's taps near a face's edge stay inside the face's map.
+ * Its clip space's y is negated, as the sun's cascades' and a spot's are:
+ * the map is the picture it was when clip space was +Y down the target,
+ * and the surface reads it through the same matrix, so either way works.
  *
  * @param[in]  light               The point light.
  * @param[in]  face                Which face, 0 to 5.
@@ -1114,7 +1118,8 @@ APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, 
 /**
  * @brief The matrix a spot light's shadow is rendered through: a perspective
  * from the light along its axis, wide enough for its cone, from
- * @p near_depth out to its range.
+ * @p near_depth out to its range, its clip space's y negated (as
+ * aprend_lit_point_shadow_view_projection()'s).
  *
  * @param[in]  light               The spot.
  * @param[in]  near_depth          The near plane's distance from the light.

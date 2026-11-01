@@ -257,7 +257,7 @@ static APRESULT aprend_immediate_on_texture(
 }
 
 /* One level of one layer of a mip generation: a view of the level above to
- * sample (a 2D array view of its one layer, as aprend_downsample.frag
+ * sample (a 2D array view of its one layer, as aprend_downsample_frag.slang
  * declares it), a view of the level to render (a 2D view), and the set that
  * binds the first with the chain's sampler. */
 struct aprend_mip_step {

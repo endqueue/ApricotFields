@@ -444,12 +444,17 @@ again), `aptext_fuzz` (font files, Hershey fonts and saved atlases) and
   of its release v9.0.0, and `../.deps/glaze` is checked out at that tag; to
   upgrade, move the two together, to a release.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
-- Aprend's own shaders are GLSL in `shaders/`, compiled by glslc at build time
-  on every platform, Apple included, and embedded in the library as C arrays
-  (`-mfmt=c`, into `aprend_shaders/` in the build directory). A new shader is
-  added to `APRICOTFIELDS_SHADERS` and included by `src/render/aprendbuiltin.cpp`,
-  which makes it into the instance's built-in objects on first use. Nothing
-  is written next to the executable and nothing is loaded at run time.
+- Aprend's own shaders are Slang in `shaders/` (card A29; `<stem>_vert.slang`,
+  `_frag`, `_comp`, its entry point named `<stem>`, never `main`), compiled
+  at build time by `cmake/aprend_slang.cmake` to SPIR-V, DXIL on Windows and
+  a .metallib on Apple platforms, and embedded in the library as one
+  `APREND_SHADER_PACKAGE` each (`<stem>.package.inc`, into `aprend_shaders/`
+  in the build directory). A new shader is added to `APRICOTFIELDS_SHADERS`
+  (a module it imports to `APRICOTFIELDS_SHADER_MODULES`) and made with
+  `aprend_shader_create()` from its package by the source that uses it, on
+  first use. Nothing is written next to the executable and nothing is
+  compiled or loaded at run time. Clip space is +Y up on every backend
+  (card S19): a matrix Aprend builds into clip space says so.
 
 ## Saying what has and hasn't run
 

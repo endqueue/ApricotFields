@@ -211,12 +211,137 @@ APREND_UNIFORM_TYPE aprend_uniform_type_of(const spirv_cross::SPIRType &type) {
 	}
 }
 
+// SPIR-V's generator word names Slang (Khronos' registry of SPIR-V tools,
+// tool 40) in its high 16 bits.
+constexpr uint32_t aprend_spirv_generator_slang = 40;
+
+/* The variables [words] (a whole SPIR-V module) writes through: a store, a
+ * copy into, an atomic other than a load, or an image write, through a
+ * pointer or image that comes from the variable by access chains, copies
+ * and loads; and, not knowing what a function does with it, any passed to
+ * a call. Slang writes NonWritable only on a storage buffer or image its
+ * source declares `readonly`, so this is how a binding only read is told
+ * from one written where the source doesn't say.
+ * Also each image sampled with a depth comparison (a Dref sample or
+ * gather), which Slang's image types leave unknown (Depth 2). By id, the
+ * bits APREND_SPIRV_WRITTEN and APREND_SPIRV_COMPARED. Throws
+ * std::bad_alloc. */
+enum : uint8_t { APREND_SPIRV_WRITTEN = 1, APREND_SPIRV_COMPARED = 2 };
+std::vector<uint8_t> aprend_spirv_variable_uses(const uint32_t *words, size_t word_count) {
+	// Each id made from another (a pointer into a variable, a loaded
+	// image, a texel pointer): the id it was made from, 0 for none. The
+	// header's bound is above every id.
+	const uint32_t bound = word_count > 3 ? words[3] : 0;
+	std::vector<uint32_t> from(bound, 0);
+	std::vector<uint32_t> targets;
+	std::vector<uint32_t> compared;
+	for (size_t at = 5; at < word_count;) {
+		const uint32_t count  = words[at] >> 16;
+		const uint32_t opcode = words[at] & 0xffff;
+		if (count == 0 || at + count > word_count)
+			break;
+		const uint32_t *w = words + at;
+		switch (opcode) {
+		case 65: // OpAccessChain
+		case 66: // OpInBoundsAccessChain
+		case 67: // OpPtrAccessChain
+		case 70: // OpInBoundsPtrAccessChain
+		case 83: // OpCopyObject
+		case 124: // OpBitcast
+		case 61: // OpLoad: an image or a pointer read from the variable
+			if (count >= 4 && w[2] < bound)
+				from[w[2]] = w[3];
+			break;
+		case 60: // OpImageTexelPointer: result type, result, image
+		case 86: // OpSampledImage: result type, result, image, sampler
+			if (count >= 4 && w[2] < bound)
+				from[w[2]] = w[3];
+			break;
+		case 89: // OpImageSampleDrefImplicitLod: result type, result, sampled image, ...
+		case 90: // OpImageSampleDrefExplicitLod
+		case 93: // OpImageSampleProjDrefImplicitLod
+		case 94: // OpImageSampleProjDrefExplicitLod
+		case 97: // OpImageDrefGather
+			if (count >= 4)
+				compared.push_back(w[3]);
+			break;
+		case 62: // OpStore: pointer, object
+		case 63: // OpCopyMemory: target, source
+		case 64: // OpCopyMemorySized
+		case 99: // OpImageWrite: image, coordinate, texel
+		case 228: // OpAtomicStore: pointer, ...
+		case 319: // OpAtomicFlagClear: pointer, ...
+			if (count >= 2)
+				targets.push_back(w[1]);
+			break;
+		case 229: case 230: case 231: case 232: case 233: case 234: case 235: case 236: case 237: case 238: case 239: case 240:
+		case 241: case 242: case 318: case 5614: case 5615: case 6035: // atomics that write: result type, result, pointer
+			if (count >= 4)
+				targets.push_back(w[3]);
+			break;
+		case 57: // OpFunctionCall: result type, result, function, arguments
+			for (uint32_t i = 4; i < count; ++i)
+				targets.push_back(w[i]);
+			break;
+		default:
+			break;
+		}
+		at += count;
+	}
+	std::vector<uint8_t> uses(bound, 0);
+	const std::vector<uint32_t> *lists[2] = {&targets, &compared};
+	const uint8_t bits[2]                 = {APREND_SPIRV_WRITTEN, APREND_SPIRV_COMPARED};
+	for (int list = 0; list < 2; ++list) {
+		for (uint32_t id : *lists[list]) {
+			// Back to the root, bounded in case of a cycle.
+			for (size_t step = 0; step <= from.size() && id < bound && from[id] != 0; ++step)
+				id = from[id];
+			if (id < bound)
+				uses[id] |= bits[list];
+		}
+	}
+	return uses;
+}
+
 // Reads one shader. Throws: SPIRV-Cross's errors and std::bad_alloc go to
 // aprend_reflect_spirv, which catches them.
 struct aprend_reflector {
 	spirv_cross::Compiler &compiler;
 	aprend_reflection_store &out;
 	std::string &error;
+	// Slang wrote the SPIR-V: its names and matrix decorations are read as
+	// the source declares them (APREND_TODO.md, item 22).
+	bool slang{false};
+	// By id, how the module uses the variable (aprend_spirv_variable_uses).
+	std::vector<uint8_t> uses{};
+
+	bool writes(spirv_cross::ID id) const { return id < uses.size() && (uses[id] & APREND_SPIRV_WRITTEN) != 0; }
+	bool compares(spirv_cross::ID id) const { return id < uses.size() && (uses[id] & APREND_SPIRV_COMPARED) != 0; }
+
+	// A block's type name as the source has it: Slang names a uniform
+	// block's type <name>_std140 and a push constant block's <name>_std430.
+	std::string source_type_name(spirv_cross::TypeID type) const {
+		std::string name = compiler.get_name(type);
+		if (!slang)
+			return name;
+		for (const char *suffix : {"_std140", "_std430"}) {
+			const size_t length = strlen(suffix);
+			if (name.size() > length && name.compare(name.size() - length, length, suffix) == 0)
+				return name.substr(0, name.size() - length);
+		}
+		return name;
+	}
+
+	// Slang's SPIR-V puts an array in a uniform or push constant block in a
+	// struct of its own, `_Array_std140_<element><count> { data[count] }`:
+	// the member is that array, and is listed as one.
+	bool slang_array_wrapper(const spirv_cross::SPIRType &type) const {
+		if (!slang || type.basetype != spirv_cross::SPIRType::Struct || !type.array.empty() || type.member_types.size() != 1)
+			return false;
+		if (compiler.get_member_name(type.self, 0) != "data")
+			return false;
+		return compiler.get_name(type.self).rfind("_Array_", 0) == 0;
+	}
 	// Every variable the entry point reaches; empty, with [all_used] set,
 	// when the entry point can't be told.
 	std::unordered_set<spirv_cross::VariableID> active{};
@@ -260,17 +385,33 @@ struct aprend_reflector {
 	// Member [i] of [struct_type], as add_members.
 	void add_members_of(const spirv_cross::SPIRType &struct_type, uint32_t i, uint32_t base_offset, const std::string &prefix) {
 		{
-			const spirv_cross::SPIRType &member_type = compiler.get_type(struct_type.member_types[i]);
-			std::string name                         = compiler.get_member_name(struct_type.self, i);
+			std::string name = compiler.get_member_name(struct_type.self, i);
 			if (name.empty())
 				name = "_m" + std::to_string(i);
-			const uint32_t offset = base_offset + compiler.type_struct_member_offset(struct_type, i);
-			const uint32_t size   = (uint32_t)compiler.get_declared_struct_member_size(struct_type, i);
-			const uint32_t stride = member_type.array.empty() ? 0 : compiler.type_struct_member_array_stride(struct_type, i);
+			// The member's place, and the struct and index its layout is
+			// read from: the wrapper's one member for Slang's wrapped array.
+			const spirv_cross::SPIRType *owner       = &struct_type;
+			uint32_t index                           = i;
+			uint32_t offset                          = base_offset + compiler.type_struct_member_offset(struct_type, i);
+			const spirv_cross::SPIRType *member_type = &compiler.get_type(struct_type.member_types[i]);
+			if (slang_array_wrapper(*member_type)) {
+				owner       = member_type;
+				index       = 0;
+				offset     += compiler.type_struct_member_offset(*owner, 0);
+				member_type = &compiler.get_type(owner->member_types[0]);
+			}
+			const uint32_t size   = (uint32_t)compiler.get_declared_struct_member_size(*owner, index);
+			const uint32_t stride = member_type->array.empty() ? 0 : compiler.type_struct_member_array_stride(*owner, index);
 			const uint32_t matrix_stride =
-			    member_type.columns > 1 ? compiler.type_struct_member_matrix_stride(struct_type, i) : 0;
-			const bool row_major = compiler.has_member_decoration(struct_type.self, i, spv::DecorationRowMajor);
-			add_member(member_type, (uint32_t)member_type.array.size(), offset, size, stride, matrix_stride, row_major, prefix + name);
+			    member_type->columns > 1 ? compiler.type_struct_member_matrix_stride(*owner, index) : 0;
+			bool row_major = compiler.has_member_decoration(owner->self, index, spv::DecorationRowMajor);
+			// Slang's SPIR-V holds each matrix transposed, its columns the
+			// source's rows, and decorates a column-major one RowMajor: the
+			// bytes are the source's columns at the matrix stride, which is
+			// what row_major false means here.
+			if (slang && member_type->columns > 1)
+				row_major = !row_major;
+			add_member(*member_type, (uint32_t)member_type->array.size(), offset, size, stride, matrix_stride, row_major, prefix + name);
 		}
 	}
 
@@ -356,13 +497,23 @@ struct aprend_reflector {
 
 		std::string instance_name = compiler.get_name(resource.id);
 		if (is_buffer) {
-			const std::string block_name = compiler.get_name(resource.base_type_id);
+			std::string block_name = source_type_name(resource.base_type_id);
+			// A Slang structured or byte address buffer's block is the
+			// buffer type's own struct, named for the type: the variable
+			// is the name the source gives it.
+			if (slang && type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER && !instance_name.empty() &&
+			    (block_name == "RWStructuredBuffer" || block_name == "StructuredBuffer" || block_name == "RWByteAddressBuffer" ||
+			     block_name == "ByteAddressBuffer"))
+				block_name = instance_name;
 			out_resource.block_name      = keep(block_name);
 			out_resource.name            = instance_name.empty() ? out_resource.block_name : keep(instance_name);
 			out_resource.block_size      = (uint32_t)compiler.get_declared_struct_size(base_type);
 			if (type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+				// Declared read only, or never written by the module's
+				// code (a Slang RW type is writable unless declared
+				// readonly).
 				const spirv_cross::Bitset flags = compiler.get_buffer_block_flags(resource.id);
-				out_resource.read_only          = flags.get(spv::DecorationNonWritable);
+				out_resource.read_only          = flags.get(spv::DecorationNonWritable) || !writes(resource.id);
 				// A last member whose array has no size.
 				if (!base_type.member_types.empty()) {
 					const uint32_t last                 = (uint32_t)base_type.member_types.size() - 1;
@@ -402,9 +553,12 @@ struct aprend_reflector {
 				return unsupported(resource, "an image of a dimension no texture view has");
 			}
 			out_resource.image_scalar_type   = aprend_scalar_type(compiler.get_type(image.type));
-			out_resource.image_depth_compare = image.depth;
+			// A depth image (SPIRV-Cross reads Depth 1 as true), or one
+			// whose depth is unknown (2, Slang's) that the code samples
+			// with a comparison.
+			out_resource.image_depth_compare = image.depth || compares(resource.id);
 			if (type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-				out_resource.read_only       = compiler.has_decoration(resource.id, spv::DecorationNonWritable);
+				out_resource.read_only       = compiler.has_decoration(resource.id, spv::DecorationNonWritable) || !writes(resource.id);
 				const SPUDGPU_FORMAT format  = aprend_spirv_image_format(image.format);
 				if (format != SPUDGPU_FORMAT_UNKNOWN && out_resource.used)
 					out.storage_formats.push_back({out_resource.set, out_resource.binding, format});
@@ -476,7 +630,7 @@ struct aprend_reflector {
 			const spirv_cross::SPIRType &base_type = compiler.get_type(r.base_type_id);
 			const std::string instance_name        = compiler.get_name(r.id);
 			out.view.has_push_constants            = true;
-			out.view.push_constant_name            = keep(instance_name.empty() ? compiler.get_name(r.base_type_id) : instance_name);
+			out.view.push_constant_name            = keep(instance_name.empty() ? source_type_name(r.base_type_id) : instance_name);
 			out.view.push_constant_first_member    = (uint32_t)out.members.size();
 			add_block_members(r.id, base_type);
 			out.view.push_constant_member_count = (uint32_t)out.members.size() - out.view.push_constant_first_member;
@@ -499,7 +653,14 @@ struct aprend_reflector {
 			for (const spirv_cross::Resource &r : resources.stage_inputs) {
 				const spirv_cross::SPIRType &type = compiler.get_type(r.type_id);
 				APREND_SHADER_INPUT input{};
-				input.name        = keep(compiler.get_name(r.id));
+				// Slang names an input that is a field of a struct
+				// parameter <parameter>.<field>: the field's own name is
+				// the one the source gives the input.
+				std::string name = compiler.get_name(r.id);
+				const size_t dot = name.find('.');
+				if (slang && dot != std::string::npos)
+					name = name.substr(dot + 1);
+				input.name        = keep(name);
 				input.location    = compiler.get_decoration(r.id, spv::DecorationLocation);
 				input.scalar_type = aprend_scalar_type(type);
 				input.components  = type.vecsize;
@@ -563,6 +724,9 @@ bool aprend_reflect_spirv(
 	try {
 		spirv_cross::Compiler compiler(words, word_count);
 		aprend_reflector reflector{compiler, *out, *error};
+		// SPIRV-Cross has read the header, so the word is there.
+		reflector.slang   = (words[2] >> 16) == aprend_spirv_generator_slang;
+		reflector.uses    = aprend_spirv_variable_uses(words, word_count);
 		return reflector.reflect(stage);
 	} catch (const std::bad_alloc &) {
 		try {

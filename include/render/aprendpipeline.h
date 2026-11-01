@@ -535,8 +535,9 @@ typedef struct APREND_GRAPHICS_PIPELINE_DESC {
 	/** The fragment stage. Required. */
 	aprend_shader fragment_shader;
 	/**
-	 * Name of the function #vertex_shader starts at, `main` for GLSL.
-	 * Required, and not an empty string. Copied: the pointer only has to
+	 * Name of the function #vertex_shader starts at: its package's
+	 * entry point (APREND_SHADER_PACKAGE::entry_point); a pipeline naming
+	 * another is refused. Required, and not an empty string. Copied: the pointer only has to
 	 * live for aprend_graphics_pipeline_create().
 	 */
 	const char *_vertex_entry_point;
@@ -772,8 +773,9 @@ typedef struct APREND_COMPUTE_PIPELINE_DESC {
 	 */
 	aprend_shader compute_shader;
 	/**
-	 * Name of the function #compute_shader starts at, `main` for GLSL.
-	 * Required, and not an empty string. Copied: the pointer only has to
+	 * Name of the function #compute_shader starts at: its package's
+	 * entry point (APREND_SHADER_PACKAGE::entry_point); a pipeline naming
+	 * another is refused. Required, and not an empty string. Copied: the pointer only has to
 	 * live for aprend_compute_pipeline_create().
 	 */
 	const char *_entry_point;

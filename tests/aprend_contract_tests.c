@@ -216,13 +216,23 @@ static void test_pipelines_null(void)
     APREND_ERROR error;
     const uint32_t words[4] = {0};
 
+    // aprend_shader_create's first refusal, the only one before a device:
+    // the rest, in the header's order, are ../apricottests'
+    // test_shader_create_refusals.
+    APREND_SHADER_PACKAGE package;
+    memset(&package, 0, sizeof(package));
+    package.base.type = APRI_STRUCT_TYPE_APREND_SHADER_PACKAGE;
+    package.stage = SPUDGPU_SHADER_STAGE_VERTEX;
+    package.entry_point = "main_vert";
+    package.spirv = words;
+    package.spirv_size = sizeof(words);
     aprend_shader shader = (aprend_shader)(uintptr_t)0x20;
     dirty(&error);
-    CHECK(aprend_shader_create_spirv(NULL, words, sizeof(words), SPUDGPU_SHADER_STAGE_VERTEX, &shader, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(aprend_shader_create(NULL, &package, &shader, &error) == APRESULT_INVALID_ARGUMENT);
     CHECK(shader == NULL);
     CHECK(strcmp(error.message, "instance is NULL") == 0);
     shader = (aprend_shader)(uintptr_t)0x20;
-    CHECK(aprend_shader_read_from_file_spirv(NULL, "x.spv", SPUDGPU_SHADER_STAGE_VERTEX, &shader, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(aprend_shader_create(NULL, NULL, &shader, NULL) == APRESULT_INVALID_ARGUMENT);
     CHECK(shader == NULL);
     shader = (aprend_shader)(uintptr_t)0x20;
     CHECK(aprend_get_fullscreen_vertex_shader(NULL, &shader, &error) == APRESULT_INVALID_ARGUMENT);

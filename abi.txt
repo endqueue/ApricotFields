@@ -273,6 +273,7 @@ const APRI_STRUCT_TYPE_APREND_MATERIAL_DESC = 5009
 const APRI_STRUCT_TYPE_APREND_RENDER_PASS_DESC = 5010
 const APRI_STRUCT_TYPE_APREND_RENDER_TARGET_POOL_INFO = 5024
 const APRI_STRUCT_TYPE_APREND_SAMPLER_DESC = 5008
+const APRI_STRUCT_TYPE_APREND_SHADER_PACKAGE = 5029
 const APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC = 5014
 const APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC = 5005
 const APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC = 5006
@@ -597,12 +598,11 @@ fn aprend_sampler_create APRESULT (aprend_instance, const APREND_SAMPLER_DESC *,
 fn aprend_sampler_destroy void (aprend_sampler)
 fn aprend_sampler_get_desc APRESULT (aprend_sampler, APREND_SAMPLER_DESC *)
 fn aprend_sampler_get_spudgpu_sampler spudgpu_sampler (aprend_sampler)
-fn aprend_shader_create_spirv APRESULT (aprend_instance, const void *, uint64_t, SPUDGPU_SHADER_STAGE, aprend_shader *, APREND_ERROR *)
+fn aprend_shader_create APRESULT (aprend_instance, const APREND_SHADER_PACKAGE *, aprend_shader *, APREND_ERROR *)
 fn aprend_shader_destroy void (aprend_shader)
 fn aprend_shader_find_resource const APREND_SHADER_RESOURCE *(aprend_shader, const char *)
 fn aprend_shader_get_reflection const APREND_SHADER_REFLECTION *(aprend_shader)
 fn aprend_shader_get_stage SPUDGPU_SHADER_STAGE (aprend_shader)
-fn aprend_shader_read_from_file_spirv APRESULT (aprend_instance, const char *, SPUDGPU_SHADER_STAGE, aprend_shader *, APREND_ERROR *)
 fn aprend_swap_chain_acquire APRESULT (aprend_swap_chain, APREND_ERROR *)
 fn aprend_swap_chain_create APRESULT (aprend_instance, const APREND_SWAP_CHAIN_DESC *, aprend_swap_chain *, APREND_ERROR *)
 fn aprend_swap_chain_destroy void (aprend_swap_chain)
@@ -1612,6 +1612,16 @@ field APREND_SHADER_MEMBER.array_stride @24 uint32_t
 field APREND_SHADER_MEMBER.matrix_stride @28 uint32_t
 field APREND_SHADER_MEMBER.row_major @32 _Bool
 field APREND_SHADER_MEMBER.used @33 _Bool
+struct APREND_SHADER_PACKAGE size=80 align=8
+field APREND_SHADER_PACKAGE.base @0 APRI_STRUCT_BASE
+field APREND_SHADER_PACKAGE.stage @16 SPUDGPU_SHADER_STAGE
+field APREND_SHADER_PACKAGE.entry_point @24 const char *
+field APREND_SHADER_PACKAGE.spirv @32 const void *
+field APREND_SHADER_PACKAGE.spirv_size @40 uint64_t
+field APREND_SHADER_PACKAGE.dxil @48 const void *
+field APREND_SHADER_PACKAGE.dxil_size @56 uint64_t
+field APREND_SHADER_PACKAGE.metallib @64 const void *
+field APREND_SHADER_PACKAGE.metallib_size @72 uint64_t
 struct APREND_SHADER_REFLECTION size=104 align=8
 field APREND_SHADER_REFLECTION.stage @0 SPUDGPU_SHADER_STAGE
 field APREND_SHADER_REFLECTION.entry_point @8 const char *
@@ -2106,6 +2116,7 @@ typedef APREND_RENDER_TARGET_POOL_INFO = struct APREND_RENDER_TARGET_POOL_INFO
 typedef APREND_SAMPLER_DESC = struct APREND_SAMPLER_DESC
 typedef APREND_SHADER_INPUT = struct APREND_SHADER_INPUT
 typedef APREND_SHADER_MEMBER = struct APREND_SHADER_MEMBER
+typedef APREND_SHADER_PACKAGE = struct APREND_SHADER_PACKAGE
 typedef APREND_SHADER_REFLECTION = struct APREND_SHADER_REFLECTION
 typedef APREND_SHADER_RESOURCE = struct APREND_SHADER_RESOURCE
 typedef APREND_SHADER_SCALAR_TYPE = uint32_t

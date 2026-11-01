@@ -13,7 +13,7 @@
 
 #include <eqstd.hpp>
 
-/* One shape, as aprend_batch.vert reads it per instance: eight vec4s. The
+/* One shape, as aprend_batch_vert.slang reads it per instance: eight vec4s. The
  * kinds' use of them is in aprendbatch.cpp, beside the writers. */
 struct aprend_batch_record {
 	float r[8][4];
@@ -29,7 +29,7 @@ struct aprend_batch_run {
 };
 APRI_PLAIN_DATA(aprend_batch_run);
 
-/* AprendBatchPush in shaders/aprend_batch.glslh. */
+/* AprendBatchPush in shaders/aprend_batch.slang. */
 struct aprend_batch_push {
 	float view_projection[16];
 	float viewport[4];

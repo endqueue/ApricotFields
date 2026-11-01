@@ -63,83 +63,80 @@ extern "C" {
 typedef struct aprend_shader_t *aprend_shader;
 
 /**
- * @brief Creates a shader from a SPIR-V file.
+ * @brief One entry point's code in the formats a build made for it.
  *
- * The file is read whole during the call and not kept open. The SPIR-V is
- * reflected as aprend_shader_create_spirv() does.
- *
- * @param[in] instance     Instance whose device the shader is created on.
- * @param[in] filename     Path of the SPIR-V file.
- * @param[in] shader_stage The one stage the code is for. Only
- *                         SPUDGPU_SHADER_STAGE_VERTEX,
- *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
- *                         SPUDGPU_SHADER_STAGE_COMPUTE and
- *                         SPUDGPU_SHADER_STAGE_MESH are accepted, the last
- *                         only on a device created with
- *                         SPUDGPU_FEATURE_MESH_SHADING (refused without
- *                         it).
- * @param[out] out_shader  Receives the shader; NULL on failure.
- * @param[out] out_error   Why it failed, when it did. May be NULL.
- *
- * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance,
- *         @p filename or @p out_shader is NULL, @p shader_stage is not
- *         accepted, the file is not a whole number of SPIR-V words, or the
- *         SPIR-V can't be reflected (see aprend_shader_create_spirv());
- *         APRESULT_UNSUPPORTED for a mesh shader on a device without the
- *         feature; APRESULT_NOT_FOUND if the file doesn't exist;
- *         APRESULT_IO if it can't be read; APRESULT_OUT_OF_MEMORY; or the
- *         code for SpudGPU's result if the shader module can't be created.
- *
- * @see aprend_shader_create_spirv()
- * @see aprend_shader_destroy()
+ * SPIR-V is always given: Aprend reflects it on every backend, and it is the
+ * module on Vulkan. DXIL (D3D12) and a .metallib (Metal) are given where
+ * the build made them; a format it didn't make is NULL with a size of 0.
+ * The format the device takes (SPUDGPU_ADAPTER_PROPERTIES::shader_formats)
+ * becomes the shader's module, with the entry point and, for a compute or
+ * mesh shader, the workgroup size the SPIR-V declares. Every pointer is
+ * borrowed for aprend_shader_create(): the shader keeps what it needs.
  */
-APRESULT aprend_shader_read_from_file_spirv(
-    aprend_instance instance,
-    const char *filename,
-    SPUDGPU_SHADER_STAGE shader_stage,
-    aprend_shader *out_shader,
-    APREND_ERROR *out_error);
+typedef struct APREND_SHADER_PACKAGE {
+	/** `type` is APRI_STRUCT_TYPE_APREND_SHADER_PACKAGE; `next` is NULL.
+	 * See APRI_STRUCT_BASE. */
+	APRI_STRUCT_BASE base;
+	/** The stage the entry point is for: SPUDGPU_SHADER_STAGE_VERTEX,
+	 * SPUDGPU_SHADER_STAGE_FRAGMENT, SPUDGPU_SHADER_STAGE_COMPUTE or
+	 * SPUDGPU_SHADER_STAGE_MESH, the last only on a device created with
+	 * SPUDGPU_FEATURE_MESH_SHADING. */
+	SPUDGPU_SHADER_STAGE stage;
+	/** The entry point's name in every format here, null-terminated.
+	 * Required; not "main" where a .metallib is given (Metal reserves it). */
+	const char *entry_point;
+	/** SPIR-V words, 4-byte aligned. Required. */
+	const void *spirv;
+	/** Bytes in #spirv: not 0, a multiple of 4. */
+	uint64_t spirv_size;
+	/** DXIL as DXC writes it, 4-byte aligned, or NULL. */
+	const void *dxil;
+	/** Bytes in #dxil: 0 with NULL, else a multiple of 4. */
+	uint64_t dxil_size;
+	/** A .metallib, 4-byte aligned, or NULL. */
+	const void *metallib;
+	/** Bytes in #metallib: 0 with NULL. */
+	uint64_t metallib_size;
+} APREND_SHADER_PACKAGE;
 
 /**
- * @brief Creates a shader from SPIR-V already in memory, such as code embedded
- * in the caller's binary, and reflects it.
+ * @brief Creates a shader from a package, and reflects its SPIR-V.
  *
- * The code is copied, so @p spirv_code only has to live for this call.
+ * Nothing is compiled: the shader's module is the package's code in the
+ * device's own format. The reflection (aprend_shader_get_reflection()) is
+ * the SPIR-V's, the same on every backend.
  *
- * @param[in] instance     Instance whose device the shader is created on.
- * @param[in] spirv_code   The SPIR-V words.
- * @param[in] spirv_size   Size of @p spirv_code in bytes. A multiple of 4, and
- *                         not 0.
- * @param[in] shader_stage The one stage the code is for. Only
- *                         SPUDGPU_SHADER_STAGE_VERTEX,
- *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
- *                         SPUDGPU_SHADER_STAGE_COMPUTE and
- *                         SPUDGPU_SHADER_STAGE_MESH are accepted, the last
- *                         only on a device created with
- *                         SPUDGPU_FEATURE_MESH_SHADING (refused without
- *                         it).
- * @param[out] out_shader  Receives the shader; NULL on failure.
- * @param[out] out_error   Why it failed, when it did. May be NULL.
+ * @param[in]  instance   Instance whose device the shader is created on.
+ * @param[in]  package    The shader's code. Borrowed for the call.
+ * @param[out] out_shader Receives the shader; NULL on failure.
+ * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
- * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance,
- *         @p spirv_code or @p out_shader is NULL, @p spirv_size is 0 or not
- *         a multiple of 4, @p shader_stage is not accepted, or the SPIR-V
- *         can't be reflected: it isn't valid SPIR-V, it has no entry point
- *         for @p shader_stage, or its entry point uses a resource Aprend has
- *         no binding for (a texel buffer, an input attachment, an
- *         acceleration structure, an array of descriptors without a size, an
- *         image of a dimension no texture view has); APRESULT_UNSUPPORTED
- *         for a mesh shader on a device without the feature;
- *         APRESULT_OUT_OF_MEMORY; or the code for SpudGPU's result if the
- *         shader module can't be created.
+ * @return APRESULT_OK. APRESULT_INVALID_ARGUMENT, checked in this order:
+ *         @p instance NULL; @p package NULL (its base wrong: the code
+ *         apri_struct_check() gives); @p out_shader NULL; the stage not one
+ *         of the four (then a mesh shader on a device without the feature:
+ *         APRESULT_UNSUPPORTED); the entry point NULL or
+ *         empty; the SPIR-V NULL, empty or not a multiple of 4; a native
+ *         format's pointer and size disagreeing (one NULL or 0 and not the
+ *         other), or a DXIL size not a multiple of 4; the SPIR-V can't be
+ *         reflected (it isn't valid SPIR-V, it has no entry point for the
+ *         stage, or its entry point uses a resource Aprend has no binding
+ *         for: a texel buffer, an input attachment, an acceleration
+ *         structure, an array of descriptors without a size, an image of a
+ *         dimension no texture view has); a compute or mesh shader whose
+ *         workgroup size is a specialization constant.
+ *         APRESULT_UNSUPPORTED: a mesh shader on a device without the
+ *         feature, or a package without the device's format, found after
+ *         the checks of its pointers and before the SPIR-V is reflected (the
+ *         message names the format). APRESULT_OUT_OF_MEMORY. Or the code for SpudGPU's
+ *         result if the module can't be made (the native code has no entry
+ *         point of that name: SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND).
  *
  * @see aprend_shader_destroy()
  */
-APRESULT aprend_shader_create_spirv(
+APRESULT aprend_shader_create(
     aprend_instance instance,
-    const void *spirv_code,
-    uint64_t spirv_size,
-    SPUDGPU_SHADER_STAGE shader_stage,
+    const APREND_SHADER_PACKAGE *package,
     aprend_shader *out_shader,
     APREND_ERROR *out_error);
 
@@ -167,8 +164,9 @@ void aprend_shader_destroy(aprend_shader shader);
  *
  * It draws one triangle that covers the target from the vertex index alone,
  * so a pipeline made with it has no vertex input (`_vertex_binding_count`
- * 0), its entry point `main`. It writes no output but the position. The
- * fragment shader takes its place from `gl_FragCoord.xy`, in pixels of the
+ * 0), its entry point `aprend_fullscreen_vert`. It writes no output but the
+ * position. The fragment shader takes its place from its pixel position
+ * (`SV_Position`, `gl_FragCoord` in GLSL), in pixels of the
  * target with the first row at the top on every backend, divided by the
  * target's size for a place in [0, 1] to sample at; a texture's rows start
  * at the top as well. An interpolated coordinate would not read the same
@@ -224,7 +222,9 @@ enum {
  * A block's members are listed flat: a member that is a struct is listed as
  * its members, and an array of structs as the members of each element. A
  * member that is an array of a scalar, vector or matrix is one entry with
- * `array_count` elements.
+ * `array_count` elements; so is one Slang's SPIR-V wraps in a struct of its
+ * own (`_Array_std140_...`, member `data`), which is listed by the member's
+ * name as the source declares it.
  */
 /* Frozen: an array element of APREND_SHADER_REFLECTION. It never changes; a new need gets a new type. */
 typedef struct APREND_SHADER_MEMBER {
@@ -279,8 +279,11 @@ typedef struct APREND_SHADER_RESOURCE {
 	 */
 	const char *name;
 	/**
-	 * For a uniform or storage buffer, the block's name (`Material` above);
-	 * NULL for anything else.
+	 * For a uniform or storage buffer, the block's name (`Material` above;
+	 * `ConstantBuffer<Material>` in Slang, without the `_std140` Slang's
+	 * SPIR-V adds); for a Slang structured or byte address buffer, whose
+	 * block is the buffer type's own, the variable's name. NULL for
+	 * anything else.
 	 */
 	const char *block_name;
 	/** The descriptor set: `set = S`. */
@@ -321,10 +324,16 @@ typedef struct APREND_SHADER_RESOURCE {
 	APREND_SHADER_SCALAR_TYPE image_scalar_type;
 	/**
 	 * For a sampled image, whether it is read with a depth comparison
-	 * (`sampler2DShadow`): the sampler given with it then compares.
+	 * (`sampler2DShadow`; in Slang, whose SPIR-V leaves an image's depth
+	 * unknown, a texture its code samples with `SampleCmp`): the sampler
+	 * given with it then compares.
 	 */
 	bool image_depth_compare;
-	/** For a storage buffer or image, whether the shader only reads it (`readonly`). */
+	/**
+	 * For a storage buffer or image, whether the shader only reads it: it
+	 * is declared `readonly`, or no code of the module writes through it
+	 * (a Slang RW type not declared `readonly` is writable in its SPIR-V).
+	 */
 	bool read_only;
 	/** Whether the entry point uses the binding (see "used" at the top of this header). */
 	bool used;
@@ -335,7 +344,11 @@ typedef struct APREND_SHADER_RESOURCE {
  */
 /* Frozen: an array element of APREND_SHADER_REFLECTION. It never changes; a new need gets a new type. */
 typedef struct APREND_SHADER_INPUT {
-	/** The variable's name. The shader's own string; not NULL. */
+	/**
+	 * The variable's name, or for a field of a struct parameter (Slang's
+	 * `VertexInput input`, `input.position`) the field's (`position`). The
+	 * shader's own string; not NULL.
+	 */
 	const char *name;
 	/** Its first location. */
 	uint32_t location;

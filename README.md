@@ -47,10 +47,12 @@ and have headless tests. Each module's unfinished work is listed in
 
 ## Building
 
-Requirements: CMake 3.30+, a C++23 compiler (C++26 for D3D12), and `glslc`
-from the Vulkan SDK on every platform. Built-in shaders are compiled to SPIR-V
-at build time and embedded, and SpudGPU cross-compiles them for D3D12 and
-Metal.
+Requirements: CMake 3.30+, a C++23 compiler (C++26 for D3D12), and from the
+Vulkan SDK `slangc` and `spirv-val` on every platform, and `dxc` on Windows
+(Apple's `metal` and `metallib` on Apple platforms). Built-in shaders are
+Slang, compiled at build time to each graphics API's own format (SPIR-V,
+DXIL, a .metallib; `cmake/aprend_slang.cmake`) and embedded; nothing is
+compiled at run time.
 
 ApricotFields expects SpudLib checked out beside it (`../spudlib`), as in the
 [eqdev workspace](https://github.com/endqueue/eqdev). Third-party

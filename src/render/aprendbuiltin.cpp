@@ -6,35 +6,25 @@
 
 #include <cstdio>
 
-// The SPIR-V of shaders/, embedded by the build (CMakeLists.txt) as
-// brace-enclosed uint32_t initializer lists.
-static const uint32_t s_fullscreen_vert_spv[] =
-#include "aprend_fullscreen.vert.spv.inc"
-    ;
-static const uint32_t s_downsample_frag_spv[] =
-#include "aprend_downsample.frag.spv.inc"
-    ;
-static const uint32_t s_present_frag_spv[] =
-#include "aprend_present.frag.spv.inc"
-    ;
-static const uint32_t s_bloom_prefilter_frag_spv[] =
-#include "aprend_bloom_prefilter.frag.spv.inc"
-    ;
-static const uint32_t s_bloom_downsample_frag_spv[] =
-#include "aprend_bloom_downsample.frag.spv.inc"
-    ;
-static const uint32_t s_bloom_upsample_frag_spv[] =
-#include "aprend_bloom_upsample.frag.spv.inc"
-    ;
-static const uint32_t s_bloom_composite_frag_spv[] =
-#include "aprend_bloom_composite.frag.spv.inc"
-    ;
-static const uint32_t s_blur_frag_spv[] =
-#include "aprend_blur.frag.spv.inc"
-    ;
-static const uint32_t s_outline_frag_spv[] =
-#include "aprend_outline.frag.spv.inc"
-    ;
+// The packages of shaders/, embedded by the build (cmake/aprend_slang.cmake):
+// each <stem>_package, its entry point named <stem>.
+#include "aprend_fullscreen_vert.package.inc"
+#include "aprend_downsample_frag.package.inc"
+#include "aprend_present_frag.package.inc"
+#include "aprend_bloom_prefilter_frag.package.inc"
+#include "aprend_bloom_downsample_frag.package.inc"
+#include "aprend_bloom_upsample_frag.package.inc"
+#include "aprend_bloom_composite_frag.package.inc"
+#include "aprend_blur_frag.package.inc"
+#include "aprend_outline_frag.package.inc"
+
+// The bloom stages' shaders, by APREND_BLOOM_STAGE.
+static const APREND_SHADER_PACKAGE *const s_bloom_packages[4] = {
+    &aprend_bloom_prefilter_frag_package,
+    &aprend_bloom_downsample_frag_package,
+    &aprend_bloom_upsample_frag_package,
+    &aprend_bloom_composite_frag_package,
+};
 
 extern "C" APRESULT aprend_get_fullscreen_vertex_shader(aprend_instance instance, aprend_shader *out_shader, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
@@ -48,8 +38,7 @@ extern "C" APRESULT aprend_get_fullscreen_vertex_shader(aprend_instance instance
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
 	aprend_builtins &builtins = instance->builtins;
 	if (!builtins.fullscreen_vert)
-		if (const APRESULT result = aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX,
-		                                                       &builtins.fullscreen_vert, out_error))
+		if (const APRESULT result = aprend_shader_create(instance, &aprend_fullscreen_vert_package, &builtins.fullscreen_vert, out_error))
 			return result;
 	*out_shader = builtins.fullscreen_vert;
 	return APRESULT_OK;
@@ -58,7 +47,7 @@ extern "C" APRESULT aprend_get_fullscreen_vertex_shader(aprend_instance instance
 aprend_shader aprend_builtin_fullscreen_vert(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
 	if (!builtins.fullscreen_vert) {
-		(void)aprend_shader_create_spirv(instance, s_fullscreen_vert_spv, sizeof(s_fullscreen_vert_spv), SPUDGPU_SHADER_STAGE_VERTEX, &builtins.fullscreen_vert, nullptr);
+		(void)aprend_shader_create(instance, &aprend_fullscreen_vert_package, &builtins.fullscreen_vert, nullptr);
 		if (!builtins.fullscreen_vert)
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's full-target vertex shader can't be created");
 	}
@@ -73,7 +62,7 @@ static bool aprend_builtin_downsample_prepare(aprend_instance instance) {
 	if (!aprend_builtin_fullscreen_vert(instance))
 		return false;
 	if (!builtins.downsample_frag) {
-		(void)aprend_shader_create_spirv(instance, s_downsample_frag_spv, sizeof(s_downsample_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.downsample_frag, nullptr);
+		(void)aprend_shader_create(instance, &aprend_downsample_frag_package, &builtins.downsample_frag, nullptr);
 		if (!builtins.downsample_frag) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's downsample shader can't be created");
 			return false;
@@ -133,8 +122,8 @@ aprend_graphics_pipeline aprend_builtin_downsample_pipeline(aprend_instance inst
 	desc._depth_compare_op            = SPUDGPU_COMPARE_OP_NEVER;
 	desc.vertex_shader                = builtins.fullscreen_vert;
 	desc.fragment_shader              = builtins.downsample_frag;
-	desc._vertex_entry_point          = "main";
-	desc._fragment_entry_point        = "main";
+	desc._vertex_entry_point          = "aprend_fullscreen_vert";
+	desc._fragment_entry_point        = "aprend_downsample_frag";
 	desc.color_attachment_formats[0]  = format;
 	desc.color_attachment_count       = 1;
 	desc.depth_format                 = SPUDGPU_FORMAT_UNKNOWN;
@@ -169,19 +158,10 @@ bool aprend_builtin_bloom_prepare(aprend_instance instance) {
 	aprend_builtins &builtins = instance->builtins;
 	if (!aprend_builtin_fullscreen_vert(instance))
 		return false;
-	static const struct {
-		const uint32_t *code;
-		uint64_t size;
-	} spirv[4] = {
-	    {s_bloom_prefilter_frag_spv, sizeof(s_bloom_prefilter_frag_spv)},
-	    {s_bloom_downsample_frag_spv, sizeof(s_bloom_downsample_frag_spv)},
-	    {s_bloom_upsample_frag_spv, sizeof(s_bloom_upsample_frag_spv)},
-	    {s_bloom_composite_frag_spv, sizeof(s_bloom_composite_frag_spv)},
-	};
 	for (uint32_t stage = 0; stage < 4; ++stage) {
 		if (builtins.bloom_frags[stage])
 			continue;
-		(void)aprend_shader_create_spirv(instance, spirv[stage].code, spirv[stage].size, SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.bloom_frags[stage], nullptr);
+		(void)aprend_shader_create(instance, s_bloom_packages[stage], &builtins.bloom_frags[stage], nullptr);
 		if (!builtins.bloom_frags[stage]) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's bloom shader for stage %u can't be created", stage);
 			return false;
@@ -217,8 +197,8 @@ aprend_graphics_pipeline aprend_builtin_bloom_pipeline(aprend_instance instance,
 	desc._depth_compare_op           = SPUDGPU_COMPARE_OP_NEVER;
 	desc.vertex_shader               = builtins.fullscreen_vert;
 	desc.fragment_shader             = builtins.bloom_frags[stage];
-	desc._vertex_entry_point         = "main";
-	desc._fragment_entry_point       = "main";
+	desc._vertex_entry_point         = "aprend_fullscreen_vert";
+	desc._fragment_entry_point       = s_bloom_packages[stage]->entry_point;
 	desc.color_attachment_formats[0] = format;
 	desc.color_attachment_count      = 1;
 	desc.depth_format                = SPUDGPU_FORMAT_UNKNOWN;
@@ -266,7 +246,7 @@ aprend_graphics_pipeline aprend_builtin_blur_pipeline(aprend_instance instance, 
 	if (!aprend_builtin_bloom_prepare(instance))
 		return nullptr;
 	if (!builtins.blur_frag) {
-		(void)aprend_shader_create_spirv(instance, s_blur_frag_spv, sizeof(s_blur_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.blur_frag, nullptr);
+		(void)aprend_shader_create(instance, &aprend_blur_frag_package, &builtins.blur_frag, nullptr);
 		if (!builtins.blur_frag) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's blur shader can't be created");
 			return nullptr;
@@ -285,8 +265,8 @@ aprend_graphics_pipeline aprend_builtin_blur_pipeline(aprend_instance instance, 
 	desc._depth_compare_op                    = SPUDGPU_COMPARE_OP_NEVER;
 	desc.vertex_shader                        = builtins.fullscreen_vert;
 	desc.fragment_shader                      = builtins.blur_frag;
-	desc._vertex_entry_point                  = "main";
-	desc._fragment_entry_point                = "main";
+	desc._vertex_entry_point                  = "aprend_fullscreen_vert";
+	desc._fragment_entry_point                = "aprend_blur_frag";
 	desc.color_attachment_formats[0]          = format;
 	desc.color_attachment_count               = 1;
 	desc.depth_format                         = SPUDGPU_FORMAT_UNKNOWN;
@@ -322,7 +302,7 @@ aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instanc
 	if (!aprend_builtin_bloom_prepare(instance))
 		return nullptr;
 	if (!builtins.outline_frag) {
-		(void)aprend_shader_create_spirv(instance, s_outline_frag_spv, sizeof(s_outline_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.outline_frag, nullptr);
+		(void)aprend_shader_create(instance, &aprend_outline_frag_package, &builtins.outline_frag, nullptr);
 		if (!builtins.outline_frag) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's outline shader can't be created");
 			return nullptr;
@@ -341,8 +321,8 @@ aprend_graphics_pipeline aprend_builtin_outline_pipeline(aprend_instance instanc
 	desc._depth_compare_op                    = SPUDGPU_COMPARE_OP_NEVER;
 	desc.vertex_shader                        = builtins.fullscreen_vert;
 	desc.fragment_shader                      = builtins.outline_frag;
-	desc._vertex_entry_point                  = "main";
-	desc._fragment_entry_point                = "main";
+	desc._vertex_entry_point                  = "aprend_fullscreen_vert";
+	desc._fragment_entry_point                = "aprend_outline_frag";
 	desc.color_attachment_formats[0]          = format;
 	desc.color_attachment_count               = 1;
 	desc.depth_format                         = SPUDGPU_FORMAT_UNKNOWN;
@@ -380,7 +360,7 @@ aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instanc
 	if (!aprend_builtin_fullscreen_vert(instance))
 		return nullptr;
 	if (!builtins.present_frag) {
-		(void)aprend_shader_create_spirv(instance, s_present_frag_spv, sizeof(s_present_frag_spv), SPUDGPU_SHADER_STAGE_FRAGMENT, &builtins.present_frag, nullptr);
+		(void)aprend_shader_create(instance, &aprend_present_frag_package, &builtins.present_frag, nullptr);
 		if (!builtins.present_frag) {
 			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's present shader can't be created");
 			return nullptr;
@@ -406,8 +386,8 @@ aprend_graphics_pipeline aprend_builtin_present_pipeline(aprend_instance instanc
 	desc._depth_compare_op                   = SPUDGPU_COMPARE_OP_NEVER;
 	desc.vertex_shader                       = builtins.fullscreen_vert;
 	desc.fragment_shader                     = builtins.present_frag;
-	desc._vertex_entry_point                 = "main";
-	desc._fragment_entry_point               = "main";
+	desc._vertex_entry_point                 = "aprend_fullscreen_vert";
+	desc._fragment_entry_point               = "aprend_present_frag";
 	desc.color_attachment_formats[0]         = format;
 	desc.color_attachment_count              = 1;
 	desc.depth_format                        = SPUDGPU_FORMAT_UNKNOWN;

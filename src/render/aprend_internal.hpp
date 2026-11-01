@@ -232,6 +232,10 @@ typedef struct aprend_instance_t {
 	 * read once at creation: a property, not a feature. Decides where
 	 * vertex, index and storage buffers are kept (aprend_buffer_store). */
 	bool unified_memory{false};
+	/* The one shader format the device takes
+	 * (SPUDGPU_ADAPTER_PROPERTIES::shader_formats): which of a package's
+	 * codes a shader's module is made from. */
+	SPUDGPU_SHADER_FORMAT shader_format{SPUDGPU_SHADER_FORMAT_NONE};
 	/* SPUDGPU_FEATURE_DEVICE_MAPPABLE_MEMORY in features: whether a buffer a
 	 * shader may write can be written directly too
 	 * (SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE). */

@@ -2,7 +2,6 @@
 #include "render/aprendpipeline.h"
 #include "aprend_internal.hpp"
 #include "aprendimages_internal.hpp"
-#include <spudfiles.h>
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -264,7 +263,7 @@ static APRESULT aprend_shader_stage_supported(SPUDGPU_SHADER_STAGE shader_stage,
 	case SPUDGPU_SHADER_STAGE_MESH:
 		return APRESULT_OK;
 	default:
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "shader_stage %u is not one stage of vertex, fragment, compute or mesh", (unsigned)shader_stage);
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "package->stage %u is not one stage of vertex, fragment, compute or mesh", (unsigned)shader_stage);
 	}
 }
 
@@ -311,19 +310,28 @@ static APRESULT aprend_shader_reflect(
 
 // SpudGPU copies the SPIR-V into its own shader module, so [code] only has to
 // live for this call.
+// The module of [shader] from [package]'s code in the device's format, its
+// entry point and its workgroup size (from the SPIR-V's reflection, which
+// [shader] already holds). [code] and [code_size] are that code, found by
+// the caller.
 static SPUDRESULT aprend_shader_create_module(
     aprend_shader_t *shader,
+    const APREND_SHADER_PACKAGE *package,
     const void *code,
-    uint64_t size,
-    SPUDGPU_SHADER_STAGE shader_stage,
+    uint64_t code_size,
     const char *debug_name) {
 	spudgpu_shader_module_desc smd = {};
-	smd.base.type = SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC;
-	smd.stage                      = shader_stage;
-	smd.spirv_code                 = code;
-	smd.spirv_size                 = size;
-	smd.debug_name = debug_name;
-	shader->stage = shader_stage;
+	smd.base.type                  = SPUD_STRUCT_TYPE_GPU_SHADER_MODULE_DESC;
+	smd.stage                      = package->stage;
+	smd.format                     = shader->instance->shader_format;
+	smd.code                       = code;
+	smd.code_size                  = code_size;
+	smd.entry_point                = package->entry_point;
+	smd.workgroup_size[0]          = shader->reflection.view.workgroup_size[0];
+	smd.workgroup_size[1]          = shader->reflection.view.workgroup_size[1];
+	smd.workgroup_size[2]          = shader->reflection.view.workgroup_size[2];
+	smd.debug_name                 = debug_name;
+	shader->stage                  = package->stage;
 	return spudgpu_create_shader_module(shader->instance->desc.device, &smd, &shader->shader_module);
 }
 
@@ -680,16 +688,29 @@ static APRESULT aprend_binding_layout_build(
 	return APRESULT_OK;
 }
 
-/* A shader of [size] bytes of SPIR-V at [code], checked by the caller:
- * reflected first, so SPIR-V that can't be read isn't handed to the device,
- * then its module made and its destroy's retire promised. [debug_name] (the
- * file's name, or NULL) is the module's. */
+// A format's name, for messages.
+static const char *aprend_shader_format_name(SPUDGPU_SHADER_FORMAT format) {
+	switch (format) {
+	case SPUDGPU_SHADER_FORMAT_SPIRV:
+		return "SPIR-V";
+	case SPUDGPU_SHADER_FORMAT_DXIL:
+		return "DXIL";
+	case SPUDGPU_SHADER_FORMAT_METALLIB:
+		return ".metallib";
+	default:
+		return "no format";
+	}
+}
+
+/* A shader from [package], checked by the caller: its SPIR-V reflected
+ * first, so code that can't be read isn't handed to the device, then its
+ * module made from the device's format and its destroy's retire
+ * promised. */
 static APRESULT aprend_shader_make(
     aprend_instance instance,
+    const APREND_SHADER_PACKAGE *package,
     const void *code,
-    uint64_t size,
-    SPUDGPU_SHADER_STAGE shader_stage,
-    const char *debug_name,
+    uint64_t code_size,
     aprend_shader *out_shader,
     APREND_ERROR *error) {
 	APREND_MALLOC__T(result, aprend_shader_t);
@@ -697,14 +718,28 @@ static APRESULT aprend_shader_make(
 		return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the shader");
 	APREND_CONSTRUCT__T(result, aprend_shader_t);
 	result->instance = instance;
-	if (const APRESULT reflected = aprend_shader_reflect(result, code, size, shader_stage, error)) {
+	if (const APRESULT reflected = aprend_shader_reflect(result, package->spirv, package->spirv_size, package->stage, error)) {
 		APREND_DESTRUCT__T(result, aprend_shader_t);
 		return reflected;
 	}
-	const SPUDRESULT sr = aprend_shader_create_module(result, code, size, shader_stage, debug_name);
+	// A compute or mesh shader's workgroup size is the module's (SpudGPU
+	// needs it on every backend); one set by a specialization constant
+	// reflects as 0.
+	if (package->stage == SPUDGPU_SHADER_STAGE_COMPUTE || package->stage == SPUDGPU_SHADER_STAGE_MESH) {
+		const uint32_t *size = result->reflection.view.workgroup_size;
+		if (size[0] == 0 || size[1] == 0 || size[2] == 0) {
+			APREND_DESTRUCT__T(result, aprend_shader_t);
+			return aprend_fail(error, APRESULT_INVALID_ARGUMENT,
+			                   "the %s shader's workgroup size is a specialization constant, which a module can't be made from",
+			                   aprend_stage_name(package->stage));
+		}
+	}
+	const SPUDRESULT sr = aprend_shader_create_module(result, package, code, code_size, nullptr);
 	if (SPUDFAIL(sr)) {
 		APREND_DESTRUCT__T(result, aprend_shader_t);
-		return aprend_fail_spud(error, sr, "creating the shader module failed");
+		return aprend_fail_spud(error, sr, "creating the %s shader's module from its %s, entry point '%s', failed",
+		                        aprend_stage_name(package->stage), aprend_shader_format_name(instance->shader_format),
+		                        package->entry_point);
 	}
 	if (aprend_instance_reserve_release(instance, 1) != APRESULT_OK) {
 		APREND_DESTRUCT__T(result, aprend_shader_t);
@@ -716,11 +751,9 @@ static APRESULT aprend_shader_make(
 
 extern "C" {
 
-APRESULT aprend_shader_create_spirv(
+APRESULT aprend_shader_create(
     aprend_instance instance,
-    const void *spirv_code,
-    uint64_t spirv_size,
-    SPUDGPU_SHADER_STAGE shader_stage,
+    const APREND_SHADER_PACKAGE *package,
     aprend_shader *out_shader,
     APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
@@ -728,118 +761,70 @@ APRESULT aprend_shader_create_spirv(
 		*out_shader = nullptr;
 	if (!instance)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
-	if (APRI_STALE(instance, "aprend_shader_create_spirv", "instance"))
+	if (APRI_STALE(instance, "aprend_shader_create", "instance"))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
-	APREND_ENTER(instance, "aprend_shader_create_spirv");
-	if (!spirv_code)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "spirv_code is NULL");
-	if (spirv_size == 0)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "spirv_size is 0");
-	if (spirv_size % 4 != 0)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "spirv_size %llu is not a multiple of 4", (unsigned long long)spirv_size);
-	if (const APRESULT result = aprend_shader_stage_supported(shader_stage, out_error))
-		return result;
-	if (const APRESULT result = aprend_shader_stage_feature_ok(instance, shader_stage, out_error))
-		return result;
+	APREND_ENTER(instance, "aprend_shader_create");
+	if (!package)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package is NULL");
+	if (const APRESULT base = aprend_base_check(out_error, "package", &package->base, APRI_STRUCT_TYPE_APREND_SHADER_PACKAGE))
+		return base;
 	if (!out_shader)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
-	return aprend_shader_make(instance, spirv_code, spirv_size, shader_stage, nullptr, out_shader, out_error);
+	if (const APRESULT result = aprend_shader_stage_supported(package->stage, out_error))
+		return result;
+	if (const APRESULT result = aprend_shader_stage_feature_ok(instance, package->stage, out_error))
+		return result;
+	if (!package->entry_point)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->entry_point is NULL");
+	if (!package->entry_point[0])
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->entry_point is empty");
+	if (!package->spirv)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv is NULL");
+	if (package->spirv_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv_size is 0");
+	if (package->spirv_size % 4 != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv_size %llu is not a multiple of 4",
+		                   (unsigned long long)package->spirv_size);
+	if (!package->dxil && package->dxil_size != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->dxil is NULL with a dxil_size of %llu",
+		                   (unsigned long long)package->dxil_size);
+	if (package->dxil && package->dxil_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->dxil is given with a dxil_size of 0");
+	if (package->dxil_size % 4 != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->dxil_size %llu is not a multiple of 4",
+		                   (unsigned long long)package->dxil_size);
+	if (!package->metallib && package->metallib_size != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->metallib is NULL with a metallib_size of %llu",
+		                   (unsigned long long)package->metallib_size);
+	if (package->metallib && package->metallib_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->metallib is given with a metallib_size of 0");
+
+	// The device's own format: the SPIR-V on Vulkan, the DXIL on D3D12, the
+	// .metallib on Metal.
+	const void *code   = nullptr;
+	uint64_t code_size = 0;
+	switch (instance->shader_format) {
+	case SPUDGPU_SHADER_FORMAT_SPIRV:
+		code      = package->spirv;
+		code_size = package->spirv_size;
+		break;
+	case SPUDGPU_SHADER_FORMAT_DXIL:
+		code      = package->dxil;
+		code_size = package->dxil_size;
+		break;
+	case SPUDGPU_SHADER_FORMAT_METALLIB:
+		code      = package->metallib;
+		code_size = package->metallib_size;
+		break;
+	default:
+		break;
+	}
+	if (!code)
+		return aprend_fail(out_error, APRESULT_UNSUPPORTED, "the %s shader's package has no %s, the format this device takes",
+		                   aprend_stage_name(package->stage), aprend_shader_format_name(instance->shader_format));
+	return aprend_shader_make(instance, package, code, code_size, out_shader, out_error);
 }
 
-/* Reads the whole file at [filename] into a malloc'd block. Its SpudFiles
- * instance is over the system heap and lives for the call: Aprend keeps no
- * files open. The file is shared with every other reader, writer and
- * rename, since nothing here minds them. APRESULT_NOT_FOUND when no file is
- * there; a size that isn't whole SPIR-V words is APRESULT_INVALID_ARGUMENT;
- * a failed read APRESULT_IO; [error] says why. */
-static APRESULT aprend_read_spirv_file(const char *filename, uint8_t **out_data, uint64_t *out_size, APREND_ERROR *error) {
-	*out_data = nullptr;
-	*out_size = 0;
-	const SPUD_ALLOCATOR allocator = spud_allocator_system();
-	spudfile_instance_desc files_desc   = {};
-	files_desc.base.type           = SPUD_STRUCT_TYPE_FILES_INSTANCE_DESC;
-	files_desc.allocator           = &allocator;
-	spudfile_instance files             = nullptr;
-	SPUDRESULT sr                  = spudfile_instance_create(&files_desc, &files);
-	if (SPUDFAIL(sr))
-		return aprend_fail(error, APRESULT_IO, "'%s' can't be read: %s", filename, spudresult_str(sr));
-
-	spudfile_open_desc open_desc = {};
-	open_desc.base.type     = SPUD_STRUCT_TYPE_FILES_OPEN_DESC;
-	open_desc.path          = filename;
-	open_desc.access        = SPUDFILE_ACCESS_READ;
-	open_desc.create        = SPUDFILE_CREATE_OPEN_EXISTING;
-	open_desc.share         = SPUDFILE_SHARE_READ | SPUDFILE_SHARE_WRITE | SPUDFILE_SHARE_DELETE;
-	spudfile_file file           = nullptr;
-	sr                      = spudfile_file_open(files, &open_desc, &file);
-	uint64_t size           = 0;
-	if (!SPUDFAIL(sr))
-		sr = spudfile_file_get_size(file, &size);
-	if (!SPUDFAIL(sr) && (size == 0 || size % 4 != 0)) {
-		spudfile_file_close(file);
-		spudfile_instance_destroy(files);
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "'%s' is %llu bytes, not a whole number of SPIR-V words", filename,
-		                   (unsigned long long)size);
-	}
-	uint8_t *data = nullptr;
-	if (!SPUDFAIL(sr)) {
-		data = (uint8_t *)malloc(size);
-		if (!data)
-			sr = SPUDRESULT_OUT_OF_MEMORY;
-	}
-	if (!SPUDFAIL(sr)) {
-		uint64_t read = 0;
-		sr            = spudfile_file_read_at(file, 0, data, size, &read);
-		if (!SPUDFAIL(sr) && read != size)
-			sr = SPUDRESULT_API_SPECIFIC_FAILURE; // shrunk while being read
-	}
-	spudfile_file_close(file);
-	spudfile_instance_destroy(files);
-	if (SPUDFAIL(sr)) {
-		free(data);
-		if (sr == SPUDRESULT_SPUDFILE_NOT_FOUND)
-			return aprend_fail(error, APRESULT_NOT_FOUND, "'%s' doesn't exist", filename);
-		if (sr == SPUDRESULT_OUT_OF_MEMORY)
-			return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the %llu bytes of '%s'", (unsigned long long)size, filename);
-		return aprend_fail(error, APRESULT_IO, "'%s' can't be read: %s", filename, spudresult_str(sr));
-	}
-	*out_data = data;
-	*out_size = size;
-	return APRESULT_OK;
-}
-
-APRESULT aprend_shader_read_from_file_spirv(
-    aprend_instance instance,
-    const char *filename,
-    SPUDGPU_SHADER_STAGE shader_stage,
-    aprend_shader *out_shader,
-    APREND_ERROR *out_error) {
-	aprend_error_clear(out_error);
-	if (out_shader)
-		*out_shader = nullptr;
-	if (!instance)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
-	if (APRI_STALE(instance, "aprend_shader_read_from_file_spirv", "instance"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
-	APREND_ENTER(instance, "aprend_shader_read_from_file_spirv");
-	if (!filename)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "filename is NULL");
-	if (const APRESULT result = aprend_shader_stage_supported(shader_stage, out_error))
-		return result;
-	if (const APRESULT result = aprend_shader_stage_feature_ok(instance, shader_stage, out_error))
-		return result;
-	if (!out_shader)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
-
-	uint8_t *data      = nullptr;
-	uint64_t data_size = 0;
-	if (const APRESULT result = aprend_read_spirv_file(filename, &data, &data_size, out_error))
-		return result;
-	// The raw file bytes aren't needed once SpudGPU has its own copy.
-	const APRESULT result = aprend_shader_make(instance, data, data_size, shader_stage, filename, out_shader, out_error);
-	free(data);
-	return result;
-}
 void aprend_shader_destroy(aprend_shader shader) {
 	if (!shader)
 		return;
@@ -1125,15 +1110,14 @@ APRESULT aprend_graphics_pipeline_create(
 		result->desc._mesh_entry_point   = result->entry_points;
 		result->desc._vertex_entry_point = nullptr;
 		pd.mesh_module                   = desc.mesh_shader->shader_module;
-		pd.mesh_entry_point              = result->entry_points;
 	} else {
 		result->desc._vertex_entry_point = result->entry_points;
 		result->desc._mesh_entry_point   = nullptr;
 		pd.vertex_module                 = desc.vertex_shader->shader_module;
-		pd.vertex_entry_point            = result->entry_points;
 	}
-	pd.fragment_module      = desc.fragment_shader->shader_module;
-	pd.fragment_entry_point = result->desc._fragment_entry_point;
+	// Each module has its one entry point, named when it was made
+	// (aprend_shader_create()); the names above were checked against them.
+	pd.fragment_module = desc.fragment_shader->shader_module;
 
 	for (uint32_t binding = 0; binding < desc._vertex_binding_count; ++binding) {
 		const APREND_VERTEX_BINDING_DESC &vb = result->desc._vertex_bindings[binding];
@@ -1359,8 +1343,7 @@ APRESULT aprend_compute_pipeline_create(
 
 	spudgpu_compute_pipeline_desc pd{};
 	pd.base.type = SPUD_STRUCT_TYPE_GPU_COMPUTE_PIPELINE_DESC;
-	pd.compute_module      = desc.compute_shader->shader_module;
-	pd.compute_entry_point = result->entry_point;
+	pd.compute_module = desc.compute_shader->shader_module;
 	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
 		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->core->layout;
 	pd.descriptor_set_layout_count = desc._binding_layout_count;

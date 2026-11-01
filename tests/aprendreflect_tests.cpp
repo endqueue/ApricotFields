@@ -9,6 +9,13 @@
 
 #include "aprendreflect_internal.hpp"
 #include "aprendreflect_tests_spirv.h"
+// Aprend's own shaders as its build compiles them with Slang
+// (cmake/aprend_slang.cmake), for what reflection reads differently there.
+#include "aprend_exposure_adapt_histogram_frag.spv.inc"
+#include "aprend_exposure_histogram_comp.spv.inc"
+#include "aprend_lit_cull_comp.spv.inc"
+#include "aprend_lit_frag.spv.inc"
+#include "aprend_lit_vert.spv.inc"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -302,6 +309,71 @@ static void test_write_member()
         }
 }
 
+// Slang's SPIR-V read as the source declares it (APREND_TODO.md, item 22):
+// block names without _std140, arrays seen through the struct Slang wraps
+// them in, matrices column-major, inputs by their field's name, and a
+// storage buffer read only unless the code writes through it.
+static void test_slang_shaders()
+{
+    current_test = "test_slang_shaders";
+    std::string error;
+    {
+        aprend_reflection_store store;
+        CHECK(reflect(aprend_lit_frag_spirv, SPUDGPU_SHADER_STAGE_FRAGMENT, &store, &error));
+        CHECK(store.view.entry_point && strcmp(store.view.entry_point, "aprend_lit_frag") == 0);
+        const APREND_SHADER_RESOURCE *scene = find_resource(store, "u_lit_scene");
+        CHECK(scene && strcmp(scene->block_name, "AprendLitScene") == 0);
+        const APREND_SHADER_MEMBER *matrix = find_member(store, scene, "view_projection");
+        CHECK(matrix && matrix->type == APREND_UNIFORM_TYPE_MAT4 && !matrix->row_major && matrix->matrix_stride == 16 && matrix->offset == 0);
+        const APREND_SHADER_MEMBER *cascades = find_member(store, scene, "sun_shadow_view_projection");
+        CHECK(cascades && cascades->type == APREND_UNIFORM_TYPE_MAT4 && cascades->array_count == 4 && cascades->array_stride == 64 &&
+              cascades->offset == 128 && !cascades->row_major);
+        const APREND_SHADER_MEMBER *light = find_member(store, scene, "lights[1].radiance_type");
+        CHECK(light && light->type == APREND_UNIFORM_TYPE_VEC4 && light->offset == 2560 + 64 + 16);
+        CHECK(find_member(store, scene, "lights.data[0].radiance_type") == nullptr);
+        const APREND_SHADER_RESOURCE *material = find_resource(store, "u_lit_material");
+        CHECK(material && strcmp(material->block_name, "AprendLitMaterial") == 0);
+        const APREND_SHADER_MEMBER *uv = find_member(store, material, "uv_transform");
+        CHECK(uv && uv->type == APREND_UNIFORM_TYPE_VEC4 && uv->array_count == 2 && uv->array_stride == 16 && uv->offset == 96);
+        const APREND_SHADER_RESOURCE *sun = find_resource(store, "sun_shadow_map");
+        CHECK(sun && sun->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY && sun->image_depth_compare);
+        const APREND_SHADER_RESOURCE *base = find_resource(store, "base_color_map");
+        CHECK(base && base->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D && !base->image_depth_compare);
+        const APREND_SHADER_RESOURCE *tiles = find_resource(store, "AprendLitTiles");
+        CHECK(tiles && tiles->type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER && strcmp(tiles->block_name, "AprendLitTiles") == 0 &&
+              tiles->read_only);
+    }
+    {
+        aprend_reflection_store store;
+        CHECK(reflect(aprend_lit_cull_comp_spirv, SPUDGPU_SHADER_STAGE_COMPUTE, &store, &error));
+        const APREND_SHADER_RESOURCE *tiles = find_resource(store, "AprendLitTiles");
+        CHECK(tiles && !tiles->read_only);
+        CHECK(store.view.workgroup_size[0] == 64 && store.view.workgroup_size[1] == 1 && store.view.workgroup_size[2] == 1);
+    }
+    {
+        aprend_reflection_store store;
+        CHECK(reflect(aprend_exposure_histogram_comp_spirv, SPUDGPU_SHADER_STAGE_COMPUTE, &store, &error));
+        const APREND_SHADER_RESOURCE *bins = find_resource(store, "AprendExposureBins");
+        CHECK(bins && !bins->read_only && strcmp(bins->block_name, "AprendExposureBins") == 0 && bins->runtime_array_stride == 4);
+    }
+    {
+        aprend_reflection_store store;
+        CHECK(reflect(aprend_exposure_adapt_histogram_frag_spirv, SPUDGPU_SHADER_STAGE_FRAGMENT, &store, &error));
+        const APREND_SHADER_RESOURCE *bins = find_resource(store, "AprendExposureBins");
+        CHECK(bins && bins->read_only);
+    }
+    {
+        aprend_reflection_store store;
+        CHECK(reflect(aprend_lit_vert_spirv, SPUDGPU_SHADER_STAGE_VERTEX, &store, &error));
+        const APREND_SHADER_INPUT *position = find_input(store, "position");
+        CHECK(position && position->location == 0 && position->components == 3 && position->used);
+        const APREND_SHADER_INPUT *transform = find_input(store, "transform3");
+        CHECK(transform && transform->location == 7);
+        const APREND_SHADER_RESOURCE *scene = find_resource(store, "u_lit_scene");
+        CHECK(scene && strcmp(scene->block_name, "AprendLitScene") == 0);
+    }
+}
+
 static void test_type_sizes()
 {
     current_test = "test_type_sizes";
@@ -323,6 +395,7 @@ int main()
     test_shared_push_constants();
     test_refused();
     test_write_member();
+    test_slang_shaders();
     test_type_sizes();
     if (failures)
     {

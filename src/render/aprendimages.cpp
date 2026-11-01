@@ -720,7 +720,7 @@ APRESULT aprend_texture2d_mip_chain(
 			aprend_mip_step &step = chain.steps[(size_t)layer * levels + i];
 
 			// The source is a 2D array view of its one layer, as the
-			// downsample shader declares it (aprend_downsample.frag says
+			// downsample shader declares it (aprend_downsample_frag.slang says
 			// why); the target a 2D view of its layer, which no shader reads.
 			APREND_TEXTURE_VIEW_DESC view_desc{};
 			view_desc.base        = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);

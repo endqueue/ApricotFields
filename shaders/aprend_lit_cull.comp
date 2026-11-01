@@ -1,8 +1,0 @@
-#version 450
-#extension GL_GOOGLE_include_directive : require
-
-// Aprend's tiled light culling (aprendlit.h), each tile over the whole depth
-// of the view: aprend_lit_cull.glslh, without depth bounds. Recorded at the
-// top of a list that binds a scene with a target size.
-
-#include "aprend_lit_cull.glslh"
