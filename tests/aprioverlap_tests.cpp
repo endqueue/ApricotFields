@@ -11,6 +11,8 @@
 #include "../src/aprioverlap.hpp"
 #include "../src/audio/apaudio_internal.hpp"
 #include "math/apmathbvh.h"
+#include "../src/render/aprendlit_internal.hpp"
+#include "../src/render/aprendraytracing_internal.hpp"
 
 #include <atomic>
 #include <stdio.h>
@@ -90,6 +92,26 @@ static void test_volume_reads()
     CHECK(expected[0][0] && expected[0][1]);
     CHECK(!expected[6][0] && !expected[6][1]);
     apmath_mesh_bvh_destroy(bvh);
+}
+
+// Calls [call] on another thread while [guard] is held: one overlap report,
+// by the call, if it opens with APREND_ENTER on that guard.
+template <typename F>
+static void overlap_once(apri_overlap &guard, const char *what, F call)
+{
+    std::atomic<bool> inside{false};
+    std::atomic<bool> release{false};
+    std::thread holder(hold, &guard, &inside, &release);
+    while (!inside.load())
+        std::this_thread::yield();
+    const uint32_t before = guard.reports.load();
+    std::thread caller(call);
+    caller.join();
+    release.store(true);
+    holder.join();
+    if (guard.reports.load() != before + 1)
+        printf("FAIL: %s: no overlap reported\n", what);
+    CHECK(guard.reports.load() == before + 1);
 }
 
 int main()
@@ -207,6 +229,34 @@ int main()
             CHECK(guard.reports.load() == 1);
             apaudio_mixer_destroy(mixer);
         }
+    }
+    // Aprend's ray tracing (aprendraytracing.h, "Threads"): each new call
+    // opens with the overlap check on the object its header names: a BLAS's
+    // and a TLAS's own calls on it, creating either and setting a light's
+    // shadow on the instance. Each call is made with an argument it refuses
+    // right after the check, so nothing past it runs: an instance with no
+    // device and no features, a BLAS and a TLAS of it never made by a create.
+    {
+        aprend_instance_t instance;
+        aprend_blas_t blas;
+        blas.instance = &instance;
+        aprend_tlas_t tlas;
+        tlas.instance = &instance;
+        aprend_lit_scene_t scene;
+        scene.instance = &instance;
+        printf("aprioverlap_tests: nine overlap reports are expected next, one for each of Aprend's ray tracing calls\n");
+        fflush(stdout);
+        overlap_once(instance.entered, "aprend_blas_create", [&] { (void)aprend_blas_create(&instance, nullptr, nullptr, nullptr); });
+        overlap_once(instance.entered, "aprend_tlas_create", [&] { (void)aprend_tlas_create(&instance, nullptr, nullptr, nullptr); });
+        overlap_once(blas.entered, "aprend_blas_get_info", [&] { (void)aprend_blas_get_info(&blas, nullptr, nullptr); });
+        overlap_once(tlas.entered, "aprend_tlas_get_info", [&] { (void)aprend_tlas_get_info(&tlas, nullptr, nullptr); });
+        overlap_once(tlas.entered, "aprend_tlas_write_instances", [&] { (void)aprend_tlas_write_instances(&tlas, 0, nullptr, 0, nullptr); });
+        overlap_once(tlas.entered, "aprend_tlas_set_instance_count", [&] { (void)aprend_tlas_set_instance_count(&tlas, 0, nullptr); });
+        overlap_once(tlas.entered, "aprend_tlas_set_materials", [&] { (void)aprend_tlas_set_materials(&tlas, 0, nullptr, 0, nullptr); });
+        overlap_once(instance.entered, "aprend_lit_scene_set_light_shadow", [&] { (void)aprend_lit_scene_set_light_shadow(&scene, 1, nullptr, nullptr); });
+        // A getter that takes no object's state is no exception: the slot
+        // reads only the BLAS, and is checked too.
+        overlap_once(blas.entered, "aprend_blas_get_slot", [&] { (void)aprend_blas_get_slot(&blas); });
     }
     if (failures)
     {

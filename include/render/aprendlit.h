@@ -401,17 +401,33 @@ enum {
  * by their names in the block (`base_color`, `roughness`, ...) with
  * aprend_material_set_uniform().
  *
+ * It also takes an entry in the instance's lit-material table, which it
+ * keeps for its life: one buffer of every lit material's values that a
+ * path trace reads (APREND_COMMAND_LIT_PATH_TRACE, aprendcommands.h), the
+ * entry named from a TLAS's material table (aprendraytracing.h). The table
+ * grows by doubling when it is full, an allocation then and only then.
+ * Destroying the material frees the entry, its generation advanced, once
+ * the frames using it have completed.
+ *
  * @param[in]  instance     Instance the material is of.
- * @param[out] out_material Receives the material; NULL on failure.
+ * @param[out] out_material Receives the material; NULL on failure, with no
+ *                          table entry taken.
  * @param[out] out_error    Why it failed, when it did. May be NULL.
  *
  * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p instance or
- *         @p out_material is NULL; or the code it can't be made with.
+ *         @p out_material is NULL; APRESULT_LIMIT if the lit-material table
+ *         holds 2^24 materials; or the code it can't be made with.
  */
 APRESULT aprend_lit_material_create(aprend_instance instance, aprend_material *out_material, APREND_ERROR *out_error);
 
 /**
  * @brief Sets every value of a lit material at once.
+ *
+ * The values reach a path trace through the material's entry in the
+ * instance's lit-material table (aprend_lit_material_create()): staged
+ * here, and copied into the table in the next submission, ahead of what
+ * reads it, so a frame already submitted reads the values it was submitted
+ * with.
  *
  * @param[in] material Material to change.
  * @param[in] values   The values. Only read during the call.
@@ -818,7 +834,15 @@ typedef struct APREND_LIT_SUN_SHADOW {
 } APREND_LIT_SUN_SHADOW;
 
 /**
- * @brief Sets the sun's shadow, or takes it away.
+ * @brief Sets the sun's shadow to cascades, or takes it away.
+ *
+ * The sun is directional light 0 of the scene until card A35 makes
+ * directional lights a type of their own, and a light has one shadow
+ * (aprend_lit_scene_set_light_shadow()). This sets that one shadow to
+ * cascades, replacing a traced mask set for light 0; a later
+ * aprend_lit_scene_set_light_shadow() for light 0 replaces these cascades
+ * in turn. Whichever of the two calls comes last is the light's shadow.
+ * NULL takes the light's shadow away, of either kind.
  *
  * The shadow pass materials of the cascades get their matrices here too.
  *
@@ -836,6 +860,82 @@ typedef struct APREND_LIT_SUN_SHADOW {
  *         strength is out of 0 to 1.
  */
 APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LIT_SUN_SHADOW *shadow, APREND_ERROR *out_error);
+
+/**
+ * @brief What kind of shadow a light has.
+ */
+typedef enum APREND_LIT_SHADOW_KIND APRI_ENUM_BASE {
+	/** Not a kind: a desc that has not chosen, and is refused. */
+	APREND_LIT_SHADOW_KIND_NONE     = 0,
+	/** A traced mask, written by APREND_COMMAND_LIT_SHADOW_MASK
+	 * (aprendcommands.h) for the light. */
+	APREND_LIT_SHADOW_KIND_MASK     = 1,
+	/** Cascaded shadow maps: refused until card A35 moves them here. Until
+	 * then, aprend_lit_scene_set_sun_shadow() sets them. */
+	APREND_LIT_SHADOW_KIND_CASCADES = 2
+} APREND_LIT_SHADOW_KIND;
+
+/**
+ * @brief One light's shadow: its kind, and that kind's fields. A mask's
+ * are here; card A35 adds the cascades' as a struct chained on #base.
+ */
+typedef struct APREND_LIT_LIGHT_SHADOW {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** Which kind. */
+	APREND_LIT_SHADOW_KIND _kind;
+	/** How dark the shadow is: 1 takes all the light away, 0 none of it. */
+	float _strength;
+	/**
+	 * APREND_LIT_SHADOW_KIND_MASK: a SHADER_RESOURCE 2D view of color of
+	 * the mask APREND_COMMAND_LIT_SHADOW_MASK writes for this light, at the
+	 * scene's view's target size, read at each fragment's place on the
+	 * target. Borrowed: it outlives its use by the scene, until the light's
+	 * shadow is set again or the scene goes.
+	 */
+	aprend_texture_view _mask;
+} APREND_LIT_LIGHT_SHADOW;
+
+/**
+ * @brief Sets directional light @p light's one shadow, replacing what it
+ * had, or takes it away.
+ *
+ * A light has one shadow. Setting it replaces the one it had, of any kind,
+ * as any setter does; there is nothing to refuse. Until card A35 is built
+ * the scene has one directional light, the sun (APREND_LIT_SUN), as light
+ * 0, and its shadow is also set to cascades by
+ * aprend_lit_scene_set_sun_shadow(): whichever of the two calls comes last
+ * is light 0's shadow.
+ *
+ * A mask is read by the lit surface for that light in place of shadow
+ * maps: the light at a fragment is multiplied by 1 - `_strength` x (1 - m),
+ * m the mask's red at the fragment's place on the view's target. It
+ * takes effect as the scene's other values do, at the next submission of
+ * a list that binds the scene. The mask is written by
+ * APREND_COMMAND_LIT_SHADOW_MASK earlier in the list that draws with it, or
+ * before; a surface drawn in a list with no mask written yet reads
+ * whatever the texture holds.
+ *
+ * @param[in] scene     Scene to change.
+ * @param[in] light     Which directional light: today only 0, the sun.
+ * @param[in] shadow    The shadow, or NULL for none. Only read during the
+ *                      call; the mask view it names is borrowed, as
+ *                      `_mask` says.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
+ *
+ * @return APRESULT_OK. Otherwise, checked in this order, with nothing
+ *         changed: APRESULT_INVALID_ARGUMENT if @p scene is NULL;
+ *         APRESULT_INVALID_ARGUMENT if @p light names no directional light
+ *         of the scene (today, anything but 0); the struct codes for
+ *         `shadow->base`; APRESULT_INVALID_ARGUMENT if `_kind` is NONE or
+ *         not an APREND_LIT_SHADOW_KIND, or CASCADES (naming
+ *         aprend_lit_scene_set_sun_shadow(), until card A35); then, for a
+ *         mask, if `_strength` is not finite or out of 0 to 1, or `_mask`
+ *         is NULL, of another instance, or not a SHADER_RESOURCE 2D view of
+ *         color.
+ */
+APRESULT aprend_lit_scene_set_light_shadow(aprend_lit_scene scene, uint32_t light, const APREND_LIT_LIGHT_SHADOW *shadow,
+                                           APREND_ERROR *out_error);
 
 /**
  * @brief How aprend_lit_fit_sun_cascades() frames the sun's cascades.

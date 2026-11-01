@@ -62,6 +62,45 @@ typedef struct aprend_lit_scene_t *aprend_lit_scene;
 /** An adapting exposure (aprendpost.h), for APREND_COMMAND_AUTO_EXPOSURE and
  * APREND_COMMAND_TONE_MAP. */
 typedef struct aprend_exposure_t *aprend_exposure;
+/** A bottom-level acceleration structure (aprendraytracing.h), built by
+ * APREND_COMMAND_BUILD_BLAS. */
+typedef struct aprend_blas_t *aprend_blas;
+/** A top-level acceleration structure (aprendraytracing.h), built by
+ * APREND_COMMAND_BUILD_TLAS and traced by APREND_COMMAND_LIT_SHADOW_MASK and
+ * APREND_COMMAND_LIT_PATH_TRACE. */
+typedef struct aprend_tlas_t *aprend_tlas;
+
+/**
+ * @brief What APREND_COMMAND_BUILD_BLAS does to its BLAS
+ * (aprendraytracing.h).
+ */
+typedef enum APREND_BUILD_MODE APRI_ENUM_BASE {
+	/** Not a mode: a zeroed command has not chosen, and is refused. */
+	APREND_BUILD_MODE_NONE    = 0,
+	/**
+	 * Builds the BLAS from its geometries as they are now: the first build,
+	 * a deforming BLAS's quality brought back after refits, or a static one
+	 * built again. A compacted BLAS gets full-size storage again first, an
+	 * allocation at the compile that records it.
+	 */
+	APREND_BUILD_MODE_BUILD   = 1,
+	/**
+	 * Refits a deforming BLAS (`_deforms`) to its geometries' new
+	 * positions, in place: the same triangles, moved. The BLAS has been
+	 * built, by a build that has completed or one sent earlier in the same
+	 * list.
+	 */
+	APREND_BUILD_MODE_REFIT   = 2,
+	/**
+	 * Compacts a static BLAS whose compacted size is known
+	 * (aprend_blas_get_info(), `_compacted_bytes`): a structure of that
+	 * size is made at the compile that records it, an allocation, the BLAS
+	 * copied into it, and the full-size one released once that frame has
+	 * completed. Its slot is unchanged; every TLAS built after it reads the
+	 * compacted one.
+	 */
+	APREND_BUILD_MODE_COMPACT = 3
+} APREND_BUILD_MODE;
 
 /**
  * @brief How APREND_COMMAND_PRESENT_TEXTURE and APREND_COMMAND_DRAW_TEXTURE
@@ -821,6 +860,130 @@ enum {
 	 * again after it.
 	 */
 	APREND_COMMAND_DRAW_BATCH                  = 40,
+	/**
+	 * Builds, refits or compacts `_blas` (aprendraytracing.h), as `_mode`
+	 * (APREND_BUILD_MODE) says, outside a pass. The device has
+	 * SPUDGPU_FEATURE_RAY_QUERY.
+	 *
+	 * Built from its geometries' buffers as they are when the command runs,
+	 * written by anything submitted before or earlier in the list. A static
+	 * BLAS is built for fast tracing, and allows compaction; a deforming
+	 * one for fast building, and allows refitting. Once a static BLAS's
+	 * build has completed, its compacted size is read back
+	 * (aprend_blas_get_info()); compacting it is the caller's choice, a
+	 * BUILD_BLAS with APREND_BUILD_MODE_COMPACT.
+	 *
+	 * Consecutive BUILD_BLAS and BUILD_TLAS commands of a list are one
+	 * build call to the device: every BLAS of the run first, then one
+	 * barrier, then every TLAS. A BLAS built in a list is ordered before
+	 * every BUILD_TLAS after it in that list. The build's scratch is the
+	 * instance's, one buffer grown to the largest a compiled list needs,
+	 * an allocation at that compile and only then.
+	 */
+	APREND_COMMAND_BUILD_BLAS                  = 41,
+	/**
+	 * Builds `_tlas` (aprendraytracing.h) from its set being prepared,
+	 * outside a pass. The device has SPUDGPU_FEATURE_RAY_QUERY.
+	 *
+	 * Sending it seals the set: the record keeps which set it builds from,
+	 * and the next write to the TLAS goes to the next set, so a write after
+	 * the send changes no build already sent. Sending checks every BLAS slot
+	 * the set names: each names a live BLAS that has been built, or that a
+	 * BUILD_BLAS earlier in the same list builds; the first that doesn't is
+	 * refused, naming the slot, and nothing is sealed.
+	 *
+	 * Running, it copies the blocks of 64 records the set didn't write from
+	 * the set sealed before it, writes every instance in the device's own
+	 * layout with each BLAS's current structure (a compute pass of
+	 * Aprend's), and builds the TLAS for fast building, over the set's
+	 * `_instance_count` instances, each BLAS ordered before it. The TLAS is
+	 * rebuilt every time, never refitted. Builds of one TLAS run in the
+	 * order they were sent, across lists too: a list holding one is
+	 * refused at submit while a list that sent an earlier build of the same
+	 * TLAS is not yet submitted (aprend_command_list_submit()). A trace of
+	 * the TLAS later in the list, or in a later list, reads this build.
+	 */
+	APREND_COMMAND_BUILD_TLAS                  = 42,
+	/**
+	 * Traces the shadow of directional light `_light` of `_scene`
+	 * (aprendlit.h) over a depth pre-pass into a mask, outside a pass. The
+	 * device has SPUDGPU_FEATURE_RAY_QUERY. The mask is what the lit
+	 * surface reads for that light instead of shadow maps, once
+	 * aprend_lit_scene_set_light_shadow() names it.
+	 *
+	 * Each texel of `_depth` is brought back into the scene's space
+	 * through the scene's view_projection, moved `_normal_offset` along
+	 * the normal its depth's slopes give (the depth's own normals: no
+	 * normal target is read), and `_ray_count` rays are traced from it
+	 * through `_tlas` towards the light, over the light's disc (its
+	 * direction and angular radius as the scene has them, today
+	 * APREND_LIT_SUN's `direction` and `disc_angle`; 0 is a hard shadow),
+	 * in blue-noise directions, up to `_max_distance`, against the
+	 * instances whose mask shares a bit with `_cull_mask`. The fraction that
+	 * reach the light is filtered over `_filter_radius` texels each way,
+	 * weighted by depth and normal so an edge is kept, and written into
+	 * `_target`'s red: 1 lit, 0 in shadow. There is no filter over time.
+	 *
+	 * `_scene`'s view has a target size and a view_projection that can be
+	 * inverted, and `_light` names a directional light of it (today only
+	 * 0, the sun, until card A35 is built). `_depth` is a SHADER_RESOURCE
+	 * view, DEPTH aspect, 2D, of a depth buffer rendered through the
+	 * view's view_projection at its target size, written earlier in the
+	 * list or before it. `_target` is an UNORDERED_ACCESS 2D view of an
+	 * SPUDGPU_FORMAT_R8_UNORM or SPUDGPU_FORMAT_R16_FLOAT texture of the
+	 * same size, which the scene then reads; its write is ordered before
+	 * any later read of it. `_tlas` has been built, by a BUILD_TLAS earlier
+	 * in the list or submitted before. `_ray_count` is 1 or more,
+	 * `_filter_radius` 0 (no filter) to 8, `_cull_mask` 1 to 255,
+	 * `_normal_offset` 0 or more and `_max_distance` above 0, both finite.
+	 */
+	APREND_COMMAND_LIT_SHADOW_MASK             = 43,
+	/**
+	 * Adds `_samples` path-traced samples a pixel of `_scene` (aprendlit.h)
+	 * through `_tlas` to the accumulation in `_target`, outside a pass, in
+	 * one dispatch. The device has SPUDGPU_FEATURE_RAY_QUERY.
+	 *
+	 * `_target` holds the running mean of `_accumulated` samples before the
+	 * step and of `_accumulated` + `_samples` after it; `_accumulated` 0
+	 * starts over, and the caller sets it back to 0 after any change to the
+	 * view, the instances, the materials, the environment or the lights:
+	 * accumulating is right only over an unchanged scene. The same `_seed`,
+	 * counts and scene give the same bits on one device. A step is one
+	 * dispatch, which an operating system ends past its time limit (about
+	 * two seconds on Windows): the caller sizes `_samples` from the samples
+	 * a second it measures.
+	 *
+	 * Each path starts from the view's eye through a jittered point of its
+	 * pixel (the view_projection's inverse), and bounces at most
+	 * `_max_bounces` times, by each lit material's values
+	 * (APREND_LIT_MATERIAL_VALUES' base color, emission, roughness,
+	 * metalness and specular: every surface opaque; opacity, transmission,
+	 * the coat, the sheen and the maps are not read).
+	 * Light comes from the environment (importance-sampled), every
+	 * directional light over its disc, emissive triangles (with multiple
+	 * importance sampling; a surface gives off its emission from both its
+	 * faces, as the lit surface lights a face seen from behind as its
+	 * front), and point and spot lights (without). The hemisphere of
+	 * APREND_LIT_AMBIENT is part of the environment. Paths end
+	 * by Russian roulette from half the bounces; the light a bounce after
+	 * the first brings is clamped to `_clamp` (0 for no clamp). Instances
+	 * are seen by the paths where their mask shares a bit with
+	 * `_cull_mask`, which leaves out every instance whose geometries reach
+	 * a NULL entry of the TLAS's material table (an entry only shadows
+	 * see): one that doesn't is refused at the compile, naming the
+	 * instance.
+	 *
+	 * `_target` is an UNORDERED_ACCESS 2D view of an SPUDGPU_FORMAT_R32G32B32A32_FLOAT
+	 * texture at the view's target size. `_albedo` and `_normal`, each NULL
+	 * or an UNORDERED_ACCESS 2D view of an R32G32B32A32_FLOAT or R16G16B16A16_FLOAT
+	 * texture of that size, receive the first hit's albedo and normal (unit,
+	 * in the scene's space), averaged as the target is: the guides a
+	 * denoiser reads. `_tlas` has been built, as for LIT_SHADOW_MASK.
+	 * `_samples` and `_max_bounces` are 1 or more, `_cull_mask` 1 to 255,
+	 * `_clamp` 0 or more and finite, and `_accumulated` + `_samples` does
+	 * not overflow.
+	 */
+	APREND_COMMAND_LIT_PATH_TRACE              = 44,
 };
 
 /**
@@ -1166,6 +1329,62 @@ typedef struct APREND_COMMAND {
 			/** The batch, begun this frame. */
 			struct aprend_batch_t *_batch;
 		} _draw_batch; /**< APREND_COMMAND_DRAW_BATCH. */
+		struct {
+			/** The BLAS, of the list's instance. */
+			aprend_blas _blas;
+			/** Build, refit or compact. */
+			APREND_BUILD_MODE _mode;
+		} _build_blas; /**< APREND_COMMAND_BUILD_BLAS. */
+		struct {
+			/** The TLAS, of the list's instance; its set being prepared is sealed at the send. */
+			aprend_tlas _tlas;
+		} _build_tlas; /**< APREND_COMMAND_BUILD_TLAS. */
+		struct {
+			/** The scene whose view the depth was rendered through, and whose light is traced. */
+			aprend_lit_scene _scene;
+			/** What the rays are traced through. */
+			aprend_tlas _tlas;
+			/** Which directional light of the scene: today only 0, the sun. */
+			uint32_t _light;
+			/** The depth pre-pass. */
+			aprend_texture_view _depth;
+			/** The mask, in red: 1 lit, 0 in shadow. */
+			aprend_texture_view _target;
+			/** Rays a texel, 1 or more. */
+			uint32_t _ray_count;
+			/** Texels each way the mask is filtered over, 0 to 8. */
+			uint32_t _filter_radius;
+			/** Which instances cast shadows: 1 to 255, against each instance's `_mask`. */
+			uint32_t _cull_mask;
+			/** How far a ray starts along the surface's normal, in the scene's units. */
+			float _normal_offset;
+			/** How far a ray looks for what stands in the light, in the scene's units. */
+			float _max_distance;
+		} _lit_shadow_mask; /**< APREND_COMMAND_LIT_SHADOW_MASK. */
+		struct {
+			/** The scene: its view, lights and environment. */
+			aprend_lit_scene _scene;
+			/** What the paths are traced through. */
+			aprend_tlas _tlas;
+			/** The accumulation: the running mean, RGBA32F. */
+			aprend_texture_view _target;
+			/** NULL, or where the first hit's albedo is averaged. */
+			aprend_texture_view _albedo;
+			/** NULL, or where the first hit's normal is averaged. */
+			aprend_texture_view _normal;
+			/** Samples a pixel this step, 1 or more. */
+			uint32_t _samples;
+			/** Samples the target holds before the step; 0 starts over. */
+			uint32_t _accumulated;
+			/** What the step's random numbers are made from. */
+			uint32_t _seed;
+			/** The most bounces a path takes, 1 or more. */
+			uint32_t _max_bounces;
+			/** Which instances the paths see: 1 to 255, against each instance's `_mask`. */
+			uint32_t _cull_mask;
+			/** The most light a bounce after the first brings; 0 for no clamp. */
+			float _clamp;
+		} _lit_path_trace; /**< APREND_COMMAND_LIT_PATH_TRACE. */
 		/**
 		 * Never read. Fixes `_params` at 120 bytes, so the command's size
 		 * stays 128 as commands are added: a new command's parameters fit
@@ -1324,7 +1543,29 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  *   instance, a source that is not a SHADER_RESOURCE 2D view of one mip of
  *   color, a target that is not a RENDER_TARGET 2D view of one mip in a
  *   format a shader writes floats to, a source and target that share a mip
- *   of a layer, or a target whose texture GENERATE_MIPS refuses.
+ *   of a layer, or a target whose texture GENERATE_MIPS refuses;
+ * - a BUILD_BLAS, BUILD_TLAS, LIT_SHADOW_MASK or LIT_PATH_TRACE on a
+ *   device without SPUDGPU_FEATURE_RAY_QUERY (APRESULT_UNSUPPORTED, naming
+ *   the feature);
+ * - a BUILD_BLAS with a NULL BLAS or one of another instance, a `_mode`
+ *   that is not an APREND_BUILD_MODE, a REFIT of a BLAS that doesn't
+ *   deform, or a COMPACT of one that does;
+ * - a BUILD_TLAS with a NULL TLAS or one of another instance, or whose set
+ *   being prepared names a BLAS slot that is not live, or a BLAS neither
+ *   built nor built by a BUILD_BLAS earlier in the list (naming the slot);
+ *   the set is not sealed then;
+ * - a LIT_SHADOW_MASK with a NULL scene, TLAS, depth or target, one of
+ *   another instance, a `_light` that names no directional light of the
+ *   scene, a depth that is not a SHADER_RESOURCE 2D view of depth, a
+ *   target that is not an UNORDERED_ACCESS 2D view of R8_UNORM or R16_FLOAT, the two
+ *   of different sizes, or a `_ray_count`, `_filter_radius`, `_cull_mask`,
+ *   `_normal_offset` or `_max_distance` out of its range;
+ * - a LIT_PATH_TRACE with a NULL scene, TLAS or target, one of another
+ *   instance, a target that is not an UNORDERED_ACCESS 2D view of R32G32B32A32_FLOAT,
+ *   an `_albedo` or `_normal` that is not NULL or an UNORDERED_ACCESS 2D view of
+ *   R32G32B32A32_FLOAT or R16G16B16A16_FLOAT, a guide of another size than
+ *   the target, or a `_samples`, `_max_bounces`, `_cull_mask` or `_clamp`
+ *   out of its range, or an `_accumulated` + `_samples` that overflows.
  *
  * BEGIN_RENDER_PASS, SET_COMPUTE_PASS and DRAW_LIST are expanded here into
  * the commands they stand for, read from the pass or list as it is now (see
@@ -1439,6 +1680,18 @@ void aprend_command_list_send(
  *           the depth's size, or whose pipeline or sets can't be made;
  *         - a COPY_SCENE_COLOR inside a pass, or whose views, sets or
  *           pipelines can't be made;
+ *         - a BUILD_BLAS, BUILD_TLAS, LIT_SHADOW_MASK or LIT_PATH_TRACE
+ *           inside a pass; a REFIT of a BLAS never built, by a build that
+ *           has completed or one earlier in the list; a COMPACT of a BLAS
+ *           whose compacted size isn't known yet, or already compacted; a
+ *           trace of a TLAS never built; a LIT_SHADOW_MASK whose depth has
+ *           nothing in it or whose scene's view has no target size of the
+ *           depth's or a view_projection that can't be inverted; a
+ *           LIT_PATH_TRACE whose `_cull_mask` lets in an instance that
+ *           reaches a NULL material table entry (naming the instance), or
+ *           whose scene's view has no target size of the target's; or
+ *           whose structures, scratch, pipelines, views or sets can't be
+ *           made;
  *         - a GENERATE_MIPS inside a pass, or whose base level has nothing
  *           in some layer: written neither by anything submitted before nor
  *           earlier in the list; or whose views, sets or pipeline can't be
@@ -1499,6 +1752,12 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
  * acquired one of the same back buffers (no resize since); follow it with
  * aprend_swap_chain_present().
  *
+ * Builds of one TLAS run in the order they were sent (aprendraytracing.h,
+ * "Instance sets"): a list holding a BUILD_TLAS is refused while another
+ * list holding an earlier-sent BUILD_TLAS of the same TLAS has not been
+ * submitted, the narrowest rule all three graphics APIs keep. Submit the
+ * lists in the order their builds were sent.
+ *
  * @param[in]  cmd_list  List to submit.
  * @param[in]  queue     Queue to submit on: the instance's one queue.
  * @param[out] out_error Why it failed, when it did. May be NULL.
@@ -1507,7 +1766,9 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
  *         @p cmd_list or @p queue is NULL, the list hasn't compiled
  *         successfully since it was last submitted, or @p queue is not the
  *         queue the instance already submits on (or the swap chain's, for
- *         a list that presents); APRESULT_APREND_STALE if a texture it uses
+ *         a list that presents), or the list holds a BUILD_TLAS sent after
+ *         another unsubmitted list's BUILD_TLAS of the same TLAS (naming
+ *         both lists); APRESULT_APREND_STALE if a texture it uses
  *         has changed layout since it was compiled (another list touching
  *         the same texture was submitted in between),
  *         aprend_instance_next_frame() has moved the frame on since it was

@@ -52,6 +52,8 @@ add_library(ApricotFields STATIC
         src/render/aprendlit.cpp
         src/render/aprendrendertargets_internal.hpp
         src/render/aprendrendertargets.cpp
+        src/render/aprendraytracing_internal.hpp
+        src/render/aprendraytracing.cpp
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio_internal.hpp
@@ -92,6 +94,7 @@ add_library(ApricotFields STATIC
         include/render/aprendlit.h
         include/render/aprendpost.h
         include/render/aprendbatch.h
+        include/render/aprendraytracing.h
         include/archive/aparchive.h
         include/audio/apaudio.h
         include/audio/apaudiocues.h
@@ -766,7 +769,8 @@ if (APRICOTFIELDS_BUILD_TESTS)
     # The Debug builds' overlap check every module opens its calls with
     # (src/aprioverlap.hpp), driven with threads; skips itself in Release.
     add_executable(aprioverlap_tests tests/aprioverlap_tests.cpp)
-    target_link_libraries(aprioverlap_tests PRIVATE ApricotFields)
+    # Aprend's ray tracing calls too, on objects of its internal headers.
+    target_link_libraries(aprioverlap_tests PRIVATE ApricotFields eqstd)
     add_test(NAME aprioverlap_tests COMMAND aprioverlap_tests)
     add_executable(apjobs_tests tests/apjobs_tests.c)
     target_link_libraries(apjobs_tests PRIVATE ApricotFields)

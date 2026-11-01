@@ -75,6 +75,10 @@ const APREND_BUFFER_USAGE_VERTEX = 1
 const APREND_BUFFER_WRITES_MANY = 2
 const APREND_BUFFER_WRITES_NONE = 0
 const APREND_BUFFER_WRITES_ONCE = 1
+const APREND_BUILD_MODE_BUILD = 1
+const APREND_BUILD_MODE_COMPACT = 3
+const APREND_BUILD_MODE_NONE = 0
+const APREND_BUILD_MODE_REFIT = 2
 const APREND_COLOR_ENCODING_LINEAR = 0
 const APREND_COLOR_ENCODING_SRGB = 1
 const APREND_COMMAND_AUTO_EXPOSURE = 34
@@ -83,6 +87,8 @@ const APREND_COMMAND_BEGIN_RENDERING = 10
 const APREND_COMMAND_BEGIN_RENDER_PASS = 23
 const APREND_COMMAND_BLOOM = 29
 const APREND_COMMAND_BLUR = 36
+const APREND_COMMAND_BUILD_BLAS = 41
+const APREND_COMMAND_BUILD_TLAS = 42
 const APREND_COMMAND_COPY_SCENE_COLOR = 39
 const APREND_COMMAND_DISPATCH = 16
 const APREND_COMMAND_DISPATCH_MESH = 19
@@ -101,6 +107,8 @@ const APREND_COMMAND_GENERATE_MIPS = 28
 const APREND_COMMAND_LIT_AMBIENT_OCCLUSION = 33
 const APREND_COMMAND_LIT_CULL_LIGHTS = 38
 const APREND_COMMAND_LIT_ENVIRONMENT = 31
+const APREND_COMMAND_LIT_PATH_TRACE = 44
+const APREND_COMMAND_LIT_SHADOW_MASK = 43
 const APREND_COMMAND_LIT_SKY = 32
 const APREND_COMMAND_NONE = 0
 const APREND_COMMAND_OUTLINE = 37
@@ -135,6 +143,9 @@ const APREND_LIT_SHADER_SHADOW_VERTEX = 3
 const APREND_LIT_SHADER_SKY_FRAGMENT = 5
 const APREND_LIT_SHADER_SURFACE_FRAGMENT = 0
 const APREND_LIT_SHADER_SURFACE_VERTEX = 2
+const APREND_LIT_SHADOW_KIND_CASCADES = 2
+const APREND_LIT_SHADOW_KIND_MASK = 1
+const APREND_LIT_SHADOW_KIND_NONE = 0
 const APREND_LIT_SKY_MODEL_HOSEK_WILKIE = 1
 const APREND_LIT_SKY_MODEL_PREETHAM = 0
 const APREND_SHADER_SCALAR_TYPE_BOOL = 4
@@ -255,6 +266,8 @@ const APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC = 4005
 const APRI_STRUCT_TYPE_APREND_BATCH_DESC = 5026
 const APRI_STRUCT_TYPE_APREND_BATCH_FRAME = 5027
 const APRI_STRUCT_TYPE_APREND_BATCH_LINE = 5028
+const APRI_STRUCT_TYPE_APREND_BLAS_DESC = 5030
+const APRI_STRUCT_TYPE_APREND_BLAS_INFO = 5031
 const APRI_STRUCT_TYPE_APREND_BUFFER_DESC = 5025
 const APRI_STRUCT_TYPE_APREND_COMPUTE_PASS_DESC = 5011
 const APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC = 5013
@@ -268,6 +281,7 @@ const APRI_STRUCT_TYPE_APREND_INSTANCE_DESC = 5000
 const APRI_STRUCT_TYPE_APREND_LIT_AMBIENT = 5023
 const APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT = 5022
 const APRI_STRUCT_TYPE_APREND_LIT_ENVIRONMENT_DESC = 5017
+const APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW = 5034
 const APRI_STRUCT_TYPE_APREND_LIT_MATERIAL_VALUES = 5018
 const APRI_STRUCT_TYPE_APREND_LIT_SUN = 5020
 const APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW = 5021
@@ -281,6 +295,8 @@ const APRI_STRUCT_TYPE_APREND_SWAP_CHAIN_DESC = 5014
 const APRI_STRUCT_TYPE_APREND_TEXTURE2D_DESC = 5005
 const APRI_STRUCT_TYPE_APREND_TEXTURE3D_DESC = 5006
 const APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC = 5007
+const APRI_STRUCT_TYPE_APREND_TLAS_DESC = 5032
+const APRI_STRUCT_TYPE_APREND_TLAS_INFO = 5033
 const APRI_STRUCT_TYPE_APREND_VERTEX_POOL_DESC = 5001
 const APRI_STRUCT_TYPE_APSYNC_EVENT = 2003
 const APRI_STRUCT_TYPE_APSYNC_HOST_DESC = 2001
@@ -487,6 +503,10 @@ fn aprend_binding_layout_get_uniform_layout APRESULT (aprend_binding_layout, uin
 fn aprend_binding_set_create APRESULT (aprend_binding_layout, const APREND_BINDING_SET_ENTRY *, uint32_t, aprend_binding_set *, APREND_ERROR *)
 fn aprend_binding_set_destroy void (aprend_binding_set)
 fn aprend_binding_set_update APRESULT (aprend_binding_set, const APREND_BINDING_SET_ENTRY *, uint32_t, APREND_ERROR *)
+fn aprend_blas_create APRESULT (aprend_instance, const APREND_BLAS_DESC *, aprend_blas *, APREND_ERROR *)
+fn aprend_blas_destroy void (aprend_blas)
+fn aprend_blas_get_info APRESULT (aprend_blas, APREND_BLAS_INFO *, APREND_ERROR *)
+fn aprend_blas_get_slot uint32_t (aprend_blas)
 fn aprend_blend_additive spudgpu_blend_attachment_desc (void)
 fn aprend_blend_alpha spudgpu_blend_attachment_desc (void)
 fn aprend_blend_premultiplied spudgpu_blend_attachment_desc (void)
@@ -572,6 +592,7 @@ fn aprend_lit_scene_get_sun_shadow_material aprend_material (aprend_lit_scene, u
 fn aprend_lit_scene_set_ambient APRESULT (aprend_lit_scene, const APREND_LIT_AMBIENT *, APREND_ERROR *)
 fn aprend_lit_scene_set_ambient_occlusion APRESULT (aprend_lit_scene, aprend_texture_view, float, APREND_ERROR *)
 fn aprend_lit_scene_set_bent_normals APRESULT (aprend_lit_scene, _Bool, APREND_ERROR *)
+fn aprend_lit_scene_set_light_shadow APRESULT (aprend_lit_scene, uint32_t, const APREND_LIT_LIGHT_SHADOW *, APREND_ERROR *)
 fn aprend_lit_scene_set_lights APRESULT (aprend_lit_scene, const APREND_LIT_LIGHT *, uint32_t, APREND_ERROR *)
 fn aprend_lit_scene_set_point_shadows APRESULT (aprend_lit_scene, aprend_texture_view, const APREND_LIT_POINT_SHADOW *, uint32_t, _Bool, APREND_ERROR *)
 fn aprend_lit_scene_set_scene_color APRESULT (aprend_lit_scene, aprend_texture_view, APREND_ERROR *)
@@ -640,6 +661,12 @@ fn aprend_texture_view_get_dimension APREND_TEXTURE_DIMENSION (aprend_texture_vi
 fn aprend_texture_view_get_spudgpu_image_view spudgpu_image_view (aprend_texture_view)
 fn aprend_texture_view_get_texture2d aprend_texture2d (aprend_texture_view)
 fn aprend_texture_view_get_type APREND_TEXTURE_VIEW_TYPE (aprend_texture_view)
+fn aprend_tlas_create APRESULT (aprend_instance, const APREND_TLAS_DESC *, aprend_tlas *, APREND_ERROR *)
+fn aprend_tlas_destroy void (aprend_tlas)
+fn aprend_tlas_get_info APRESULT (aprend_tlas, APREND_TLAS_INFO *, APREND_ERROR *)
+fn aprend_tlas_set_instance_count APRESULT (aprend_tlas, uint32_t, APREND_ERROR *)
+fn aprend_tlas_set_materials APRESULT (aprend_tlas, uint32_t, const aprend_material *, uint32_t, APREND_ERROR *)
+fn aprend_tlas_write_instances APRESULT (aprend_tlas, uint32_t, const APREND_RAY_INSTANCE *, uint32_t, APREND_ERROR *)
 fn aprend_transient_allocate APRESULT (aprend_instance, uint64_t, uint64_t, APREND_TRANSIENT_SPAN *, APREND_ERROR *)
 fn aprend_transient_get_frame_usage uint64_t (aprend_instance)
 fn aprend_uniform_layout_get_size APRESULT (const APREND_UNIFORM_LAYOUT *, uint32_t *, APREND_ERROR *)
@@ -767,6 +794,7 @@ opaque apmath_mesh_bvh_t
 opaque apmath_poly_t
 opaque aprend_binding_layout_t
 opaque aprend_binding_set_t
+opaque aprend_blas_t
 opaque aprend_buffer_t
 opaque aprend_command_list_t
 opaque aprend_compute_pass_t
@@ -788,6 +816,7 @@ opaque aprend_swap_chain_t
 opaque aprend_texture2d_t
 opaque aprend_texture3d_t
 opaque aprend_texture_view_t
+opaque aprend_tlas_t
 opaque aprend_vertex_pool_t
 opaque apsync_session_t
 opaque aptext_atlas_t
@@ -1182,6 +1211,18 @@ field APREND_BINDING_SET_ENTRY._resource._storage._offset @24 uint64_t
 field APREND_BINDING_SET_ENTRY._resource._uniform._offset @24 uint64_t
 field APREND_BINDING_SET_ENTRY._resource._storage._range @32 uint64_t
 field APREND_BINDING_SET_ENTRY._resource._uniform._range @32 uint64_t
+struct APREND_BLAS_DESC size=40 align=8
+field APREND_BLAS_DESC.base @0 APRI_STRUCT_BASE
+field APREND_BLAS_DESC._geometries @16 const APREND_DRAW_MESH *
+field APREND_BLAS_DESC._geometry_count @24 uint32_t
+field APREND_BLAS_DESC._deforms @28 _Bool
+field APREND_BLAS_DESC.debug_name @32 const char *
+struct APREND_BLAS_INFO size=40 align=8
+field APREND_BLAS_INFO.base @0 APRI_STRUCT_BASE_OUT
+field APREND_BLAS_INFO._storage_bytes @16 uint64_t
+field APREND_BLAS_INFO._compacted_bytes @24 uint64_t
+field APREND_BLAS_INFO._built @32 _Bool
+field APREND_BLAS_INFO._compacted @33 _Bool
 struct APREND_BUFFER_DESC size=56 align=8
 field APREND_BUFFER_DESC.base @0 APRI_STRUCT_BASE
 field APREND_BUFFER_DESC.size @16 uint64_t
@@ -1212,6 +1253,10 @@ field APREND_COMMAND._params._bloom @8 struct {}
 field APREND_COMMAND._params._bloom._source @8 aprend_texture_view
 field APREND_COMMAND._params._blur @8 struct {}
 field APREND_COMMAND._params._blur._source @8 aprend_texture_view
+field APREND_COMMAND._params._build_blas @8 struct {}
+field APREND_COMMAND._params._build_blas._blas @8 aprend_blas
+field APREND_COMMAND._params._build_tlas @8 struct {}
+field APREND_COMMAND._params._build_tlas._tlas @8 aprend_tlas
 field APREND_COMMAND._params._copy_scene_color @8 struct {}
 field APREND_COMMAND._params._copy_scene_color._source @8 aprend_texture_view
 field APREND_COMMAND._params._dispatch @8 struct {}
@@ -1242,6 +1287,10 @@ field APREND_COMMAND._params._lit_cull_lights @8 struct {}
 field APREND_COMMAND._params._lit_cull_lights._scene @8 aprend_lit_scene
 field APREND_COMMAND._params._lit_environment @8 struct {}
 field APREND_COMMAND._params._lit_environment._environment @8 aprend_lit_environment
+field APREND_COMMAND._params._lit_path_trace @8 struct {}
+field APREND_COMMAND._params._lit_path_trace._scene @8 aprend_lit_scene
+field APREND_COMMAND._params._lit_shadow_mask @8 struct {}
+field APREND_COMMAND._params._lit_shadow_mask._scene @8 aprend_lit_scene
 field APREND_COMMAND._params._lit_sky @8 struct {}
 field APREND_COMMAND._params._lit_sky._environment @8 aprend_lit_environment
 field APREND_COMMAND._params._outline @8 struct {}
@@ -1285,6 +1334,7 @@ field APREND_COMMAND._params._auto_exposure._source @16 aprend_texture_view
 field APREND_COMMAND._params._begin_rendering._color_target_count @16 uint32_t
 field APREND_COMMAND._params._bloom._target @16 aprend_texture_view
 field APREND_COMMAND._params._blur._target @16 aprend_texture_view
+field APREND_COMMAND._params._build_blas._mode @16 APREND_BUILD_MODE
 field APREND_COMMAND._params._copy_scene_color._target @16 aprend_texture_view
 field APREND_COMMAND._params._dispatch._group_count_z @16 uint32_t
 field APREND_COMMAND._params._dispatch_mesh._group_count_z @16 uint32_t
@@ -1298,6 +1348,8 @@ field APREND_COMMAND._params._generate_mips._base_mip @16 uint32_t
 field APREND_COMMAND._params._lit_ambient_occlusion._depth @16 aprend_texture_view
 field APREND_COMMAND._params._lit_cull_lights._depth @16 aprend_texture_view
 field APREND_COMMAND._params._lit_environment._source @16 aprend_texture_view
+field APREND_COMMAND._params._lit_path_trace._tlas @16 aprend_tlas
+field APREND_COMMAND._params._lit_shadow_mask._tlas @16 aprend_tlas
 field APREND_COMMAND._params._lit_sky._sun_direction @16 float[3]
 field APREND_COMMAND._params._outline._target @16 aprend_texture_view
 field APREND_COMMAND._params._present_texture._swap_chain @16 aprend_swap_chain
@@ -1323,6 +1375,8 @@ field APREND_COMMAND._params._draw_indexed_instanced._start_instance_location @2
 field APREND_COMMAND._params._draw_indirect._draw_count @24 uint32_t
 field APREND_COMMAND._params._draw_texture._scaling @24 APREND_TEXTURE_SCALING
 field APREND_COMMAND._params._lit_ambient_occlusion._target @24 aprend_texture_view
+field APREND_COMMAND._params._lit_path_trace._target @24 aprend_texture_view
+field APREND_COMMAND._params._lit_shadow_mask._light @24 uint32_t
 field APREND_COMMAND._params._outline._color @24 float[4]
 field APREND_COMMAND._params._present_texture._scaling @24 APREND_TEXTURE_SCALING
 field APREND_COMMAND._params._tone_map._exposure @24 float
@@ -1335,6 +1389,8 @@ field APREND_COMMAND._params._tone_map._curve @28 APREND_TONE_CURVE
 field APREND_COMMAND._params._bloom._radius @32 float
 field APREND_COMMAND._params._draw_texture._border_color @32 float[4]
 field APREND_COMMAND._params._lit_ambient_occlusion._radius @32 float
+field APREND_COMMAND._params._lit_path_trace._albedo @32 aprend_texture_view
+field APREND_COMMAND._params._lit_shadow_mask._depth @32 aprend_texture_view
 field APREND_COMMAND._params._lit_sky._intensity @32 float
 field APREND_COMMAND._params._present_texture._border_color @32 float[4]
 field APREND_COMMAND._params._tone_map._encoding @32 APREND_COLOR_ENCODING
@@ -1342,20 +1398,33 @@ field APREND_COMMAND._params._bloom._intensity @36 float
 field APREND_COMMAND._params._lit_ambient_occlusion._intensity @36 float
 field APREND_COMMAND._params._lit_sky._ground_albedo @36 float[3]
 field APREND_COMMAND._params._bloom._levels @40 uint32_t
+field APREND_COMMAND._params._lit_path_trace._normal @40 aprend_texture_view
+field APREND_COMMAND._params._lit_shadow_mask._target @40 aprend_texture_view
 field APREND_COMMAND._params._outline._width @40 float
 field APREND_COMMAND._params._tone_map._auto_exposure @40 aprend_exposure
 field APREND_COMMAND._params._bloom._mask @48 aprend_texture_view
 field APREND_COMMAND._params._draw_texture._source_rect @48 APREND_TEXEL_RECT
+field APREND_COMMAND._params._lit_path_trace._samples @48 uint32_t
+field APREND_COMMAND._params._lit_shadow_mask._ray_count @48 uint32_t
 field APREND_COMMAND._params._lit_sky._model @48 APREND_LIT_SKY_MODEL
+field APREND_COMMAND._params._lit_path_trace._accumulated @52 uint32_t
+field APREND_COMMAND._params._lit_shadow_mask._filter_radius @52 uint32_t
 field APREND_COMMAND._params._begin_rendering._x @56 int32_t
 field APREND_COMMAND._params._bloom._lens_dirt @56 aprend_texture_view
+field APREND_COMMAND._params._lit_path_trace._seed @56 uint32_t
+field APREND_COMMAND._params._lit_shadow_mask._cull_mask @56 uint32_t
 field APREND_COMMAND._params._set_transient_index_buffer._index_size @56 uint32_t
 field APREND_COMMAND._params._set_transient_vertex_buffer._slot @56 uint32_t
 field APREND_COMMAND._params._begin_rendering._y @60 int32_t
+field APREND_COMMAND._params._lit_path_trace._max_bounces @60 uint32_t
+field APREND_COMMAND._params._lit_shadow_mask._normal_offset @60 float
 field APREND_COMMAND._params._begin_rendering._width @64 uint32_t
 field APREND_COMMAND._params._bloom._lens_dirt_intensity @64 float
 field APREND_COMMAND._params._draw_texture._target_rect @64 APREND_TEXEL_RECT
+field APREND_COMMAND._params._lit_path_trace._cull_mask @64 uint32_t
+field APREND_COMMAND._params._lit_shadow_mask._max_distance @64 float
 field APREND_COMMAND._params._begin_rendering._height @68 uint32_t
+field APREND_COMMAND._params._lit_path_trace._clamp @68 float
 field APREND_COMMAND._params._begin_rendering._timer @72 aprend_gpu_timer
 field APREND_COMMAND._params._begin_rendering._timer_slot @80 uint32_t
 struct APREND_COMPUTE_PASS_DESC size=56 align=8
@@ -1505,6 +1574,11 @@ field APREND_LIT_LIGHT.radiance @28 float[3]
 field APREND_LIT_LIGHT.range @40 float
 field APREND_LIT_LIGHT.inner_angle @44 float
 field APREND_LIT_LIGHT.outer_angle @48 float
+struct APREND_LIT_LIGHT_SHADOW size=32 align=8
+field APREND_LIT_LIGHT_SHADOW.base @0 APRI_STRUCT_BASE
+field APREND_LIT_LIGHT_SHADOW._kind @16 APREND_LIT_SHADOW_KIND
+field APREND_LIT_LIGHT_SHADOW._strength @20 float
+field APREND_LIT_LIGHT_SHADOW._mask @24 aprend_texture_view
 struct APREND_LIT_MATERIAL_VALUES size=144 align=8
 field APREND_LIT_MATERIAL_VALUES.base @0 APRI_STRUCT_BASE
 field APREND_LIT_MATERIAL_VALUES.base_color @16 float[4]
@@ -1578,6 +1652,12 @@ struct APREND_MATERIAL_UNIFORM size=16 align=8
 field APREND_MATERIAL_UNIFORM._layout @0 aprend_binding_layout
 field APREND_MATERIAL_UNIFORM._binding_index @8 uint32_t
 field APREND_MATERIAL_UNIFORM._member_index @12 uint32_t
+struct APREND_RAY_INSTANCE size=64 align=4
+field APREND_RAY_INSTANCE._transform @0 float[12]
+field APREND_RAY_INSTANCE._blas @48 uint32_t
+field APREND_RAY_INSTANCE._material_base @52 uint32_t
+field APREND_RAY_INSTANCE._mask @56 uint32_t
+field APREND_RAY_INSTANCE._reserved @60 uint32_t
 struct APREND_RENDER_PASS_DESC size=440 align=8
 field APREND_RENDER_PASS_DESC.base @0 APRI_STRUCT_BASE
 field APREND_RENDER_PASS_DESC._pipeline @16 aprend_graphics_pipeline
@@ -1712,6 +1792,16 @@ field APREND_TEXTURE_VIEW_DESC.base_mip @28 uint32_t
 field APREND_TEXTURE_VIEW_DESC.mip_count @32 uint32_t
 field APREND_TEXTURE_VIEW_DESC.base_layer @36 uint32_t
 field APREND_TEXTURE_VIEW_DESC.layer_count @40 uint32_t
+struct APREND_TLAS_DESC size=40 align=8
+field APREND_TLAS_DESC.base @0 APRI_STRUCT_BASE
+field APREND_TLAS_DESC._max_instances @16 uint32_t
+field APREND_TLAS_DESC._max_materials @20 uint32_t
+field APREND_TLAS_DESC._max_instance_sets @24 uint32_t
+field APREND_TLAS_DESC.debug_name @32 const char *
+struct APREND_TLAS_INFO size=32 align=8
+field APREND_TLAS_INFO.base @0 APRI_STRUCT_BASE_OUT
+field APREND_TLAS_INFO._storage_bytes @16 uint64_t
+field APREND_TLAS_INFO._sets_in_use @24 uint32_t
 struct APREND_TRANSIENT_SPAN size=48 align=8
 field APREND_TRANSIENT_SPAN.data @0 void *
 field APREND_TRANSIENT_SPAN.size @8 uint64_t
@@ -2087,9 +2177,12 @@ typedef APREND_BATCH_SPACE = enum APREND_BATCH_SPACE
 typedef APREND_BATCH_UNIT = enum APREND_BATCH_UNIT
 typedef APREND_BINDING_DESC = struct APREND_BINDING_DESC
 typedef APREND_BINDING_SET_ENTRY = struct APREND_BINDING_SET_ENTRY
+typedef APREND_BLAS_DESC = struct APREND_BLAS_DESC
+typedef APREND_BLAS_INFO = struct APREND_BLAS_INFO
 typedef APREND_BUFFER_DESC = struct APREND_BUFFER_DESC
 typedef APREND_BUFFER_USAGE = uint32_t
 typedef APREND_BUFFER_WRITES = uint32_t
+typedef APREND_BUILD_MODE = enum APREND_BUILD_MODE
 typedef APREND_COLOR_ENCODING = uint32_t
 typedef APREND_COLOR_TARGET = struct APREND_COLOR_TARGET
 typedef APREND_COMMAND = struct APREND_COMMAND
@@ -2115,11 +2208,13 @@ typedef APREND_LIT_CASCADE_FIT = struct APREND_LIT_CASCADE_FIT
 typedef APREND_LIT_ENVIRONMENT_DESC = struct APREND_LIT_ENVIRONMENT_DESC
 typedef APREND_LIT_INSTANCE = struct APREND_LIT_INSTANCE
 typedef APREND_LIT_LIGHT = struct APREND_LIT_LIGHT
+typedef APREND_LIT_LIGHT_SHADOW = struct APREND_LIT_LIGHT_SHADOW
 typedef APREND_LIT_LIGHT_TYPE = uint32_t
 typedef APREND_LIT_MAP = uint32_t
 typedef APREND_LIT_MATERIAL_VALUES = struct APREND_LIT_MATERIAL_VALUES
 typedef APREND_LIT_POINT_SHADOW = struct APREND_LIT_POINT_SHADOW
 typedef APREND_LIT_SHADER = uint32_t
+typedef APREND_LIT_SHADOW_KIND = enum APREND_LIT_SHADOW_KIND
 typedef APREND_LIT_SKY_MODEL = uint32_t
 typedef APREND_LIT_SPOT_SHADOW = struct APREND_LIT_SPOT_SHADOW
 typedef APREND_LIT_SUN = struct APREND_LIT_SUN
@@ -2128,6 +2223,7 @@ typedef APREND_LIT_VERTEX = struct APREND_LIT_VERTEX
 typedef APREND_LIT_VIEW = struct APREND_LIT_VIEW
 typedef APREND_MATERIAL_DESC = struct APREND_MATERIAL_DESC
 typedef APREND_MATERIAL_UNIFORM = struct APREND_MATERIAL_UNIFORM
+typedef APREND_RAY_INSTANCE = struct APREND_RAY_INSTANCE
 typedef APREND_RENDER_PASS_DESC = struct APREND_RENDER_PASS_DESC
 typedef APREND_RENDER_TARGET_POOL_INFO = struct APREND_RENDER_TARGET_POOL_INFO
 typedef APREND_SAMPLER_DESC = struct APREND_SAMPLER_DESC
@@ -2148,6 +2244,8 @@ typedef APREND_TEXTURE_VIEW_ASPECT = uint32_t
 typedef APREND_TEXTURE_VIEW_DESC = struct APREND_TEXTURE_VIEW_DESC
 typedef APREND_TEXTURE_VIEW_SHAPE = uint32_t
 typedef APREND_TEXTURE_VIEW_TYPE = uint32_t
+typedef APREND_TLAS_DESC = struct APREND_TLAS_DESC
+typedef APREND_TLAS_INFO = struct APREND_TLAS_INFO
 typedef APREND_TONE_CURVE = uint32_t
 typedef APREND_TRANSIENT_SPAN = struct APREND_TRANSIENT_SPAN
 typedef APREND_UNIFORM = struct APREND_UNIFORM
@@ -2225,6 +2323,7 @@ typedef apmath_poly = struct apmath_poly_t *
 typedef aprend_batch = struct aprend_batch_t *
 typedef aprend_binding_layout = struct aprend_binding_layout_t *
 typedef aprend_binding_set = struct aprend_binding_set_t *
+typedef aprend_blas = struct aprend_blas_t *
 typedef aprend_buffer = struct aprend_buffer_t *
 typedef aprend_command_list = struct aprend_command_list_t *
 typedef aprend_compute_pass = struct aprend_compute_pass_t *
@@ -2246,6 +2345,7 @@ typedef aprend_swap_chain = struct aprend_swap_chain_t *
 typedef aprend_texture2d = struct aprend_texture2d_t *
 typedef aprend_texture3d = struct aprend_texture3d_t *
 typedef aprend_texture_view = struct aprend_texture_view_t *
+typedef aprend_tlas = struct aprend_tlas_t *
 typedef aprend_vertex_pool = struct aprend_vertex_pool_t *
 typedef apsync_session = struct apsync_session_t *
 typedef aptext_atlas = struct aptext_atlas_t *

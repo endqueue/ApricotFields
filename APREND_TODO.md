@@ -3027,7 +3027,132 @@ Left:
       translated on the GPU, staged material tables, builds of one TLAS in
       the order sent), APREND_COMMAND_LIT_SHADOW_MASK and
       APREND_COMMAND_LIT_PATH_TRACE, and `aprend_lit_scene_set_light_shadow()`.
-      Built in Phase 7 of `prompts/ray_tracing.md`.
+      Built in Phase 7 of `prompts/ray_tracing.md`
+      (`prompts/ray_tracing_phase7.md`).
+      **Phase 7a, the contract: written 2026-10-31 on the ThinkPad**
+      (Windows 11, ThinkPad P1 Gen 5: Intel Iris Xe, NVIDIA RTX A2000, WARP
+      under D3D12). Against the draft, item by item:
+      - `include/render/aprendraytracing.h` (new, in `aprend.h`): the two
+        handles, `APREND_BLAS_DESC`, `aprend_blas_create`/`_destroy`/
+        `_get_slot`/`_get_info`, `APREND_BLAS_INFO`, `APREND_TLAS_DESC`,
+        `aprend_tlas_create`/`_destroy`, `APREND_RAY_INSTANCE` (frozen, 64
+        bytes, read back from the ABI at offsets 0/48/52/56/60),
+        `aprend_tlas_write_instances`, `_set_instance_count`,
+        `_set_materials`, `APREND_TLAS_INFO`, `aprend_tlas_get_info`: the
+        draft's fields, types and order, with Doxygen holding D1-D8 and
+        T1-T12 as rules the caller follows.
+      - `aprendcommands.h`: `APREND_BUILD_MODE` (`APRI_ENUM_BASE`, NONE 0
+        refused, BUILD 1, REFIT 2, COMPACT 3) and the four commands at
+        **41-44, not the draft's 40-43** (card A40, decided with the user:
+        DRAW_BATCH has been 40 since 2026-10-30), their params in the
+        draft's order; `aprend_command_list_send()`'s refusals,
+        `_compile()`'s and `_submit()`'s T5 refusal in their comments. The
+        handles are declared again there, beside the commands, as
+        `aprend_lit_scene` and `aprend_lit_environment` are.
+      - `aprendlit.h`: `APREND_LIT_SHADOW_KIND` (NONE 0 refused, MASK 1,
+        CASCADES 2 refused naming `aprend_lit_scene_set_sun_shadow()` until
+        A35), `APREND_LIT_LIGHT_SHADOW`, `aprend_lit_scene_set_light_shadow()`;
+        `aprend_lit_scene_set_sun_shadow()`'s comment (light 0's one shadow,
+        the last of the two calls wins); `aprend_lit_material_create()` and
+        `_set_values()` (the lit-material table, staged entries).
+      - `apricore.h`: struct types 5030-5034.
+      - `SPUDGPU_FEATURE_RAY_QUERY` is group 2 of item 39 (a call that needs
+        it names it and refuses without it, `APRESULT_UNSUPPORTED`); it is
+        not returned by `aprend_get_optional_gpu_features()`, which is
+        group 1.
+      - Where building found the draft wrong or incomplete, decided with the
+        user the same day: **A40** (the command values); **A41** (a path
+        trace reads a hit's vertices from an instance-wide geometry arena
+        each build and refit copies into, since HLSL can't load through a
+        buffer address and Metal has no bindless; T2's "storage usage"
+        requirement goes with it); **A42** (every BLAS vertex is an
+        `APREND_LIT_VERTEX`, 48 bytes, position first: T2's "its stride"
+        named a stride no buffer or mesh has).
+      - The ABI: `abi.txt` 100 lines added, none removed or changed.
+      - Every new call returns `APRESULT_NOT_IMPLEMENTED` after its leading
+        checks (null, destroyed, struct bases, out pointer, and
+        `APRESULT_UNSUPPORTED` without ray queries); the four commands are
+        refused at the send (`UNSUPPORTED` or `NOT_IMPLEMENTED`), which the
+        compile reports. The three changed calls behave as before.
+      - Tests (`../apricottests`, each pending until built):
+        `test_rt_shadow_mask` (the mask against cascades on the same scene;
+        the cull mask; set_light_shadow and set_sun_shadow each replacing
+        light 0's shadow; half strength; NULL; the penumbra wider for a disc
+        of 0.2, with and without a filter; the refusals),
+        `test_rt_path_trace` (the furnace; an emissive square against
+        Lambert's polygon formula; the guides; determinism; 8 steps of 1
+        against 1 of 8, and 1024 samples against the formula; a
+        two-geometry BLAS), `test_rt_instance_sets` (partial writes carried
+        over; a write after a sent build; staged material values read by the
+        frame in flight and the next; the emitter table's reuse by the same
+        bits; every set in use refused), `test_rt_build_order` (T5),
+        `test_rt_blas_life` (refit; compaction's sizes and the same shadow,
+        a set carried over from before it, a rebuild full size; a reused
+        slot refused naming the record), `test_rt_materials` (T7's NULL
+        entries naming the instance; values changed; another layout and a
+        destroyed material refused), `test_rt_refusals` (every refusal of
+        the new calls and commands, in the header's order),
+        `test_rt_unsupported` (a device without the feature: every call and
+        command refused naming it), `test_frame_allocations`' ray-traced
+        frame (asserted zero), and two factories for
+        `test_destroyed_handles`. Each new call's forbidden overlap: nine
+        cases in `tests/aprioverlap_tests.cpp`, all reported in Debug.
+      - Run, Debug, D3D12: pending on the RTX A2000 and WARP; refused as
+        designed on the Iris Xe and on every adapter's device with no
+        optional features; every run passing.
+        Runs (Windows 11, ThinkPad P1 Gen 5, MSVC 14.51, Vulkan SDK 1.4.363.0):
+        ApricotFields `apricotfields-windows-d3d12` and `-vulkan`, Debug and
+        Release, 36 ctests each, passing; `apri_misuse_tests` ten times in
+        Debug, passing; `aprioverlap_tests`' nine new cases reported.
+        apricottests, Debug, every test passing: D3D12 on the Iris Xe, the
+        RTX A2000 and WARP under the debug layer, silent, and once each under
+        GPU-based validation (the A2000 and WARP silent; the Iris Xe's 26
+        `[942]`, as on 2026-10-30, the validator's); Vulkan on the Iris Xe
+        and the RTX A2000 under the validation layer, synchronization
+        validation and GPU-assisted validation, silent but GPU-AV's notices
+        of its own settings. The ray tracing tests pending on the A2000 and
+        WARP, refused as designed on the Iris Xe and every bare device.
+        trellislib (`trellislib-windows-d3d12`, `-vulkan`, Debug, 47 ctests)
+        and Latran (`latran-windows-d3d12`, `-vulkan`, Debug, 66 ctests),
+        passing. `check.sh`: clean but `dep-locks` (trellis's and latran's
+        locks name the commits before Phases 1-6; `--update-locks` waits for
+        this phase's commit) and the two this machine can't run
+        (`mutable-globals`, `doxygen`). Not run this phase: the `-asan`
+        presets (no ApricotFields code path ran but the stubs). Metal and
+        Linux not built; ThreadSanitizer hasn't seen it.
+      **Phase 7b, the implementation: not started.** What reading the code
+      for it found, none of it a change to the draft's contract:
+      - Aprend's binding machinery has no acceleration structure
+        descriptor: `APREND_DESCRIPTOR_TYPE_COUNT` ends at
+        `SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE`, and the SPIR-V reflection
+        (`aprendreflect.cpp`) knows no `OpTypeAccelerationStructureKHR`. The
+        mask, the instance writer's neighbours and the path tracer bind a
+        TLAS, so the binding layout, set, pool budget and reflection take
+        `SPUDGPU_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE` first (refused, as
+        SpudGPU refuses it, on a device without ray queries).
+      - Vertex and index buffers need `SPUDGPU_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT`
+        (card S23 allows it on every device) and, for A41's arena copy,
+        `_TRANSFER_SRC`, added in `aprend_buffer_spud_usage()`; a build
+        moves them from their use state to BUILD_INPUT and back, as the
+        list's multi-state buffers are moved.
+      - The barriers and layout tracking a traced command needs
+        (`aprend_cmd_transition_view`, `aprend_cmd_ready_set_resources`)
+        are static in `aprendcommands.cpp`: the four commands' compile
+        functions live there, beside LIT_CULL_LIGHTS's, calling into
+        `aprendraytracing.cpp` for the tables and structures.
+      - T6's seal check and D6's residency need the slots a set names
+        *now*, which a bitset set by writes alone can't give once a record
+        is overwritten or a BLAS destroyed: the TLAS keeps a CPU copy of
+        its records (a second memcpy of the range) and a count of records
+        naming each slot, within `_instance_count`, kept by writes and
+        count changes; the seal copies the live bitset (count > 0) into the
+        set's. T7's check keeps, per mask bit, a count of records whose
+        range reaches a NULL entry, rebuilt when an entry's NULL-ness
+        changes.
+      - A sealed set is free once the submission that built from it has
+        completed (the instance's frame fence), read at the next write,
+        seal or info, so a caller who waits for its work (a readback) need
+        not turn the frame; `_sets_in_use` counts by the same rule.
       **Directional lights (card A35, decided 2026-10-31 with the user,
       option b; not built):** the sun becomes a light type. The lit scene's
       lights gain directional ones, up to a fixed count (Hazel's 4 the
@@ -3039,8 +3164,8 @@ Left:
       moon); nothing in Aprend is the sun. `APREND_LIT_SUN`,
       `aprend_lit_scene_set_sun`, `_set_sun_shadow` and
       `aprend_lit_fit_sun_cascades` become their per-light forms, and every
-      caller changes in the same change (Aprend's tests, trellislib,
-      Latran). Lights stay data; passes are commands naming the lights they
+      caller changes in the same change (Aprend's tests among them).
+      Lights stay data; passes are commands naming the lights they
       act on (no engine records lights as commands: Unreal, Unity, Godot,
       Filament, Bevy and Hazel keep them as scene data). The ray tracing
       commands are written per light from the start

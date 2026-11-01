@@ -22,5 +22,6 @@
 #include "render/aprendlit.h"
 #include "render/aprendpost.h"
 #include "render/aprendbatch.h"
+#include "render/aprendraytracing.h"
 
 #endif // APREND_H

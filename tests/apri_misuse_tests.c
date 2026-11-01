@@ -8,7 +8,7 @@
 //
 // Handle types with no factory, not called with a destroyed handle:
 // - An Aprend handle needs a GPU device, which these tests never make; apricottests/tests/aprend_gpu_tests.c, test_destroyed_handles, calls these.
-//   Not covered: aprend_batch, aprend_binding_layout, aprend_binding_set, aprend_buffer, aprend_command_list, aprend_compute_pass, aprend_compute_pipeline, aprend_draw_list, aprend_exposure, aprend_framebuffer, aprend_gpu_timer, aprend_graphics_pipeline, aprend_index_pool, aprend_instance, aprend_lit_environment, aprend_lit_scene, aprend_material, aprend_render_pass, aprend_sampler, aprend_shader, aprend_swap_chain, aprend_texture2d, aprend_texture3d, aprend_texture_view, aprend_vertex_pool.
+//   Not covered: aprend_batch, aprend_binding_layout, aprend_binding_set, aprend_blas, aprend_buffer, aprend_command_list, aprend_compute_pass, aprend_compute_pipeline, aprend_draw_list, aprend_exposure, aprend_framebuffer, aprend_gpu_timer, aprend_graphics_pipeline, aprend_index_pool, aprend_instance, aprend_lit_environment, aprend_lit_scene, aprend_material, aprend_render_pass, aprend_sampler, aprend_shader, aprend_swap_chain, aprend_texture2d, aprend_texture3d, aprend_texture_view, aprend_tlas, aprend_vertex_pool.
 
 #include "aprend.h"
 #include "archive/aparchive.h"
@@ -1385,6 +1385,14 @@ int main(void)
     calls++;
     expect_error("aprend_binding_set_update", aprend_binding_set_update((aprend_binding_set){0}, (const APREND_BINDING_SET_ENTRY *){0}, (uint32_t){0}, (APREND_ERROR *){0}));
     calls++;
+    expect_error("aprend_blas_create", aprend_blas_create((aprend_instance){0}, (const APREND_BLAS_DESC *){0}, (aprend_blas *){0}, (APREND_ERROR *){0}));
+    calls++;
+    aprend_blas_destroy((aprend_blas){0});
+    calls++;
+    expect_error("aprend_blas_get_info", aprend_blas_get_info((aprend_blas){0}, (APREND_BLAS_INFO *){0}, (APREND_ERROR *){0}));
+    calls++;
+    (void)aprend_blas_get_slot((aprend_blas){0});
+    calls++;
     (void)aprend_blend_additive();
     calls++;
     (void)aprend_blend_alpha();
@@ -1555,6 +1563,8 @@ int main(void)
     calls++;
     expect_error("aprend_lit_scene_set_bent_normals", aprend_lit_scene_set_bent_normals((aprend_lit_scene){0}, (_Bool){0}, (APREND_ERROR *){0}));
     calls++;
+    expect_error("aprend_lit_scene_set_light_shadow", aprend_lit_scene_set_light_shadow((aprend_lit_scene){0}, (uint32_t){0}, (const APREND_LIT_LIGHT_SHADOW *){0}, (APREND_ERROR *){0}));
+    calls++;
     expect_error("aprend_lit_scene_set_lights", aprend_lit_scene_set_lights((aprend_lit_scene){0}, (const APREND_LIT_LIGHT *){0}, (uint32_t){0}, (APREND_ERROR *){0}));
     calls++;
     expect_error("aprend_lit_scene_set_point_shadows", aprend_lit_scene_set_point_shadows((aprend_lit_scene){0}, (aprend_texture_view){0}, (const APREND_LIT_POINT_SHADOW *){0}, (uint32_t){0}, (_Bool){0}, (APREND_ERROR *){0}));
@@ -1686,6 +1696,18 @@ int main(void)
     (void)aprend_texture_view_get_texture2d((aprend_texture_view){0});
     calls++;
     (void)aprend_texture_view_get_type((aprend_texture_view){0});
+    calls++;
+    expect_error("aprend_tlas_create", aprend_tlas_create((aprend_instance){0}, (const APREND_TLAS_DESC *){0}, (aprend_tlas *){0}, (APREND_ERROR *){0}));
+    calls++;
+    aprend_tlas_destroy((aprend_tlas){0});
+    calls++;
+    expect_error("aprend_tlas_get_info", aprend_tlas_get_info((aprend_tlas){0}, (APREND_TLAS_INFO *){0}, (APREND_ERROR *){0}));
+    calls++;
+    expect_error("aprend_tlas_set_instance_count", aprend_tlas_set_instance_count((aprend_tlas){0}, (uint32_t){0}, (APREND_ERROR *){0}));
+    calls++;
+    expect_error("aprend_tlas_set_materials", aprend_tlas_set_materials((aprend_tlas){0}, (uint32_t){0}, (const aprend_material *){0}, (uint32_t){0}, (APREND_ERROR *){0}));
+    calls++;
+    expect_error("aprend_tlas_write_instances", aprend_tlas_write_instances((aprend_tlas){0}, (uint32_t){0}, (const APREND_RAY_INSTANCE *){0}, (uint32_t){0}, (APREND_ERROR *){0}));
     calls++;
     expect_error("aprend_transient_allocate", aprend_transient_allocate((aprend_instance){0}, (uint64_t){0}, (uint64_t){0}, (APREND_TRANSIENT_SPAN *){0}, (APREND_ERROR *){0}));
     calls++;

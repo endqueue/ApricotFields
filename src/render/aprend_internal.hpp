@@ -85,6 +85,14 @@ static inline APRESULT aprend_base_check(APREND_ERROR *error, const char *name, 
 	return aprend_fail(error, result, "%s %s", name, apri_struct_check_message(result));
 }
 
+/* As aprend_base_check, for a struct Aprend fills in (APRI_STRUCT_BASE_OUT). */
+static inline APRESULT aprend_base_out_check(APREND_ERROR *error, const char *name, const APRI_STRUCT_BASE_OUT *base, APRI_STRUCT_TYPE type) {
+	const APRESULT result = apri_struct_out_check(base, type);
+	if (result == APRESULT_OK)
+		return APRESULT_OK;
+	return aprend_fail(error, result, "%s %s", name, apri_struct_check_message(result));
+}
+
 /* ============================================================
    GLM conversion helpers
    Reinterpret-cast is valid because Apri### structs are laid out

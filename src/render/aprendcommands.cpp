@@ -3,6 +3,7 @@
 #include "aprendbatch_internal.hpp"
 #include "aprendimages_internal.hpp"
 #include "aprendlit_internal.hpp"
+#include "aprendraytracing_internal.hpp"
 
 #include <cmath>
 #include <cstdarg>
@@ -489,6 +490,20 @@ static void aprend_send_command_recorded(
 		has_copy    = true;
 		return (void *)(cmd_list->side_bytes.data() + copy_offset);
 	};
+
+	// Ray tracing's commands (aprendraytracing.h): every one needs ray
+	// queries, refused before anything else.
+	if (cmd._type == APREND_COMMAND_BUILD_BLAS || cmd._type == APREND_COMMAND_BUILD_TLAS || cmd._type == APREND_COMMAND_LIT_SHADOW_MASK ||
+	    cmd._type == APREND_COMMAND_LIT_PATH_TRACE) {
+		if (!(cmd_list->instance->features & SPUDGPU_FEATURE_RAY_QUERY)) {
+			aprend_cmd_report(cmd_list, APRESULT_UNSUPPORTED, "%s: the device was not created with SPUDGPU_FEATURE_RAY_QUERY", aprend_rt_command_name(cmd._type));
+			cmd_list->recording_error = true;
+			return;
+		}
+		aprend_cmd_report(cmd_list, APRESULT_NOT_IMPLEMENTED, "%s is not implemented yet", aprend_rt_command_name(cmd._type));
+		cmd_list->recording_error = true;
+		return;
+	}
 
 	// The three commands that stand for others are expanded into them here,
 	// from the pass or list as it is now, and are not recorded themselves.

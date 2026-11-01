@@ -1840,6 +1840,23 @@ APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LI
 	return APRESULT_OK;
 }
 
+APRESULT aprend_lit_scene_set_light_shadow(aprend_lit_scene scene, uint32_t light, const APREND_LIT_LIGHT_SHADOW *shadow,
+                                           APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_light_shadow", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_light_shadow");
+	if (light != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light %u names no directional light: the scene has one, light 0 (the sun), until card A35", light);
+	if (shadow) {
+		if (const APRESULT base = aprend_base_check(out_error, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW))
+			return base;
+	}
+	return aprend_fail(out_error, APRESULT_NOT_IMPLEMENTED, "aprend_lit_scene_set_light_shadow is not implemented yet");
+}
+
 APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LIGHT *lights, uint32_t count, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	if (!scene)
