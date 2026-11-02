@@ -1,13 +1,19 @@
-// Headless tests for Aprend's SPIR-V reflection (src/render/aprendreflect.cpp)
-// and for writing a block member where the reflection lays it out.
+// Headless tests for Aprend's reflection and for writing a block member
+// where the reflection lays it out.
 //
-// A shader needs a device; its reflection doesn't. This test reflects SPIR-V
-// compiled ahead of time (tests/aprendreflect_tests_spirv.h, with the GLSL
-// beside each) through the internal header, as aprendranges_tests does with
-// the pools' range list. What the pipelines and layouts do with the
-// reflection needs a device and isn't tested here.
+// A shader needs a device; its reflection doesn't. The reflection is made at
+// build time (tools/aprend_reflect, card X18) and read by the library from
+// the package's table (src/render/aprendreflect_table.cpp). This test builds
+// the tool's reflection and table writer in, reflects SPIR-V compiled ahead
+// of time (tests/aprendreflect_tests_spirv.h, with the GLSL beside each),
+// writes each table and reads it back through the library's reader, and
+// checks the view read back is the one reflected, field for field, before
+// every case checks it. It also checks the tables the build wrote for
+// Aprend's own shaders are the writer's, byte for byte, and every refusal
+// of the reader, the table cut at every length. What the pipelines and
+// layouts do with the reflection needs a device and isn't tested here.
 
-#include "aprendreflect_internal.hpp"
+#include "aprend_reflect_tool.hpp"
 #include "aprendreflect_tests_spirv.h"
 // Aprend's own shaders as its build compiles them with Slang
 // (cmake/aprend_slang.cmake), for what reflection reads differently there.
@@ -16,6 +22,13 @@
 #include "aprend_lit_cull_comp.spv.inc"
 #include "aprend_lit_frag.spv.inc"
 #include "aprend_lit_vert.spv.inc"
+// The tables the build wrote for them (cmake/aprend_slang.cmake).
+#include "aprend_exposure_adapt_histogram_frag.reflection.inc"
+#include "aprend_exposure_histogram_comp.reflection.inc"
+#include "aprend_lit_cull_comp.reflection.inc"
+#include "aprend_lit_frag.reflection.inc"
+#include "aprend_lit_vert.reflection.inc"
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,10 +48,77 @@ static const char *current_test = "";
 
 // ---- Helpers ------------------------------------------------------------------
 
+static bool same_string(const char *a, const char *b)
+{
+    return (!a && !b) || (a && b && strcmp(a, b) == 0);
+}
+
+// [read], read back from its table, is [reflected], field for field.
+static void check_same(const aprend_reflection_store &reflected, const aprend_reflection_store &read)
+{
+    const APREND_SHADER_REFLECTION &a = reflected.view;
+    const APREND_SHADER_REFLECTION &b = read.view;
+    CHECK(a.stage == b.stage);
+    CHECK(same_string(a.entry_point, b.entry_point));
+    CHECK(a.has_push_constants == b.has_push_constants);
+    CHECK(same_string(a.push_constant_name, b.push_constant_name));
+    CHECK(a.push_constant_begin == b.push_constant_begin && a.push_constant_end == b.push_constant_end);
+    CHECK(a.push_constant_first_member == b.push_constant_first_member && a.push_constant_member_count == b.push_constant_member_count);
+    CHECK(a.color_output_count == b.color_output_count);
+    CHECK(memcmp(a.workgroup_size, b.workgroup_size, sizeof(a.workgroup_size)) == 0);
+    CHECK(a.resource_count == b.resource_count && a.member_count == b.member_count && a.input_count == b.input_count);
+    for (uint32_t i = 0; i < a.resource_count && i < b.resource_count; ++i)
+    {
+        const APREND_SHADER_RESOURCE &x = a.resources[i];
+        const APREND_SHADER_RESOURCE &y = b.resources[i];
+        CHECK(same_string(x.name, y.name) && same_string(x.block_name, y.block_name));
+        CHECK(x.set == y.set && x.binding == y.binding && x.type == y.type && x.count == y.count);
+        CHECK(x.block_size == y.block_size && x.runtime_array_stride == y.runtime_array_stride);
+        CHECK(x.first_member == y.first_member && x.member_count == y.member_count);
+        CHECK(x.image_shape == y.image_shape && x.image_scalar_type == y.image_scalar_type);
+        CHECK(x.image_depth_compare == y.image_depth_compare && x.read_only == y.read_only && x.used == y.used);
+    }
+    for (uint32_t i = 0; i < a.member_count && i < b.member_count; ++i)
+    {
+        const APREND_SHADER_MEMBER &x = a.members[i];
+        const APREND_SHADER_MEMBER &y = b.members[i];
+        CHECK(same_string(x.name, y.name) && x.type == y.type && x.offset == y.offset && x.size == y.size);
+        CHECK(x.array_count == y.array_count && x.array_stride == y.array_stride && x.matrix_stride == y.matrix_stride);
+        CHECK(x.row_major == y.row_major && x.used == y.used);
+    }
+    for (uint32_t i = 0; i < a.input_count && i < b.input_count; ++i)
+    {
+        const APREND_SHADER_INPUT &x = a.inputs[i];
+        const APREND_SHADER_INPUT &y = b.inputs[i];
+        CHECK(same_string(x.name, y.name) && x.location == y.location && x.location_count == y.location_count);
+        CHECK(x.scalar_type == y.scalar_type && x.components == y.components && x.used == y.used);
+    }
+    CHECK(reflected.storage_formats.size() == read.storage_formats.size());
+    for (size_t i = 0; i < reflected.storage_formats.size() && i < read.storage_formats.size(); ++i)
+        CHECK(reflected.storage_formats[i].set == read.storage_formats[i].set &&
+              reflected.storage_formats[i].binding == read.storage_formats[i].binding &&
+              reflected.storage_formats[i].format == read.storage_formats[i].format);
+    CHECK(reflected.output_types == read.output_types);
+}
+
+// [words] reflected as the tool does, written as its table and read back
+// into [out] as aprend_shader_create() does, the two views compared field
+// for field. False, with [error], where the tool would refuse the SPIR-V.
 template <size_t N>
 static bool reflect(const uint32_t (&words)[N], SPUDGPU_SHADER_STAGE stage, aprend_reflection_store *out, std::string *error)
 {
-    return aprend_reflect_spirv(words, N, stage, out, error);
+    aprend_reflection_store reflected;
+    if (!aprend_reflect_spirv(words, N, stage, &reflected, error))
+        return false;
+    std::vector<uint8_t> table;
+    CHECK(aprend_reflect_table_write(reflected, &table, error));
+    const char *entry_point = reflected.view.entry_point ? reflected.view.entry_point : "";
+    const APRESULT result = aprend_reflect_table_read(table.data(), table.size(), stage, entry_point, out, error);
+    CHECK(result == APRESULT_OK);
+    if (result != APRESULT_OK)
+        return false;
+    check_same(reflected, *out);
+    return true;
 }
 
 static const APREND_SHADER_RESOURCE *find_resource(const aprend_reflection_store &store, const char *name)
@@ -386,6 +466,96 @@ static void test_type_sizes()
     CHECK(aprend_uniform_type_columns(APREND_UNIFORM_TYPE_VEC4) == 1);
 }
 
+// The tables the build wrote for Aprend's own shaders (tools/aprend_reflect,
+// through cmake/aprend_slang.cmake) are the writer's, byte for byte.
+static void test_tool_output()
+{
+    current_test = "test_tool_output";
+    struct shader
+    {
+        const uint32_t *spirv;
+        size_t words;
+        SPUDGPU_SHADER_STAGE stage;
+        const uint32_t *table;
+        uint64_t table_size;
+    } shaders[5] = {
+        {aprend_lit_frag_spirv, sizeof(aprend_lit_frag_spirv) / 4, SPUDGPU_SHADER_STAGE_FRAGMENT, aprend_lit_frag_reflection, aprend_lit_frag_reflection_size},
+        {aprend_lit_vert_spirv, sizeof(aprend_lit_vert_spirv) / 4, SPUDGPU_SHADER_STAGE_VERTEX, aprend_lit_vert_reflection, aprend_lit_vert_reflection_size},
+        {aprend_lit_cull_comp_spirv, sizeof(aprend_lit_cull_comp_spirv) / 4, SPUDGPU_SHADER_STAGE_COMPUTE, aprend_lit_cull_comp_reflection,
+         aprend_lit_cull_comp_reflection_size},
+        {aprend_exposure_histogram_comp_spirv, sizeof(aprend_exposure_histogram_comp_spirv) / 4, SPUDGPU_SHADER_STAGE_COMPUTE,
+         aprend_exposure_histogram_comp_reflection, aprend_exposure_histogram_comp_reflection_size},
+        {aprend_exposure_adapt_histogram_frag_spirv, sizeof(aprend_exposure_adapt_histogram_frag_spirv) / 4, SPUDGPU_SHADER_STAGE_FRAGMENT,
+         aprend_exposure_adapt_histogram_frag_reflection, aprend_exposure_adapt_histogram_frag_reflection_size},
+    };
+    for (const shader &sh : shaders)
+    {
+        aprend_reflection_store store;
+        std::string error;
+        std::vector<uint8_t> table;
+        CHECK(aprend_reflect_spirv(sh.spirv, sh.words, sh.stage, &store, &error));
+        CHECK(aprend_reflect_table_write(store, &table, &error));
+        CHECK(table.size() == sh.table_size && memcmp(table.data(), sh.table, table.size()) == 0);
+    }
+}
+
+// The reader's refusals (aprend_reflect_table_read), each with its code, and
+// a table cut at every length, in a buffer of exactly that length, so a
+// read past its end is an AddressSanitizer report.
+static void test_table_refusals()
+{
+    current_test = "test_table_refusals";
+    const uint8_t *good = (const uint8_t *)aprend_lit_frag_reflection;
+    const size_t size = (size_t)aprend_lit_frag_reflection_size;
+    const char *entry = "aprend_lit_frag";
+    std::vector<uint8_t> bytes(good, good + size);
+    aprend_reflect_table_header header;
+    memcpy(&header, good, sizeof(header));
+    auto read = [&](const std::vector<uint8_t> &table, SPUDGPU_SHADER_STAGE stage, const char *entry_point) {
+        aprend_reflection_store store;
+        std::string error;
+        const APRESULT result = aprend_reflect_table_read(table.data(), table.size(), stage, entry_point, &store, &error);
+        CHECK(result == APRESULT_OK || !error.empty());
+        return result;
+    };
+    CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_OK);
+    CHECK(read(bytes, SPUDGPU_SHADER_STAGE_VERTEX, entry) == APRESULT_CORRUPT_DATA);
+    CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, "aprend_other_frag") == APRESULT_CORRUPT_DATA);
+    bytes[0] ^= 1u;
+    CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_CORRUPT_DATA);
+    bytes.assign(good, good + size);
+    bytes[4] += 1u;
+    CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_APREND_REFLECTION_MISMATCH);
+    // Every string unterminated: the string area filled.
+    bytes.assign(good, good + size);
+    memset(bytes.data() + header.string_offset, 'x', header.string_size);
+    CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_CORRUPT_DATA);
+    // A resource's members past the members, and its block's first member past its block.
+    bytes.assign(good, good + size);
+    {
+        aprend_reflect_table_resource resource;
+        memcpy(&resource, good + header.resource_offset, sizeof(resource));
+        resource.first_member = header.member_count;
+        memcpy(bytes.data() + header.resource_offset, &resource, sizeof(resource));
+        CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_CORRUPT_DATA);
+    }
+    // Cut at every length: the stated size made the cut's, so the parts'
+    // bounds are what refuse it, never a read past the end.
+    uint32_t refused = 0;
+    for (size_t cut = 0; cut < size; ++cut)
+    {
+        std::vector<uint8_t> cut_table(good, good + cut);
+        if (cut >= sizeof(header))
+        {
+            const uint32_t stated = (uint32_t)cut;
+            memcpy(cut_table.data() + offsetof(aprend_reflect_table_header, size), &stated, sizeof(stated));
+        }
+        refused += read(cut_table, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_CORRUPT_DATA;
+    }
+    CHECK(refused == size);
+    printf("aprendreflect_tests: a %zu-byte table cut at every length: %u refused, none read past its end\n", size, refused);
+}
+
 int main()
 {
     test_vertex_shader();
@@ -397,6 +567,8 @@ int main()
     test_write_member();
     test_slang_shaders();
     test_type_sizes();
+    test_tool_output();
+    test_table_refusals();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);

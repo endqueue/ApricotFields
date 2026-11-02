@@ -284,34 +284,20 @@ static APRESULT aprend_shader_stage_feature_ok(aprend_instance instance, SPUDGPU
 	return APRESULT_OK;
 }
 
-// Reflects [size] bytes of SPIR-V into [shader]'s reflection.
-// APRESULT_INVALID_ARGUMENT, [error] saying why, if it can't be. [code] is
-// the caller's and may not be aligned to 4, so the words are read through a
-// copy where it isn't.
-static APRESULT aprend_shader_reflect(
+// [package]'s reflection table into [shader]'s reflection, the whole table
+// checked first (aprend_reflect_table_read): its code, and [error] saying
+// why the table can't be read.
+static APRESULT aprend_shader_read_reflection(
     aprend_shader_t *shader,
-    const void *code,
-    uint64_t size,
-    SPUDGPU_SHADER_STAGE shader_stage,
+    const APREND_SHADER_PACKAGE *package,
     APREND_ERROR *error) {
 	std::string why;
-	bool ok = false;
-	try {
-		if (((uintptr_t)code % alignof(uint32_t)) == 0) {
-			ok = aprend_reflect_spirv((const uint32_t *)code, (size_t)(size / 4), shader_stage, &shader->reflection, &why);
-		} else {
-			uint32_t *words = (uint32_t *)malloc(size);
-			if (!words)
-				return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory for a copy of the SPIR-V");
-			memcpy(words, code, size);
-			ok = aprend_reflect_spirv(words, (size_t)(size / 4), shader_stage, &shader->reflection, &why);
-			free(words);
-		}
-	} catch (const std::bad_alloc &) {
-		return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory to reflect the shader");
-	}
-	if (!ok)
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the shader can't be reflected: %s", why.c_str());
+	const APRESULT result =
+	    aprend_reflect_table_read(package->reflection, package->reflection_size, package->stage, package->entry_point, &shader->reflection, &why);
+	if (result == APRESULT_OUT_OF_MEMORY)
+		return aprend_fail(error, result, "no memory to read the shader's reflection");
+	if (result != APRESULT_OK)
+		return aprend_fail(error, result, "the shader's reflection can't be read: %s", why.c_str());
 	return APRESULT_OK;
 }
 
@@ -709,9 +695,9 @@ static const char *aprend_shader_format_name(SPUDGPU_SHADER_FORMAT format) {
 	}
 }
 
-/* A shader from [package], checked by the caller: its SPIR-V reflected
- * first, so code that can't be read isn't handed to the device, then its
- * module made from the device's format and its destroy's retire
+/* A shader from [package], checked by the caller: its reflection read
+ * first, so a package whose table can't be read isn't handed to the device,
+ * then its module made from the device's format and its destroy's retire
  * promised. */
 static APRESULT aprend_shader_make(
     aprend_instance instance,
@@ -726,7 +712,7 @@ static APRESULT aprend_shader_make(
 		return aprend_fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the shader");
 	APREND_CONSTRUCT__T(result, aprend_shader_t);
 	result->instance = instance;
-	if (const APRESULT reflected = aprend_shader_reflect(result, package->spirv, package->spirv_size, package->stage, error)) {
+	if (const APRESULT reflected = aprend_shader_read_reflection(result, package, error)) {
 		APREND_DESTRUCT__T(result, aprend_shader_t);
 		return reflected;
 	}
@@ -740,7 +726,7 @@ static APRESULT aprend_shader_make(
 				continue;
 			APREND_DESTRUCT__T(result, aprend_shader_t);
 			return aprend_fail(error, APRESULT_INVALID_ARGUMENT,
-			                   "the shader can't be reflected: the entry point uses \"%s\", an acceleration structure, which Aprend has no binding for",
+			                   "the entry point uses \"%s\", an acceleration structure, which Aprend has no binding for",
 			                   resource.name ? resource.name : "");
 		}
 	}
@@ -805,10 +791,11 @@ static APRESULT aprend_shader_create_from(
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->entry_point is NULL");
 	if (!package->entry_point[0])
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->entry_point is empty");
-	if (!package->spirv)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv is NULL");
-	if (package->spirv_size == 0)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv_size is 0");
+	if (!package->spirv && package->spirv_size != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv is NULL with a spirv_size of %llu",
+		                   (unsigned long long)package->spirv_size);
+	if (package->spirv && package->spirv_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv is given with a spirv_size of 0");
 	if (package->spirv_size % 4 != 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->spirv_size %llu is not a multiple of 4",
 		                   (unsigned long long)package->spirv_size);
@@ -825,6 +812,13 @@ static APRESULT aprend_shader_create_from(
 		                   (unsigned long long)package->metallib_size);
 	if (package->metallib && package->metallib_size == 0)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->metallib is given with a metallib_size of 0");
+	if (!package->reflection)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->reflection is NULL");
+	if (package->reflection_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->reflection_size is 0");
+	if (package->reflection_size % 4 != 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "package->reflection_size %llu is not a multiple of 4",
+		                   (unsigned long long)package->reflection_size);
 
 	// The device's own format: the SPIR-V on Vulkan, the DXIL on D3D12, the
 	// .metallib on Metal.

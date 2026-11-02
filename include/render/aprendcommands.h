@@ -1684,7 +1684,9 @@ void aprend_command_list_send(
  *           inside a pass; a REFIT of a BLAS never built, by a build that
  *           has completed or one earlier in the list; a COMPACT of a BLAS
  *           whose compacted size isn't known yet, or already compacted; a
- *           trace of a TLAS never built; a LIT_SHADOW_MASK whose depth has
+ *           trace of a TLAS never built; a BUILD_TLAS whose list was
+ *           submitted since it was sent (sent again, it seals the next
+ *           set); a LIT_SHADOW_MASK whose depth has
  *           nothing in it or whose scene's view has no target size of the
  *           depth's or a view_projection that can't be inverted; a
  *           LIT_PATH_TRACE whose `_cull_mask` lets in an instance that

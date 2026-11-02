@@ -8,8 +8,10 @@
 // map reads. Unreal's eye adaptation measures between its low and high
 // percent the same way.
 
+// Set 0 is the histogram's (aprend_exposure_histogram_comp.slang), declared
+// as its layout holds it: the luminance texture, which only that shader
+// reads, and the bins.
 [[vk::binding(0, 0)]] Texture2D<float4> luminance : register(t0, space0);
-[[vk::binding(1, 0)]] SamplerState luminance_sampler : register(s1, space0);
 // 64 bins, a uint each. Raw (byte addressed), as SpudGPU's D3D12 backend
 // views every storage buffer; read only here, and declared `readonly`
 // (NonWritable), as Vulkan requires of a fragment shader's storage buffer

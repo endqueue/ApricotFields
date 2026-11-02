@@ -7,10 +7,12 @@
 import aprend_lit_scene;
 import aprend_lit_cull;
 
-// The view's depth: a depth view's environment set (a texture and a sampler,
-// aprendlit_internal.hpp).
+// The view's depth, loaded: the depth view's culling set
+// (aprend_texture_view_cull_depth_set, aprendlit_internal.hpp), a texture
+// alone, as its layout, made from this shader, holds it. A module declares
+// its set's layout exactly (spudgpu_shader_module_desc, "Every binding of a
+// set"), so no sampler.
 [[vk::binding(0, 1)]] Texture2D<float4> tile_depth : register(t0, space1);
-[[vk::binding(1, 1)]] SamplerState tile_depth_sampler : register(s1, space1);
 
 // One invocation a tile.
 [shader("compute")]

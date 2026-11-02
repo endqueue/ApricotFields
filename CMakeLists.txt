@@ -40,6 +40,8 @@ add_library(ApricotFields STATIC
         src/render/aprendpass.cpp
         src/render/aprendreflect_internal.hpp
         src/render/aprendreflect.cpp
+        src/render/aprendreflect_table.hpp
+        src/render/aprendreflect_table.cpp
         src/render/aprendpipeline.cpp
         src/render/aprendswapchain.cpp
         src/render/aprendtransient_internal.hpp
@@ -165,33 +167,6 @@ function(declare_vendored_or_fetch_sources name dir repo tag probe)
     FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}" GIT_SHALLOW TRUE
             SOURCE_SUBDIR sources-only-not-a-directory)
 endfunction()
-
-# SPIRV-Cross - SPIR-V reflection for Aprend's shaders
-# (src/render/aprendreflect.cpp): only its core, which reads SPIR-V and
-# writes nothing. SpudLib already builds it for its spudgpu_msl tool (card
-# S20), which the shader build step runs, wherever it isn't cross-compiling;
-# where it hasn't, it is built here from the same tag. Its core API is the
-# same in both.
-if (NOT TARGET spirv-cross-core)
-    include(FetchContent)
-    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_GLSL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
-    set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
-    declare_vendored_or_fetch(spirv_cross SPIRV-Cross
-            https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
-    set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
-    FetchContent_MakeAvailable(spirv_cross)
-endif ()
-# ApricotFields may be linked into a shared library too.
-set_target_properties(spirv-cross-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(ApricotFields PRIVATE spirv-cross-core)
 
 # ApSync runs each session on a thread of its own (src/sync/apsyncnet.cpp).
 find_package(Threads REQUIRED)
@@ -825,9 +800,30 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_test(NAME aprihashindex_tests COMMAND aprihashindex_tests)
     # SPIR-V reflection, and writing a member where the reflection lays it
     # out: no device either, so it sees src/render too.
-    add_executable(aprendreflect_tests tests/aprendreflect_tests.cpp)
-    target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render ${APRICOTFIELDS_SHADER_INC_DIR})
-    target_link_libraries(aprendreflect_tests PRIVATE ApricotFields)
+    # The reflection is made at build time (tools/aprend_reflect): the test
+    # builds the tool's reflection and table writer in, over SPIRV-Cross's
+    # core, which is never in the library (card X18), and reads each table
+    # back through the library's reader.
+    include(FetchContent)
+    set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_GLSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_MSL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+    declare_vendored_or_fetch(spirv_cross SPIRV-Cross
+            https://github.com/KhronosGroup/SPIRV-Cross.git vulkan-sdk-1.4.363.0)
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
+    FetchContent_MakeAvailable(spirv_cross)
+    add_executable(aprendreflect_tests tests/aprendreflect_tests.cpp
+            tools/aprend_reflect/aprend_reflect_spirv.cpp tools/aprend_reflect/aprend_reflect_write.cpp)
+    target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/aprend_reflect ${APRICOTFIELDS_SHADER_INC_DIR})
+    target_link_libraries(aprendreflect_tests PRIVATE ApricotFields spirv-cross-core)
     add_test(NAME aprendreflect_tests COMMAND aprendreflect_tests)
     # The features Aprend's own code uses, from C.
     add_executable(aprendfeatures_tests tests/aprendfeatures_tests.c)
@@ -848,11 +844,13 @@ endif ()
 # on macOS, since Apple's Clang has no libFuzzer). The presets build every
 # target with -fsanitize=fuzzer-no-link,address,undefined; only the fuzz
 # executables link libFuzzer itself.
-set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz aptext_fuzz apaudio_fuzz)
+set(APRICOTFIELDS_FUZZ_TARGETS aparchive_fuzz aptext_fuzz apaudio_fuzz aprend_reflection_fuzz)
 if (APRICOTFIELDS_BUILD_TESTS)
     foreach (target IN LISTS APRICOTFIELDS_FUZZ_TARGETS)
         add_executable(${target}_replay tests/fuzz/aprifuzz_replay.cpp tests/fuzz/${target}.cpp)
         target_link_libraries(${target}_replay PRIVATE ApricotFields)
+        # aprend_reflection_fuzz reads Aprend's reflection table through its internal reader.
+        target_include_directories(${target}_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
         add_test(NAME ${target}_regressions COMMAND ${target}_replay
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/corpus/${target}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/regressions/${target})
@@ -863,6 +861,7 @@ if (APRICOTFIELDS_BUILD_FUZZERS)
     foreach (target IN LISTS APRICOTFIELDS_FUZZ_TARGETS)
         add_executable(${target} tests/fuzz/${target}.cpp)
         target_link_libraries(${target} PRIVATE ApricotFields)
+        target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
         target_link_options(${target} PRIVATE -fsanitize=fuzzer)
     endforeach ()
 endif ()

@@ -2802,7 +2802,86 @@ JSON); `APREND_SHADER_PACKAGE` carries its output, a versioned table of
 plain data checked whole before it is read; SPIR-V becomes optional; a
 shader Aprend can't bind fails the build; SPIRV-Cross leaves the library.
 `aprend_shaderreflection_draft.h` approved 2026-11-01 by you, as
-written. Neither step built; the second follows the first.
+written.
+
+**S27 and X18's first step, built 2026-11-01 on the Mac** (Apple M5 Pro,
+macOS 27.0.1, Xcode 27.2, Slang 2026.18.3-2; Windows and Linux not built):
+- `cmake/aprend_slang.cmake` is a wrapper over spudlib's `spud_add_shader()`
+  (the file spudlib names in `SPUD_SHADERS_CMAKE`) adding only the package;
+  `cmake/aprend_embed.cmake` went (spudlib's `spud_embed.cmake` writes the
+  arrays). `aprend_add_slang_shader()`'s arguments are as they were, so
+  a caller's build through it is unchanged.
+  `CMakeLists.txt` builds its own `spirv-cross-core`, always.
+- `aprendpipeline.h`'s comments from `aprend_shaderbindings_draft.h`, as
+  written.
+- The padding is spudlib's tool's own (spudlib `SPUDGPU_DEVICE_TODO.md`):
+  a set is padded to what the shader's source declares. The glyph shader
+  needed nothing: `aprend_batch_inputs.slang` declares its set whole. Five
+  sources declared what their layouts don't hold, or less, and were
+  changed: `aprend_lit_vert` imports `aprend_lit_bindings` (it declared
+  only `u_lit_scene` of the lit scene's 14 bindings, 19 refusals in
+  apricottests); the histogram pair (`aprend_exposure_histogram_comp`,
+  `_adapt_histogram_frag`) and `aprend_lit_cull_bounded_comp` no longer
+  declare a sampler no shader of their layout reads; apricottests'
+  `stencil_frag` the same.
+- apricottests' `test_set_declared_whole`: a layout made from two shaders
+  sharing set 0, one declaring only the texture it loads: refused on Metal
+  with `APRESULT_APREND_GPU_FAILURE` and SpudGPU's
+  `SPUDRESULT_GPU_SHADER_LAYOUT_MISMATCH` in the message; the whole one
+  made.
+- Ran: 36 ctests on `apricotfields-macos-metal` in Debug and Release,
+  `-asan` and `-tsan`; `apri_misuse_tests` ten times (368 calls with
+  zeroes, 119 with a destroyed handle, no failure); apricottests whole on
+  Metal, Debug and Release, under API and shader validation with warnings
+  fatal, both of its devices: every check passed, `test_lit_sky`,
+  `test_auto_exposure` and `test_batch_aptext_glyph` included, and Aprend's
+  ray tracing as before; `test_frame_allocations` none of ours in the lit
+  and the ray-traced frames, Debug and Release.
+
+**X18's second step, built 2026-11-01 on the Mac:** the reflection made
+at build time.
+- `tools/aprend_reflect` (`aprend_reflect.cpp`, its `CMakeLists.txt`):
+  `src/render/aprendreflect.cpp`'s SPIR-V half moved there unchanged in
+  what it computes (`aprend_reflect_spirv.cpp`), with a writer of the
+  table (`aprend_reflect_write.cpp`). Built for the build machine by
+  `cmake/aprend_slang.cmake` through ExternalProject (or
+  `APREND_REFLECT_EXECUTABLE`), which runs it on each shader's SPIR-V and
+  embeds its output (`<stem>.reflection.inc`) in the package. A shader
+  Aprend can't bind fails the build. The library keeps the block member
+  writers (`aprendreflect.cpp`).
+- The table (`src/render/aprendreflect_table.hpp`, version 1): a 27-word
+  header, then resources, members, inputs, storage formats and output
+  types as fixed records of 32-bit words, then the strings, each a 0
+  inside the area; no pointer. The reader
+  (`aprendreflect_table.cpp`, `aprend_reflect_table_read`) checks the
+  magic, the version (`APRESULT_APREND_REFLECTION_MISMATCH`), the stated
+  size, the stage and entry point, every part's bounds, every string, every
+  enum and flag, the resources' order, and every block member's extent
+  inside its block, before it reads anything, by memcpy.
+- `aprendshader.h` and `apricore.h` from `aprend_shaderreflection_draft.h`:
+  `APREND_SHADER_PACKAGE::reflection` and `reflection_size`, SPIR-V
+  optional, `APRESULT_APREND_REFLECTION_MISMATCH` (5004),
+  `aprend_shader_create()`'s refusals and the file comment. One clause not
+  built as written (card A45): the tool can't refuse an acceleration
+  structure "outside Aprend's own layouts", since Aprend's traced shaders
+  need theirs; a caller's shader using one is still refused at run time.
+  ABI: `APREND_SHADER_PACKAGE` 80 to 96 bytes, two members at its end;
+  5004 added.
+- A package holds the code of the build's `GRAPHICS_BACKEND` alone: SPIR-V
+  only for Vulkan.
+- SPIRV-Cross is out of the library: `nm` on the Debug and Release
+  `libApricotFields.a` shows no `spirv_cross` symbol.
+- Tests: `aprendreflect_tests` builds the tool's code in and runs every
+  case through the table and the reader, the view read back compared with
+  the reflected one field for field (the brute-force comparison, kept);
+  the build's tables for five of Aprend's shaders equal the writer's byte
+  for byte; the reader's refusals, and the lit fragment shader's table cut
+  at every length (33,224 of 33,224 refused, none read past its end,
+  `-asan` included). apricottests' `test_shader_create_refusals`: the
+  SPIR-V, DXIL, .metallib and reflection pairs, a table's wrong magic,
+  another version, a cut one, another stage's and another entry point's,
+  and a package without SPIR-V made on Metal. `aprend_reflection_fuzz`,
+  with its corpus (eight of Aprend's tables) and a regression.
 
 
 ### 23. No 2D, line, text or debug drawing
@@ -3300,7 +3379,14 @@ Left:
         `APRESULT_INVALID_ARGUMENT`, the message naming the command by its
         place as every compile refusal does, and losing its "(card A44)".
         A test in apricottests: a list holding a BUILD_TLAS, submitted,
-        compiled again, refused; sent again, compiled and submitted. Not
+        compiled again, refused; sent again, compiled and submitted.
+        **Built 2026-11-01 on the Mac:** the line in
+        `aprend_command_list_compile()`'s refusals; the message "command N:
+        BUILD_TLAS's list was submitted since it was sent: its set is built
+        and free; send BUILD_TLAS again, which seals the next set";
+        apricottests' `test_rt_resubmit`, passing on Metal under validation
+        with warnings fatal (the device with ray queries; skipped on the one
+        without). Not
         b (a set held for good by a list kept, rebuilding what didn't
         change) or c (the seal at compile, against T5's snapshots per
         send). Revisited only if lists become prebuilt (compiled once into
@@ -4066,7 +4152,7 @@ builds, its scratch allocator and resource tracker; 18 in the encoders; 18
 in blit copies; 17 in the compute sets' residency; 10 in the size queries;
 the rest the command buffer and submit). `test_destroyed_handles` 177 of
 177. Failing, not ray tracing: the three tests card S27 holds (item 22;
-decided 2026-11-01, a, not yet built).
+decided 2026-11-01, a; built the same evening, and all three pass).
 Measured (Release, no validation layer, `test_rt_measure`, beside the A2000's
 D3D12 / Vulkan above): 1% of 100,000 written a frame: the write 16.4 us, the
 compile and submit 101.7 us, the frame 4.73 ms; 10%: 111.8 us, 121.6 us,

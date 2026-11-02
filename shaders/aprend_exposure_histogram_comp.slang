@@ -7,9 +7,12 @@
 // group, not one a texel (Unreal's PostProcessHistogram works the same
 // way). A dispatch with `clear` set, one group, empties the buffer first.
 
-// AprendExposureHistogram's set 0, shared with aprend_exposure_adapt_histogram_frag.slang.
+// AprendExposureHistogram's set 0, shared with aprend_exposure_adapt_histogram_frag.slang:
+// the luminance texture this shader loads and the bins, and no sampler, since
+// neither shader samples. Each shader declares the set exactly as its layout,
+// made from the two, holds it (spudgpu_shader_module_desc, "Every binding of
+// a set").
 [[vk::binding(0, 0)]] Texture2D<float4> luminance : register(t0, space0);
-[[vk::binding(1, 0)]] SamplerState luminance_sampler : register(s1, space0);
 // 64 bins, a uint each. Raw (byte addressed), as SpudGPU's D3D12 backend
 // views every storage buffer.
 [[vk::binding(2, 0)]] RWByteAddressBuffer AprendExposureBins : register(u2, space0);

@@ -228,6 +228,10 @@ typedef enum APRESULT APRI_ENUM_BASE {
 	 * the instance submits runs. Destroy what was made of it, the instance
 	 * last, and the device; a caller that goes on makes them again. */
 	APRESULT_APREND_DEVICE_LOST = 5003,
+	/** A shader package's reflection was written by tools/aprend_reflect
+	 * of another format version than this library reads. Rebuilding the
+	 * caller's shaders with this version's tool fixes it. */
+	APRESULT_APREND_REFLECTION_MISMATCH = 5004,
 
 	/* ApText (text/aptext.h) */
 

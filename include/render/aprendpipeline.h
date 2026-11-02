@@ -144,7 +144,10 @@ APRESULT aprend_binding_layout_create(
  * the shaders declare them (the largest count, where two shaders declare one
  * binding with different counts), and the stages of every shader that uses
  * it. A binding declared and not used is left out, as the pipeline doesn't
- * need it.
+ * need it. A module that declares such a binding is then refused on a device
+ * that takes a .metallib, where a module declares exactly its sets' layouts
+ * (aprend_graphics_pipeline_create()): declare in a set only what one of
+ * the layout's shaders reads.
  *
  * The layout keeps, for each binding, the shader's name for it (the
  * variable's, or a block's instance name, or its block name if it has none)
@@ -704,7 +707,12 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  * - Every binding a shader uses is declared by the binding layout at its
  *   set, with the same type, at least as many descriptors, and the shader's
  *   stage among its `_stages`. A layout may declare more than the shaders
- *   use.
+ *   use, as long as each shader's module declares every binding of each set
+ *   it reads, with the layout's type and count, and no other: SpudGPU's
+ *   rule (`spudgpu_shader_module_desc`, "Every binding of a set"). A device
+ *   that takes a .metallib refuses a module that doesn't, as SpudGPU's
+ *   result; the others don't check it. Aprend's reflection doesn't see the
+ *   bindings a compiler left out, so Aprend doesn't check it either.
  * - Every byte of a shader's push constant block that a member covers is in
  *   a range whose `stage_flags` include the shader's stage.
  * - Every input the vertex shader uses has a vertex element at each of its

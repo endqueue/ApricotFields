@@ -4,6 +4,10 @@
 // the fragment shader the four outputs it reads.
 
 import aprend_lit_scene;
+// Set 0 whole, read or not: the lit scene's layout is every binding the
+// surface and sky shaders read, and a module declares its set's whole
+// layout (spudgpu_shader_module_desc, "Every binding of a set").
+import aprend_lit_bindings;
 import aprend_lit_vertex;
 
 // The position first, then every location in order, as the lit fragment

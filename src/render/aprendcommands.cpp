@@ -3518,7 +3518,7 @@ static bool aprend_cmd_rt_builds(aprend_command_list cmd_list, size_t first, siz
 			const aprend_rt_set &set  = tlas->sets[seal.set];
 			if (set.state != APREND_RT_SET_SEALED || set.sequence != seal.sequence) {
 				aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT,
-				                  "BUILD_TLAS was submitted once already: its set is built and free; send BUILD_TLAS again (card A44)");
+				                  "BUILD_TLAS's list was submitted since it was sent: its set is built and free; send BUILD_TLAS again, which seals the next set");
 				return false;
 			}
 			aprend_cmd_use_handle(cmd_list, tlas);

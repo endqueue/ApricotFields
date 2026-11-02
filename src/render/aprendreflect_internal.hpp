@@ -2,13 +2,16 @@
 #define APREND_REFLECT_INTERNAL_HPP
 
 /* Internal header — never included outside ApricotFields/src/render/ (and
- * tests/aprendreflect_tests.cpp, which tests it without a device).
+ * tests/aprendreflect_tests.cpp and tests/fuzz/aprend_reflection_fuzz.cpp,
+ * which test it without a device, and tools/aprend_reflect, which fills the
+ * store at build time).
  *
- * The reflection of one shader's SPIR-V (render/aprendshader.h), and what
- * the rest of Aprend does with it: building a binding layout, checking a
- * pipeline, writing a block member. Nothing here calls into SpudGPU, so it
- * runs without a device. */
+ * The reflection of one shader (render/aprendshader.h), read from its
+ * package's table, and what the rest of Aprend does with it: building a
+ * binding layout, checking a pipeline, writing a block member. Nothing here
+ * calls into SpudGPU, so it runs without a device. */
 
+#include "apricore.h"
 #include "render/aprendshader.h"
 
 #include <spudgpu.h>
@@ -18,7 +21,8 @@
 #include <vector>
 
 /* Owns everything APREND_SHADER_REFLECTION points at. [view] is filled by
- * aprend_reflect_spirv and points into the vectors and strings below, so a
+ * aprend_reflect_table_read (at build time, aprend_reflect_spirv in
+ * tools/aprend_reflect) and points into the vectors and strings below, so a
  * store is never copied or moved once filled: it lives inside the handle
  * that owns it. */
 struct aprend_reflection_store {
@@ -47,16 +51,21 @@ struct aprend_reflection_store {
 	std::deque<std::string> strings{};
 };
 
-/* Reflects [word_count] words of SPIR-V, the code of a shader of [stage],
- * into [out], which is empty. False, with what was wrong in [error], if the
- * code isn't SPIR-V, has no entry point for [stage], or its entry point uses
- * a resource Aprend has no binding for. [out] is then in no particular
- * state, and is only destroyed. Throws nothing: SPIRV-Cross's exceptions
- * and std::bad_alloc are caught here. */
-bool aprend_reflect_spirv(
-    const uint32_t *words,
-    size_t word_count,
+/* Reads [size] bytes of a package's reflection table (aprendreflect_table.hpp),
+ * the reflection of a shader of [stage] whose entry point is [entry_point],
+ * into [out], which is empty. Everything in the table is checked before
+ * anything is read: APRESULT_CORRUPT_DATA if it isn't a table
+ * tools/aprend_reflect wrote or is another stage's or entry point's,
+ * APRESULT_APREND_REFLECTION_MISMATCH if it is of another table version,
+ * APRESULT_OUT_OF_MEMORY; [error] says why. [table] need not be aligned:
+ * it is read by memcpy. [out] is then in no particular state, and is only
+ * destroyed. Throws nothing. The SPIR-V's reflection itself is made at
+ * build time (tools/aprend_reflect), not here. */
+APRESULT aprend_reflect_table_read(
+    const void *table,
+    uint64_t size,
     SPUDGPU_SHADER_STAGE stage,
+    const char *entry_point,
     aprend_reflection_store *out,
     std::string *error) noexcept;
 

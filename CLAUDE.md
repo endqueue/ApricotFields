@@ -447,9 +447,11 @@ again), `aptext_fuzz` (font files, Hershey fonts and saved atlases) and
   both and `src/math/apmathpoly.cpp` are built with floating-point
   contraction off, because what ApMath's polygons compute must be the same
   bits on every platform.
-  SPIRV-Cross's core is Aprend's SPIR-V reflection; SpudLib builds the same
-  target on Metal and D3D12, so `CMakeLists.txt` only builds it when no
-  target exists yet. libdeflate is pinned on
+  SPIRV-Cross is not in the library (card X18, 2026-11-01): Aprend's
+  reflection is made at build time by `tools/aprend_reflect`, a program of
+  its own for the build machine (built by `cmake/aprend_slang.cmake`
+  through ExternalProject), over SPIRV-Cross's core, which only it and
+  `aprendreflect_tests` link. libdeflate is pinned on
   purpose: its DEFLATE output is part of what makes an archive byte-identical.
   Every fetch fallback names a tag or a commit, never a branch, so a build
   without `../.deps/` is the same every time. glaze is pinned to the commit
@@ -458,15 +460,27 @@ again), `aptext_fuzz` (font files, Hershey fonts and saved atlases) and
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
 - Aprend's own shaders are Slang in `shaders/` (card A29; `<stem>_vert.slang`,
   `_frag`, `_comp`, its entry point named `<stem>`, never `main`), compiled
-  at build time by `cmake/aprend_slang.cmake` to SPIR-V, DXIL on Windows and
-  a .metallib on Apple platforms, and embedded in the library as one
+  at build time by SpudLib's shader step (`spud_add_shader()`, card X18),
+  which `cmake/aprend_slang.cmake` wraps to add only the package, to SPIR-V,
+  DXIL on Windows and a .metallib on Apple platforms, and embedded in the
+  library as one
   `APREND_SHADER_PACKAGE` each (`<stem>.package.inc`, into `aprend_shaders/`
-  in the build directory). A new shader is added to `APRICOTFIELDS_SHADERS`
+  in the build directory): the shader's reflection table, written from its
+  SPIR-V at build time by `tools/aprend_reflect` and checked whole by
+  Aprend before it is read (`src/render/aprendreflect_table.hpp`, its
+  layout versioned on both sides at once), and the code in the format the
+  build's device takes. A new shader is added to `APRICOTFIELDS_SHADERS`
   (a module it imports to `APRICOTFIELDS_SHADER_MODULES`) and made with
   `aprend_shader_create()` from its package by the source that uses it, on
   first use. Nothing is written next to the executable and nothing is
   compiled or loaded at run time. Clip space is +Y up on every backend
-  (card S19): a matrix Aprend builds into clip space says so.
+  (card S19): a matrix Aprend builds into clip space says so. A shader
+  declares each set it reads exactly as its layout holds it, read or not
+  (SpudGPU's "Every binding of a set", card S27): through the set's shared
+  bindings module where it has one (`aprend_lit_bindings.slang`,
+  `aprend_lit_material.slang`, `aprend_batch_inputs.slang`), and with no
+  binding no shader of the layout reads, where the layout is made from the
+  shaders. Metal refuses a module that doesn't.
 
 ## Saying what has and hasn't run
 

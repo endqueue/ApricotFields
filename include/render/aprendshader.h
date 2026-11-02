@@ -38,8 +38,8 @@
  * be told from the shader alone, and everything it declares counts as used
  * (APREND_SHADER_REFLECTION::entry_point is then NULL).
  *
- * Nothing here compiles a shader or reads GLSL: the input is SPIR-V
- * (APREND_TODO.md, item 22).
+ * Nothing here compiles or reflects a shader: the input is a package a
+ * build made (cmake/aprend_slang.cmake).
  *
  * @par Threads
  * The rule is in aprendcontext.h ("Threads"): a shader is used by one
@@ -65,13 +65,15 @@ typedef struct aprend_shader_t *aprend_shader;
 /**
  * @brief One entry point's code in the formats a build made for it.
  *
- * SPIR-V is always given: Aprend reflects it on every backend, and it is the
- * module on Vulkan. DXIL (D3D12) and a .metallib (Metal) are given where
- * the build made them; a format it didn't make is NULL with a size of 0.
- * The format the device takes (SPUDGPU_ADAPTER_PROPERTIES::shader_formats)
- * becomes the shader's module, with the entry point and, for a compute or
- * mesh shader, the workgroup size the SPIR-V declares. Every pointer is
- * borrowed for aprend_shader_create(): the shader keeps what it needs.
+ * The package carries its reflection, made at build time from its SPIR-V by
+ * tools/aprend_reflect (cmake/aprend_slang.cmake runs it), and the code in
+ * each format the build made. SPIR-V is given where a Vulkan device may
+ * take the package, DXIL where a D3D12 one may, a .metallib where a Metal
+ * one may; a format it didn't make is NULL with a size of 0. The format the
+ * device takes (SPUDGPU_ADAPTER_PROPERTIES::shader_formats) becomes the
+ * shader's module, with the entry point and, for a compute or mesh shader,
+ * the workgroup size the reflection holds. Every pointer is borrowed for
+ * aprend_shader_create(): the shader keeps what it needs.
  */
 typedef struct APREND_SHADER_PACKAGE {
 	/** `type` is APRI_STRUCT_TYPE_APREND_SHADER_PACKAGE; `next` is NULL.
@@ -85,9 +87,9 @@ typedef struct APREND_SHADER_PACKAGE {
 	/** The entry point's name in every format here, null-terminated.
 	 * Required; not "main" where a .metallib is given (Metal reserves it). */
 	const char *entry_point;
-	/** SPIR-V words, 4-byte aligned. Required. */
+	/** SPIR-V words, 4-byte aligned, or NULL. */
 	const void *spirv;
-	/** Bytes in #spirv: not 0, a multiple of 4. */
+	/** Bytes in #spirv: 0 with NULL, else a multiple of 4. */
 	uint64_t spirv_size;
 	/** DXIL as DXC writes it, 4-byte aligned, or NULL. */
 	const void *dxil;
@@ -97,17 +99,28 @@ typedef struct APREND_SHADER_PACKAGE {
 	const void *metallib;
 	/** Bytes in #metallib: 0 with NULL. */
 	uint64_t metallib_size;
+	/**
+	 * The entry point's reflection, as tools/aprend_reflect wrote it from
+	 * this package's SPIR-V, 4-byte aligned. Required. Its layout is
+	 * Aprend's own and versioned: the tool of the same ApricotFields
+	 * version writes what this one reads. It is checked whole before it is
+	 * read, and nothing in it is a pointer.
+	 */
+	const void *reflection;
+	/** Bytes in #reflection: not 0, a multiple of 4. */
+	uint64_t reflection_size;
 } APREND_SHADER_PACKAGE;
 
 /**
- * @brief Creates a shader from a package, and reflects its SPIR-V.
+ * @brief Creates a shader from a package.
  *
- * Nothing is compiled: the shader's module is the package's code in the
- * device's own format. The reflection (aprend_shader_get_reflection()) is
- * the SPIR-V's, the same on every backend.
+ * Nothing is compiled or reflected: the shader's module is the package's
+ * code in the device's own format, and its reflection
+ * (aprend_shader_get_reflection()) is the package's, the same on every
+ * backend.
  *
  * @param[in]  instance   Instance whose device the shader is created on.
- * @param[in]  package    The shader's code. Borrowed for the call.
+ * @param[in]  package    The shader's code and reflection. Borrowed for the call.
  * @param[out] out_shader Receives the shader; NULL on failure.
  * @param[out] out_error  Why it failed, when it did. May be NULL.
  *
@@ -115,22 +128,24 @@ typedef struct APREND_SHADER_PACKAGE {
  *         @p instance NULL; @p package NULL (its base wrong: the code
  *         apri_struct_check() gives); @p out_shader NULL; the stage not one
  *         of the four (then a mesh shader on a device without the feature:
- *         APRESULT_UNSUPPORTED); the entry point NULL or
- *         empty; the SPIR-V NULL, empty or not a multiple of 4; a native
- *         format's pointer and size disagreeing (one NULL or 0 and not the
- *         other), or a DXIL size not a multiple of 4; the SPIR-V can't be
- *         reflected (it isn't valid SPIR-V, it has no entry point for the
- *         stage, or its entry point uses a resource Aprend has no binding
- *         for: a texel buffer, an input attachment, an acceleration
- *         structure, an array of descriptors without a size, an image of a
- *         dimension no texture view has); a compute or mesh shader whose
- *         workgroup size is a specialization constant.
+ *         APRESULT_UNSUPPORTED); the entry point NULL or empty; a format's
+ *         pointer and size disagreeing (one NULL or 0 and not the other),
+ *         or a SPIR-V or DXIL size not a multiple of 4; the reflection
+ *         NULL, empty or not a multiple of 4; the entry point using an
+ *         acceleration structure (Aprend's own traced passes alone bind
+ *         one); a compute or mesh shader whose workgroup size is a
+ *         specialization constant.
+ *         APRESULT_CORRUPT_DATA: the reflection isn't one
+ *         tools/aprend_reflect wrote (its magic, a count or an offset
+ *         reaching past its end, a string not terminated inside it), or it
+ *         is for another stage or entry point than the package names.
+ *         APRESULT_APREND_REFLECTION_MISMATCH: it was written by a tool of
+ *         another format version; the message names both. The caller
+ *         builds its shaders again with this version's tool.
  *         APRESULT_UNSUPPORTED: a mesh shader on a device without the
- *         feature, or a package without the device's format, found after
- *         the checks of its pointers and before the SPIR-V is reflected (the
- *         message names the format). APRESULT_OUT_OF_MEMORY. Or the code for SpudGPU's
- *         result if the module can't be made (the native code has no entry
- *         point of that name: SPUDRESULT_GPU_SHADER_ENTRY_POINT_NOT_FOUND).
+ *         feature, or a package without the device's format (the message
+ *         names the format). APRESULT_OUT_OF_MEMORY. Or the code for
+ *         SpudGPU's result if the module can't be made.
  *
  * @see aprend_shader_destroy()
  */
