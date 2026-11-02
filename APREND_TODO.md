@@ -2858,6 +2858,15 @@ at build time.
   size, the stage and entry point, every part's bounds, every string, every
   enum and flag, the resources' order, and every block member's extent
   inside its block, before it reads anything, by memcpy.
+  **To do (reviewed 2026-11-01 with the user, ready, no card):** the
+  reader skips the extent check for any member without an array size,
+  wherever it is (`aprendreflect_table.cpp`, the resources' loop), though
+  its comment says one may only end a storage block. Refuse one that
+  isn't its block's last member, or whose resource isn't a storage
+  buffer, so the check and the comment agree. Not a hole today: no write
+  goes through such a member's record (`aprend_material_*` refuses one,
+  `aprend_material_set_uniform_bytes` is bounded by the block's size). A
+  case in `aprendreflect_tests`' refusals with it.
 - `aprendshader.h` and `apricore.h` from `aprend_shaderreflection_draft.h`:
   `APREND_SHADER_PACKAGE::reflection` and `reflection_size`, SPIR-V
   optional, `APRESULT_APREND_REFLECTION_MISMATCH` (5004),
@@ -2865,6 +2874,10 @@ at build time.
   built as written (card A45): the tool can't refuse an acceleration
   structure "outside Aprend's own layouts", since Aprend's traced shaders
   need theirs; a caller's shader using one is still refused at run time.
+  **Decided 2026-11-01 with the user (card A45, a):** it stays a run-time
+  refusal, as built (`aprendshader.h`: "the entry point using an
+  acceleration structure (Aprend's own traced passes alone bind one)"):
+  it is about who calls, which only the call knows. No tool switch.
   ABI: `APREND_SHADER_PACKAGE` 80 to 96 bytes, two members at its end;
   5004 added.
 - A package holds the code of the build's `GRAPHICS_BACKEND` alone: SPIR-V
@@ -4787,6 +4800,30 @@ That run found two things on Vulkan, both fixed:
 
 Rerun, every check passed with no message, plain and under
 synchronization validation. Left: Linux, where it is not built.
+
+### 50. A per-vertex color for lit surfaces (card A46)
+
+**Decided 2026-11-01 with you (card A46, a):** Aprend's lit surfaces read
+an optional per-vertex color, linear RGBA, multiplied into the base color
+as glTF 2.0's `COLOR_0` is (core spec: the base color factor times the
+base color texture times `COLOR_0`). It is a second vertex stream beside
+`APREND_LIT_VERTEX`, which doesn't change (a frozen 48 bytes, and every
+BLAS vertex today, A42), and a surface vertex shader that reads it; a mesh
+without one draws as today. Raised by Latran's L7 draft
+(`../latran/core/latran_lighting_draft.h`, approved 2026-11-01), whose
+meshes carry vertex colors that its lit surfaces must keep; general
+purpose, as any glTF asset may have them.
+
+Its public half is a draft for your approval first. What the draft
+settles: the stream's binding (slot 2, after the instance at 1) and
+format (four floats, or RGBA8/RGBA16 normalized as glTF allows); one
+vertex shader that reads it with a neutral white bound for meshes
+without, or a second shader; the depth and shadow passes (which need no
+color, but a cut-out reads opacity, which the color's alpha multiplies);
+and what traced passes (item 24) read at a hit, since the arena holds
+`APREND_LIT_VERTEX` alone: none until A43's c (the caller's vertex
+streams, with bindless), or a color in the arena. Not started. Latran's
+L7 waits on it.
 
 ## Suggested order
 
