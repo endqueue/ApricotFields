@@ -965,6 +965,35 @@ static const APREND_VERTEX_ELEMENT s_lit_instance_elements[] = {
     {"in_transform3", APREND_VERTEX_ELEMENT_TYPE_VEC4, 48},
 };
 
+// aprend_lit_get_scene_layout's work: the instance's layout, made on
+// first use. NULL, reported, if it can't be.
+static aprend_binding_layout aprend_lit_scene_layout(aprend_instance instance) {
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	if (lit.scene_layout)
+		return lit.scene_layout;
+	// Every shader that reads set 0, so each binding has every stage that
+	// reads it.
+	aprend_shader shaders[4] = {aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_FRAGMENT),
+	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_VERTEX),
+	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_VERTEX_COLOR),
+	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SKY_FRAGMENT)};
+	for (aprend_shader shader : shaders)
+		if (!shader)
+			return nullptr;
+	aprend_binding_layout layout = nullptr;
+	(void)aprend_binding_layout_create_from_shaders(instance, shaders, 4, APREND_LIT_SCENE_SET, &layout, nullptr);
+	if (!layout) {
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit scene can't be created");
+		return nullptr;
+	}
+	if (!aprend_lit_check_scene_block(layout)) {
+		aprend_binding_layout_destroy(layout);
+		return nullptr;
+	}
+	lit.scene_layout = layout;
+	return layout;
+}
+
 extern "C" {
 
 APREND_VERTEX_LAYOUT aprend_lit_vertex_layout(void) {
@@ -1007,35 +1036,6 @@ APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shade
 	if (!*out_shader)
 		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "Aprend's lit shader %u can't be made", shader);
 	return APRESULT_OK;
-}
-
-// aprend_lit_get_scene_layout's work: the instance's layout, made on
-// first use. NULL, reported, if it can't be.
-static aprend_binding_layout aprend_lit_scene_layout(aprend_instance instance) {
-	aprend_lit_builtins &lit = instance->builtins.lit;
-	if (lit.scene_layout)
-		return lit.scene_layout;
-	// Every shader that reads set 0, so each binding has every stage that
-	// reads it.
-	aprend_shader shaders[4] = {aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_FRAGMENT),
-	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_VERTEX),
-	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_VERTEX_COLOR),
-	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SKY_FRAGMENT)};
-	for (aprend_shader shader : shaders)
-		if (!shader)
-			return nullptr;
-	aprend_binding_layout layout = nullptr;
-	(void)aprend_binding_layout_create_from_shaders(instance, shaders, 4, APREND_LIT_SCENE_SET, &layout, nullptr);
-	if (!layout) {
-		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit scene can't be created");
-		return nullptr;
-	}
-	if (!aprend_lit_check_scene_block(layout)) {
-		aprend_binding_layout_destroy(layout);
-		return nullptr;
-	}
-	lit.scene_layout = layout;
-	return layout;
 }
 
 // aprend_lit_get_shadow_layout's work: the instance's layout, made on

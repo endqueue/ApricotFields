@@ -3620,6 +3620,22 @@ Left:
       The workspace's callers built and passed against it unchanged
       (`../ROADMAP.md`, the same night). D3D12 and Vulkan not built
       (`../ROADMAP.md`, the handoff).
+      **Built on Windows 2026-11-02** (the ThinkPad, MSVC, in trellislib's
+      `trellislib-windows-d3d12` and `-vulkan` Debug builds): MSVC refused
+      `aprendlit.cpp` (C2732: `aprend_lit_scene_layout()` declared static
+      outside the `extern "C"` block and defined inside it; the definition
+      moved out, nothing else changed). Then every ApricotFields ctest
+      passed but `aprend_contract_tests`' `lit_fit_cascades`: 4 of its
+      framings' bits differ from the Mac's. Not fixed, two causes to
+      choose between: the fit calls `std::pow` (the splits) and `std::tan`
+      (the frustum), which aren't correctly rounded and differ between
+      Apple's libm and the UCRT; and Apple clang contracts `a * b + c` to
+      FMA on arm64 where MSVC doesn't (ApMath's polygons build with
+      contraction off for this). Bit-equal everywhere needs both: the
+      fit's file built with contraction off, and the two functions made
+      portable (or the test's bits replaced by a tolerance, with the
+      reason, as `CONVENTIONS.md`'s "Floating point" allows). apricottests
+      not run here.
       **Waiting on Metal's bindless (card A15, decided, not built),
       recorded 2026-10-31 with the user** (`aprend_raytracing_draft.h`, T3
       and T7): alpha-tested geometry in ray queries (a cut-out material's
