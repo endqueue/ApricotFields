@@ -136,7 +136,10 @@ typedef struct aprend_tlas_t *aprend_tlas;
  * is full, an allocation then and only then).
  *
  * Geometry is opaque to rays in this version: a cut-out material's
- * `alpha_cutoff` is not yet read by a ray.
+ * `alpha_cutoff` is not yet read by a ray. Nor is a per-vertex color
+ * (aprendlit.h, APREND_LIT_SHADER_SURFACE_VERTEX_COLOR): a path trace shades
+ * a hit with its material's base color alone. A geometry whose mesh has its
+ * colors at `_vertex_buffers[1]` is taken as any other; slot 1 isn't read.
  */
 typedef struct APREND_BLAS_DESC {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_BLAS_DESC, and its chain (apricore.h, "Struct bases"). */

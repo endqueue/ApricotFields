@@ -17,7 +17,9 @@
 #include "aprend_lit_frag.package.inc"
 #include "aprend_lit_depth_frag.package.inc"
 #include "aprend_lit_vert.package.inc"
+#include "aprend_lit_color_vert.package.inc"
 #include "aprend_lit_shadow_vert.package.inc"
+#include "aprend_lit_shadow_color_vert.package.inc"
 #include "aprend_lit_depth_cutout_frag.package.inc"
 #include "aprend_lit_sky_frag.package.inc"
 #include "aprend_lit_cull_comp.package.inc"
@@ -36,11 +38,21 @@
 #include "aprend_exposure_histogram_comp.package.inc"
 #include "aprend_exposure_adapt_histogram_frag.package.inc"
 #include "aprend_tone_map_frag.package.inc"
+#include "aprend_lit_surface_reflect_frag.package.inc"
+#include "aprend_lit_hiz_frag.package.inc"
+#include "aprend_lit_hiz_down_frag.package.inc"
+#include "aprend_lit_ssr_comp.package.inc"
+#include "aprend_lit_reflect_frag.package.inc"
 
 static_assert(sizeof(APREND_LIT_VERTEX) == 48, "APREND_LIT_VERTEX is 48 bytes");
 static_assert(sizeof(APREND_LIT_INSTANCE) == 64, "APREND_LIT_INSTANCE is 64 bytes");
-static_assert(sizeof(aprend_lit_scene_block) == 960 + 64 * 6 * APREND_LIT_MAX_POINT_SHADOWS + 16 * APREND_LIT_MAX_POINT_SHADOWS + 64 * APREND_LIT_MAX_LIGHTS,
+static_assert(sizeof(aprend_lit_scene_block) == 128 + 80 * APREND_LIT_MAX_SHADOW_VIEWS + 80 * APREND_LIT_MAX_DIRECTIONAL_LIGHTS +
+                                                 32 * APREND_LIT_MAX_SHADOW_VIEWS + 208 + 64 * APREND_LIT_MAX_LIGHTS,
               "AprendLitScene's std140 size");
+// Vulkan's guaranteed maxUniformBufferRange, the smallest any device may
+// report; SpudGPU reports no limit of its own for a uniform buffer, so the
+// block keeps under this one on every device.
+static_assert(sizeof(aprend_lit_scene_block) <= 16384, "AprendLitScene fits Vulkan's guaranteed uniform buffer range");
 static_assert(sizeof(aprend_lit_material_block) == 288, "AprendLitMaterial's std140 size");
 static_assert(sizeof(aprend_lit_shadow_pass_block) == 64, "AprendLitShadowPass's std140 size");
 static_assert(sizeof(aprend_occlusion_block) == 176, "AprendOcclusionPass's std140 size");
@@ -49,6 +61,8 @@ static_assert(sizeof(aprend_environment_params) % 8 == 0 && sizeof(aprend_sky_pa
                   sizeof(aprend_adapt_params) % 8 == 0 && sizeof(aprend_size_params) % 8 == 0 &&
                   sizeof(aprend_histogram_params) % 8 == 0 && sizeof(aprend_histogram_adapt_params) % 8 == 0,
               "a push Metal aligns to 8 bytes is a multiple of 8");
+static_assert(sizeof(aprend_hiz_params) == 16 && sizeof(aprend_reflect_params) == 16, "HizParams and ReflectParams are 16 bytes");
+static_assert(sizeof(aprend_ssr_params) == 48, "SsrParams in aprend_lit_ssr_comp.slang");
 
 // ---- Checks -------------------------------------------------------------------------
 
@@ -125,33 +139,39 @@ static bool aprend_lit_check_block(aprend_binding_layout layout, uint32_t bindin
 static bool aprend_lit_check_scene_block(aprend_binding_layout layout) {
 	typedef aprend_lit_scene_block B;
 	typedef aprend_lit_light_block L;
-	const uint32_t last = MEMBER(B, lights) + (uint32_t)sizeof(L) * (APREND_LIT_MAX_LIGHTS - 1);
+	typedef aprend_lit_directional_block D;
+	typedef aprend_lit_shadow_block S;
+	typedef aprend_lit_shadow_view_block V;
+	const uint32_t last_light       = MEMBER(B, lights) + (uint32_t)sizeof(L) * (APREND_LIT_MAX_LIGHTS - 1);
+	const uint32_t last_directional = MEMBER(B, directional) + (uint32_t)sizeof(D) * (APREND_LIT_MAX_DIRECTIONAL_LIGHTS - 1);
+	const uint32_t last_shadow      = MEMBER(B, shadows) + (uint32_t)sizeof(S) * (APREND_LIT_MAX_SHADOW_VIEWS - 1);
+	const uint32_t last_view        = MEMBER(B, shadow_views) + (uint32_t)sizeof(V) * (APREND_LIT_MAX_SHADOW_VIEWS - 1);
 	const expected_member members[] = {
 	    {"view_projection", MEMBER(B, view_projection)},
 	    {"inverse_view_projection", MEMBER(B, inverse_view_projection)},
-	    {"sun_shadow_view_projection", MEMBER(B, sun_shadow_view_projection)},
-	    {"spot_shadow_view_projection", MEMBER(B, spot_shadow_view_projection)},
-	    {"point_shadow_view_projection", MEMBER(B, point_shadow_view_projection)},
+	    {"shadow_views[0].view_projection", MEMBER(B, shadow_views)},
+	    {"shadow_views[0].rect", MEMBER(B, shadow_views) + MEMBER(V, rect)},
+	    {"shadow_views[63].rect", last_view + MEMBER(V, rect)},
+	    {"directional[0].direction_versine", MEMBER(B, directional)},
+	    {"directional[0].shadow_views", MEMBER(B, directional) + MEMBER(D, shadow_views)},
+	    {"directional[3].shadow_views", last_directional + MEMBER(D, shadow_views)},
+	    {"shadows[0].params", MEMBER(B, shadows)},
+	    {"shadows[63].views", last_shadow + MEMBER(S, views)},
 	    {"eye_position", MEMBER(B, eye_position)},
 	    {"view_direction", MEMBER(B, view_direction)},
-	    {"sun_direction", MEMBER(B, sun_direction)},
-	    {"sun_radiance", MEMBER(B, sun_radiance)},
 	    {"ambient_up", MEMBER(B, ambient_up)},
 	    {"ambient_sky", MEMBER(B, ambient_sky)},
 	    {"ambient_ground", MEMBER(B, ambient_ground)},
 	    {"environment_rotation", MEMBER(B, environment_rotation)},
-	    {"sun_shadow_splits", MEMBER(B, sun_shadow_splits)},
-	    {"sun_shadow_params", MEMBER(B, sun_shadow_params)},
-	    {"spot_shadow_params", MEMBER(B, spot_shadow_params)},
-	    {"point_shadow_params", MEMBER(B, point_shadow_params)},
 	    {"target_size", MEMBER(B, target_size)},
+	    {"shadow_atlas_size", MEMBER(B, shadow_atlas_size)},
 	    {"environment_intensity", MEMBER(B, environment_intensity)},
 	    {"environment_mips", MEMBER(B, environment_mips)},
 	    {"exposure", MEMBER(B, exposure)},
 	    {"output_encoding", MEMBER(B, output_encoding)},
 	    {"flags", MEMBER(B, flags)},
 	    {"light_count", MEMBER(B, light_count)},
-	    {"sun_cascade_count", MEMBER(B, sun_cascade_count)},
+	    {"directional_count", MEMBER(B, directional_count)},
 	    {"tile_size", MEMBER(B, tile_size)},
 	    {"tiles_x", MEMBER(B, tiles_x)},
 	    {"tiles_y", MEMBER(B, tiles_y)},
@@ -159,7 +179,7 @@ static bool aprend_lit_check_scene_block(aprend_binding_layout layout) {
 	    {"scene_color_mips", MEMBER(B, scene_color_mips)},
 	    {"lights[0].position_range", MEMBER(B, lights)},
 	    {"lights[0].outer_shadow", MEMBER(B, lights) + MEMBER(L, outer_shadow)},
-	    {"lights[127].outer_shadow", last + MEMBER(L, outer_shadow)},
+	    {"lights[127].outer_shadow", last_light + MEMBER(L, outer_shadow)},
 	};
 	return aprend_lit_check_block(layout, 0, "AprendLitScene", (uint32_t)sizeof(B), members, COUNT_OF(members));
 }
@@ -218,13 +238,16 @@ static bool aprend_lit_check_occlusion_block(aprend_binding_layout layout) {
 static const struct {
 	const APREND_SHADER_PACKAGE *package;
 	const char *name;
-} s_lit_shaders[6] = {
+} s_lit_shaders[9] = {
     {&aprend_lit_frag_package, "surface fragment"},
     {&aprend_lit_depth_frag_package, "depth fragment"},
     {&aprend_lit_vert_package, "surface vertex"},
     {&aprend_lit_shadow_vert_package, "shadow vertex"},
     {&aprend_lit_depth_cutout_frag_package, "cut-out depth fragment"},
     {&aprend_lit_sky_frag_package, "sky fragment"},
+    {&aprend_lit_color_vert_package, "colored surface vertex"},
+    {&aprend_lit_shadow_color_vert_package, "colored shadow vertex"},
+    {&aprend_lit_surface_reflect_frag_package, "reflecting surface fragment"},
 };
 
 static aprend_shader aprend_lit_shader(aprend_instance instance, uint32_t which) {
@@ -319,7 +342,7 @@ bool aprend_lit_prepare_resources(aprend_instance instance) {
 		return false;
 	if (!aprend_lit_placeholder(instance, APREND_TEXTURE_VIEW_SHAPE_CUBE, false, &lit.placeholder_cube, &lit.placeholder_cube_view))
 		return false;
-	if (!aprend_lit_placeholder(instance, APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY, true, &lit.placeholder_depth, &lit.placeholder_depth_view))
+	if (!aprend_lit_placeholder(instance, APREND_TEXTURE_VIEW_SHAPE_2D, true, &lit.placeholder_depth, &lit.placeholder_depth_view))
 		return false;
 	if (!lit.placeholder_tiles) {
 		if (aprend_lit_storage_buffer(instance, 64, false, "aprend lit placeholder tiles", &lit.placeholder_tiles, nullptr) != APRESULT_OK) {
@@ -384,7 +407,7 @@ bool aprend_lit_prepare_brdf_lut(aprend_instance instance) {
 // constants (none if 0).
 static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance instance, aprend_shader fragment, const aprend_binding_layout *layouts,
                                                                uint32_t layout_count, SPUDGPU_FORMAT format, uint32_t push_size,
-                                                               const char *name) {
+                                                               const char *name, const spudgpu_blend_attachment_desc *blend = nullptr) {
 	APREND_GRAPHICS_PIPELINE_DESC desc{};
 	desc.base = apri_struct_base(APRI_STRUCT_TYPE_APREND_GRAPHICS_PIPELINE_DESC);
 	desc._debug_name = name;
@@ -402,6 +425,8 @@ static aprend_graphics_pipeline aprend_lit_fullscreen_pipeline(aprend_instance i
 	desc.color_attachment_formats[0] = format;
 	desc.color_attachment_count      = 1;
 	desc.depth_format                = SPUDGPU_FORMAT_UNKNOWN;
+	if (blend)
+		desc._blends[0] = *blend;
 	for (uint32_t i = 0; i < layout_count; ++i)
 		desc._binding_layouts[i] = layouts[i];
 	desc._binding_layout_count = layout_count;
@@ -446,6 +471,8 @@ static const struct {
      "Hosek-Wilkie sky"},
     {&aprend_exposure_adapt_histogram_frag_package, APREND_EXPOSURE_FORMAT,
      sizeof(aprend_histogram_adapt_params), "exposure adapt from a histogram"},
+    {&aprend_lit_hiz_frag_package, APREND_HIZ_FORMAT, sizeof(aprend_hiz_params), "Hi-Z pyramid"},
+    {&aprend_lit_hiz_down_frag_package, APREND_HIZ_FORMAT, sizeof(aprend_size_params), "Hi-Z pyramid level"},
 };
 
 // Every pass's fragment shader, the pass layout (a texture at 0, a sampler
@@ -543,11 +570,12 @@ aprend_graphics_pipeline aprend_lit_pass_pipeline(aprend_instance instance, uint
 
 static aprend_graphics_pipeline aprend_lit_format_pipeline(aprend_instance instance, std::vector<aprend_lit_builtins::format_pipeline> &pipelines,
                                                            aprend_shader fragment, const aprend_binding_layout *layouts, uint32_t layout_count,
-                                                           SPUDGPU_FORMAT format, uint32_t push_size, const char *name) {
+                                                           SPUDGPU_FORMAT format, uint32_t push_size, const char *name,
+                                                           const spudgpu_blend_attachment_desc *blend = nullptr) {
 	for (const aprend_lit_builtins::format_pipeline &entry : pipelines)
 		if (entry.format == format)
 			return entry.pipeline;
-	aprend_graphics_pipeline pipeline = aprend_lit_fullscreen_pipeline(instance, fragment, layouts, layout_count, format, push_size, name);
+	aprend_graphics_pipeline pipeline = aprend_lit_fullscreen_pipeline(instance, fragment, layouts, layout_count, format, push_size, name, blend);
 	if (!pipeline)
 		return nullptr;
 	try {
@@ -591,6 +619,118 @@ aprend_graphics_pipeline aprend_lit_tone_map_pipeline(aprend_instance instance, 
 	const aprend_binding_layout layouts[2] = {lit.tone_map_layout, lit.pass_layout};
 	return aprend_lit_format_pipeline(instance, lit.tone_map_pipelines, lit.tone_map_frag, layouts, 2, format, sizeof(aprend_tone_map_params),
 	                                  "tone map");
+}
+
+static aprend_binding_layout aprend_lit_scene_layout(aprend_instance instance);
+
+// A shader of Aprend's made from [package] into [*shader] if it isn't, and
+// the layout of its set [index] into [*layout] if it isn't. False, reported
+// naming [what], if either can't be.
+static bool aprend_lit_own_shader(aprend_instance instance, const APREND_SHADER_PACKAGE *package, aprend_shader *shader, uint32_t index,
+                                  aprend_binding_layout *layout, const char *what) {
+	if (!*shader) {
+		(void)aprend_shader_create(instance, package, shader, nullptr);
+		if (!*shader) {
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's %s shader can't be created", what);
+			return false;
+		}
+	}
+	if (!*layout) {
+		(void)aprend_binding_layout_create_from_shaders(instance, shader, 1, index, layout, nullptr);
+		if (!*layout) {
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's %s shader can't be created", what);
+			return false;
+		}
+	}
+	return true;
+}
+
+aprend_compute_pipeline aprend_lit_ssr_pipeline(aprend_instance instance) {
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	if (lit.ssr_pipeline)
+		return lit.ssr_pipeline;
+	if (!aprend_lit_prepare_resources(instance))
+		return nullptr;
+	if (!aprend_lit_own_shader(instance, &aprend_lit_ssr_comp_package, &lit.ssr_comp, 0, &lit.ssr_scene_layout, "screen-space reflections"))
+		return nullptr;
+	if (!aprend_lit_own_shader(instance, &aprend_lit_ssr_comp_package, &lit.ssr_comp, 1, &lit.ssr_input_layout, "screen-space reflections"))
+		return nullptr;
+	if (!aprend_lit_check_scene_block(lit.ssr_scene_layout)) {
+		aprend_binding_layout_destroy(lit.ssr_scene_layout);
+		lit.ssr_scene_layout = nullptr;
+		return nullptr;
+	}
+	APREND_COMPUTE_PIPELINE_DESC desc{};
+	desc.base                                 = apri_struct_base(APRI_STRUCT_TYPE_APREND_COMPUTE_PIPELINE_DESC);
+	desc._debug_name                          = "aprend screen-space reflections";
+	desc.compute_shader                       = lit.ssr_comp;
+	desc._entry_point                         = "aprend_lit_ssr_comp";
+	desc._binding_layouts[0]                  = lit.ssr_scene_layout;
+	desc._binding_layouts[1]                  = lit.ssr_input_layout;
+	desc._binding_layout_count                = 2;
+	desc._push_constant_ranges[0].stage_flags = SPUDGPU_SHADER_STAGE_COMPUTE;
+	desc._push_constant_ranges[0].offset      = 0;
+	desc._push_constant_ranges[0].size        = sizeof(aprend_ssr_params);
+	desc._push_constant_range_count           = 1;
+	APREND_ERROR error;
+	(void)aprend_compute_pipeline_create(instance, &desc, &lit.ssr_pipeline, &error);
+	if (!lit.ssr_pipeline)
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's screen-space reflections pipeline can't be created: %s", error.message);
+	return lit.ssr_pipeline;
+}
+
+aprend_graphics_pipeline aprend_lit_reflect_pipeline(aprend_instance instance, SPUDGPU_FORMAT format) {
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	aprend_binding_layout scene_layout = aprend_lit_scene_layout(instance);
+	if (!scene_layout)
+		return nullptr;
+	if (!aprend_lit_own_shader(instance, &aprend_lit_reflect_frag_package, &lit.reflect_frag, 1, &lit.reflect_input_layout, "reflection composite"))
+		return nullptr;
+	// Added onto the picture: what the shader writes is the change.
+	const spudgpu_blend_attachment_desc blend = aprend_blend_additive();
+	const aprend_binding_layout layouts[2]    = {scene_layout, lit.reflect_input_layout};
+	return aprend_lit_format_pipeline(instance, lit.reflect_pipelines, lit.reflect_frag, layouts, 2, format, sizeof(aprend_reflect_params),
+	                                  "reflection composite", &blend);
+}
+
+aprend_binding_set aprend_view_set_get(aprend_instance instance, aprend_view_set (&sets)[APREND_VIEW_SETS], aprend_binding_layout layout,
+                                       const aprend_texture_view *views, uint32_t view_count, const APREND_BINDING_SET_ENTRY *entries,
+                                       uint32_t entry_count, const char *what) {
+	aprend_view_set *oldest = &sets[0];
+	for (aprend_view_set &kept : sets) {
+		bool same = kept.set != nullptr && kept.layout == layout;
+		for (uint32_t i = 0; i < view_count && same; ++i)
+			same = kept.views[i] == views[i] && kept.serials[i] == views[i]->serial;
+		if (same) {
+			kept.used = instance->frame_number;
+			return kept.set;
+		}
+		if (!kept.set || (oldest->set && kept.used < oldest->used))
+			oldest = &kept;
+	}
+	aprend_binding_set made = nullptr;
+	APREND_ERROR error;
+	if (aprend_binding_set_create(layout, entries, entry_count, &made, &error) != APRESULT_OK) {
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "%s's set can't be made: %s", what, error.message);
+		return nullptr;
+	}
+	aprend_binding_set_destroy(oldest->set);
+	*oldest        = aprend_view_set{};
+	oldest->set    = made;
+	oldest->layout = layout;
+	for (uint32_t i = 0; i < view_count; ++i) {
+		oldest->views[i]   = views[i];
+		oldest->serials[i] = views[i]->serial;
+	}
+	oldest->used = instance->frame_number;
+	return made;
+}
+
+void aprend_view_sets_destroy(aprend_view_set (&sets)[APREND_VIEW_SETS]) {
+	for (aprend_view_set &kept : sets) {
+		aprend_binding_set_destroy(kept.set);
+		kept = aprend_view_set{};
+	}
 }
 
 aprend_compute_pipeline aprend_lit_histogram_pipeline(aprend_instance instance) {
@@ -723,6 +863,12 @@ aprend_binding_set aprend_texture_view_environment_set(aprend_texture_view view)
 
 void aprend_lit_builtins_destroy(aprend_instance instance) {
 	aprend_lit_builtins &lit = instance->builtins.lit;
+	aprend_view_sets_destroy(lit.view_sets);
+	for (const aprend_lit_builtins::format_pipeline &entry : lit.reflect_pipelines)
+		aprend_graphics_pipeline_destroy(entry.pipeline);
+	lit.reflect_pipelines.clear();
+	aprend_compute_pipeline_destroy(lit.ssr_pipeline);
+	lit.ssr_pipeline = nullptr;
 	for (const aprend_lit_builtins::format_pipeline &entry : lit.tone_map_pipelines)
 		aprend_graphics_pipeline_destroy(entry.pipeline);
 	lit.tone_map_pipelines.clear();
@@ -739,15 +885,20 @@ void aprend_lit_builtins_destroy(aprend_instance instance) {
 	lit.cull_bounded_pipeline = nullptr;
 	aprend_compute_pipeline_destroy(lit.histogram_pipeline);
 	lit.histogram_pipeline           = nullptr;
-	aprend_binding_layout *layouts[] = {&lit.tone_map_layout, &lit.pass_layout,       &lit.occlusion_layout, &lit.hosek_layout,
-	                                    &lit.histogram_layout, &lit.cull_depth_layout, &lit.cull_layout,      &lit.material_layout,
-	                                    &lit.shadow_layout,    &lit.scene_layout};
+	aprend_binding_layout *layouts[] = {&lit.reflect_input_layout, &lit.ssr_input_layout, &lit.ssr_scene_layout,  &lit.tone_map_layout,
+	                                    &lit.pass_layout,          &lit.occlusion_layout, &lit.hosek_layout,       &lit.histogram_layout,
+	                                    &lit.cull_depth_layout,    &lit.cull_layout,      &lit.material_layout,    &lit.shadow_layout,
+	                                    &lit.scene_layout};
 	for (aprend_binding_layout *layout : layouts) {
 		aprend_binding_layout_destroy(*layout);
 		*layout = nullptr;
 	}
 	aprend_shader_destroy(lit.tone_map_frag);
 	lit.tone_map_frag = nullptr;
+	aprend_shader_destroy(lit.ssr_comp);
+	lit.ssr_comp = nullptr;
+	aprend_shader_destroy(lit.reflect_frag);
+	lit.reflect_frag = nullptr;
 	aprend_shader_destroy(lit.cull_comp);
 	lit.cull_comp = nullptr;
 	aprend_shader_destroy(lit.cull_bounded_comp);
@@ -804,6 +955,9 @@ static const APREND_VERTEX_ELEMENT s_lit_vertex_elements[] = {
     {"in_uv", APREND_VERTEX_ELEMENT_TYPE_VEC2, (uint32_t)offsetof(APREND_LIT_VERTEX, uv)},
     {"in_tangent", APREND_VERTEX_ELEMENT_TYPE_VEC4, (uint32_t)offsetof(APREND_LIT_VERTEX, tangent)},
 };
+static const APREND_VERTEX_ELEMENT s_lit_color_elements[] = {
+    {"color", APREND_VERTEX_ELEMENT_TYPE_VEC4, 0},
+};
 static const APREND_VERTEX_ELEMENT s_lit_instance_elements[] = {
     {"in_transform0", APREND_VERTEX_ELEMENT_TYPE_VEC4, 0},
     {"in_transform1", APREND_VERTEX_ELEMENT_TYPE_VEC4, 16},
@@ -818,6 +972,14 @@ APREND_VERTEX_LAYOUT aprend_lit_vertex_layout(void) {
 	layout.count    = 4;
 	layout.elements = s_lit_vertex_elements;
 	layout.stride   = (uint32_t)sizeof(APREND_LIT_VERTEX);
+	return layout;
+}
+
+APREND_VERTEX_LAYOUT aprend_lit_vertex_color_layout(void) {
+	APREND_VERTEX_LAYOUT layout{};
+	layout.count    = 1;
+	layout.elements = s_lit_color_elements;
+	layout.stride   = (uint32_t)(sizeof(float) * 4);
 	return layout;
 }
 
@@ -837,7 +999,7 @@ APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shade
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is NULL");
 	if (APRI_STALE(instance, "aprend_lit_get_shader", "instance"))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "instance is destroyed");
-	if (shader > APREND_LIT_SHADER_SKY_FRAGMENT)
+	if (shader > APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u is not an APREND_LIT_SHADER", shader);
 	if (!out_shader)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_shader is NULL");
@@ -855,13 +1017,15 @@ static aprend_binding_layout aprend_lit_scene_layout(aprend_instance instance) {
 		return lit.scene_layout;
 	// Every shader that reads set 0, so each binding has every stage that
 	// reads it.
-	aprend_shader shaders[3] = {aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_FRAGMENT),
+	aprend_shader shaders[4] = {aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_FRAGMENT),
 	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_VERTEX),
+	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SURFACE_VERTEX_COLOR),
 	                            aprend_lit_shader(instance, APREND_LIT_SHADER_SKY_FRAGMENT)};
-	if (!shaders[0] || !shaders[1] || !shaders[2])
-		return nullptr;
+	for (aprend_shader shader : shaders)
+		if (!shader)
+			return nullptr;
 	aprend_binding_layout layout = nullptr;
-	(void)aprend_binding_layout_create_from_shaders(instance, shaders, 3, APREND_LIT_SCENE_SET, &layout, nullptr);
+	(void)aprend_binding_layout_create_from_shaders(instance, shaders, 4, APREND_LIT_SCENE_SET, &layout, nullptr);
 	if (!layout) {
 		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit scene can't be created");
 		return nullptr;
@@ -880,11 +1044,14 @@ static aprend_binding_layout aprend_lit_shadow_layout(aprend_instance instance) 
 	aprend_lit_builtins &lit = instance->builtins.lit;
 	if (lit.shadow_layout)
 		return lit.shadow_layout;
-	aprend_shader vertex = aprend_lit_shader(instance, APREND_LIT_SHADER_SHADOW_VERTEX);
-	if (!vertex)
+	aprend_shader vertices[2] = {aprend_lit_shader(instance, APREND_LIT_SHADER_SHADOW_VERTEX),
+	                             aprend_lit_shader(instance, APREND_LIT_SHADER_SHADOW_VERTEX_COLOR)};
+	if (!vertices[0])
+		return nullptr;
+	if (!vertices[1])
 		return nullptr;
 	aprend_binding_layout layout = nullptr;
-	(void)aprend_binding_layout_create_from_shaders(instance, &vertex, 1, APREND_LIT_SCENE_SET, &layout, nullptr);
+	(void)aprend_binding_layout_create_from_shaders(instance, vertices, 2, APREND_LIT_SCENE_SET, &layout, nullptr);
 	if (!layout) {
 		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "the binding layout of Aprend's lit shadow pass can't be created");
 		return nullptr;
@@ -1463,24 +1630,68 @@ void aprend_lit_hosek_cook(const float sun[3], float turbidity, const float albe
 
 // ---- Scenes -------------------------------------------------------------------------
 
-// The block's lights' spot and point shadow indices, from the shadows'
-// lights.
+static const char *const s_directional_masks[APREND_LIT_MAX_DIRECTIONAL_LIGHTS] = {"directional_mask_0", "directional_mask_1", "directional_mask_2",
+                                                                                   "directional_mask_3"};
+
+// The shadows as set, into the block: each map shadow's views into the view
+// table in record order, a directional light's shadow into its record, a
+// point or spot light's into the shadow table it names; and each
+// directional light's mask bound at its slot (a placeholder where it has
+// none). Every view, name and handle here was checked when it was set, so
+// binding a mask can't fail.
 static void aprend_lit_scene_resolve_shadows(aprend_lit_scene scene) {
 	aprend_lit_scene_block &b = scene->block;
-	for (uint32_t i = 0; i < APREND_LIT_MAX_LIGHTS; ++i) {
+	for (uint32_t i = 0; i < APREND_LIT_MAX_LIGHTS; ++i)
 		b.lights[i].outer_shadow[1] = -1.0f;
-		b.lights[i].outer_shadow[2] = -1.0f;
+	aprend_texture_view masks[APREND_LIT_MAX_DIRECTIONAL_LIGHTS];
+	for (uint32_t d = 0; d < APREND_LIT_MAX_DIRECTIONAL_LIGHTS; ++d) {
+		memset(b.directional[d].shadow_params, 0, sizeof(b.directional[d].shadow_params));
+		memset(b.directional[d].shadow_views, 0, sizeof(b.directional[d].shadow_views));
+		memset(b.directional[d].splits, 0, sizeof(b.directional[d].splits));
+		masks[d] = scene->instance->builtins.lit.placeholder_2d_view;
 	}
-	for (uint32_t s = 0; s < scene->spot_shadow_count; ++s) {
-		const uint32_t light = scene->spot_shadow_lights[s];
-		if (light < b.light_count && b.lights[light].radiance_type[3] > 0.5f)
-			b.lights[light].outer_shadow[1] = (float)s;
+	uint32_t views   = 0;
+	uint32_t shadows = 0;
+	for (uint32_t r = 0; r < scene->shadow_count; ++r) {
+		const aprend_lit_shadow_record &record = scene->shadows[r];
+		const aprend_lit_light_entry entry     = scene->lights[record.light];
+		if (record.kind == APREND_LIT_SHADOW_KIND_MASK) {
+			aprend_lit_directional_block &d = b.directional[entry.slot];
+			d.shadow_views[0]               = APREND_LIT_DIRECTIONAL_MASK;
+			d.shadow_params[3]              = record.strength;
+			masks[entry.slot]               = record.mask;
+			continue;
+		}
+		const uint32_t first = views;
+		for (uint32_t v = 0; v < record.view_count; ++v, ++views) {
+			aprend_lit_shadow_view_block &view = b.shadow_views[views];
+			memcpy(view.view_projection, record.view_projection[v], sizeof(view.view_projection));
+			view.rect[0] = (float)record.rects[v]._x;
+			view.rect[1] = (float)record.rects[v]._y;
+			view.rect[2] = (float)record.rects[v]._width;
+			view.rect[3] = (float)record.rects[v]._height;
+		}
+		const float params[4] = {record.depth_bias, record.normal_offset, record.softness, record.strength};
+		if (record.kind == APREND_LIT_SHADOW_KIND_CASCADES) {
+			aprend_lit_directional_block &d = b.directional[entry.slot];
+			d.shadow_views[0]               = APREND_LIT_DIRECTIONAL_CASCADES;
+			d.shadow_views[1]               = first;
+			d.shadow_views[2]               = record.view_count;
+			memcpy(d.shadow_params, params, sizeof(params));
+			memcpy(d.splits, record.split_depths, sizeof(d.splits));
+			continue;
+		}
+		aprend_lit_shadow_block &shadow = b.shadows[shadows];
+		memcpy(shadow.params, params, sizeof(params));
+		shadow.views[0]                         = first;
+		shadow.views[1]                         = record.view_count;
+		shadow.views[2]                         = 0;
+		shadow.views[3]                         = 0;
+		b.lights[entry.slot].outer_shadow[1] = (float)shadows;
+		++shadows;
 	}
-	for (uint32_t s = 0; s < scene->point_shadow_count; ++s) {
-		const uint32_t light = scene->point_shadow_lights[s];
-		if (light < b.light_count && b.lights[light].radiance_type[3] < 0.5f)
-			b.lights[light].outer_shadow[2] = (float)s;
-	}
+	for (uint32_t d = 0; d < APREND_LIT_MAX_DIRECTIONAL_LIGHTS; ++d)
+		(void)aprend_material_set_texture(scene->material, s_directional_masks[d], 0, masks[d], nullptr);
 }
 
 // The block as the scene holds it, into the materials that read it, for the
@@ -1511,21 +1722,100 @@ aprend_binding_set aprend_lit_scene_rt_set(aprend_lit_scene scene, aprend_bindin
 	return scene->rt_set;
 }
 
+aprend_binding_set aprend_lit_scene_ssr_set(aprend_lit_scene scene) {
+	if (scene->ssr_set)
+		return scene->ssr_set;
+	// The block's range of the material arena, as aprend_lit_scene_rt_set
+	// binds it.
+	aprend_material_slot *slot = aprend_lit_block_slot(scene->material, "u_lit_scene");
+	APREND_BINDING_SET_ENTRY entry{};
+	entry._binding                   = 0;
+	entry._type                      = SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	entry._resource._uniform._buffer = slot->arena->buffer;
+	entry._resource._uniform._offset = slot->offset;
+	entry._resource._uniform._range  = slot->block_size;
+	APREND_ERROR error;
+	if (aprend_binding_set_create(scene->instance->builtins.lit.ssr_scene_layout, &entry, 1, &scene->ssr_set, &error) != APRESULT_OK) {
+		aprend_report(scene->instance, APRESULT_APREND_GPU_FAILURE, "the scene's set for screen-space reflections can't be made: %s", error.message);
+		return nullptr;
+	}
+	return scene->ssr_set;
+}
+
+bool aprend_lit_scene_depth_reversed(aprend_lit_scene scene) {
+	// Depth 0 and depth 1 at the middle of the view brought back through
+	// the inverse: the one nearer the eye is near. A point at infinity (w
+	// 0, as a reversed infinite projection's depth 0) is the far one.
+	const float *m   = scene->block.inverse_view_projection;
+	const float *eye = scene->block.eye_position;
+	float distance[2] = {0.0f, 0.0f};
+	for (int z = 0; z < 2; ++z) {
+		// Column-major: element (row, column) at column * 4 + row.
+		const float h[4] = {m[8] * (float)z + m[12], m[9] * (float)z + m[13], m[10] * (float)z + m[14], m[11] * (float)z + m[15]};
+		if (std::fabs(h[3]) < 1e-30f) {
+			distance[z] = INFINITY;
+			continue;
+		}
+		const float d[3] = {h[0] / h[3] - eye[0], h[1] / h[3] - eye[1], h[2] / h[3] - eye[2]};
+		distance[z]      = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	}
+	return distance[1] < distance[0];
+}
+
+uint32_t aprend_lit_scene_directional_slot(aprend_lit_scene scene, uint32_t light) {
+	if (light >= scene->light_count)
+		return UINT32_MAX;
+	if (scene->lights[light].type != APREND_LIT_LIGHT_TYPE_DIRECTIONAL)
+		return UINT32_MAX;
+	return scene->lights[light].slot;
+}
+
 static void aprend_lit_scene_free(aprend_lit_scene scene) {
 	aprend_binding_set_destroy(scene->rt_set);
+	aprend_binding_set_destroy(scene->ssr_set);
 	if (scene->material)
 		scene->material->lit_scene = nullptr;
 	aprend_material_destroy(scene->material);
-	for (aprend_material material : scene->sun_shadow_materials)
-		aprend_material_destroy(material);
-	for (aprend_material material : scene->spot_shadow_materials)
-		aprend_material_destroy(material);
-	for (aprend_material material : scene->point_shadow_materials)
+	for (aprend_material material : scene->shadow_pass_materials)
 		aprend_material_destroy(material);
 	aprend_material_destroy(scene->cull_material);
 	aprend_material_destroy(scene->occlusion_material);
 	aprend_buffer_destroy(scene->tiles);
 	APREND_DESTRUCT__T(scene, aprend_lit_scene_t);
+}
+
+// The record of [light]'s shadow in [scene], or NULL if it has none.
+static aprend_lit_shadow_record *aprend_lit_scene_find_shadow(aprend_lit_scene scene, uint32_t light) {
+	for (uint32_t r = 0; r < scene->shadow_count; ++r)
+		if (scene->shadows[r].light == light)
+			return &scene->shadows[r];
+	return nullptr;
+}
+
+// Takes record [r] of [scene]'s shadows away: its pass materials go back to
+// the free ones, and the records after it move down, keeping their order.
+static void aprend_lit_scene_remove_shadow(aprend_lit_scene scene, uint32_t r) {
+	const aprend_lit_shadow_record &record = scene->shadows[r];
+	for (uint32_t v = 0; v < record.view_count; ++v)
+		scene->free_pass_materials[scene->free_pass_count++] = record.materials[v];
+	for (uint32_t i = r + 1; i < scene->shadow_count; ++i)
+		scene->shadows[i - 1] = scene->shadows[i];
+	--scene->shadow_count;
+}
+
+// Whether a shadow of [kind] fits a light of [type].
+static bool aprend_lit_kind_fits(APREND_LIT_SHADOW_KIND kind, uint32_t type) {
+	switch (kind) {
+	case APREND_LIT_SHADOW_KIND_MASK:
+	case APREND_LIT_SHADOW_KIND_CASCADES:
+		return type == APREND_LIT_LIGHT_TYPE_DIRECTIONAL;
+	case APREND_LIT_SHADOW_KIND_SPOT_MAP:
+		return type == APREND_LIT_LIGHT_TYPE_SPOT;
+	case APREND_LIT_SHADOW_KIND_POINT_MAP:
+		return type == APREND_LIT_LIGHT_TYPE_POINT;
+	default:
+		return false;
+	}
 }
 
 extern "C" {
@@ -1566,11 +1856,7 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 	desc._layout = layout;
 	(void)aprend_material_create(instance, &desc, &scene->material, nullptr);
 	desc._layout = shadow_layout;
-	for (aprend_material &material : scene->sun_shadow_materials)
-		(void)aprend_material_create(instance, &desc, &material, nullptr);
-	for (aprend_material &material : scene->spot_shadow_materials)
-		(void)aprend_material_create(instance, &desc, &material, nullptr);
-	for (aprend_material &material : scene->point_shadow_materials)
+	for (aprend_material &material : scene->shadow_pass_materials)
 		(void)aprend_material_create(instance, &desc, &material, nullptr);
 	desc._layout = lit.cull_layout;
 	(void)aprend_material_create(instance, &desc, &scene->cull_material, nullptr);
@@ -1578,17 +1864,11 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 	(void)aprend_material_create(instance, &desc, &scene->occlusion_material, nullptr);
 
 	bool ok = scene->material && scene->cull_material && scene->occlusion_material;
-	for (aprend_material material : scene->sun_shadow_materials)
-		ok = ok && material;
-	for (aprend_material material : scene->spot_shadow_materials)
-		ok = ok && material;
-	for (aprend_material material : scene->point_shadow_materials)
+	for (aprend_material material : scene->shadow_pass_materials)
 		ok = ok && material;
 	aprend_material m = scene->material;
 	ok                = ok && aprend_material_set_storage_buffer(m, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
-	ok                = ok && aprend_material_set_texture(m, "sun_shadow_map", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
-	ok                = ok && aprend_material_set_texture(m, "spot_shadow_map", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
-	ok                = ok && aprend_material_set_texture(m, "point_shadow_map", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
+	ok                = ok && aprend_material_set_texture(m, "shadow_atlas", 0, lit.placeholder_depth_view, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler", 0, lit.shadow_sampler, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_sampler(m, "shadow_sampler_reversed", 0, lit.shadow_sampler_reversed, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_texture(m, "environment_specular", 0, lit.placeholder_cube_view, nullptr) == APRESULT_OK;
@@ -1597,13 +1877,19 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 	ok                = ok && aprend_material_set_sampler(m, "environment_sampler", 0, lit.environment_sampler, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_texture(m, "ambient_occlusion", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
 	ok                = ok && aprend_material_set_texture(m, "scene_color", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
-	ok                = ok && aprend_material_set_texture(m, "sun_mask", 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
-	ok                = ok && aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
-	ok                = ok && aprend_lit_block_slot(m, "u_lit_scene") && aprend_lit_block_slot(scene->cull_material, "u_lit_scene");
+	for (const char *mask : s_directional_masks)
+		ok = ok && aprend_material_set_texture(m, mask, 0, lit.placeholder_2d_view, nullptr) == APRESULT_OK;
+	ok = ok && aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
+	ok = ok && aprend_lit_block_slot(m, "u_lit_scene") && aprend_lit_block_slot(scene->cull_material, "u_lit_scene");
 	if (!ok) {
 		aprend_lit_scene_free(scene);
 		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "the scene's materials can't be made");
 	}
+	// Every pass material free, handed out from the end down so the first
+	// shadow set takes material 0.
+	for (uint32_t i = 0; i < APREND_LIT_MAX_SHADOW_VIEWS; ++i)
+		scene->free_pass_materials[i] = (uint8_t)(APREND_LIT_MAX_SHADOW_VIEWS - 1 - i);
+	scene->free_pass_count       = APREND_LIT_MAX_SHADOW_VIEWS;
 	scene->material->lit_scene   = scene;
 	scene->block.exposure        = 1.0f;
 	scene->block.output_encoding = APREND_COLOR_ENCODING_LINEAR;
@@ -1628,28 +1914,17 @@ aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene) {
 	return scene->material;
 }
 
-aprend_material aprend_lit_scene_get_sun_shadow_material(aprend_lit_scene scene, uint32_t cascade) {
+aprend_material aprend_lit_scene_get_shadow_pass_material(aprend_lit_scene scene, uint32_t light, uint32_t view) {
 	if (!scene)
 		return nullptr;
-	if (APRI_STALE(scene, "aprend_lit_scene_get_sun_shadow_material", "scene"))
+	if (APRI_STALE(scene, "aprend_lit_scene_get_shadow_pass_material", "scene"))
 		return nullptr;
-	return cascade < APREND_LIT_MAX_CASCADES ? scene->sun_shadow_materials[cascade] : nullptr;
-}
-
-aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene, uint32_t index) {
-	if (!scene)
+	const aprend_lit_shadow_record *record = aprend_lit_scene_find_shadow(scene, light);
+	if (!record)
 		return nullptr;
-	if (APRI_STALE(scene, "aprend_lit_scene_get_spot_shadow_material", "scene"))
+	if (view >= record->view_count)
 		return nullptr;
-	return index < APREND_LIT_MAX_SPOT_SHADOWS ? scene->spot_shadow_materials[index] : nullptr;
-}
-
-aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scene, uint32_t index, uint32_t face) {
-	if (!scene)
-		return nullptr;
-	if (APRI_STALE(scene, "aprend_lit_scene_get_point_shadow_material", "scene"))
-		return nullptr;
-	return index < APREND_LIT_MAX_POINT_SHADOWS && face < 6 ? scene->point_shadow_materials[index * 6 + face] : nullptr;
+	return scene->shadow_pass_materials[record->materials[view]];
 }
 
 APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW *view, APREND_ERROR *out_error) {
@@ -1729,148 +2004,186 @@ APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW
 	return APRESULT_OK;
 }
 
-APRESULT aprend_lit_scene_set_sun(aprend_lit_scene scene, const APREND_LIT_SUN *sun, APREND_ERROR *out_error) {
-	aprend_error_clear(out_error);
-	if (!scene)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
-	if (APRI_STALE(scene, "aprend_lit_scene_set_sun", "scene"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
-	if (!sun)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "sun is NULL");
-	APREND_ENTER(scene->instance, "aprend_lit_scene_set_sun");
-	if (const APRESULT base = aprend_base_check(out_error, "sun", &sun->base, APRI_STRUCT_TYPE_APREND_LIT_SUN))
-		return base;
-	if (!all_finite(sun->direction, 3) || !all_finite(sun->radiance, 3) || sun->radiance[0] < 0.0f || sun->radiance[1] < 0.0f ||
-	    sun->radiance[2] < 0.0f) {
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number, or a radiance is negative");
-	}
-	const bool lit = sun->radiance[0] > 0.0f || sun->radiance[1] > 0.0f || sun->radiance[2] > 0.0f;
-	if (lit && length3(sun->direction) == 0.0f)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the sun has radiance and no direction");
-	if (!finite(sun->disc_angle))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "disc_angle is not a finite number");
-	if (sun->disc_angle < 0.0f)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "disc_angle is negative");
-	if (sun->disc_angle > 0.5f)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "disc_angle %g is above 0.5", (double)sun->disc_angle);
-	aprend_lit_scene_block &b = scene->block;
-	unit3(sun->direction, b.sun_direction);
-	memcpy(b.sun_radiance, sun->radiance, sizeof(float) * 3);
-	// 1 - cos of the disc's angle, in the w the shader leaves: 0 for none,
-	// as a zeroed block has it. Worked out in double, since for the
-	// earth's sun it is 1e-5.
-	b.sun_radiance[3] = (float)(1.0 - std::cos((double)sun->disc_angle));
-	aprend_lit_scene_commit(scene);
-	return APRESULT_OK;
-}
-
 } // extern "C"
 
-// Whether [map] is a SHADER_RESOURCE view of depth shaped 2D_ARRAY, of
-// [scene]'s instance, with at least [layers] layers. Printed for [who].
-static APRESULT aprend_lit_shadow_map_valid(aprend_lit_scene scene, aprend_texture_view map, uint32_t layers, APREND_ERROR *error) {
-	if (!map)
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map is NULL");
-	if (map->instance != scene->instance)
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map is of another instance");
-	if (map->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || map->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY ||
-	    map->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_DEPTH) {
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map is not a SHADER_RESOURCE 2D_ARRAY view of depth");
-	}
-	if (map->desc.layer_count < layers)
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "the map has %u layers, and %u are needed", map->desc.layer_count, layers);
-	return APRESULT_OK;
-}
-
-static APRESULT aprend_lit_shadow_params_valid(float bias, float normal_offset, float softness, float strength, APREND_ERROR *error) {
-	if (!finite(bias) || !finite(normal_offset) || !finite(softness) || !finite(strength))
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number");
-	if (softness < 0.0f || softness > 4.0f || strength < 0.0f || strength > 1.0f)
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "softness is outside 0 to 4, or strength outside 0 to 1");
-	return APRESULT_OK;
+// Whether any of [v]'s three is below 0.
+static bool any_negative3(const float v[3]) {
+	bool negative = false;
+	for (int i = 0; i < 3; ++i)
+		negative = negative || v[i] < 0.0f;
+	return negative;
 }
 
 // Whether [l] is a light aprend_lit_scene_set_lights() takes; [error] names
 // it by its [index] if not.
-static APRESULT aprend_lit_light_valid(const APREND_LIT_LIGHT &l, uint32_t index, APREND_ERROR *error) {
+static APRESULT aprend_lit_light_valid(const APREND_LIT_SCENE_LIGHT &l, uint32_t index, APREND_ERROR *error) {
 	const float half_pi = 1.57079632679f;
-	if (l.type > APREND_LIT_LIGHT_TYPE_SPOT)
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has type %u, which is not an APREND_LIT_LIGHT_TYPE", index, l.type);
-	if (!all_finite(l.position, 3) || !all_finite(l.direction, 3) || !all_finite(l.radiance, 3) || !finite(l.range) || !finite(l.inner_angle) ||
-	    !finite(l.outer_angle)) {
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has a value that is not a finite number", index);
-	}
-	if (l.radiance[0] < 0.0f || l.radiance[1] < 0.0f || l.radiance[2] < 0.0f || !(l.range > 0.0f))
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has a negative radiance or a range that is not above 0", index);
-	if (l.type == APREND_LIT_LIGHT_TYPE_SPOT &&
-	    (length3(l.direction) == 0.0f || l.inner_angle < 0.0f || l.inner_angle > l.outer_angle || l.outer_angle > half_pi)) {
-		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "spot light %u has no direction, or angles that are not 0 <= inner <= outer <= pi / 2", index);
-	}
+	if (l._type > APREND_LIT_LIGHT_TYPE_DIRECTIONAL)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has type %u, which is not an APREND_LIT_LIGHT_TYPE", index, l._type);
+	if (!all_finite(l._position, 3))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _position is not finite", index);
+	if (!all_finite(l._direction, 3))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _direction is not finite", index);
+	if (!all_finite(l._radiance, 3))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _radiance is not finite", index);
+	if (!finite(l._range))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _range is not finite", index);
+	if (!finite(l._inner_angle))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _inner_angle is not finite", index);
+	if (!finite(l._outer_angle))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _outer_angle is not finite", index);
+	if (!finite(l._radius))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u's _radius is not finite", index);
+	if (any_negative3(l._radiance))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u has a negative _radiance", index);
+	if (l._type != APREND_LIT_LIGHT_TYPE_POINT && length3(l._direction) == 0.0f)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u, a spot or directional light, has a _direction of 0", index);
+	if (l._type != APREND_LIT_LIGHT_TYPE_DIRECTIONAL && !(l._range > 0.0f))
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u, a point or spot light, has a _range that is not above 0", index);
+	if (l._type == APREND_LIT_LIGHT_TYPE_SPOT && l._inner_angle < 0.0f)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "spot light %u's _inner_angle is negative", index);
+	if (l._type == APREND_LIT_LIGHT_TYPE_SPOT && l._inner_angle > l._outer_angle)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "spot light %u's _inner_angle is past its _outer_angle", index);
+	if (l._type == APREND_LIT_LIGHT_TYPE_SPOT && l._outer_angle > half_pi)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "spot light %u's _outer_angle is past pi / 2", index);
+	if (l._type == APREND_LIT_LIGHT_TYPE_DIRECTIONAL && l._radius < 0.0f)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "directional light %u's _radius is negative", index);
+	if (l._type == APREND_LIT_LIGHT_TYPE_DIRECTIONAL && l._radius > 0.5f)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "directional light %u's _radius %g is above 0.5", index, (double)l._radius);
+	if (l._type != APREND_LIT_LIGHT_TYPE_DIRECTIONAL && l._radius != 0.0f)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u, a point or spot light, has a _radius that is not 0 (card A38)", index);
+	if (l._type != APREND_LIT_LIGHT_TYPE_DIRECTIONAL && l._sky_disc)
+		return aprend_fail(error, APRESULT_INVALID_ARGUMENT, "light %u, a point or spot light, has _sky_disc set", index);
 	return APRESULT_OK;
+}
+
+// Whether every rectangle of [maps]' first [count] views lies inside an
+// atlas of [width] by [height]: their index, or UINT32_MAX if they do.
+static uint32_t aprend_lit_rect_outside(const APREND_LIT_SHADOW_RECT *rects, uint32_t count, uint32_t width, uint32_t height) {
+	for (uint32_t v = 0; v < count; ++v) {
+		const APREND_LIT_SHADOW_RECT &r = rects[v];
+		if ((uint64_t)r._x + r._width > width || (uint64_t)r._y + r._height > height)
+			return v;
+	}
+	return UINT32_MAX;
 }
 
 extern "C" {
 
-APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LIT_SUN_SHADOW *shadow, APREND_ERROR *out_error) {
+APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_SCENE_LIGHT *lights, uint32_t count, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	if (!scene)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
-	if (APRI_STALE(scene, "aprend_lit_scene_set_sun_shadow", "scene"))
+	if (APRI_STALE(scene, "aprend_lit_scene_set_lights", "scene"))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
-	APREND_ENTER(scene->instance, "aprend_lit_scene_set_sun_shadow");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_lights");
+	if (count > 0 && !lights)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "lights is NULL with a count of %u", count);
+	uint32_t point_or_spot = 0;
+	uint32_t directional   = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		if (const APRESULT valid = aprend_lit_light_valid(lights[i], i, out_error))
+			return valid;
+		if (lights[i]._type == APREND_LIT_LIGHT_TYPE_DIRECTIONAL)
+			++directional;
+		else
+			++point_or_spot;
+	}
+	if (point_or_spot > APREND_LIT_MAX_LIGHTS)
+		return aprend_fail(out_error, APRESULT_LIMIT, "%u point and spot lights, and a scene holds %u", point_or_spot, APREND_LIT_MAX_LIGHTS);
+	if (directional > APREND_LIT_MAX_DIRECTIONAL_LIGHTS)
+		return aprend_fail(out_error, APRESULT_LIMIT, "%u directional lights, and a scene holds %u", directional, APREND_LIT_MAX_DIRECTIONAL_LIGHTS);
 	aprend_lit_scene_block &b = scene->block;
-	if (!shadow) {
-		if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_shadow_map", 0, scene->instance->builtins.lit.placeholder_depth_view, out_error))
-			return set;
-		b.flags &= ~(APREND_LIT_SCENE_FLAG_SUN_SHADOW | APREND_LIT_SCENE_FLAG_SUN_REVERSED);
-		b.sun_cascade_count = 0;
-		aprend_lit_scene_commit(scene);
-		return APRESULT_OK;
+	memset(b.lights, 0, sizeof(b.lights));
+	for (aprend_lit_directional_block &d : b.directional) {
+		memset(d.direction_versine, 0, sizeof(d.direction_versine));
+		memset(d.radiance_disc, 0, sizeof(d.radiance_disc));
 	}
-	if (const APRESULT base = aprend_base_check(out_error, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
-		return base;
-	const APREND_LIT_SUN_SHADOW &s = *shadow;
-	if (s.cascade_count == 0 || s.cascade_count > APREND_LIT_MAX_CASCADES)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u cascades: 1 to %u", s.cascade_count, APREND_LIT_MAX_CASCADES);
-	if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, s.map, s.cascade_count, out_error))
-		return valid;
-	if (const APRESULT valid = aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, out_error))
-		return valid;
-	for (uint32_t c = 0; c < s.cascade_count; ++c) {
-		if (!all_finite(s.view_projection[c], 16) || !finite(s.split_depths[c]) || !(s.split_depths[c] > 0.0f) ||
-		    (c > 0 && !(s.split_depths[c] > s.split_depths[c - 1]))) {
-			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cascade %u's matrix is not finite, or its split is not above the one before and 0", c);
+	uint32_t slots[2] = {0, 0};
+	for (uint32_t i = 0; i < count; ++i) {
+		const APREND_LIT_SCENE_LIGHT &l = lights[i];
+		const bool is_directional       = l._type == APREND_LIT_LIGHT_TYPE_DIRECTIONAL;
+		const uint32_t slot             = slots[is_directional ? 1 : 0]++;
+		scene->lights[i].type           = (uint8_t)l._type;
+		scene->lights[i].slot           = (uint8_t)slot;
+		if (is_directional) {
+			aprend_lit_directional_block &d = b.directional[slot];
+			unit3(l._direction, d.direction_versine);
+			// 1 - cos of the radius: 0 for none. Worked out in double, since
+			// for the earth's sun it is 1e-5.
+			d.direction_versine[3] = (float)(1.0 - std::cos((double)l._radius));
+			memcpy(d.radiance_disc, l._radiance, sizeof(float) * 3);
+			d.radiance_disc[3] = l._sky_disc ? 1.0f : 0.0f;
+			continue;
 		}
+		aprend_lit_light_block &o = b.lights[slot];
+		memcpy(o.position_range, l._position, sizeof(float) * 3);
+		o.position_range[3] = l._range;
+		memcpy(o.radiance_type, l._radiance, sizeof(float) * 3);
+		o.radiance_type[3] = l._type == APREND_LIT_LIGHT_TYPE_SPOT ? 1.0f : 0.0f;
+		unit3(l._direction, o.direction_inner);
+		o.direction_inner[3] = std::cos(l._inner_angle);
+		o.outer_shadow[0]    = std::cos(l._outer_angle);
 	}
-	if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_shadow_map", 0, s.map, out_error))
-		return set;
-	for (uint32_t c = 0; c < APREND_LIT_MAX_CASCADES; ++c) {
-		if (c < s.cascade_count) {
-			memcpy(b.sun_shadow_view_projection[c], s.view_projection[c], sizeof(float) * 16);
-			b.sun_shadow_splits[c] = s.split_depths[c];
-		} else {
-			memset(b.sun_shadow_view_projection[c], 0, sizeof(float) * 16);
-			b.sun_shadow_splits[c] = 0.0f;
-		}
-		aprend_lit_shadow_pass_block pass{};
-		memcpy(pass.view_projection, b.sun_shadow_view_projection[c], sizeof(pass.view_projection));
-		aprend_lit_write_block(scene->sun_shadow_materials[c], "u_lit_shadow_pass", &pass, sizeof(pass));
+	scene->light_count  = count;
+	b.light_count       = point_or_spot;
+	b.directional_count = directional;
+	// Each shadow whose index still names a light of a type its kind fits
+	// stays; the rest go.
+	for (uint32_t r = scene->shadow_count; r-- > 0;) {
+		const aprend_lit_shadow_record &record = scene->shadows[r];
+		if (record.light >= count || !aprend_lit_kind_fits(record.kind, lights[record.light]._type))
+			aprend_lit_scene_remove_shadow(scene, r);
 	}
-	b.sun_cascade_count    = s.cascade_count;
-	b.sun_shadow_params[0] = s.depth_bias;
-	b.sun_shadow_params[1] = s.normal_offset;
-	b.sun_shadow_params[2] = s.softness;
-	b.sun_shadow_params[3] = s.strength;
-	// Light 0's one shadow (aprend_lit_scene_set_light_shadow()): cascades
-	// replace a mask set before, whose borrowed view the scene lets go of.
-	if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_mask", 0, scene->instance->builtins.lit.placeholder_2d_view, out_error))
+	aprend_lit_scene_commit(scene);
+	return APRESULT_OK;
+}
+
+APRESULT aprend_lit_scene_set_shadow_atlas(aprend_lit_scene scene, aprend_texture_view atlas, bool reversed_depth, APREND_ERROR *out_error) {
+	aprend_error_clear(out_error);
+	if (!scene)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
+	if (APRI_STALE(scene, "aprend_lit_scene_set_shadow_atlas", "scene"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
+	APREND_ENTER(scene->instance, "aprend_lit_scene_set_shadow_atlas");
+	if (atlas && APRI_STALE(atlas, "aprend_lit_scene_set_shadow_atlas", "atlas"))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is destroyed");
+	if (atlas && atlas->instance != scene->instance)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is of another instance");
+	if (atlas && atlas->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is not a SHADER_RESOURCE view");
+	if (atlas && atlas->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is not a 2D view");
+	if (atlas && atlas->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_DEPTH)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "atlas is not a view of depth");
+	const uint32_t width  = atlas ? aprend_mip_size(atlas->texture._t2d->desc.width, atlas->desc.base_mip) : 0;
+	const uint32_t height = atlas ? aprend_mip_size(atlas->texture._t2d->desc.height, atlas->desc.base_mip) : 0;
+	for (uint32_t r = 0; atlas && r < scene->shadow_count; ++r) {
+		const aprend_lit_shadow_record &record = scene->shadows[r];
+		const uint32_t outside                 = aprend_lit_rect_outside(record.rects, record.view_count, width, height);
+		if (outside != UINT32_MAX)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light %u's shadow has view %u's rectangle past an atlas of %u by %u", record.light,
+			                   outside, width, height);
+	}
+	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
+	if (const APRESULT set = aprend_material_set_texture(scene->material, "shadow_atlas", 0, atlas ? atlas : lit.placeholder_depth_view, out_error))
 		return set;
-	b.flags &= ~APREND_LIT_SCENE_FLAG_SUN_MASK;
-	b.flags |= APREND_LIT_SCENE_FLAG_SUN_SHADOW;
-	if (s.reversed_depth)
-		b.flags |= APREND_LIT_SCENE_FLAG_SUN_REVERSED;
+	scene->atlas        = atlas;
+	scene->atlas_width  = width;
+	scene->atlas_height = height;
+	aprend_lit_scene_block &b = scene->block;
+	b.shadow_atlas_size[0]    = (float)width;
+	b.shadow_atlas_size[1]    = (float)height;
+	b.shadow_atlas_size[2]    = width ? 1.0f / (float)width : 0.0f;
+	b.shadow_atlas_size[3]    = height ? 1.0f / (float)height : 0.0f;
+	if (atlas)
+		b.flags |= APREND_LIT_SCENE_FLAG_SHADOW_ATLAS;
 	else
-		b.flags &= ~APREND_LIT_SCENE_FLAG_SUN_REVERSED;
+		b.flags &= ~APREND_LIT_SCENE_FLAG_SHADOW_ATLAS;
+	if (reversed_depth)
+		b.flags |= APREND_LIT_SCENE_FLAG_SHADOW_REVERSED;
+	else
+		b.flags &= ~APREND_LIT_SCENE_FLAG_SHADOW_REVERSED;
 	aprend_lit_scene_commit(scene);
 	return APRESULT_OK;
 }
@@ -1883,198 +2196,145 @@ APRESULT aprend_lit_scene_set_light_shadow(aprend_lit_scene scene, uint32_t ligh
 	if (APRI_STALE(scene, "aprend_lit_scene_set_light_shadow", "scene"))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
 	APREND_ENTER(scene->instance, "aprend_lit_scene_set_light_shadow");
-	if (light != 0)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light %u names no directional light: the scene has one, light 0 (the sun), until card A35", light);
-	aprend_lit_scene_block &b = scene->block;
+	if (light >= scene->light_count)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light %u names no light of the scene, which has %u", light, scene->light_count);
+	aprend_lit_shadow_record *existing = aprend_lit_scene_find_shadow(scene, light);
 	if (!shadow) {
-		// No shadow at all: neither a mask nor cascades.
-		if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_mask", 0, scene->instance->builtins.lit.placeholder_2d_view, out_error))
-			return set;
-		b.flags &= ~(APREND_LIT_SCENE_FLAG_SUN_MASK | APREND_LIT_SCENE_FLAG_SUN_SHADOW | APREND_LIT_SCENE_FLAG_SUN_REVERSED);
-		b.sun_cascade_count = 0;
+		if (existing)
+			aprend_lit_scene_remove_shadow(scene, (uint32_t)(existing - scene->shadows));
 		aprend_lit_scene_commit(scene);
 		return APRESULT_OK;
 	}
-	if (const APRESULT base = aprend_base_check(out_error, "shadow", &shadow->base, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW))
-		return base;
+	// The shadow's own type; what is chained on is its kind's, checked below.
+	if (shadow->base.type != APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW)
+		return aprend_fail(out_error, APRESULT_STRUCT_WRONG_TYPE, "shadow %s", apri_struct_check_message(APRESULT_STRUCT_WRONG_TYPE));
 	const APREND_LIT_LIGHT_SHADOW &s = *shadow;
+	const uint32_t type              = scene->lights[light].type;
 	if (s._kind == APREND_LIT_SHADOW_KIND_NONE)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind is APREND_LIT_SHADOW_KIND_NONE");
-	if (s._kind == APREND_LIT_SHADOW_KIND_CASCADES)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind is APREND_LIT_SHADOW_KIND_CASCADES, which aprend_lit_scene_set_sun_shadow() sets until card A35");
-	if (s._kind != APREND_LIT_SHADOW_KIND_MASK)
+	if (s._kind > APREND_LIT_SHADOW_KIND_POINT_MAP)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind %u is not an APREND_LIT_SHADOW_KIND", (unsigned)s._kind);
-	if (!finite(s._strength) || s._strength < 0.0f || s._strength > 1.0f)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_strength is not a number from 0 to 1");
-	if (!s._mask)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is NULL");
-	if (APRI_STALE(s._mask, "aprend_lit_scene_set_light_shadow", "shadow->_mask"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is destroyed");
-	if (s._mask->instance != scene->instance)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is of another instance");
-	if (s._mask->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE || s._mask->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D ||
-	    s._mask->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is not a SHADER_RESOURCE 2D view of color");
-	if (const APRESULT set = aprend_material_set_texture(scene->material, "sun_mask", 0, s._mask, out_error))
-		return set;
-	// Light 0's one shadow: the mask replaces cascades set before, whose map
-	// stays bound and unread.
-	b.flags &= ~(APREND_LIT_SCENE_FLAG_SUN_SHADOW | APREND_LIT_SCENE_FLAG_SUN_REVERSED);
-	b.flags |= APREND_LIT_SCENE_FLAG_SUN_MASK;
-	b.sun_shadow_params[3] = s._strength;
-	aprend_lit_scene_commit(scene);
-	return APRESULT_OK;
-}
-
-APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LIGHT *lights, uint32_t count, APREND_ERROR *out_error) {
-	aprend_error_clear(out_error);
-	if (!scene)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
-	if (APRI_STALE(scene, "aprend_lit_scene_set_lights", "scene"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
-	APREND_ENTER(scene->instance, "aprend_lit_scene_set_lights");
-	if (count > 0 && !lights)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "lights is NULL with a count of %u", count);
-	if (count > APREND_LIT_MAX_LIGHTS)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u lights, and a scene holds %u", count, APREND_LIT_MAX_LIGHTS);
-	for (uint32_t i = 0; i < count; ++i)
-		if (const APRESULT valid = aprend_lit_light_valid(lights[i], i, out_error))
-			return valid;
-	aprend_lit_scene_block &b = scene->block;
-	memset(b.lights, 0, sizeof(b.lights));
-	for (uint32_t i = 0; i < count; ++i) {
-		const APREND_LIT_LIGHT &l = lights[i];
-		aprend_lit_light_block &o = b.lights[i];
-		memcpy(o.position_range, l.position, sizeof(float) * 3);
-		o.position_range[3] = l.range;
-		memcpy(o.radiance_type, l.radiance, sizeof(float) * 3);
-		o.radiance_type[3] = l.type == APREND_LIT_LIGHT_TYPE_SPOT ? 1.0f : 0.0f;
-		unit3(l.direction, o.direction_inner);
-		o.direction_inner[3] = std::cos(l.inner_angle);
-		o.outer_shadow[0]    = std::cos(l.outer_angle);
-	}
-	b.light_count = count;
-	aprend_lit_scene_commit(scene);
-	return APRESULT_OK;
-}
-
-APRESULT aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_SPOT_SHADOW *shadows, uint32_t count,
-                                       bool reversed_depth, APREND_ERROR *out_error) {
-	aprend_error_clear(out_error);
-	if (!scene)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
-	if (APRI_STALE(scene, "aprend_lit_scene_set_spot_shadows", "scene"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
-	APREND_ENTER(scene->instance, "aprend_lit_scene_set_spot_shadows");
-	if (count > APREND_LIT_MAX_SPOT_SHADOWS)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u spot shadows, and a scene holds %u", count, APREND_LIT_MAX_SPOT_SHADOWS);
-	if (count > 0 && !shadows)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows is NULL with a count of %u", count);
-	if (map && APRI_STALE(map, "aprend_lit_scene_set_spot_shadows", "map"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "map is destroyed");
-	if (count > 0)
-		if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, map, count, out_error))
-			return valid;
-	for (uint32_t i = 0; i < count; ++i) {
-		const APREND_LIT_SPOT_SHADOW &s = shadows[i];
-		if (!all_finite(s.view_projection, 16))
-			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow %u's view_projection is not finite", i);
-		if (const APRESULT valid = aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, out_error))
-			return valid;
-		for (uint32_t j = 0; j < i; ++j) {
-			if (shadows[j].light == s.light)
-				return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows %u and %u name one light, %u", j, i, s.light);
-		}
-	}
-	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
-	if (const APRESULT set = aprend_material_set_texture(scene->material, "spot_shadow_map", 0, count ? map : lit.placeholder_depth_view, out_error))
-		return set;
-	aprend_lit_scene_block &b = scene->block;
-	for (uint32_t i = 0; i < APREND_LIT_MAX_SPOT_SHADOWS; ++i) {
-		if (i < count) {
-			const APREND_LIT_SPOT_SHADOW &s = shadows[i];
-			memcpy(b.spot_shadow_view_projection[i], s.view_projection, sizeof(float) * 16);
-			b.spot_shadow_params[i][0]   = s.depth_bias;
-			b.spot_shadow_params[i][1]   = s.normal_offset;
-			b.spot_shadow_params[i][2]   = s.softness;
-			b.spot_shadow_params[i][3]   = s.strength;
-			scene->spot_shadow_lights[i] = s.light;
+	if (!aprend_lit_kind_fits(s._kind, type))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_kind %u is not a kind light %u, of type %u, can have", (unsigned)s._kind, light, type);
+	if (!finite(s._strength))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_strength is not finite");
+	if (s._strength < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_strength is below 0");
+	if (s._strength > 1.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_strength is above 1");
+	const uint32_t held = existing ? existing->view_count : 0;
+	if (s._kind == APREND_LIT_SHADOW_KIND_MASK) {
+		if (s.base.next)
+			return aprend_fail(out_error, APRESULT_STRUCT_UNKNOWN_IN_CHAIN, "shadow is a mask, and nothing is chained onto a mask");
+		if (!s._mask)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is NULL");
+		if (APRI_STALE(s._mask, "aprend_lit_scene_set_light_shadow", "shadow->_mask"))
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is destroyed");
+		if (s._mask->instance != scene->instance)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is of another instance");
+		if (s._mask->view_type != APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is not a SHADER_RESOURCE view");
+		if (s._mask->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is not a 2D view");
+		if (s._mask->desc.aspect != APREND_TEXTURE_VIEW_ASPECT_COLOR)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow->_mask is not a view of color");
+		aprend_lit_shadow_record *record = existing;
+		if (!record) {
+			record = &scene->shadows[scene->shadow_count++];
 		} else {
-			memset(b.spot_shadow_view_projection[i], 0, sizeof(float) * 16);
-			memset(b.spot_shadow_params[i], 0, sizeof(float) * 4);
+			for (uint32_t v = 0; v < record->view_count; ++v)
+				scene->free_pass_materials[scene->free_pass_count++] = record->materials[v];
 		}
+		*record          = aprend_lit_shadow_record{};
+		record->light    = light;
+		record->kind     = s._kind;
+		record->strength = s._strength;
+		record->mask     = s._mask;
+		aprend_lit_scene_commit(scene);
+		return APRESULT_OK;
+	}
+	if (!s.base.next)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadow is of a map kind, and has no APREND_LIT_SHADOW_MAPS chained on");
+	const APREND_LIT_SHADOW_MAPS &maps = *(const APREND_LIT_SHADOW_MAPS *)s.base.next;
+	if (const APRESULT base = aprend_base_check(out_error, "shadow's chained APREND_LIT_SHADOW_MAPS", &maps.base, APRI_STRUCT_TYPE_APREND_LIT_SHADOW_MAPS))
+		return base;
+	const uint32_t wanted = s._kind == APREND_LIT_SHADOW_KIND_POINT_MAP ? 6u : 1u;
+	if (s._kind == APREND_LIT_SHADOW_KIND_CASCADES && (maps._view_count == 0 || maps._view_count > APREND_LIT_MAX_CASCADES))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_view_count %u: cascades are 1 to %u views", maps._view_count, APREND_LIT_MAX_CASCADES);
+	if (s._kind != APREND_LIT_SHADOW_KIND_CASCADES && maps._view_count != wanted)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_view_count %u: a %s is %u", maps._view_count,
+		                   s._kind == APREND_LIT_SHADOW_KIND_POINT_MAP ? "point light's map" : "spot's map", wanted);
+	const uint32_t views = maps._view_count;
+	if (!all_finite(&maps._view_projection[0][0], (size_t)views * 16))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value of _view_projection is not finite");
+	if (s._kind == APREND_LIT_SHADOW_KIND_CASCADES && !all_finite(maps._split_depths, views))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value of _split_depths is not finite");
+	if (!finite(maps._depth_bias))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_depth_bias is not finite");
+	if (!finite(maps._normal_offset))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_normal_offset is not finite");
+	if (!finite(maps._softness))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_softness is not finite");
+	for (uint32_t v = 0; v < views; ++v) {
+		if (maps._rects[v]._width == 0)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view %u's rectangle has a _width of 0", v);
+		if (maps._rects[v]._height == 0)
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view %u's rectangle has a _height of 0", v);
+	}
+	if (!scene->atlas)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the scene has no shadow atlas (aprend_lit_scene_set_shadow_atlas()) for the rectangles to be in");
+	const uint32_t outside = aprend_lit_rect_outside(maps._rects, views, scene->atlas_width, scene->atlas_height);
+	if (outside != UINT32_MAX)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view %u's rectangle is past the atlas, %u by %u", outside, scene->atlas_width, scene->atlas_height);
+	for (uint32_t c = 0; s._kind == APREND_LIT_SHADOW_KIND_CASCADES && c < views; ++c) {
+		if (!(maps._split_depths[c] > 0.0f))
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cascade %u's split is not above 0", c);
+		if (c > 0 && !(maps._split_depths[c] > maps._split_depths[c - 1]))
+			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cascade %u's split is not above the one before", c);
+	}
+	if (maps._softness < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_softness is below 0");
+	if (maps._softness > 4.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_softness is above 4");
+	if (maps._depth_bias < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_depth_bias is negative");
+	if (maps._normal_offset < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "_normal_offset is negative");
+	if (views > held && views - held > scene->free_pass_count)
+		return aprend_fail(out_error, APRESULT_LIMIT, "the scene's shadows would draw %u views, and a scene draws %u",
+		                   APREND_LIT_MAX_SHADOW_VIEWS - scene->free_pass_count - held + views, APREND_LIT_MAX_SHADOW_VIEWS);
+
+	aprend_lit_shadow_record *record = existing;
+	uint8_t materials[6]             = {};
+	if (record)
+		memcpy(materials, record->materials, sizeof(materials));
+	else
+		record = &scene->shadows[scene->shadow_count++];
+	// The views it held keep their materials, so one taken for a view before
+	// holds the new matrix; more come from the free ones, and those past the
+	// new count go back.
+	for (uint32_t v = held; v < views; ++v)
+		materials[v] = scene->free_pass_materials[--scene->free_pass_count];
+	for (uint32_t v = views; v < held; ++v)
+		scene->free_pass_materials[scene->free_pass_count++] = materials[v];
+	*record               = aprend_lit_shadow_record{};
+	record->light         = light;
+	record->kind          = s._kind;
+	record->strength      = s._strength;
+	record->view_count    = views;
+	record->depth_bias    = maps._depth_bias;
+	record->normal_offset = maps._normal_offset;
+	record->softness      = maps._softness;
+	memcpy(record->materials, materials, sizeof(materials));
+	memcpy(record->view_projection, maps._view_projection, sizeof(float) * 16 * views);
+	memcpy(record->rects, maps._rects, sizeof(APREND_LIT_SHADOW_RECT) * views);
+	if (s._kind == APREND_LIT_SHADOW_KIND_CASCADES)
+		memcpy(record->split_depths, maps._split_depths, sizeof(float) * views);
+	for (uint32_t v = 0; v < views; ++v) {
 		aprend_lit_shadow_pass_block pass{};
-		memcpy(pass.view_projection, b.spot_shadow_view_projection[i], sizeof(pass.view_projection));
-		aprend_lit_write_block(scene->spot_shadow_materials[i], "u_lit_shadow_pass", &pass, sizeof(pass));
+		memcpy(pass.view_projection, record->view_projection[v], sizeof(pass.view_projection));
+		aprend_lit_write_block(scene->shadow_pass_materials[materials[v]], "u_lit_shadow_pass", &pass, sizeof(pass));
 	}
-	scene->spot_shadow_count = count;
-	if (reversed_depth)
-		b.flags |= APREND_LIT_SCENE_FLAG_SPOT_REVERSED;
-	else
-		b.flags &= ~APREND_LIT_SCENE_FLAG_SPOT_REVERSED;
-	aprend_lit_scene_commit(scene);
-	return APRESULT_OK;
-}
-
-APRESULT aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_POINT_SHADOW *shadows, uint32_t count,
-                                        bool reversed_depth, APREND_ERROR *out_error) {
-	aprend_error_clear(out_error);
-	if (!scene)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is NULL");
-	if (APRI_STALE(scene, "aprend_lit_scene_set_point_shadows", "scene"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "scene is destroyed");
-	APREND_ENTER(scene->instance, "aprend_lit_scene_set_point_shadows");
-	if (count > APREND_LIT_MAX_POINT_SHADOWS)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u point shadows, and a scene holds %u", count, APREND_LIT_MAX_POINT_SHADOWS);
-	if (count > 0 && !shadows)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows is NULL with a count of %u", count);
-	if (map && APRI_STALE(map, "aprend_lit_scene_set_point_shadows", "map"))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "map is destroyed");
-	if (count > 0)
-		if (const APRESULT valid = aprend_lit_shadow_map_valid(scene, map, count * 6, out_error))
-			return valid;
-	for (uint32_t i = 0; i < count; ++i) {
-		const APREND_LIT_POINT_SHADOW &s = shadows[i];
-		if (!all_finite(&s.view_projection[0][0], 6 * 16))
-			return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value of shadow %u's matrices is not a finite number", i);
-		if (const APRESULT valid = aprend_lit_shadow_params_valid(s.depth_bias, s.normal_offset, s.softness, s.strength, out_error))
-			return valid;
-		for (uint32_t j = 0; j < i; ++j) {
-			if (shadows[j].light == s.light)
-				return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "shadows %u and %u name one light, %u", j, i, s.light);
-		}
-	}
-	const aprend_lit_builtins &lit = scene->instance->builtins.lit;
-	if (const APRESULT set = aprend_material_set_texture(scene->material, "point_shadow_map", 0, count ? map : lit.placeholder_depth_view, out_error))
-		return set;
-	aprend_lit_scene_block &b = scene->block;
-	for (uint32_t i = 0; i < APREND_LIT_MAX_POINT_SHADOWS; ++i) {
-		for (uint32_t face = 0; face < 6; ++face) {
-			float *matrix = b.point_shadow_view_projection[i * 6 + face];
-			if (i < count)
-				memcpy(matrix, shadows[i].view_projection[face], sizeof(float) * 16);
-			else
-				memset(matrix, 0, sizeof(float) * 16);
-			aprend_lit_shadow_pass_block pass{};
-			memcpy(pass.view_projection, matrix, sizeof(pass.view_projection));
-			aprend_lit_write_block(scene->point_shadow_materials[i * 6 + face], "u_lit_shadow_pass", &pass, sizeof(pass));
-		}
-		if (i < count) {
-			const APREND_LIT_POINT_SHADOW &s = shadows[i];
-			b.point_shadow_params[i][0]       = s.depth_bias;
-			b.point_shadow_params[i][1]       = s.normal_offset;
-			b.point_shadow_params[i][2]       = s.softness;
-			b.point_shadow_params[i][3]       = s.strength;
-			scene->point_shadow_lights[i]     = s.light;
-		} else {
-			memset(b.point_shadow_params[i], 0, sizeof(float) * 4);
-		}
-	}
-	scene->point_shadow_count = count;
-	if (reversed_depth)
-		b.flags |= APREND_LIT_SCENE_FLAG_POINT_REVERSED;
-	else
-		b.flags &= ~APREND_LIT_SCENE_FLAG_POINT_REVERSED;
 	aprend_lit_scene_commit(scene);
 	return APRESULT_OK;
 }
@@ -2212,35 +2472,72 @@ APRESULT aprend_lit_scene_set_bent_normals(aprend_lit_scene scene, bool read, AP
 
 // ---- Fitting shadows --------------------------------------------------------------
 
-APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_LIT_SUN_SHADOW *out_shadow, APREND_ERROR *out_error) {
+APRESULT aprend_lit_fit_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_LIT_SHADOW_MAPS *out_maps, APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
-	if (!fit || !out_shadow)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", fit ? "out_shadow" : "fit");
+	if (!fit)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "fit is NULL");
+	if (!out_maps)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_maps is NULL");
 	if (const APRESULT base = aprend_base_check(out_error, "fit", &fit->base, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT))
 		return base;
-	if (const APRESULT base = aprend_base_check(out_error, "out_shadow", &out_shadow->base, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW))
+	if (const APRESULT base = aprend_base_check(out_error, "out_maps", &out_maps->base, APRI_STRUCT_TYPE_APREND_LIT_SHADOW_MAPS))
 		return base;
 	const APREND_LIT_CASCADE_FIT &f = *fit;
-	if (!all_finite(f.eye_position, 3) || !all_finite(f.view_direction, 3) || !all_finite(f.view_up, 3) || !all_finite(f.sun_direction, 3) ||
-	    !finite(f.fov_y) || !finite(f.half_height) || !finite(f.aspect) || !finite(f.near_depth) || !finite(f.far_depth) ||
-	    !finite(f.split_lambda) || !finite(f.caster_distance)) {
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a value is not a finite number");
-	}
-	const glm::vec3 forward_in = vec3_of(f.view_direction), up_in = vec3_of(f.view_up), sun_in = vec3_of(f.sun_direction);
-	if (glm::length(forward_in) == 0.0f || glm::length(sun_in) == 0.0f)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the view direction or the sun direction is 0");
+	if (!all_finite(f.eye_position, 3))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "eye_position is not finite");
+	if (!all_finite(f.view_direction, 3))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view_direction is not finite");
+	if (!all_finite(f.view_up, 3))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view_up is not finite");
+	if (!finite(f.fov_y))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "fov_y is not finite");
+	if (!finite(f.half_height))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "half_height is not finite");
+	if (!finite(f.aspect))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "aspect is not finite");
+	if (!finite(f.near_depth))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not finite");
+	if (!finite(f.far_depth))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "far_depth is not finite");
+	if (!finite(f.split_lambda))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "split_lambda is not finite");
+	if (!all_finite(f.light_direction, 3))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light_direction is not finite");
+	if (!finite(f.caster_distance))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "caster_distance is not finite");
+	const glm::vec3 forward_in = vec3_of(f.view_direction), up_in = vec3_of(f.view_up), sun_in = vec3_of(f.light_direction);
+	if (glm::length(forward_in) == 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view_direction is 0");
 	const glm::vec3 forward = glm::normalize(forward_in);
 	glm::vec3 right         = glm::cross(forward, up_in);
 	if (glm::length(right) <= 1e-6f * std::max(glm::length(up_in), 1e-30f))
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "view_up runs along the view direction");
 	right              = glm::normalize(right);
 	const glm::vec3 up = glm::cross(right, forward);
-	if (f.cascade_count == 0 || f.cascade_count > APREND_LIT_MAX_CASCADES || f.map_size == 0)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%u cascades and a map of %u: 1 to %u, and above 0", f.cascade_count, APREND_LIT_MAX_CASCADES, f.map_size);
-	if (!(f.far_depth > f.near_depth) || (!f.orthographic && !(f.near_depth > 0.0f)) || !(f.aspect > 0.0f) || f.split_lambda < 0.0f ||
-	    f.split_lambda > 1.0f || f.caster_distance < 0.0f || (f.orthographic ? !(f.half_height > 0.0f) : !(f.fov_y > 0.0f && f.fov_y < 3.1f))) {
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the depths, the field of view or half height, the aspect, the split lambda or the caster distance is out of range");
-	}
+	if (!f.orthographic && !(f.fov_y > 0.0f && f.fov_y < 3.1f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a perspective view's fov_y is not between 0 and 3.1");
+	if (f.orthographic && !(f.half_height > 0.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a parallel view's half_height is not above 0");
+	if (!(f.aspect > 0.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "aspect is not above 0");
+	if (!f.orthographic && !(f.near_depth > 0.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "a perspective view's near_depth is not above 0");
+	if (!(f.far_depth > f.near_depth))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "far_depth is not beyond near_depth");
+	if (f.cascade_count == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cascade_count is 0");
+	if (f.cascade_count > APREND_LIT_MAX_CASCADES)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "cascade_count %u is above %u", f.cascade_count, APREND_LIT_MAX_CASCADES);
+	if (f.split_lambda < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "split_lambda is below 0");
+	if (f.split_lambda > 1.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "split_lambda is above 1");
+	if (glm::length(sun_in) == 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light_direction is 0");
+	if (f.caster_distance < 0.0f)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "caster_distance is negative");
+	if (f.map_size == 0)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "map_size is 0");
 
 	const glm::vec3 eye = vec3_of(f.eye_position);
 	const glm::vec3 sun = glm::normalize(sun_in);
@@ -2279,8 +2576,8 @@ APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_L
 			radius = std::max(radius, glm::length(corner - centre));
 		radius = std::ceil(radius * 16.0f) / 16.0f;
 
-		// Looking down the sun's direction at the sphere, from far enough
-		// out to catch what stands between it and the sun.
+		// Looking down the light's direction at the sphere, from far enough
+		// out to catch what stands between it and the light.
 		const glm::vec3 light_up = std::fabs(sun.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
 		const float back         = radius + f.caster_distance;
 		const glm::mat4 view     = glm::lookAtRH(centre + sun * back, centre, light_up);
@@ -2296,65 +2593,72 @@ APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_L
 		projection[3][0] += offset.x;
 		projection[3][1] += offset.y;
 		matrix = projection * view;
-		memcpy(out_shadow->view_projection[c], &matrix, sizeof(float) * 16);
-		out_shadow->split_depths[c] = end;
+		memcpy(out_maps->_view_projection[c], &matrix, sizeof(float) * 16);
+		out_maps->_split_depths[c] = end;
 		before                      = c == 0 ? 0.0f : start;
 		start                       = end;
 	}
-	for (uint32_t c = f.cascade_count; c < APREND_LIT_MAX_CASCADES; ++c) {
-		memset(out_shadow->view_projection[c], 0, sizeof(float) * 16);
-		out_shadow->split_depths[c] = 0.0f;
-	}
-	out_shadow->cascade_count = f.cascade_count;
+	for (uint32_t c = f.cascade_count; c < 6; ++c)
+		memset(out_maps->_view_projection[c], 0, sizeof(float) * 16);
+	for (uint32_t c = f.cascade_count; c < APREND_LIT_MAX_CASCADES; ++c)
+		out_maps->_split_depths[c] = 0.0f;
+	out_maps->_view_count = f.cascade_count;
 	return APRESULT_OK;
 }
 
-APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, uint32_t face, float near_depth, bool reversed_depth,
-                                             float out_view_projection[16], APREND_ERROR *out_error) {
+APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_SCENE_LIGHT *light, uint32_t face, float near_depth, bool reversed_depth,
+                                                 float out_view_projection[16], APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
 	if (!light)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light is NULL");
 	if (!out_view_projection)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_view_projection is NULL");
-	if (light->type != APREND_LIT_LIGHT_TYPE_POINT)
+	if (light->_type != APREND_LIT_LIGHT_TYPE_POINT)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the light is not a point light");
 	if (const APRESULT valid = aprend_lit_light_valid(*light, 0, out_error))
 		return valid;
 	if (face >= 6)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "face %u is not below 6", face);
-	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not between 0 and the light's range");
+	if (!(near_depth > 0.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not above 0");
+	if (!(near_depth < light->_range))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not below the light's range");
 	static const glm::vec3 axes[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
-	const glm::vec3 position = vec3_of(light->position), axis = axes[face];
+	const glm::vec3 position = vec3_of(light->_position), axis = axes[face];
 	// Any up that isn't the axis: what the matrix renders is what the
 	// surface reads through it.
 	const glm::vec3 up = face == 2 || face == 3 ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
 	// A margin past 90 degrees, as a spot's has past its cone, for the taps
 	// of a soft shadow near a face's edge.
 	const float fov            = 2.0f * std::atan(1.05f);
-	const glm::mat4 projection = aprend_flip_clip_y(reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
-	                                                               : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range));
+	const glm::mat4 projection = aprend_flip_clip_y(reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->_range, near_depth)
+	                                                               : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->_range));
 	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
 	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
 	return APRESULT_OK;
 }
 
-APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_LIGHT *light, float near_depth, bool reversed_depth, float out_view_projection[16], APREND_ERROR *out_error) {
+APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_SCENE_LIGHT *light, float near_depth, bool reversed_depth, float out_view_projection[16],
+                                                APREND_ERROR *out_error) {
 	aprend_error_clear(out_error);
-	if (!light || !out_view_projection)
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "%s is NULL", light ? "out_view_projection" : "light");
-	if (light->type != APREND_LIT_LIGHT_TYPE_SPOT)
+	if (!light)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "light is NULL");
+	if (!out_view_projection)
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "out_view_projection is NULL");
+	if (light->_type != APREND_LIT_LIGHT_TYPE_SPOT)
 		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "the light is not a spot");
 	if (const APRESULT valid = aprend_lit_light_valid(*light, 0, out_error))
 		return valid;
-	if (!finite(near_depth) || !(near_depth > 0.0f) || !(near_depth < light->range))
-		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not between 0 and the light's range");
-	const glm::vec3 position = vec3_of(light->position), axis = glm::normalize(vec3_of(light->direction));
+	if (!(near_depth > 0.0f))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not above 0");
+	if (!(near_depth < light->_range))
+		return aprend_fail(out_error, APRESULT_INVALID_ARGUMENT, "near_depth is not below the light's range");
+	const glm::vec3 position = vec3_of(light->_position), axis = glm::normalize(vec3_of(light->_direction));
 	const glm::vec3 up       = std::fabs(axis.y) < 0.99f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
 	// Wide enough for the cone, with a margin the softness reads into.
-	const float fov            = std::min(light->outer_angle * 2.0f * 1.05f, 3.1f);
-	const glm::mat4 projection = aprend_flip_clip_y(reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->range, near_depth)
-	                                                               : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->range));
+	const float fov            = std::min(light->_outer_angle * 2.0f * 1.05f, 3.1f);
+	const glm::mat4 projection = aprend_flip_clip_y(reversed_depth ? glm::perspectiveRH_ZO(fov, 1.0f, light->_range, near_depth)
+	                                                               : glm::perspectiveRH_ZO(fov, 1.0f, near_depth, light->_range));
 	const glm::mat4 matrix     = projection * glm::lookAtRH(position, position + axis, up);
 	memcpy(out_view_projection, &matrix, sizeof(float) * 16);
 	return APRESULT_OK;

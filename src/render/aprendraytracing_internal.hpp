@@ -37,6 +37,7 @@
 
 #include "aprend_internal.hpp"
 #include "aprendranges_internal.hpp"
+#include "aprendlit_internal.hpp"
 #include "render/aprendraytracing.h"
 
 /* ---- Fixed values of the design (aprend_raytracing_draft.h) ------------ */
@@ -77,7 +78,7 @@ static inline bool aprend_rt_supported(aprend_instance instance) {
  * call's name. */
 #define APREND_RT_UNSUPPORTED_MESSAGE "the device was not created with SPUDGPU_FEATURE_RAY_QUERY"
 
-/* The name of one of ray tracing's four commands, for a message. */
+/* The name of one of ray tracing's commands, for a message. */
 static inline const char *aprend_rt_command_name(APREND_COMMAND_TYPE type) {
 	switch (type) {
 	case APREND_COMMAND_BUILD_BLAS:
@@ -88,6 +89,8 @@ static inline const char *aprend_rt_command_name(APREND_COMMAND_TYPE type) {
 		return "LIT_SHADOW_MASK";
 	case APREND_COMMAND_LIT_PATH_TRACE:
 		return "LIT_PATH_TRACE";
+	case APREND_COMMAND_LIT_TRACE_REFLECTIONS:
+		return "LIT_TRACE_REFLECTIONS";
 	default:
 		return "a command";
 	}
@@ -180,6 +183,20 @@ struct aprend_rt_trace_params {
 };
 static_assert(sizeof(aprend_rt_trace_params) == 48, "TraceParams in aprend_rt_path_trace_comp.slang");
 
+/* The push constants of the traced reflections (aprend_rt_reflections_comp). */
+struct aprend_rt_reflection_params {
+	uint32_t size[2];
+	uint32_t full[2];
+	uint32_t ray_count;
+	uint32_t cull_mask;
+	float max_distance;
+	float max_roughness;
+	uint32_t material_count;
+	uint32_t reversed;
+	uint32_t padding[2];
+};
+static_assert(sizeof(aprend_rt_reflection_params) == 48, "ReflectionParams in aprend_rt_reflections_comp.slang");
+
 /* ---- The instance's tables -------------------------------------------- */
 
 /* What an instance with SPUDGPU_FEATURE_RAY_QUERY keeps for ray tracing,
@@ -268,6 +285,13 @@ struct aprend_rt_state {
 	aprend_shader path_comps[4]{};
 	aprend_binding_layout path_output_layout{nullptr};
 	aprend_compute_pipeline path_pipelines[4]{};
+	/* The traced reflections (APREND_COMMAND_LIT_TRACE_REFLECTIONS): the
+	 * shader, the layout of its set 2, its pipeline, and the sets of that
+	 * layout over the commands' views. */
+	aprend_shader reflection_comp{nullptr};
+	aprend_binding_layout reflection_output_layout{nullptr};
+	aprend_compute_pipeline reflection_pipeline{nullptr};
+	aprend_view_set reflection_sets[APREND_VIEW_SETS]{};
 	/* Every TLAS alive, by address and serial: what a list's reset reads
 	 * before it reaches a TLAS through a seal, which may name one destroyed
 	 * since. Under the instance's release_mutex. */
@@ -603,6 +627,9 @@ bool aprend_rt_trace_layouts(aprend_instance instance);
  * R32G32B32A32_FLOAT or R16G16B16A16_FLOAT), made if it isn't. NULL,
  * reported. */
 aprend_compute_pipeline aprend_rt_path_pipeline(aprend_instance instance, SPUDGPU_FORMAT albedo, SPUDGPU_FORMAT normal);
+/* The traced reflections' pipeline, made if it isn't, with the traces'
+ * layouts. NULL, reported. */
+aprend_compute_pipeline aprend_rt_reflection_pipeline(aprend_instance instance);
 /* The emitter pass's pipeline, and [tlas]'s set of it, made if they aren't.
  * NULL, reported. */
 aprend_compute_pipeline aprend_rt_emitter_pipeline(aprend_instance instance);

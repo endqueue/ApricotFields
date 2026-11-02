@@ -11,11 +11,10 @@ extern "C" {
 /**
  * @file aprendlit.h
  * @brief Aprend's lit surfaces: physically based shading of metal/roughness
- * materials, with a clear coat and sheen, under a sun with cascaded
- * shadows, point and spot lights (spots with shadows of their own), a
+ * materials, with a clear coat and sheen, under directional lights with
+ * cascaded shadows, point and spot lights, each with a shadow of its own, a
  * hemisphere of ambient light, an environment (a picture or a sky) and
  * ambient occlusion - shaders Aprend ships, and the objects that feed them.
- * Point lights may have shadows too, from six faces each.
  *
  * @par What is whose
  * Aprend ships the shading, never the geometry. A surface is drawn by a
@@ -43,10 +42,11 @@ extern "C" {
  * Sets 2 and 3 are the caller's, for its vertex shader (a camera, say).
  * A pipeline names Aprend's two layouts at slots 0 and 1, and its own after
  * them; a caller's vertex shader declares nothing in sets 0 and 1. A pass
- * that renders a shadow map binds instead, at set 0, one of the scene's
- * shadow pass materials (aprend_lit_get_shadow_layout()), which hold the
- * matrix the map is rendered through and leave out the maps themselves: a
- * pass can't read what it renders into.
+ * that renders a shadow binds, at set 0, the material
+ * aprend_lit_scene_get_shadow_pass_material() gives for the light and view
+ * it renders (of aprend_lit_get_shadow_layout()), which holds the matrix the
+ * view is rendered through and leaves out the atlas itself: a pass can't
+ * read what it renders into.
  *
  * @par A caller's vertex shader
  * It writes, as outputs the fragment shader reads, every one of:
@@ -57,10 +57,23 @@ extern "C" {
  *   none: every map then reads its one texel at the corner);
  * - `layout(location = 3) out vec4`: its tangent, xyz along the texture's
  *   u, w +1 or -1 for which way v runs (glTF's and MikkTSpace's), or 0 for
- *   none, which turns normal mapping off.
- * All four are written even where the geometry has no use for them: Metal
+ *   none, which turns normal mapping off;
+ * - `layout(location = 4) out vec4`: its color, linear RGBA, which
+ *   multiplies the base color and the opacity, as glTF 2.0's COLOR_0 does
+ *   (the base color factor times the base color map times the vertex
+ *   color); (1, 1, 1, 1) for geometry with none. Emission is not
+ *   multiplied by it.
+ * All five are written even where the geometry has no use for them: Metal
  * refuses a pipeline whose fragment shader reads what its vertex shader
- * doesn't write. Positions and directions are in any one space of the
+ * doesn't write, and D3D12 matches the stages by register in order
+ * (SpudGPU's rule: every output from location 0 up to the last one read).
+ *
+ * The same holds for a caller's vertex shader in a pass that renders a
+ * shadow map or a depth pre-pass with APREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT:
+ * it writes locations 0 to 4 as above (the cut-out fragment shader reads the
+ * texture coordinate and the color).
+ *
+ * Positions and directions are in any one space of the
  * caller's choosing - world space, the eye at the origin, any other - and
  * every position, direction and matrix an aprend_lit_scene is given is in
  * that same space. The push constants are all the caller's; Aprend's
@@ -71,7 +84,7 @@ extern "C" {
  * most are) is the caller's to convert; a texture of colors is read through
  * an `_SRGB` format, which converts as it is sampled. A light's radiance is
  * scaled so that a white, matte face square to it reads the light's color:
- * the sun at radiance 1 lights a face of albedo 0.5 to 0.5; a point light
+ * a directional light at radiance 1 lights a face of albedo 0.5 to 0.5; a point light
  * does so at distance 1, falling off with the square of the distance. What
  * the surface writes is linear radiance times the view's exposure, for a
  * float target and then APREND_COMMAND_TONE_MAP (aprendcommands.h), or
@@ -112,14 +125,17 @@ extern "C" {
 #define APREND_LIT_SCENE_SET 0u
 /** @brief The set slot of a lit pipeline's material. */
 #define APREND_LIT_MATERIAL_SET 1u
-/** @brief The most point and spot lights a scene holds. */
+/** @brief The most point and spot lights a scene holds: 128. */
 #define APREND_LIT_MAX_LIGHTS 128u
-/** @brief The most cascades a sun shadow has. */
+/** @brief The most directional lights a scene holds, beside its point and spot lights (Hazel's 4). */
+#define APREND_LIT_MAX_DIRECTIONAL_LIGHTS 4u
+/** @brief The most cascades a directional light's shadow has. */
 #define APREND_LIT_MAX_CASCADES 4u
-/** @brief The most spot lights with a shadow a scene holds. */
-#define APREND_LIT_MAX_SPOT_SHADOWS 4u
-/** @brief The most point lights with a shadow a scene holds. */
-#define APREND_LIT_MAX_POINT_SHADOWS 4u
+/**
+ * @brief The most views a scene's shadows draw from its atlas, together: a
+ * cascade, a spot's map and each of a point light's six faces are one each.
+ */
+#define APREND_LIT_MAX_SHADOW_VIEWS 64u
 /** @brief The side of a tile of a view's target that lights are culled for, in texels. */
 #define APREND_LIT_TILE_SIZE 16u
 /** @brief The most lights one tile keeps; beyond them a tile drops the rest, in the order they were set. */
@@ -132,12 +148,16 @@ extern "C" {
  */
 typedef uint32_t APREND_LIT_SHADER;
 enum {
-	/** The surface, shaded: what the top of this header describes. */
+	/**
+	 * The surface, shaded: what the top of this header describes. Reads
+	 * locations 0 to 4; its color at 4 multiplies the base color and the
+	 * opacity.
+	 */
 	APREND_LIT_SHADER_SURFACE_FRAGMENT = 0,
 	/**
 	 * A fragment shader that writes nothing, for a pass that renders depth
 	 * alone (a shadow map, a depth pre-pass) with no color target: a
-	 * pipeline needs a fragment shader.
+	 * pipeline needs a fragment shader. Reads no input.
 	 */
 	APREND_LIT_SHADER_DEPTH_FRAGMENT = 1,
 	/**
@@ -145,22 +165,25 @@ enum {
 	 * APREND_LIT_INSTANCE per instance at slot 1 (aprend_lit_vertex_layout()
 	 * and aprend_lit_instance_layout() for the pipeline's vertex bindings),
 	 * through the view's view_projection; positions out in the space the
-	 * instance's transform takes them to.
+	 * instance's transform takes them to. Writes the color at location 4
+	 * as (1, 1, 1, 1).
 	 */
 	APREND_LIT_SHADER_SURFACE_VERTEX = 2,
 	/**
 	 * The same meshes through a shadow pass material's matrix
 	 * (aprend_lit_get_shadow_layout() at set 0), for a pass that renders a
-	 * sun cascade's or a spot's shadow map; it hands the texture coordinate
-	 * on at location 2, for APREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT.
+	 * view of a shadow; it writes locations 0 to 4 (the position, normal and
+	 * tangent as 0, the texture coordinate, and the color as white), for
+	 * APREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT.
 	 */
 	APREND_LIT_SHADER_SHADOW_VERTEX = 3,
 	/**
 	 * Depth only, as APREND_LIT_SHADER_DEPTH_FRAGMENT, for cut-out
-	 * materials: a fragment whose opacity is below the material's
-	 * alpha_cutoff is discarded, so the holes in leaves or a perforated
-	 * screen let light through. Reads the lit material at set 1 and the
-	 * texture coordinate at location 2.
+	 * materials: a fragment whose opacity (the material's base color alpha,
+	 * times the base color map's alpha, times the color's alpha at location
+	 * 4) is below the material's alpha_cutoff is discarded, so the holes in
+	 * leaves or a perforated screen let light through. Reads the lit
+	 * material at set 1 and locations 0 to 4 (it uses 2 and 4).
 	 */
 	APREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT = 4,
 	/**
@@ -169,11 +192,59 @@ enum {
 	 * drawn before the surfaces: each texel looks along its ray through the
 	 * view's view_projection and reads the environment there, times its
 	 * intensity and the exposure, written out as a surface is. Black with
-	 * no environment. With a sun disc (APREND_LIT_SUN::disc_angle), the
-	 * sun is drawn over it, its edge softened over a texel. Reads set 0
-	 * and needs the view's target size.
+	 * no environment. With directional lights whose `_sky_disc` is true,
+	 * each disc is drawn over it at its `_radius`, its edge softened over a
+	 * texel. Reads set 0 and needs the view's target size.
 	 */
 	APREND_LIT_SHADER_SKY_FRAGMENT = 5,
+	/**
+	 * Meshes of APREND_LIT_VERTEX at vertex buffer slot 0 with a color per
+	 * vertex at slot 1 (aprend_lit_vertex_color_layout()), and an
+	 * APREND_LIT_INSTANCE per instance at slot 2: as
+	 * APREND_LIT_SHADER_SURFACE_VERTEX, but the instance a slot later and
+	 * the color at location 4 the vertex's own. A pipeline's vertex bindings
+	 * are aprend_lit_vertex_layout(), aprend_lit_vertex_color_layout() and
+	 * aprend_lit_instance_layout(), the last per instance; a draw list's
+	 * `_instance_slot` is 2.
+	 *
+	 * Meshes whose colors are per vertex (glTF's COLOR_0, a painted
+	 * terrain, a scan) keep them under lit shading.
+	 */
+	APREND_LIT_SHADER_SURFACE_VERTEX_COLOR = 6,
+	/**
+	 * The shadow pass of the same colored meshes, as
+	 * APREND_LIT_SHADER_SHADOW_VERTEX with the bindings of
+	 * APREND_LIT_SHADER_SURFACE_VERTEX_COLOR, handing the color on at
+	 * location 4 for APREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT. A colored mesh
+	 * whose material isn't cut out may instead be drawn with
+	 * APREND_LIT_SHADER_SHADOW_VERTEX, named by its first vertex buffer
+	 * alone in a draw list whose `_instance_slot` is 1.
+	 *
+	 * A cut-out's holes come from its opacity, the color's alpha included,
+	 * and the shadow's are the same holes.
+	 */
+	APREND_LIT_SHADER_SHADOW_VERTEX_COLOR = 7,
+	/**
+	 * The surface, as APREND_LIT_SHADER_SURFACE_FRAGMENT, writing two more
+	 * color targets for reflections (aprendcommands.h: LIT_SSR,
+	 * LIT_TRACE_REFLECTIONS, LIT_REFLECT). At color target 1, the shading
+	 * normal (xyz, unit, in the scene's space, the normal map applied) and
+	 * the roughness (w, after the ORM map), for an
+	 * SPUDGPU_FORMAT_R16G16B16A16_FLOAT target. At color target 2, the
+	 * specular weight the environment's specular light is multiplied by
+	 * (the split sum's f0 x scale + bias, times the occlusion, and under a
+	 * sheen or a clear coat the share of the light they leave the surface
+	 * below them), linear, in rgb of an SPUDGPU_FORMAT_R8G8B8A8_UNORM
+	 * target; its alpha is written 0 and read by nothing. A pipeline with
+	 * it has three color targets, target 0 the picture as with
+	 * APREND_LIT_SHADER_SURFACE_FRAGMENT. A cut-out discards in all three.
+	 *
+	 * A forward renderer has no G-buffer: a pipeline with this variant pays
+	 * for the two targets where a caller reflects, and nowhere else. The
+	 * caller clears both to 0 before the surfaces: a normal of 0 is a texel
+	 * with no surface, which nothing reflects.
+	 */
+	APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT = 8,
 };
 
 /**
@@ -197,8 +268,8 @@ APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shade
 /**
  * @brief The layout of set APREND_LIT_SCENE_SET, for slot 0 of a lit
  * pipeline: what an aprend_lit_scene fills. Made from every one of Aprend's
- * shaders that read it - the surface, its vertex shader and the sky - so one
- * layout serves them all.
+ * shaders that read it - the surface, its two vertex shaders and the sky -
+ * so one layout serves them all.
  *
  * The instance's, as aprend_lit_get_shader()'s are: don't destroy it.
  *
@@ -213,11 +284,11 @@ APRESULT aprend_lit_get_shader(aprend_instance instance, APREND_LIT_SHADER shade
 APRESULT aprend_lit_get_scene_layout(aprend_instance instance, aprend_binding_layout *out_layout, APREND_ERROR *out_error);
 
 /**
- * @brief The layout of set 0 of a pass that renders a shadow map with
- * APREND_LIT_SHADER_SHADOW_VERTEX: one matrix, the one the map is rendered
- * through. Filled by a scene's shadow pass materials
- * (aprend_lit_scene_get_sun_shadow_material(),
- * aprend_lit_scene_get_spot_shadow_material()). The instance's: don't
+ * @brief The layout of set 0 of a pass that renders a view of a shadow
+ * with APREND_LIT_SHADER_SHADOW_VERTEX or
+ * APREND_LIT_SHADER_SHADOW_VERTEX_COLOR (both read it): one matrix, the one
+ * the view is rendered through. Filled by a scene's shadow pass materials
+ * (aprend_lit_scene_get_shadow_pass_material()). The instance's: don't
  * destroy it.
  *
  * @param[in]  instance   Instance the layout is of.
@@ -292,6 +363,20 @@ APREND_VERTEX_LAYOUT aprend_lit_vertex_layout(void);
  * @return The layout: four elements, a stride of 64.
  */
 APREND_VERTEX_LAYOUT aprend_lit_instance_layout(void);
+
+/**
+ * @brief The vertex layout of a per-vertex color, for vertex binding 1 of a
+ * pipeline with APREND_LIT_SHADER_SURFACE_VERTEX_COLOR or
+ * APREND_LIT_SHADER_SHADOW_VERTEX_COLOR: one APREND_VERTEX_ELEMENT_TYPE_VEC4
+ * element named `color` at offset 0, linear RGBA. Static, as
+ * aprend_lit_vertex_layout()'s, so it may be kept as long as anything likes.
+ *
+ * A caller whose colors are interleaved in a buffer of its own gives its
+ * own layout instead: one VEC4 element at its offset, at its stride.
+ *
+ * @return The layout: one element, a stride of 16.
+ */
+APREND_VERTEX_LAYOUT aprend_lit_vertex_color_layout(void);
 
 /* ---- Materials ---------------------------------------------------------- */
 
@@ -617,9 +702,9 @@ uint32_t aprend_lit_environment_get_specular_mip_count(aprend_lit_environment en
 /**
  * @brief Opaque handle to a scene: what one view of the world shades with.
  *
- * A scene is a value store, not a world: it holds the view, the sun and its
- * shadow, the point and spot lights and their shadows, the ambient light and
- * the ambient occlusion as they were last set, and is drawn with by binding
+ * A scene is a value store, not a world: it holds the view, the lights and
+ * their shadows, the shadow atlas, the ambient light and the ambient
+ * occlusion as they were last set, and is drawn with by binding
  * its material (aprend_lit_scene_get_material()) at set
  * APREND_LIT_SCENE_SET. Values set take effect as an aprend_material's do
  * (aprendmaterial.h, "When uniform values take effect"): at the next
@@ -631,8 +716,13 @@ typedef struct aprend_lit_scene_t *aprend_lit_scene;
 
 /**
  * @brief Creates a scene. It starts with exposure 1 and LINEAR output and
- * everything else 0: no view, no sun, no lights, no ambient light, no
- * shadows, so a surface drawn with it is black but for its emission.
+ * everything else 0: no view, no lights, no shadow atlas, no ambient light,
+ * no shadows, so a surface drawn with it is black but for its emission.
+ *
+ * It makes, with its own material, APREND_LIT_MAX_SHADOW_VIEWS shadow pass
+ * materials (aprend_lit_scene_get_shadow_pass_material()), handed out to
+ * shadows' views as they are set: what setting a shadow needs is allocated
+ * here, once.
  *
  * @param[in]  instance  Instance the scene is of.
  * @param[out] out_scene Receives the scene; NULL on failure.
@@ -669,33 +759,6 @@ void aprend_lit_scene_destroy(aprend_lit_scene scene);
 aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene);
 
 /**
- * @brief The material a pass that renders cascade @p cascade of the sun's
- * shadow binds at set 0: of aprend_lit_get_shadow_layout(), holding that
- * cascade's matrix from aprend_lit_scene_set_sun_shadow(). The scene's:
- * don't destroy it.
- *
- * @param[in] scene   Scene to read.
- * @param[in] cascade Which cascade.
- *
- * @return The material, or NULL if @p scene is NULL or @p cascade is not
- *         below APREND_LIT_MAX_CASCADES.
- */
-aprend_material aprend_lit_scene_get_sun_shadow_material(aprend_lit_scene scene, uint32_t cascade);
-
-/**
- * @brief The material a pass that renders spot shadow @p index binds at set
- * 0, as aprend_lit_scene_get_sun_shadow_material() is for a cascade.
- *
- * @param[in] scene Scene to read.
- * @param[in] index Which spot shadow: its place in the shadows
- *                  aprend_lit_scene_set_spot_shadows() was given.
- *
- * @return The material, or NULL if @p scene is NULL or @p index is not below
- *         APREND_LIT_MAX_SPOT_SHADOWS.
- */
-aprend_material aprend_lit_scene_get_spot_shadow_material(aprend_lit_scene scene, uint32_t index);
-
-/**
  * @brief Where a scene is seen from.
  */
 typedef struct APREND_LIT_VIEW {
@@ -704,8 +767,8 @@ typedef struct APREND_LIT_VIEW {
 	/** Where the eye is: what view-dependent shading (highlights, Fresnel)
 	 * is worked out from. */
 	float eye_position[3];
-	/** Which way the view looks: what the sun's cascades are measured along.
-	 * Any length; 0 only for a scene with no sun shadow. */
+	/** Which way the view looks: what directional lights' cascades are
+	 * measured along. Any length; 0 only for a scene with no cascades. */
 	float view_direction[3];
 	/**
 	 * Positions to clip space, column after column: what Aprend's surface
@@ -747,137 +810,157 @@ typedef struct APREND_LIT_VIEW {
 APRESULT aprend_lit_scene_set_view(aprend_lit_scene scene, const APREND_LIT_VIEW *view, APREND_ERROR *out_error);
 
 /**
- * @brief The sun: a light from one direction, everywhere alike.
+ * @brief The kinds of light.
  */
-typedef struct APREND_LIT_SUN {
-	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SUN, and its chain (apricore.h, "Struct bases"). */
-	APRI_STRUCT_BASE base;
-	/** From the surface towards the sun; any length but 0. */
-	float direction[3];
-	/** Its color times its strength, linear; 0 for no sun. */
-	float radiance[3];
+typedef uint32_t APREND_LIT_LIGHT_TYPE;
+enum {
+	/** Light from one point, every way. */
+	APREND_LIT_LIGHT_TYPE_POINT = 0,
+	/** Light from one point, in a cone. */
+	APREND_LIT_LIGHT_TYPE_SPOT = 1,
+	/** Light from one direction, everywhere alike: a sun, a moon. */
+	APREND_LIT_LIGHT_TYPE_DIRECTIONAL = 2,
+};
+
+/**
+ * @brief One light of a scene, of any type.
+ */
+/* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
+typedef struct APREND_LIT_SCENE_LIGHT {
+	/** Which type. */
+	APREND_LIT_LIGHT_TYPE _type;
+	/** Where a point or spot light is, in the scene's space. Not read for a
+	 * directional light. */
+	float _position[3];
 	/**
-	 * The angle from the disc's centre to its edge, in radians, as
-	 * APREND_LIT_SHADER_SKY_FRAGMENT draws the sun on the sky: 0 for no
-	 * disc, up to 0.5. The sun seen from the earth is 0.00465. The disc is
-	 * the sun's own light spread over it, so it lights nothing more than
-	 * #radiance does: each texel of it reads pi times #radiance over its
-	 * solid angle, 2 pi (1 - cos(disc_angle)). A larger disc is dimmer.
+	 * A spot's axis, from the light outwards; a directional light's
+	 * direction, from the surface towards the light. Any length but 0. Not
+	 * read for a point light.
 	 */
-	float disc_angle;
-} APREND_LIT_SUN;
-
-/**
- * @brief Sets a scene's sun.
- *
- * @param[in] scene Scene to change.
- * @param[in] sun   The sun. Only read during the call.
- * @param[out] out_error Why it failed, when it did. May be NULL.
- *
- * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
- *         own code (aprendcontext.h, "Results and errors"), with nothing
- *         changed, if an argument is NULL, a value is not finite or a
- *         radiance negative, the direction is 0 while the radiance isn't, or
- *         the disc angle is out of 0 to 0.5.
- */
-APRESULT aprend_lit_scene_set_sun(aprend_lit_scene scene, const APREND_LIT_SUN *sun, APREND_ERROR *out_error);
-
-/**
- * @brief The sun's shadow: cascaded shadow maps the caller rendered, each
- * covering a stretch of the view's depth, nearer stretches in finer detail.
- *
- * The caller renders each cascade into a layer of one 2D array depth
- * texture: a depth-only pass over that layer's view, binding
- * aprend_lit_scene_get_sun_shadow_material() for the cascade at set 0 with
- * Aprend's shadow shaders, or through its own shaders with the same matrix.
- * aprend_lit_fit_sun_cascades() works out the matrices and splits from the
- * view; or the caller frames them itself. A fragment is shadowed from the
- * first cascade whose split is beyond it along the view direction, and over
- * the last tenth of that cascade's stretch (from the split before it, or the
- * eye for the first) it is blended into the next by a smoothstep, so no seam
- * shows where one cascade's detail gives way to the next's. The last fades
- * out to no shadow over its own last tenth; past the last split a fragment
- * is lit. A caller framing its own cascades lets each after the first reach
- * back over the last tenth of the one before, as
- * aprend_lit_fit_sun_cascades() does: where a cascade's map doesn't reach,
- * it reads as lit.
- */
-typedef struct APREND_LIT_SUN_SHADOW {
-	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SUN_SHADOW, and its chain (apricore.h, "Struct bases"). */
-	APRI_STRUCT_BASE base;
+	float _direction[3];
 	/**
-	 * A SHADER_RESOURCE view, DEPTH aspect, shaped 2D_ARRAY, of a depth
-	 * texture with a layer for each cascade.
+	 * Its color times its strength, linear: what a white matte face square
+	 * to it reads (a point or spot light at distance 1). 0 is a light that
+	 * gives nothing.
 	 */
-	aprend_texture_view map;
-	/** How many cascades: 1 to APREND_LIT_MAX_CASCADES. */
-	uint32_t cascade_count;
-	/** Each cascade's matrix from the scene's space to its layer's clip
-	 * space, column after column, as it was rendered with. */
-	float view_projection[APREND_LIT_MAX_CASCADES][16];
-	/** How far along the view direction from the eye each cascade reaches:
-	 * increasing, and above 0. */
-	float split_depths[APREND_LIT_MAX_CASCADES];
-	/** Depth added in the light's favour before the test, in the map's depth
-	 * units: against acne. */
-	float depth_bias;
-	/** How far a surface's position is moved along its normal before it is
-	 * looked up, in the scene's units: against acne on slopes. */
-	float normal_offset;
-	/** The shadow's edge, in texels of the map: 0 for the hardware's own
-	 * four-texel filter alone, 1 and up for a softer one. Up to 4. */
-	float softness;
-	/** How dark the shadow is: 1 takes all the sun away, 0 none of it. */
-	float strength;
-	/** The maps were rendered with depth reversed: near at 1, far at 0. */
-	bool reversed_depth;
-} APREND_LIT_SUN_SHADOW;
+	float _radiance[3];
+	/** Where a point or spot light's light has fallen to 0, smoothly: above
+	 * 0. What tiled culling bounds it by. Not read for a directional light. */
+	float _range;
+	/** A spot's full light within this angle of its axis, in radians... */
+	float _inner_angle;
+	/** ...fading to none at this one: #_inner_angle to pi / 2. */
+	float _outer_angle;
+	/**
+	 * A directional light's angular radius, in radians, 0 to 0.5: the
+	 * angle from its disc's centre to its edge (0.00465 for the sun seen
+	 * from the earth). Its light is spread over the disc, so it lights
+	 * nothing more than #_radiance; a traced shadow and the path trace
+	 * read it as the light's size. A point or spot light's: 0 (card A38).
+	 */
+	float _radius;
+	/**
+	 * A directional light only: whether APREND_LIT_SHADER_SKY_FRAGMENT
+	 * draws its disc, at #_radius. Each texel of a disc reads pi times
+	 * #_radiance over its solid angle, 2 pi (1 - cos(_radius)). Must be
+	 * false for the other types.
+	 */
+	bool _sky_disc;
+} APREND_LIT_SCENE_LIGHT;
 
 /**
- * @brief Sets the sun's shadow to cascades, or takes it away.
+ * @brief Sets a scene's lights, every type, replacing the ones it had.
+ * Shadows, the traced mask command and the path trace name a light by its
+ * place in this list.
  *
- * The sun is directional light 0 of the scene until card A35 makes
- * directional lights a type of their own, and a light has one shadow
- * (aprend_lit_scene_set_light_shadow()). This sets that one shadow to
- * cascades, replacing a traced mask set for light 0; a later
- * aprend_lit_scene_set_light_shadow() for light 0 replaces these cascades
- * in turn. Whichever of the two calls comes last is the light's shadow.
- * NULL takes the light's shadow away, of either kind.
- *
- * The shadow pass materials of the cascades get their matrices here too.
+ * A shadow set for a light stays while its index names a light of a type
+ * its kind fits; the call takes away the rest (an index past the new
+ * count, or a kind the new light's type can't have). So a list resent each
+ * frame keeps its shadows. Directional lights aren't culled per tile; point
+ * and spot lights are.
  *
  * @param[in] scene  Scene to change.
- * @param[in] shadow The shadow, or NULL for none. Its map must outlive its
- *                   use by the scene.
+ * @param[in] lights The lights; NULL with a count of 0 for none. Only read
+ *                   during the call.
+ * @param[in] count  How many: up to APREND_LIT_MAX_LIGHTS plus
+ *                   APREND_LIT_MAX_DIRECTIONAL_LIGHTS.
  * @param[out] out_error Why it failed, when it did. May be NULL.
  *
- * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
- *         own code (aprendcontext.h, "Results and errors"), with nothing
- *         changed, if @p scene is NULL, the map is NULL, of another instance,
- *         not a depth view as above or has fewer layers than cascades, the
- *         cascade count is 0 or too many, a value is not finite, the splits
- *         are not increasing above 0, the softness is out of range, or the
- *         strength is out of 0 to 1.
+ * @return APRESULT_OK. Otherwise, with nothing changed:
+ *         APRESULT_INVALID_ARGUMENT if @p scene is NULL, @p lights is NULL
+ *         with a count above 0, or a light (named by its index) has a type
+ *         that is not an APREND_LIT_LIGHT_TYPE, a value not finite, a
+ *         negative radiance, a direction of 0 where it is read, a range not
+ *         above 0 (point, spot), angles out of order or past pi / 2
+ *         (spot), a radius out of 0 to 0.5 (directional) or not 0 (point,
+ *         spot), or `_sky_disc` true on a point or spot light;
+ *         APRESULT_LIMIT if more than APREND_LIT_MAX_LIGHTS are point and
+ *         spot lights, or more than APREND_LIT_MAX_DIRECTIONAL_LIGHTS are
+ *         directional.
  */
-APRESULT aprend_lit_scene_set_sun_shadow(aprend_lit_scene scene, const APREND_LIT_SUN_SHADOW *shadow, APREND_ERROR *out_error);
+APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_SCENE_LIGHT *lights, uint32_t count,
+                                     APREND_ERROR *out_error);
+
+/**
+ * @brief Sets the depth atlas every shadow drawn from maps reads, or takes
+ * it away.
+ *
+ * The caller renders each view of each shadow into its rectangle of the
+ * atlas (APREND_LIT_SHADOW_MAPS::_rects): a depth-only pass over the
+ * atlas, its viewport and scissor the rectangle
+ * (APREND_COMMAND_SET_VIEWPORTS, APREND_COMMAND_SET_SCISSOR_RECTS), binding
+ * aprend_lit_scene_get_shadow_pass_material() for that light and view at
+ * set 0. Which rectangle each view has, and how large, is the caller's:
+ * rectangles may differ in size, and nothing checks two don't overlap.
+ * Every view's depth is rendered with the same direction of depth.
+ *
+ * One binding serves any number of shadows of any size, the caps then the
+ * view table's; a small or distant light's shadow costs what the caller
+ * gives it (Unreal's, Godot's and Unity's atlases).
+ *
+ * @param[in] scene          Scene to change.
+ * @param[in] atlas          A SHADER_RESOURCE view, DEPTH aspect, shaped
+ *                           2D, of a depth texture; NULL for none, which
+ *                           every map shadow then reads as lit. Borrowed:
+ *                           it outlives its use by the scene, until set
+ *                           again or the scene goes.
+ * @param[in] reversed_depth The views are rendered near at 1, far at 0.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
+ *
+ * @return APRESULT_OK. Otherwise, with nothing changed:
+ *         APRESULT_INVALID_ARGUMENT if @p scene is NULL, or @p atlas is of
+ *         another instance or not a depth view shaped as above; or
+ *         APRESULT_INVALID_ARGUMENT, naming the light, if a shadow already
+ *         set has a rectangle past the atlas's size.
+ */
+APRESULT aprend_lit_scene_set_shadow_atlas(aprend_lit_scene scene, aprend_texture_view atlas, bool reversed_depth,
+                                           APREND_ERROR *out_error);
 
 /**
  * @brief What kind of shadow a light has.
  */
 typedef enum APREND_LIT_SHADOW_KIND APRI_ENUM_BASE {
 	/** Not a kind: a desc that has not chosen, and is refused. */
-	APREND_LIT_SHADOW_KIND_NONE     = 0,
-	/** A traced mask, written by APREND_COMMAND_LIT_SHADOW_MASK
-	 * (aprendcommands.h) for the light. */
-	APREND_LIT_SHADOW_KIND_MASK     = 1,
-	/** Cascaded shadow maps: refused until card A35 moves them here. Until
-	 * then, aprend_lit_scene_set_sun_shadow() sets them. */
-	APREND_LIT_SHADOW_KIND_CASCADES = 2
+	APREND_LIT_SHADOW_KIND_NONE      = 0,
+	/** A traced mask, a directional light's, written by
+	 * APREND_COMMAND_LIT_SHADOW_MASK (aprendcommands.h) for the light. */
+	APREND_LIT_SHADOW_KIND_MASK      = 1,
+	/** A directional light's cascades, from the atlas. Its fields are an
+	 * APREND_LIT_SHADOW_MAPS chained on the shadow's base. */
+	APREND_LIT_SHADOW_KIND_CASCADES  = 2,
+	/** A spot's map, one view in the atlas; an APREND_LIT_SHADOW_MAPS
+	 * chained on. */
+	APREND_LIT_SHADOW_KIND_SPOT_MAP  = 3,
+	/** A point light's six faces, +X, -X, +Y, -Y, +Z, -Z, each a view in the
+	 * atlas; an APREND_LIT_SHADOW_MAPS chained on. A fragment is looked up
+	 * in the face its offset from the light is largest along. */
+	APREND_LIT_SHADOW_KIND_POINT_MAP = 4,
 } APREND_LIT_SHADOW_KIND;
 
 /**
- * @brief One light's shadow: its kind, and that kind's fields. A mask's
- * are here; card A35 adds the cascades' as a struct chained on `base`.
+ * @brief One light's shadow: its kind, its strength and, for a mask, the
+ * mask. A map kind's fields are an APREND_LIT_SHADOW_MAPS chained on `base`
+ * (its `next`); a mask has none chained.
  */
 typedef struct APREND_LIT_LIGHT_SHADOW {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW, and its chain (apricore.h, "Struct bases"). */
@@ -891,54 +974,148 @@ typedef struct APREND_LIT_LIGHT_SHADOW {
 	 * the mask APREND_COMMAND_LIT_SHADOW_MASK writes for this light, at the
 	 * scene's view's target size, read at each fragment's place on the
 	 * target. Borrowed: it outlives its use by the scene, until the light's
-	 * shadow is set again or the scene goes.
+	 * shadow is set again or the scene goes. Not read for the other kinds.
 	 */
 	aprend_texture_view _mask;
 } APREND_LIT_LIGHT_SHADOW;
 
 /**
- * @brief Sets directional light @p light's one shadow, replacing what it
- * had, or takes it away.
+ * @brief A rectangle of a scene's shadow atlas, in texels.
+ */
+/* Frozen: an array element of APREND_LIT_SHADOW_MAPS. It never changes; a new need gets a new type. */
+typedef struct APREND_LIT_SHADOW_RECT {
+	/** Its left column. */
+	uint32_t _x;
+	/** Its top row. */
+	uint32_t _y;
+	/** Its width: above 0. */
+	uint32_t _width;
+	/** Its height: above 0. */
+	uint32_t _height;
+} APREND_LIT_SHADOW_RECT;
+
+/**
+ * @brief A map shadow's views: each one's matrix and rectangle of the
+ * atlas, and the filtering. Chained on APREND_LIT_LIGHT_SHADOW's base.
  *
- * A light has one shadow. Setting it replaces the one it had, of any kind,
- * as any setter does; there is nothing to refuse. Until card A35 is built
- * the scene has one directional light, the sun (APREND_LIT_SUN), as light
- * 0, and its shadow is also set to cascades by
- * aprend_lit_scene_set_sun_shadow(): whichever of the two calls comes last
- * is light 0's shadow.
+ * Cascades: a fragment is shadowed from the first cascade whose split is
+ * beyond it along the view direction, and over the last tenth of that
+ * cascade's stretch (from the split before it, or the eye for the first) it
+ * is blended into the next by a smoothstep, so no seam shows where one
+ * cascade's detail gives way to the next's. The last fades out to no shadow
+ * over its own last tenth; past the last split a fragment is lit. A caller
+ * framing its own cascades lets each after the first reach back over the
+ * last tenth of the one before, as aprend_lit_fit_cascades() does: where a
+ * cascade's view doesn't reach, it reads as lit.
+ */
+typedef struct APREND_LIT_SHADOW_MAPS {
+	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_SHADOW_MAPS, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** How many views: 1 to APREND_LIT_MAX_CASCADES for CASCADES, 1 for a
+	 * SPOT_MAP, 6 for a POINT_MAP. */
+	uint32_t _view_count;
+	/**
+	 * Each view's matrix from the scene's space to its clip space, column
+	 * after column, as rendered into its rectangle (the rectangle is the
+	 * whole of that clip space). aprend_lit_fit_cascades(),
+	 * aprend_lit_spot_shadow_view_projection() and
+	 * aprend_lit_point_shadow_view_projection() frame them.
+	 */
+	float _view_projection[6][16];
+	/** Each view's rectangle of the atlas, inside it. Filtering reads within
+	 * a rectangle only, clamped at its edge. */
+	APREND_LIT_SHADOW_RECT _rects[6];
+	/**
+	 * CASCADES only: how far along the view direction from the eye each
+	 * cascade reaches, increasing and above 0, blended as above (the last
+	 * tenth of each into the next; the last fades out). Not read for the
+	 * other kinds.
+	 */
+	float _split_depths[APREND_LIT_MAX_CASCADES];
+	/** Depth added in the light's favour before the test, in the map's
+	 * depth units: against acne. */
+	float _depth_bias;
+	/** How far a surface's position is moved along its normal before it is
+	 * looked up, in the scene's units: against acne on slopes. */
+	float _normal_offset;
+	/** The edge, in texels: 0 for the hardware's own filter alone, up to 4. */
+	float _softness;
+} APREND_LIT_SHADOW_MAPS;
+
+/**
+ * @brief Sets light @p light's one shadow, of any kind its type can have,
+ * replacing what it had, or takes it away.
  *
- * A mask is read by the lit surface for that light in place of shadow
- * maps: the light at a fragment is multiplied by 1 - `_strength` x (1 - m),
- * m the mask's red at the fragment's place on the view's target. It
- * takes effect as the scene's other values do, at the next submission of
- * a list that binds the scene. The mask is written by
- * APREND_COMMAND_LIT_SHADOW_MASK earlier in the list that draws with it, or
- * before; a surface drawn in a list with no mask written yet reads
- * whatever the texture holds.
+ * A directional light takes a MASK or CASCADES; a spot a SPOT_MAP; a point
+ * light a POINT_MAP. A map shadow's rectangles must lie inside the scene's
+ * atlas (aprend_lit_scene_set_shadow_atlas()), and the scene's views
+ * together stay within APREND_LIT_MAX_SHADOW_VIEWS. The shadow pass
+ * materials of its views get their matrices here.
+ *
+ * A mask is read by the lit surface for that light in place of maps: the
+ * light at a fragment is multiplied by 1 - `_strength` x (1 - m), m the
+ * mask's red at the fragment's place on the view's target. The mask is
+ * written by APREND_COMMAND_LIT_SHADOW_MASK earlier in the list that draws
+ * with it, or before; a surface drawn in a list with no mask written yet
+ * reads whatever the texture holds. A map shadow multiplies the light by
+ * 1 - `_strength` x (1 - v), v the share of the filtered comparisons that
+ * pass. Either takes effect as the scene's other values do, at the next
+ * submission of a list that binds the scene.
+ *
+ * A light has one shadow, set by naming the light; a change to one light's
+ * shadow touches that light alone (Unreal, Godot and Unity set shadows on
+ * each light).
  *
  * @param[in] scene     Scene to change.
- * @param[in] light     Which directional light: today only 0, the sun.
+ * @param[in] light     Which light: its place in the scene's lights.
  * @param[in] shadow    The shadow, or NULL for none. Only read during the
- *                      call; the mask view it names is borrowed, as
- *                      `_mask` says.
+ *                      call; a mask view it names is borrowed, as `_mask`
+ *                      says.
  * @param[out] out_error Why it failed, when it did. May be NULL.
  *
  * @return APRESULT_OK. Otherwise, checked in this order, with nothing
  *         changed: APRESULT_INVALID_ARGUMENT if @p scene is NULL;
- *         APRESULT_INVALID_ARGUMENT if @p light names no directional light
- *         of the scene (today, anything but 0); the struct codes for
- *         `shadow->base`; APRESULT_INVALID_ARGUMENT if `_kind` is NONE or
- *         not an APREND_LIT_SHADOW_KIND, or CASCADES (naming
- *         aprend_lit_scene_set_sun_shadow(), until card A35); then, for a
- *         mask, if `_strength` is not finite or out of 0 to 1, or `_mask`
- *         is NULL, of another instance, or not a SHADER_RESOURCE 2D view of
- *         color.
+ *         APRESULT_INVALID_ARGUMENT if @p light names no light of the
+ *         scene; the struct codes for `shadow->base`;
+ *         APRESULT_INVALID_ARGUMENT if `_kind` is NONE or not an
+ *         APREND_LIT_SHADOW_KIND, or a kind the light's type can't have, or
+ *         `_strength` is not finite or out of 0 to 1; for a mask, if
+ *         `_mask` is NULL, of another instance, or not a SHADER_RESOURCE 2D
+ *         view of color; for a map kind, the struct codes for the chained
+ *         APREND_LIT_SHADOW_MAPS (missing: APRESULT_INVALID_ARGUMENT), then
+ *         APRESULT_INVALID_ARGUMENT if `_view_count` is wrong for the kind,
+ *         a value is not finite, a rectangle is empty or past the atlas (or
+ *         there is no atlas), the splits are not increasing above 0
+ *         (CASCADES), the softness is out of 0 to 4 or a bias negative;
+ *         APRESULT_LIMIT if the scene's views would pass
+ *         APREND_LIT_MAX_SHADOW_VIEWS.
  */
 APRESULT aprend_lit_scene_set_light_shadow(aprend_lit_scene scene, uint32_t light, const APREND_LIT_LIGHT_SHADOW *shadow,
                                            APREND_ERROR *out_error);
 
 /**
- * @brief How aprend_lit_fit_sun_cascades() frames the sun's cascades.
+ * @brief The material a pass that renders view @p view of light @p light's
+ * map shadow binds at set 0: of aprend_lit_get_shadow_layout(), holding
+ * that view's matrix. The scene's: don't destroy it. It changes with the
+ * light's shadow; one taken before a later
+ * aprend_lit_scene_set_light_shadow() for the light holds the new matrix.
+ *
+ * The scene makes APREND_LIT_MAX_SHADOW_VIEWS such materials when it is
+ * created (aprend_lit_scene_create()) and hands them out as shadows take
+ * views: nothing is allocated here or by aprend_lit_scene_set_light_shadow().
+ *
+ * @param[in] scene Scene to read.
+ * @param[in] light Which light.
+ * @param[in] view  Which view of its shadow: a cascade, or a face.
+ *
+ * @return The material, or NULL if @p scene is NULL, @p light has no map
+ *         shadow, or @p view is not below its view count.
+ */
+aprend_material aprend_lit_scene_get_shadow_pass_material(aprend_lit_scene scene, uint32_t light, uint32_t view);
+
+/**
+ * @brief How aprend_lit_fit_cascades() frames a directional light's
+ * cascades.
  */
 typedef struct APREND_LIT_CASCADE_FIT {
 	/** This struct's type, APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT, and its chain (apricore.h, "Struct bases"). */
@@ -968,39 +1145,43 @@ typedef struct APREND_LIT_CASCADE_FIT {
 	 * (logarithmically); between, a mix of the two (Zhang's practical split
 	 * scheme). 0.75 suits most views. */
 	float split_lambda;
-	/** From the scene towards the sun, as APREND_LIT_SUN has it. */
-	float sun_direction[3];
-	/** How far beyond a cascade towards the sun its map still catches what
-	 * casts a shadow into it, in the scene's units: the height of the
-	 * tallest thing that can stand between a surface and the sun. */
+	/** From the scene towards the light: the directional light's
+	 * APREND_LIT_SCENE_LIGHT::_direction. */
+	float light_direction[3];
+	/** How far beyond a cascade towards the light its view still catches
+	 * what casts a shadow into it, in the scene's units: the height of the
+	 * tallest thing that can stand between a surface and the light. */
 	float caster_distance;
-	/** The width of a layer of the map, in texels: what each cascade is
-	 * snapped to, so its shadows don't shimmer as the view moves. */
+	/** The width in texels of each cascade's rectangle of the atlas: what
+	 * each cascade is snapped to, so its shadows don't shimmer as the view
+	 * moves. */
 	uint32_t map_size;
-	/** Whether the maps will be rendered with depth reversed. */
+	/** Whether the views will be rendered with depth reversed. */
 	bool reversed_depth;
 } APREND_LIT_CASCADE_FIT;
 
 /**
- * @brief Frames the sun's cascades for a view: for each, the matrix its layer
- * is rendered through and how far along the view it reaches, into
- * @p out_shadow's cascade_count, view_projection and split_depths (nothing
- * else of it is written: its base, which the caller sets as for
- * aprend_lit_scene_set_sun_shadow(), is checked and left as it is).
+ * @brief Frames a directional light's cascades for a view: for each, the
+ * matrix its view is rendered through and how far along the view it
+ * reaches, into @p out_maps's `_view_count`, `_view_projection` and
+ * `_split_depths` (the views past the count, and the splits past it, are
+ * zeroed). Its rectangles, biases and softness are left as they are, the
+ * caller's; its base, which the caller sets as for
+ * aprend_lit_scene_set_light_shadow(), is checked and left as it is.
  *
  * Each cascade bounds its stretch of the view's frustum with a sphere, so
  * its size doesn't change as the view turns (a cascade after the first from
  * the last tenth of the stretch before it, which the surface blends over),
- * looks at it down the sun's
- * direction with a parallel projection (its clip space's y negated, as
- * aprend_lit_point_shadow_view_projection()'s), and is moved by whole texels of the
- * map, so as the view moves its shadows stay still: the stable cascades of
- * Valient's "Stable Rendering of Cascaded Shadow Maps", as Unreal and Hazel
- * have them. Depth runs 0 at the sun's end to 1 (or reversed).
+ * looks at it down the light's direction with a parallel projection (its
+ * clip space's y negated, as aprend_lit_point_shadow_view_projection()'s),
+ * and is moved by whole texels of its rectangle, so as the view moves its
+ * shadows stay still: the stable cascades of Valient's "Stable Rendering of
+ * Cascaded Shadow Maps", as Unreal and Hazel have them. Depth runs 0 at the
+ * light's end to 1 (or reversed).
  *
- * @param[in]  fit        The view and how its cascades are framed. Only read
- *                        during the call.
- * @param[out] out_shadow Receives the cascades, as above.
+ * @param[in]  fit       The view and how its cascades are framed. Only read
+ *                       during the call.
+ * @param[out] out_maps  Receives the cascades, as above.
  * @param[out] out_error Why it failed, when it did. May be NULL.
  *
  * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
@@ -1010,197 +1191,24 @@ typedef struct APREND_LIT_CASCADE_FIT {
  *         out of their ranges, the cascade count is 0 or too many, the map
  *         size is 0, or either struct's base is wrong.
  */
-APRESULT aprend_lit_fit_sun_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_LIT_SUN_SHADOW *out_shadow, APREND_ERROR *out_error);
-
-/**
- * @brief Point and spot lights.
- */
-typedef uint32_t APREND_LIT_LIGHT_TYPE;
-enum {
-	/** Light from one point, every way. */
-	APREND_LIT_LIGHT_TYPE_POINT = 0,
-	/** Light from one point, in a cone. */
-	APREND_LIT_LIGHT_TYPE_SPOT = 1,
-};
-
-/**
- * @brief One point or spot light.
- */
-/* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
-typedef struct APREND_LIT_LIGHT {
-	/** A point light or a spot. */
-	APREND_LIT_LIGHT_TYPE type;
-	/** Where the light is, in the scene's space. */
-	float position[3];
-	/** A spot's axis, from the light outwards; any length but 0. Not read
-	 * for a point light. */
-	float direction[3];
-	/** Its color times its strength, linear: what a white matte face
-	 * square to it reads at distance 1. */
-	float radiance[3];
-	/** Where its light has fallen to 0, smoothly: above 0. Also what light
-	 * culling bounds it by. */
-	float range;
-	/** A spot's full light within this angle of its axis, in radians... */
-	float inner_angle;
-	/** ...fading to none at this one: inner_angle to pi / 2. */
-	float outer_angle;
-} APREND_LIT_LIGHT;
-
-/**
- * @brief Sets a scene's point and spot lights, replacing the ones it had.
- * Spot shadows name lights by their place in this list.
- *
- * @param[in] scene  Scene to change.
- * @param[in] lights The lights; NULL with a count of 0 for none.
- * @param[in] count  How many: up to APREND_LIT_MAX_LIGHTS.
- * @param[out] out_error Why it failed, when it did. May be NULL.
- *
- * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
- *         own code (aprendcontext.h, "Results and errors"), with nothing
- *         changed, if @p scene is NULL, @p lights is NULL with a count above
- *         0, @p count is above APREND_LIT_MAX_LIGHTS, or a light has a type
- *         that is not an APREND_LIT_LIGHT_TYPE, a value that is not finite, a
- *         negative radiance, a range that is not above 0, or (a spot) a
- *         direction of 0 or angles out of order or past pi / 2.
- */
-APRESULT aprend_lit_scene_set_lights(aprend_lit_scene scene, const APREND_LIT_LIGHT *lights, uint32_t count, APREND_ERROR *out_error);
-
-/**
- * @brief The shadow of one spot light, from a layer of a depth map the
- * caller rendered, as a sun cascade is.
- */
-/* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
-typedef struct APREND_LIT_SPOT_SHADOW {
-	/** The spot it is the shadow of: its place in the scene's lights. A
-	 * light that is not a spot casts no shadow from it. */
-	uint32_t light;
-	/** The scene's space to its layer's clip space, as rendered:
-	 * aprend_lit_spot_shadow_view_projection() frames one. */
-	float view_projection[16];
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float depth_bias;
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float normal_offset;
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float softness;
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float strength;
-} APREND_LIT_SPOT_SHADOW;
-
-/**
- * @brief Sets the shadows of a scene's spot lights, replacing any it had.
- *
- * Shadow @p i is rendered into layer i of @p map, binding
- * aprend_lit_scene_get_spot_shadow_material() for it at set 0.
- *
- * @param[in] scene          Scene to change.
- * @param[in] map            A SHADER_RESOURCE view, DEPTH aspect, shaped
- *                           2D_ARRAY, with a layer for each shadow; NULL with
- *                           a count of 0.
- * @param[in] shadows        The shadows; NULL with a count of 0.
- * @param[in] count          Up to APREND_LIT_MAX_SPOT_SHADOWS.
- * @param[in] reversed_depth The maps were rendered near at 1.
- * @param[out] out_error Why it failed, when it did. May be NULL.
- *
- * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
- *         own code (aprendcontext.h, "Results and errors"), with nothing
- *         changed, if @p scene is NULL, @p map or @p shadows is NULL with a
- *         count above 0, there are too many, the map is not a depth view as
- *         above or has too few layers, two shadows name one light, or a value
- *         is out of its range.
- */
-APRESULT aprend_lit_scene_set_spot_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_SPOT_SHADOW *shadows,
-                                       uint32_t count, bool reversed_depth,
-                                       APREND_ERROR *out_error);
-
-/**
- * @brief The shadow of one point light, from six layers of a depth map the
- * caller rendered, one for each face of a cube round the light, as a spot's
- * is from one.
- */
-/* Frozen: an array element, set every frame. It never changes; a new need gets a new type. */
-typedef struct APREND_LIT_POINT_SHADOW {
-	/** The point light it is the shadow of: its place in the scene's lights.
-	 * A light that is not a point light casts no shadow from it. */
-	uint32_t light;
-	/**
-	 * Each face's matrix, from the scene's space to its layer's clip space,
-	 * as rendered: faces +X, -X, +Y, -Y, +Z, -Z, in that order, each
-	 * looking from the light along its axis and covering at least the
-	 * quarter of space around it (a 90 degree square frustum).
-	 * aprend_lit_point_shadow_view_projection() frames each. A fragment is
-	 * looked up in the face its offset from the light is largest along.
-	 */
-	float view_projection[6][16];
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float depth_bias;
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float normal_offset;
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float softness;
-	/** As APREND_LIT_SUN_SHADOW's. */
-	float strength;
-} APREND_LIT_POINT_SHADOW;
-
-/**
- * @brief Sets the shadows of a scene's point lights, replacing any it had.
- *
- * Face f of shadow @p i is rendered into layer 6i + f of @p map, binding
- * aprend_lit_scene_get_point_shadow_material() for it at set 0: six
- * depth-only passes a light. A 2D array, not a cube array, so a device with
- * no cube array views takes them.
- *
- * @param[in] scene          Scene to change.
- * @param[in] map            A SHADER_RESOURCE view, DEPTH aspect, shaped
- *                           2D_ARRAY, with six layers for each shadow; NULL
- *                           with a count of 0.
- * @param[in] shadows        The shadows; NULL with a count of 0.
- * @param[in] count          Up to APREND_LIT_MAX_POINT_SHADOWS.
- * @param[in] reversed_depth The maps were rendered near at 1.
- * @param[out] out_error Why it failed, when it did. May be NULL.
- *
- * @return APRESULT_OK; otherwise APRESULT_INVALID_ARGUMENT or the failure's
- *         own code (aprendcontext.h, "Results and errors"), with nothing
- *         changed, if @p scene is NULL, @p map or @p shadows is NULL with a
- *         count above 0, there are too many, the map is not a depth view as
- *         above or has too few layers, two shadows name one light, or a value
- *         is out of its range.
- */
-APRESULT aprend_lit_scene_set_point_shadows(aprend_lit_scene scene, aprend_texture_view map, const APREND_LIT_POINT_SHADOW *shadows,
-                                        uint32_t count, bool reversed_depth,
-                                        APREND_ERROR *out_error);
-
-/**
- * @brief The material a pass that renders face @p face of point shadow
- * @p index binds at set 0, as aprend_lit_scene_get_spot_shadow_material() is
- * for a spot.
- *
- * @param[in] scene Scene to read.
- * @param[in] index Which point shadow: its place in the shadows
- *                  aprend_lit_scene_set_point_shadows() was given.
- * @param[in] face  Which face, 0 to 5, in the order of
- *                  APREND_LIT_POINT_SHADOW::view_projection.
- *
- * @return The material, or NULL if @p scene is NULL, @p index is not below
- *         APREND_LIT_MAX_POINT_SHADOWS or @p face is not below 6.
- */
-aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scene, uint32_t index, uint32_t face);
+APRESULT aprend_lit_fit_cascades(const APREND_LIT_CASCADE_FIT *fit, APREND_LIT_SHADOW_MAPS *out_maps, APREND_ERROR *out_error);
 
 /**
  * @brief The matrix face @p face of a point light's shadow is rendered
  * through: a perspective from the light along the face's axis (+X, -X, +Y,
  * -Y, +Z, -Z for faces 0 to 5), from @p near_depth out to the light's range,
  * a little wider than 90 degrees (the tangent of its half angle is 1.05),
- * so a soft shadow's taps near a face's edge stay inside the face's map.
- * Its clip space's y is negated, as the sun's cascades' and a spot's are:
- * the map is the picture it was when clip space was +Y down the target,
- * and the surface reads it through the same matrix, so either way works.
+ * so a soft shadow's taps near a face's edge stay inside the face's view.
+ * Its clip space's y is negated, as a directional light's cascades' and a
+ * spot's are: the view is the picture it was when clip space was +Y down
+ * the target, and the surface reads it through the same matrix, so either
+ * way works.
  *
- * @param[in]  light               The point light.
+ * @param[in]  light               The point light (of type
+ *                                 APREND_LIT_LIGHT_TYPE_POINT).
  * @param[in]  face                Which face, 0 to 5.
  * @param[in]  near_depth          The near plane's distance from the light.
- * @param[in]  reversed_depth      Whether the map is rendered with depth
+ * @param[in]  reversed_depth      Whether the view is rendered with depth
  *                                 reversed: near at 1, far at 0.
  * @param[out] out_view_projection Receives the matrix, column after column.
  * @param[out] out_error Why it failed, when it did. May be NULL.
@@ -1211,9 +1219,8 @@ aprend_material aprend_lit_scene_get_point_shadow_material(aprend_lit_scene scen
  *         light (as aprend_lit_scene_set_lights() checks), @p face is not
  *         below 6, or @p near_depth is not between 0 and the range.
  */
-APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, uint32_t face, float near_depth, bool reversed_depth,
-                                             float out_view_projection[16],
-                                             APREND_ERROR *out_error);
+APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_SCENE_LIGHT *light, uint32_t face, float near_depth, bool reversed_depth,
+                                                 float out_view_projection[16], APREND_ERROR *out_error);
 
 /**
  * @brief The matrix a spot light's shadow is rendered through: a perspective
@@ -1221,9 +1228,10 @@ APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, 
  * @p near_depth out to its range, its clip space's y negated (as
  * aprend_lit_point_shadow_view_projection()'s).
  *
- * @param[in]  light               The spot.
+ * @param[in]  light               The spot (of type
+ *                                 APREND_LIT_LIGHT_TYPE_SPOT).
  * @param[in]  near_depth          The near plane's distance from the light.
- * @param[in]  reversed_depth      Whether the map is rendered with depth
+ * @param[in]  reversed_depth      Whether the view is rendered with depth
  *                                 reversed: near at 1, far at 0.
  * @param[out] out_view_projection Receives the matrix, column after column.
  * @param[out] out_error Why it failed, when it did. May be NULL.
@@ -1234,7 +1242,8 @@ APRESULT aprend_lit_point_shadow_view_projection(const APREND_LIT_LIGHT *light, 
  *         aprend_lit_scene_set_lights() checks), or @p near_depth is not
  *         between 0 and the range.
  */
-APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_LIGHT *light, float near_depth, bool reversed_depth, float out_view_projection[16], APREND_ERROR *out_error);
+APRESULT aprend_lit_spot_shadow_view_projection(const APREND_LIT_SCENE_LIGHT *light, float near_depth, bool reversed_depth,
+                                                float out_view_projection[16], APREND_ERROR *out_error);
 
 /**
  * @brief The light that comes from all round: a hemisphere of two colors,

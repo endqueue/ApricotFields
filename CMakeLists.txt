@@ -192,8 +192,11 @@ set(APRICOTFIELDS_SHADERS
         aprend_blur_frag
         aprend_outline_frag
         aprend_lit_vert
+        aprend_lit_color_vert
         aprend_lit_frag
+        aprend_lit_surface_reflect_frag
         aprend_lit_shadow_vert
+        aprend_lit_shadow_color_vert
         aprend_lit_depth_frag
         aprend_environment_from_cube_frag
         aprend_environment_from_equirect_frag
@@ -208,6 +211,10 @@ set(APRICOTFIELDS_SHADERS
         aprend_lit_brdf_lut_frag
         aprend_lit_occlusion_frag
         aprend_lit_occlusion_blur_frag
+        aprend_lit_hiz_frag
+        aprend_lit_hiz_down_frag
+        aprend_lit_ssr_comp
+        aprend_lit_reflect_frag
         aprend_exposure_luminance_frag
         aprend_exposure_adapt_frag
         aprend_exposure_histogram_comp
@@ -230,6 +237,7 @@ set(APRICOTFIELDS_SHADER_MODULES
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_environment.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_material.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_bindings.slang
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_surface.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_lit_shadow_pass.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch.slang
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/aprend_batch_inputs.slang
@@ -248,6 +256,7 @@ set(APRICOTFIELDS_TRACE_SHADERS
         aprend_rt_path_trace_f32_f16_comp
         aprend_rt_path_trace_f16_f32_comp
         aprend_rt_path_trace_f16_f16_comp
+        aprend_rt_reflections_comp
 )
 foreach (shader IN LISTS APRICOTFIELDS_SHADERS)
     aprend_add_slang_shader(APRICOTFIELDS_SHADER_OUTPUTS

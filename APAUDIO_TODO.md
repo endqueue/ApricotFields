@@ -324,6 +324,18 @@ tenth, each refusing the others' files, garbage, empty input, NULLs, a
 `max_frames` of 0, and too few frames, a truncated file decoding or
 refused, never past its end.
 
+**Found 2026-11-02, not fixed (the workspace's `ROADMAP.md`, the session
+of 2026-11-02, step 2):** stb's fetch fails where `../.deps/` has no copy. It is declared
+with `GIT_SHALLOW TRUE` and a commit (`003501f`), and a shallow clone holds
+only the branch's tip, which has moved on: `fatal: unable to read tree
+(003501f6d7a8668ce8b6d875e34dd97ad0d5d5b5)` from a fresh build directory
+on the Mac. A build that already fetched it, or has `../.deps/stb`, doesn't
+see it; a clean clone of ApricotFields, or of anything that fetches it, can't
+configure. The fix is
+`GIT_SHALLOW` off for a commit (as the other pins by commit have it) or a
+tag; checked when it is made by a configure from an empty build directory
+with no `../.deps/stb`.
+
 `apaudio_fuzz` (`tests/fuzz/`, new; the first byte picks the decoder, the
 seeds are the four test files) found, in its first hour on macOS:
 - stb_vorbis: a vendor or comment length past 2^31 read as negative, so

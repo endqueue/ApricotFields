@@ -9,8 +9,8 @@ module aprend_rt_shadow_mask;
 // the scene's view_projection, moved _normal_offset along the normal the
 // depth's own slopes give (no normal target is read: card T9's
 // approximation until A6 and A30's target exists), and _ray_count rays are
-// traced towards the light over its disc (the scene's sun_radiance.w, 1 -
-// the cosine of its angular radius), in directions of Roberts' R2 sequence
+// traced towards the light over its disc (its directional record's
+// direction_versine.w, 1 - the cosine of its angular radius), in directions of Roberts' R2 sequence
 // turned per texel by interleaved gradient noise, so neighbouring texels
 // sample the disc apart and a filter averages them. The fraction that
 // reaches the light is filtered over _filter_radius texels each way, its
@@ -29,7 +29,7 @@ public struct MaskParams {
     public uint cull_mask;
     public float normal_offset;
     public float max_distance;
-    public uint light;
+    public uint light;            // its place among the scene's directional lights
 };
 
 // The entry points' group: 8 x 8 texels.
@@ -91,8 +91,9 @@ float mask_visibility(Texture2D<float4> depth, int2 p, MaskParams params, out fl
     float3 c       = mask_position(depth, p, float2(size));
     float3 n       = mask_normal(depth, p, size, c);
     float3 origin  = c + n * params.normal_offset;
-    float3 light   = normalize(u_lit_scene.sun_direction.xyz);
-    float cos_max  = 1.0 - u_lit_scene.sun_radiance.w;
+    AprendLitDirectional d = u_lit_scene.directional[min(params.light, uint(APREND_LIT_MAX_DIRECTIONAL_LIGHTS - 1))];
+    float3 light   = normalize(d.direction_versine.xyz);
+    float cos_max  = 1.0 - d.direction_versine.w;
     float2 turn    = float2(rt_interleaved_gradient(float2(p)), rt_interleaved_gradient(float2(p) + float2(5.588238, 5.588238)));
     uint reached   = 0u;
     for (uint i = 0u; i < params.ray_count; ++i) {

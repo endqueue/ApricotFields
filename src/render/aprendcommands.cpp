@@ -487,6 +487,166 @@ static void aprend_cmd_point_at_copies(aprend_command_list cmd_list) {
 	}
 }
 
+/* A view a reflection command names ([who], its member [member]), checked
+ * at the send: NULL, another instance's, a view of another type than
+ * [type], not 2D, of another aspect than [aspect], of more than one mip
+ * where [one_mip], or of another format than [format] (UNKNOWN for any;
+ * [format_name] its name): each its own refusal. False, reported, at the
+ * first. */
+static bool aprend_reflect_view_ok(aprend_command_list cmd_list, const char *who, const char *member, aprend_texture_view view,
+                                   APREND_TEXTURE_VIEW_TYPE type, const char *type_name, APREND_TEXTURE_VIEW_ASPECT aspect, bool one_mip,
+                                   SPUDGPU_FORMAT format, const char *format_name) {
+	if (!view)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a NULL %s", who, member);
+	if (view->instance != cmd_list->instance)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a %s of another instance", who, member);
+	if (view->view_type != type)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a %s that is not a %s view", who, member, type_name);
+	if (view->desc.shape != APREND_TEXTURE_VIEW_SHAPE_2D)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a %s that is not a 2D view", who, member);
+	if (view->desc.aspect != aspect)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a %s that is not a view of %s", who, member,
+		                          aspect == APREND_TEXTURE_VIEW_ASPECT_DEPTH ? "depth" : "color");
+	if (one_mip && view->desc.mip_count != 1)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a %s of more than one mip", who, member);
+	if (format != SPUDGPU_FORMAT_UNKNOWN && view->texture._t2d->desc.format != format)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a %s that is not of %s", who, member, format_name);
+	return true;
+}
+
+/* [view]'s size at its mip. */
+static void aprend_reflect_view_size(aprend_texture_view view, uint32_t *out_width, uint32_t *out_height) {
+	*out_width  = aprend_mip_size(view->texture._t2d->desc.width, view->desc.base_mip);
+	*out_height = aprend_mip_size(view->texture._t2d->desc.height, view->desc.base_mip);
+}
+
+/* Whether [format] is one LIT_REFLECT draws onto: a float format, the
+ * picture linear. */
+static bool aprend_reflect_target_format(SPUDGPU_FORMAT format) {
+	return format == SPUDGPU_FORMAT_R16G16B16A16_FLOAT || format == SPUDGPU_FORMAT_R32G32B32A32_FLOAT || format == SPUDGPU_FORMAT_R11G11B10_FLOAT;
+}
+
+/* The checks the reflection commands make at the send (aprendcommands.h:
+ * LIT_SSR, LIT_TRACE_REFLECTIONS, LIT_REFLECT), in their members' order,
+ * each its own refusal. False, reported, at the first that fails. */
+static bool aprend_reflect_send_checks(aprend_command_list cmd_list, const APREND_COMMAND &cmd) {
+	aprend_instance instance = cmd_list->instance;
+	const auto SR            = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
+	const auto UA            = APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS;
+	const auto RT            = APREND_TEXTURE_VIEW_TYPE_RENDER_TARGET;
+	const auto DEPTH         = APREND_TEXTURE_VIEW_ASPECT_DEPTH;
+	const auto COLOR         = APREND_TEXTURE_VIEW_ASPECT_COLOR;
+	const SPUDGPU_FORMAT any = SPUDGPU_FORMAT_UNKNOWN;
+	const SPUDGPU_FORMAT f16 = APREND_REFLECTION_FORMAT;
+	uint32_t width = 0, height = 0, w = 0, h = 0;
+	if (cmd._type == APREND_COMMAND_LIT_SSR) {
+		const auto &p   = cmd._params._lit_ssr;
+		const char *who = "LIT_SSR";
+		if (!p._scene)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a NULL scene", who);
+		if (p._scene->instance != instance)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a scene of another instance", who);
+		if (!aprend_reflect_view_ok(cmd_list, who, "_depth", p._depth, SR, "SHADER_RESOURCE", DEPTH, true, any, nullptr))
+			return false;
+		aprend_reflect_view_size(p._depth, &width, &height);
+		if (!aprend_reflect_view_ok(cmd_list, who, "_normal_roughness", p._normal_roughness, SR, "SHADER_RESOURCE", COLOR, true, f16, "R16G16B16A16_FLOAT"))
+			return false;
+		aprend_reflect_view_size(p._normal_roughness, &w, &h);
+		if (w != width || h != height)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _normal_roughness of %ux%u, and the depth %ux%u", who, w, h, width, height);
+		if (!aprend_reflect_view_ok(cmd_list, who, "_color", p._color, SR, "SHADER_RESOURCE", COLOR, false, any, nullptr))
+			return false;
+		if (!aprend_reflect_view_ok(cmd_list, who, "_reflection", p._reflection, UA, "UNORDERED_ACCESS", COLOR, true, f16, "R16G16B16A16_FLOAT"))
+			return false;
+		aprend_reflect_view_size(p._reflection, &w, &h);
+		if (w != (width + 1) / 2 || h != (height + 1) / 2)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _reflection of %ux%u, not half the depth's %ux%u rounded up", who, w, h, width,
+			                          height);
+		if (p._max_steps == 0)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with _max_steps of 0", who);
+		if (p._max_steps > APREND_SSR_MAX_STEPS)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with _max_steps of %u, past %u", who, p._max_steps, APREND_SSR_MAX_STEPS);
+		if (!(std::isfinite(p._max_distance) && p._max_distance > 0.0f))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _max_distance that is not above 0, or not a number", who);
+		if (!(std::isfinite(p._thickness) && p._thickness > 0.0f))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _thickness that is not above 0, or not a number", who);
+		if (!(p._edge_fade >= 0.0f && p._edge_fade <= 0.5f))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with an _edge_fade outside 0 to 0.5, or not a number", who);
+		if (!(p._max_roughness >= 0.0f && p._max_roughness <= 1.0f))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _max_roughness outside 0 to 1, or not a number", who);
+		return true;
+	}
+	if (cmd._type == APREND_COMMAND_LIT_TRACE_REFLECTIONS) {
+		const auto &p   = cmd._params._lit_trace_reflections;
+		const char *who = "LIT_TRACE_REFLECTIONS";
+		if (!p._scene)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a NULL scene", who);
+		if (p._scene->instance != instance)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a scene of another instance", who);
+		if (!p._tlas)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a NULL TLAS", who);
+		if (p._tlas->instance != instance)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a TLAS of another instance", who);
+		if (!aprend_reflect_view_ok(cmd_list, who, "_depth", p._depth, SR, "SHADER_RESOURCE", DEPTH, true, any, nullptr))
+			return false;
+		aprend_reflect_view_size(p._depth, &width, &height);
+		if (!aprend_reflect_view_ok(cmd_list, who, "_normal_roughness", p._normal_roughness, SR, "SHADER_RESOURCE", COLOR, true, f16, "R16G16B16A16_FLOAT"))
+			return false;
+		aprend_reflect_view_size(p._normal_roughness, &w, &h);
+		if (w != width || h != height)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _normal_roughness of %ux%u, and the depth %ux%u", who, w, h, width, height);
+		if (!aprend_reflect_view_ok(cmd_list, who, "_reflection", p._reflection, UA, "UNORDERED_ACCESS", COLOR, true, f16, "R16G16B16A16_FLOAT"))
+			return false;
+		aprend_reflect_view_size(p._reflection, &w, &h);
+		if (w != (width + 1) / 2 || h != (height + 1) / 2)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _reflection of %ux%u, not half the depth's %ux%u rounded up", who, w, h, width,
+			                          height);
+		if (p._ray_count == 0)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _ray_count of 0", who);
+		if (p._cull_mask == 0)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _cull_mask of 0", who);
+		if (p._cull_mask > APREND_RT_MASK_LIMIT)
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _cull_mask of 0x%x, past 255", who, p._cull_mask);
+		if (!(std::isfinite(p._max_distance) && p._max_distance > 0.0f))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _max_distance that is not above 0, or not a number", who);
+		if (!(p._max_roughness >= 0.0f && p._max_roughness <= 1.0f))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _max_roughness outside 0 to 1, or not a number", who);
+		return true;
+	}
+	const auto &p   = cmd._params._lit_reflect;
+	const char *who = "LIT_REFLECT";
+	if (!p._scene)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a NULL scene", who);
+	if (p._scene->instance != instance)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a scene of another instance", who);
+	if (!aprend_reflect_view_ok(cmd_list, who, "_depth", p._depth, SR, "SHADER_RESOURCE", DEPTH, true, any, nullptr))
+		return false;
+	aprend_reflect_view_size(p._depth, &width, &height);
+	if (!aprend_reflect_view_ok(cmd_list, who, "_normal_roughness", p._normal_roughness, SR, "SHADER_RESOURCE", COLOR, true, f16, "R16G16B16A16_FLOAT"))
+		return false;
+	aprend_reflect_view_size(p._normal_roughness, &w, &h);
+	if (w != width || h != height)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _normal_roughness of %ux%u, and the depth %ux%u", who, w, h, width, height);
+	if (!aprend_reflect_view_ok(cmd_list, who, "_specular", p._specular, SR, "SHADER_RESOURCE", COLOR, true, APREND_SPECULAR_FORMAT, "R8G8B8A8_UNORM"))
+		return false;
+	aprend_reflect_view_size(p._specular, &w, &h);
+	if (w != width || h != height)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _specular of %ux%u, and the depth %ux%u", who, w, h, width, height);
+	if (!aprend_reflect_view_ok(cmd_list, who, "_reflection", p._reflection, SR, "SHADER_RESOURCE", COLOR, true, f16, "R16G16B16A16_FLOAT"))
+		return false;
+	aprend_reflect_view_size(p._reflection, &w, &h);
+	if (w != (width + 1) / 2 || h != (height + 1) / 2)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _reflection of %ux%u, not half the depth's %ux%u rounded up", who, w, h, width, height);
+	if (!aprend_reflect_view_ok(cmd_list, who, "_target", p._target, RT, "RENDER_TARGET", COLOR, true, any, nullptr))
+		return false;
+	if (!aprend_reflect_target_format(p._target->texture._t2d->desc.format))
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _target not of R16G16B16A16_FLOAT, R32G32B32A32_FLOAT or R11G11B10_FLOAT", who);
+	aprend_reflect_view_size(p._target, &w, &h);
+	if (w != width || h != height)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s with a _target of %ux%u, and the depth %ux%u", who, w, h, width, height);
+	return true;
+}
+
 /* aprend_command_list_send's checks and copies. Throws std::bad_alloc from the
  * list's vectors, which aprend_command_list_send catches. */
 static void aprend_send_command_recorded(
@@ -505,7 +665,7 @@ static void aprend_send_command_recorded(
 	// Ray tracing's commands (aprendraytracing.h): every one needs ray
 	// queries, refused before anything else.
 	if (cmd._type == APREND_COMMAND_BUILD_BLAS || cmd._type == APREND_COMMAND_BUILD_TLAS || cmd._type == APREND_COMMAND_LIT_SHADOW_MASK ||
-	    cmd._type == APREND_COMMAND_LIT_PATH_TRACE) {
+	    cmd._type == APREND_COMMAND_LIT_PATH_TRACE || cmd._type == APREND_COMMAND_LIT_TRACE_REFLECTIONS) {
 		if (!(cmd_list->instance->features & SPUDGPU_FEATURE_RAY_QUERY)) {
 			aprend_cmd_report(cmd_list, APRESULT_UNSUPPORTED, "%s: the device was not created with SPUDGPU_FEATURE_RAY_QUERY", aprend_rt_command_name(cmd._type));
 			cmd_list->recording_error = true;
@@ -1421,6 +1581,12 @@ static void aprend_send_command_recorded(
 			fault = "a _ground_albedo that is negative or not a number";
 		if (fault) {
 			aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "LIT_SKY with %s", fault);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+	if (cmd._type == APREND_COMMAND_LIT_SSR || cmd._type == APREND_COMMAND_LIT_TRACE_REFLECTIONS || cmd._type == APREND_COMMAND_LIT_REFLECT) {
+		if (!aprend_reflect_send_checks(cmd_list, cmd)) {
 			cmd_list->recording_error = true;
 			return;
 		}
@@ -3914,6 +4080,13 @@ static bool aprend_cmd_rt_shadow_mask(aprend_command_list cmd_list, const APREND
 	aprend_cmd_rt_view_size(p._depth, &width, &height);
 	if (!aprend_cmd_rt_trace_ready(cmd_list, "LIT_SHADOW_MASK", p._scene, p._tlas, width, height))
 		return false;
+	// Its place among the scene's directional lights, as the scene holds
+	// them now: the lights may have changed since the send.
+	const uint32_t slot = aprend_lit_scene_directional_slot(p._scene, p._light);
+	if (slot == UINT32_MAX) {
+		aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "LIT_SHADOW_MASK: _light %u names no directional light of the scene at the compile", p._light);
+		return false;
+	}
 	aprend_compute_pipeline pipeline = aprend_rt_mask_pipeline(instance, p._target->texture._t2d->desc.format);
 	if (!pipeline)
 		return false;
@@ -3937,11 +4110,284 @@ static bool aprend_cmd_rt_shadow_mask(aprend_command_list cmd_list, const APREND
 	params.cull_mask     = p._cull_mask;
 	params.normal_offset = p._normal_offset;
 	params.max_distance  = p._max_distance;
-	params.light         = p._light;
+	params.light         = slot;
 	return aprend_cmd_rt_dispatch(cmd_list, pipeline, p._tlas, sets, &params, sizeof(params), (width + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP,
 	                              (height + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP);
 }
 
+
+/* ---- Reflections (LIT_SSR, LIT_TRACE_REFLECTIONS, LIT_REFLECT) ---------- */
+
+/* A binding entry of [view] at [binding], of [type]. */
+static APREND_BINDING_SET_ENTRY aprend_reflect_entry(uint32_t binding, SPUDGPU_DESCRIPTOR_TYPE type, aprend_texture_view view) {
+	APREND_BINDING_SET_ENTRY entry{};
+	entry._binding               = binding;
+	entry._type                  = type;
+	entry._resource._image._view = view;
+	return entry;
+}
+
+/* A sampler entry of [sampler] at [binding]. */
+static APREND_BINDING_SET_ENTRY aprend_reflect_sampler_entry(uint32_t binding, aprend_sampler sampler) {
+	APREND_BINDING_SET_ENTRY entry{};
+	entry._binding                  = binding;
+	entry._type                     = SPUDGPU_DESCRIPTOR_TYPE_SAMPLER;
+	entry._resource._image._sampler = sampler;
+	return entry;
+}
+
+/* One dispatch of Aprend's own [pipeline] over [count] [sets], untraced:
+ * each set's resources made ready as any dispatch's are. False, reported,
+ * if a set can't be read. Throws std::bad_alloc. */
+static bool aprend_cmd_own_dispatch(aprend_command_list cmd_list, aprend_compute_pipeline pipeline, const aprend_binding_set *sets, uint32_t count,
+                                    const void *push, uint32_t push_size, uint32_t groups_x, uint32_t groups_y) {
+	eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+	eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+	images.clear();
+	stores.clear();
+	for (uint32_t slot = 0; slot < count; ++slot) {
+		if (!aprend_pass_images_add_set(cmd_list, images, sets[slot], slot, pipeline->storage_writes))
+			return false;
+		aprend_storage_stores_add_set(stores, sets[slot], cmd_list->compiled_frame, slot, pipeline->storage_writes);
+		aprend_cmd_use_handle(cmd_list, sets[slot]);
+	}
+	for (const aprend_pass_store &store : stores)
+		aprend_cmd_use_store(cmd_list, store.store);
+	aprend_cmd_ready_set_resources(cmd_list, images, stores);
+	spudgpu_command_list cmd = cmd_list->cmd_list;
+	spudgpu_cmd_bind_compute_pipeline(cmd, pipeline->pipeline);
+	for (uint32_t slot = 0; slot < count; ++slot)
+		spudgpu_cmd_bind_descriptor_sets_compute(cmd, pipeline->pipeline, slot, &sets[slot]->sets[aprend_binding_set_frame_slot(sets[slot], cmd_list->compiled_frame)], 1);
+	spudgpu_cmd_push_constants_compute(cmd, pipeline->pipeline, 0, push_size, push);
+	spudgpu_cmd_dispatch(cmd, groups_x, groups_y, 1);
+	return true;
+}
+
+/* What every reflection command needs of its views and scene before it is
+ * recorded, [who] the command: [views] (NULL-terminated, [names] theirs)
+ * each written earlier in the list or before it; the scene's view of
+ * [depth]'s size with a view_projection that can be inverted; [reflection]
+ * still half [depth]'s size, rounded up (a resize since the send may have
+ * changed either). Its size through [out_width] and [out_height]. False,
+ * reported, if not. */
+static bool aprend_cmd_reflect_ready(aprend_command_list cmd_list, const char *who, aprend_lit_scene scene, const aprend_texture_view *views,
+                                     const char *const *names, aprend_texture_view depth, aprend_texture_view reflection, uint32_t *out_width,
+                                     uint32_t *out_height) {
+	for (uint32_t i = 0; views[i]; ++i) {
+		if (!aprend_cmd_range_written(cmd_list, aprend_texture_view_range(views[i])))
+			return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the %s has nothing in it, from before the list or earlier in it", who, names[i]);
+	}
+	uint32_t width = 0, height = 0, w = 0, h = 0;
+	aprend_reflect_view_size(depth, &width, &height);
+	aprend_reflect_view_size(reflection, &w, &h);
+	if (w != (width + 1) / 2 || h != (height + 1) / 2)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the reflection is %ux%u, no longer half the depth's %ux%u rounded up", who, w, h, width, height);
+	if ((float)width != scene->block.target_size[0] || (float)height != scene->block.target_size[1])
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the depth is %ux%u, and the scene's view's target %gx%g", who, width, height,
+		                         (double)scene->block.target_size[0], (double)scene->block.target_size[1]);
+	// aprend_lit_scene_set_view() leaves the inverse 0 where the matrix has
+	// none.
+	bool inverse = false;
+	for (float v : scene->block.inverse_view_projection)
+		inverse = inverse || v != 0.0f;
+	if (!inverse)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s: the scene's view_projection can't be inverted", who);
+	*out_width  = width;
+	*out_height = height;
+	return true;
+}
+
+/* LIT_SSR, outside a pass: the Hi-Z pyramid of the depth into a pooled
+ * texture, level 0 the depth's nearness and each level below the least of
+ * the one above, then one dispatch marching a texel of the reflection a
+ * thread. False, reported, if a view has nothing in it, the scene's view
+ * doesn't fit the depth, or a pipeline, set or the pooled texture can't be
+ * made. */
+static bool aprend_cmd_lit_ssr(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p            = command._params._lit_ssr;
+	aprend_instance instance = cmd_list->instance;
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	const aprend_texture_view read[4] = {p._depth, p._normal_roughness, p._color, nullptr};
+	const char *const names[3]        = {"depth", "normal and roughness", "color"};
+	uint32_t width = 0, height = 0;
+	if (!aprend_cmd_reflect_ready(cmd_list, "LIT_SSR", p._scene, read, names, p._depth, p._reflection, &width, &height))
+		return false;
+	aprend_compute_pipeline pipeline = aprend_lit_ssr_pipeline(instance);
+	aprend_graphics_pipeline first   = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_HIZ);
+	aprend_graphics_pipeline down    = aprend_lit_pass_pipeline(instance, APREND_LIT_PASS_HIZ_DOWN);
+	if (!pipeline || !first || !down)
+		return false;
+	if (!aprend_cmd_use_material(cmd_list, p._scene->material))
+		return false;
+	// Every level down to a texel: the march climbs as far as it can.
+	uint32_t levels = 1;
+	while ((width >> levels) > 0 || (height >> levels) > 0)
+		++levels;
+	aprend_pooled_target *pyramid = aprend_render_target_take(cmd_list, width, height, APREND_HIZ_FORMAT, levels);
+	if (!pyramid)
+		return false;
+	aprend_texture_view whole     = aprend_pooled_target_whole(instance, pyramid);
+	aprend_binding_set depth_set  = aprend_texture_view_environment_set(p._depth);
+	aprend_binding_set scene_set  = aprend_lit_scene_ssr_set(p._scene);
+	if (!whole || !depth_set || !scene_set)
+		return false;
+	const bool reversed = aprend_lit_scene_depth_reversed(p._scene);
+
+	aprend_cmd_transition_range(cmd_list, aprend_texture_view_range(p._depth), SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, true);
+	aprend_hiz_params hiz{};
+	hiz.target_size[0] = (float)width;
+	hiz.target_size[1] = (float)height;
+	hiz.reversed       = reversed ? 1u : 0u;
+	aprend_cmd_own_pass(cmd_list, first, pyramid->level_targets[0], width, height, &depth_set, 1, &hiz, sizeof(hiz));
+	for (uint32_t level = 1; level < levels; ++level) {
+		aprend_binding_set above = aprend_texture_view_environment_set(pyramid->level_sources[level - 1]);
+		if (!above)
+			return false;
+		aprend_size_params size{};
+		size.target_size[0] = (float)aprend_mip_size(width, level);
+		size.target_size[1] = (float)aprend_mip_size(height, level);
+		aprend_cmd_own_pass(cmd_list, down, pyramid->level_targets[level], aprend_mip_size(width, level), aprend_mip_size(height, level), &above, 1, &size,
+		                    sizeof(size));
+	}
+
+	const aprend_texture_view views[5]         = {p._depth, p._normal_roughness, p._color, whole, p._reflection};
+	const APREND_BINDING_SET_ENTRY entries[6] = {aprend_reflect_entry(0, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._depth),
+	                                             aprend_reflect_entry(1, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._normal_roughness),
+	                                             aprend_reflect_entry(2, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._color),
+	                                             aprend_reflect_entry(3, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, whole),
+	                                             aprend_reflect_sampler_entry(4, lit.environment_sampler),
+	                                             aprend_reflect_entry(5, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE, p._reflection)};
+	aprend_binding_set inputs = aprend_view_set_get(instance, lit.view_sets, lit.ssr_input_layout, views, 5, entries, 6, "screen-space reflections");
+	if (!inputs)
+		return false;
+	aprend_ssr_params params{};
+	aprend_reflect_view_size(p._reflection, &params.size[0], &params.size[1]);
+	params.full[0]       = width;
+	params.full[1]       = height;
+	params.max_steps     = p._max_steps;
+	params.max_distance  = p._max_distance;
+	params.thickness     = p._thickness;
+	params.edge_fade     = p._edge_fade;
+	params.max_roughness = p._max_roughness;
+	params.hiz_levels    = levels;
+	params.reversed      = reversed ? 1u : 0u;
+	params.color_mips    = (float)p._color->desc.mip_count;
+	const aprend_binding_set sets[2] = {scene_set, inputs};
+	return aprend_cmd_own_dispatch(cmd_list, pipeline, sets, 2, &params, sizeof(params), (params.size[0] + 7) / 8, (params.size[1] + 7) / 8);
+}
+
+/* LIT_TRACE_REFLECTIONS, outside a pass: one traced dispatch, a texel of the
+ * reflection a thread. False, reported, if a view has nothing in it, the
+ * TLAS was never built, the scene's view doesn't fit the depth, or a
+ * pipeline or set can't be made. */
+static bool aprend_cmd_rt_reflections(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p            = command._params._lit_trace_reflections;
+	aprend_instance instance = cmd_list->instance;
+	aprend_rt_state *rt      = instance->rt;
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	const aprend_texture_view read[4] = {p._depth, p._normal_roughness, p._reflection, nullptr};
+	const char *const names[3]        = {"depth", "normal and roughness", "reflection"};
+	uint32_t width = 0, height = 0;
+	if (!aprend_cmd_reflect_ready(cmd_list, "LIT_TRACE_REFLECTIONS", p._scene, read, names, p._depth, p._reflection, &width, &height))
+		return false;
+	if (!aprend_cmd_rt_trace_ready(cmd_list, "LIT_TRACE_REFLECTIONS", p._scene, p._tlas, width, height))
+		return false;
+	aprend_compute_pipeline pipeline = aprend_rt_reflection_pipeline(instance);
+	if (!pipeline)
+		return false;
+	// A hit reads the lit-material table: the submission copies the
+	// entries staged since (D4).
+	cmd_list->rt_reads_lit = true;
+	aprend_cmd_use_store(cmd_list, &rt->lit_table->parts[0].store);
+	// The scene's environment, or the placeholder cube where it has none
+	// (the block's flag says so); the BRDF lookup texture, which the
+	// compile's preparation of the scene has filled.
+	aprend_lit_environment env      = p._scene->environment;
+	aprend_texture_view specular    = env ? env->specular_cube : lit.placeholder_cube_view;
+	aprend_texture_view irradiance  = env ? env->irradiance_cube : lit.placeholder_cube_view;
+	const aprend_texture_view views[6]         = {p._depth, p._normal_roughness, p._reflection, specular, irradiance, lit.brdf_lut_view};
+	const APREND_BINDING_SET_ENTRY entries[7] = {aprend_reflect_entry(0, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._depth),
+	                                             aprend_reflect_entry(1, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._normal_roughness),
+	                                             aprend_reflect_entry(2, SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE, p._reflection),
+	                                             aprend_reflect_entry(3, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, specular),
+	                                             aprend_reflect_entry(4, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, irradiance),
+	                                             aprend_reflect_entry(5, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, lit.brdf_lut_view),
+	                                             aprend_reflect_sampler_entry(6, lit.environment_sampler)};
+	aprend_binding_set sets[3] = {aprend_lit_scene_rt_set(p._scene, rt->scene_layout), aprend_rt_tlas_trace_set(p._tlas),
+	                              aprend_view_set_get(instance, rt->reflection_sets, rt->reflection_output_layout, views, 6, entries, 7, "the traced reflections")};
+	if (!sets[0] || !sets[1] || !sets[2])
+		return false;
+	aprend_rt_reflection_params params{};
+	aprend_reflect_view_size(p._reflection, &params.size[0], &params.size[1]);
+	params.full[0]        = width;
+	params.full[1]        = height;
+	params.ray_count      = p._ray_count;
+	params.cull_mask      = p._cull_mask;
+	params.max_distance   = p._max_distance;
+	params.max_roughness  = p._max_roughness;
+	params.material_count = p._tlas->max_materials;
+	params.reversed       = aprend_lit_scene_depth_reversed(p._scene) ? 1u : 0u;
+	return aprend_cmd_rt_dispatch(cmd_list, pipeline, p._tlas, sets, &params, sizeof(params), (params.size[0] + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP,
+	                              (params.size[1] + APREND_RT_TRACE_GROUP - 1) / APREND_RT_TRACE_GROUP);
+}
+
+/* LIT_REFLECT, outside a pass: one full-target pass over the picture, added
+ * onto it, reading the scene's own set and the targets. False, reported, if
+ * a view has nothing in it, the scene's view doesn't fit or writes encoded
+ * color, or a pipeline or set can't be made. */
+static bool aprend_cmd_lit_reflect(aprend_command_list cmd_list, const APREND_COMMAND &command) {
+	const auto &p            = command._params._lit_reflect;
+	aprend_instance instance = cmd_list->instance;
+	aprend_lit_builtins &lit = instance->builtins.lit;
+	const aprend_texture_view read[6] = {p._depth, p._normal_roughness, p._specular, p._reflection, p._target, nullptr};
+	const char *const names[5]        = {"depth", "normal and roughness", "specular", "reflection", "target"};
+	uint32_t width = 0, height = 0;
+	if (!aprend_cmd_reflect_ready(cmd_list, "LIT_REFLECT", p._scene, read, names, p._depth, p._reflection, &width, &height))
+		return false;
+	if (p._scene->block.output_encoding != APREND_COLOR_ENCODING_LINEAR)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "LIT_REFLECT: the scene writes its color encoded, and the picture it reflects onto is linear");
+	uint32_t tw = 0, th = 0;
+	aprend_reflect_view_size(p._target, &tw, &th);
+	if (tw != width || th != height)
+		return aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "LIT_REFLECT: the target is %ux%u, no longer the depth's %ux%u", tw, th, width, height);
+	aprend_graphics_pipeline pipeline = aprend_lit_reflect_pipeline(instance, p._target->texture._t2d->desc.format);
+	if (!pipeline)
+		return false;
+	if (!aprend_cmd_use_material(cmd_list, p._scene->material))
+		return false;
+	const aprend_texture_view views[4]         = {p._depth, p._normal_roughness, p._specular, p._reflection};
+	const APREND_BINDING_SET_ENTRY entries[4] = {aprend_reflect_entry(0, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._depth),
+	                                             aprend_reflect_entry(1, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._normal_roughness),
+	                                             aprend_reflect_entry(2, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._specular),
+	                                             aprend_reflect_entry(3, SPUDGPU_DESCRIPTOR_TYPE_SAMPLED_IMAGE, p._reflection)};
+	aprend_binding_set inputs = aprend_view_set_get(instance, lit.view_sets, lit.reflect_input_layout, views, 4, entries, 4, "the reflection composite");
+	if (!inputs)
+		return false;
+	// What both sets hold made ready to be read, as a pass's are: the
+	// scene's textures and the reflection the march or the trace wrote.
+	const aprend_binding_set sets[2]     = {p._scene->material->set, inputs};
+	eq::array<aprend_pass_image> &images = cmd_list->pass_images;
+	eq::array<aprend_pass_store> &stores = cmd_list->pass_stores;
+	images.clear();
+	stores.clear();
+	for (uint32_t slot = 0; slot < 2; ++slot) {
+		if (!aprend_pass_images_add_set(cmd_list, images, sets[slot], slot, pipeline->storage_writes))
+			return false;
+		aprend_storage_stores_add_set(stores, sets[slot], cmd_list->compiled_frame, slot, pipeline->storage_writes);
+		aprend_cmd_use_handle(cmd_list, sets[slot]);
+	}
+	for (const aprend_pass_store &store : stores)
+		aprend_cmd_use_store(cmd_list, store.store);
+	aprend_cmd_ready_set_resources(cmd_list, images, stores);
+	aprend_reflect_params params{};
+	params.target_size[0] = (float)width;
+	params.target_size[1] = (float)height;
+	params.reversed       = aprend_lit_scene_depth_reversed(p._scene) ? 1u : 0u;
+	aprend_cmd_transition_view(cmd_list, p._target, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	aprend_record_fullscreen_pass_sets(cmd_list->cmd_list, pipeline, p._target->image_view, width, height, SPUDGPU_LOAD_OP_LOAD, sets, 2,
+	                                   cmd_list->compiled_frame, &params, sizeof(params));
+	return true;
+}
 
 /* LIT_PATH_TRACE, outside a pass (T10, T11): the TLAS's emitter table built
  * first if anything it reads changed since it was (D6), then one dispatch
@@ -4234,6 +4680,24 @@ static void aprend_cmd_use_command_views(aprend_command_list cmd_list, const APR
 		aprend_cmd_use_handle(cmd_list, command._params._copy_scene_color._source);
 		aprend_cmd_use_handle(cmd_list, command._params._copy_scene_color._target);
 		break;
+	case APREND_COMMAND_LIT_SSR:
+		aprend_cmd_use_handle(cmd_list, command._params._lit_ssr._depth);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_ssr._normal_roughness);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_ssr._color);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_ssr._reflection);
+		break;
+	case APREND_COMMAND_LIT_TRACE_REFLECTIONS:
+		aprend_cmd_use_handle(cmd_list, command._params._lit_trace_reflections._depth);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_trace_reflections._normal_roughness);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_trace_reflections._reflection);
+		break;
+	case APREND_COMMAND_LIT_REFLECT:
+		aprend_cmd_use_handle(cmd_list, command._params._lit_reflect._depth);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_reflect._normal_roughness);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_reflect._specular);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_reflect._reflection);
+		aprend_cmd_use_handle(cmd_list, command._params._lit_reflect._target);
+		break;
 	default:
 		break;
 	}
@@ -4293,9 +4757,18 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 	// images), and a SET_MATERIAL inside it has to have one by then.
 	try {
 		for (const APREND_COMMAND &command : cmd_list->commands) {
-			if (command._type != APREND_COMMAND_SET_MATERIAL)
+			// A material set for a draw; and the scene of a reflection
+			// command that reads its environment and lookup texture, which
+			// the scenes' preparation below fills.
+			aprend_material material = nullptr;
+			if (command._type == APREND_COMMAND_SET_MATERIAL)
+				material = command._params._set_material._material;
+			else if (command._type == APREND_COMMAND_LIT_TRACE_REFLECTIONS)
+				material = command._params._lit_trace_reflections._scene->material;
+			else if (command._type == APREND_COMMAND_LIT_REFLECT)
+				material = command._params._lit_reflect._scene->material;
+			if (!material)
 				continue;
-			aprend_material material = command._params._set_material._material;
 			bool known               = false;
 			for (aprend_material listed : cmd_list->materials)
 				if (listed == material)
@@ -4857,6 +5330,31 @@ APRESULT aprend_command_list_compile(aprend_command_list cmd_list, APREND_ERROR 
 				const size_t run_end = aprend_cmd_rt_run_end(cmd_list, command_index);
 				ok                   = aprend_cmd_rt_builds(cmd_list, command_index, run_end);
 				command_index        = run_end - 1;
+				bound_compute_pipeline = nullptr;
+				break;
+			}
+			case APREND_COMMAND_LIT_SSR:
+			case APREND_COMMAND_LIT_REFLECT: {
+				if (in_pass) {
+					aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "%s inside a rendering pass",
+					                  command._type == APREND_COMMAND_LIT_SSR ? "LIT_SSR" : "LIT_REFLECT");
+					ok = false;
+					break;
+				}
+				if (command._type == APREND_COMMAND_LIT_SSR)
+					ok = aprend_cmd_lit_ssr(cmd_list, command);
+				else
+					ok = aprend_cmd_lit_reflect(cmd_list, command);
+				bound_compute_pipeline = nullptr;
+				break;
+			}
+			case APREND_COMMAND_LIT_TRACE_REFLECTIONS: {
+				if (in_pass) {
+					aprend_cmd_report(cmd_list, APRESULT_INVALID_ARGUMENT, "LIT_TRACE_REFLECTIONS inside a rendering pass");
+					ok = false;
+					break;
+				}
+				ok = aprend_cmd_rt_reflections(cmd_list, command);
 				bound_compute_pipeline = nullptr;
 				break;
 			}

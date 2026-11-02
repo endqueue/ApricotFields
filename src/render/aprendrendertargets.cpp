@@ -12,6 +12,7 @@ static void aprend_pooled_target_release(aprend_pooled_target *target) {
 		aprend_texture_view_destroy(view);
 	for (aprend_texture_view view : target->level_sources)
 		aprend_texture_view_destroy(view);
+	aprend_texture_view_destroy(target->whole);
 	aprend_texture2d_destroy(target->texture);
 	target->~aprend_pooled_target();
 	free(target);
@@ -91,6 +92,24 @@ static aprend_pooled_target *aprend_pooled_target_make(
 		}
 	}
 	return target;
+}
+
+aprend_texture_view aprend_pooled_target_whole(aprend_instance instance, aprend_pooled_target *target) {
+	if (target->whole)
+		return target->whole;
+	APREND_TEXTURE_VIEW_DESC view_desc{};
+	view_desc.base        = apri_struct_base(APRI_STRUCT_TYPE_APREND_TEXTURE_VIEW_DESC);
+	view_desc.shape       = APREND_TEXTURE_VIEW_SHAPE_2D;
+	view_desc.aspect      = APREND_TEXTURE_VIEW_ASPECT_COLOR;
+	view_desc.base_mip    = 0;
+	view_desc.mip_count   = target->levels;
+	view_desc.base_layer  = 0;
+	view_desc.layer_count = 1;
+	view_desc.type        = APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE;
+	(void)aprend_texture_view_create_2d(target->texture, &view_desc, &target->whole, nullptr);
+	if (!target->whole)
+		aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "render target pool: the view of all %u levels can't be created", target->levels);
+	return target->whole;
 }
 
 aprend_pooled_target *aprend_render_target_take(

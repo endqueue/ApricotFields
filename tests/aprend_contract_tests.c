@@ -638,6 +638,244 @@ static void test_buffers(void)
     aprend_index_pool_destroy(NULL);
 }
 
+// ---- Lit: vertex colors, cascades and the light helpers (cards A35, A46) ----
+
+// The bits aprend_lit_fit_sun_cascades() gave for three framings before card
+// A35 renamed it (captured 2026-11-01 from the Debug and Release builds of
+// ApricotFields a2bbbee's lit code, which gave the same bits): each row a
+// cascade's matrix, column after column, then its split.
+static const uint32_t s_fit_perspective_4[][17] = {
+    {0x3d829439u, 0xbdbcf5a5u, 0x3bfe40dbu, 0x00000000u, 0x00000000u, 0xbd5237afu, 0xbc9ee888u, 0x00000000u, 0x3dd0ed28u, 0x3d6c330fu, 0xbb9ee888u, 0x00000000u, 0xbe640000u, 0x3e8d0000u, 0x3f53f576u, 0x3f800000u, 0x40feb9c1u},
+    {0x3d002b77u, 0xbd397923u, 0x3bb9970au, 0x00000000u, 0x00000000u, 0xbcce56c6u, 0xbc67fccbu, 0x00000000u, 0x3d4d1258u, 0x3ce7d76du, 0xbb67fccdu, 0x00000000u, 0xbf138000u, 0xbca00000u, 0x3f3b4a48u, 0x3f800000u, 0x418ce276u},
+    {0x3c70ca56u, 0xbcae3900u, 0x3b68286bu, 0x00000000u, 0x00000000u, 0xbc41d29eu, 0xbc111942u, 0x00000000u, 0x3cc0a1deu, 0x3c59c741u, 0xbb111943u, 0x00000000u, 0xbf290000u, 0xbe0e0000u, 0x3f22de72u, 0x3f800000u, 0x421730cbu},
+    {0x3b941e94u, 0xbbd6579au, 0x3ab3466au, 0x00000000u, 0x00000000u, 0xbb6e74a8u, 0xbb601803u, 0x00000000u, 0x3becfdbau, 0x3b85f6bfu, 0xba601803u, 0x00000000u, 0xbf1d0000u, 0xbe380000u, 0x3f0a8adcu, 0x3f800000u, 0x42f00000u},
+};
+static const uint32_t s_fit_parallel_3[][17] = {
+    {0x3c8f876au, 0xbccfb308u, 0x3b82fd59u, 0x00000000u, 0x00000000u, 0xbc6710c5u, 0xbc23bcafu, 0x00000000u, 0x3ce5a577u, 0x3c81cfe5u, 0xbb23bcafu, 0x00000000u, 0xbf0f8000u, 0xbdb80000u, 0x3f289088u, 0x3f800000u, 0x42200000u},
+    {0x3c8949e1u, 0xbcc6ab40u, 0x3b7e40dcu, 0x00000000u, 0x00000000u, 0xbc5d04ecu, 0xbc1ee889u, 0x00000000u, 0x3cdba968u, 0x3c785611u, 0xbb1ee88au, 0x00000000u, 0xbfd68000u, 0xbeee0000u, 0x3f2127bbu, 0x3f800000u, 0x42a00000u},
+    {0x3c8949dfu, 0xbcc6ab40u, 0x3b7e40dcu, 0x00000000u, 0x00000000u, 0xbc5d04eau, 0xbc1ee889u, 0x00000000u, 0x3cdba968u, 0x3c78560du, 0xbb1ee888u, 0x00000000u, 0xc037e000u, 0xbf5d0000u, 0x3f1a9d74u, 0x3f800000u, 0x42f00000u},
+};
+static const uint32_t s_fit_reversed_2[][17] = {
+    {0x3ced179cu, 0xbd2b8c01u, 0xbbb1edfcu, 0x00000000u, 0x00000000u, 0xbcbed88eu, 0x3c5e697bu, 0x00000000u, 0x3d3dac7du, 0x3cd66f02u, 0x3b5e697bu, 0x00000000u, 0xbeb40000u, 0x3d300000u, 0x3e8cb292u, 0x3f800000u, 0x418ce276u},
+    {0x3b8f4e92u, 0xbbcf60c2u, 0xbaae177du, 0x00000000u, 0x00000000u, 0xbb66b540u, 0x3b599d5cu, 0x00000000u, 0x3be54a82u, 0x3b819c7au, 0x3a599d5eu, 0x00000000u, 0xbf040000u, 0xbe160000u, 0x3eea68c2u, 0x3f800000u, 0x42f00000u},
+};
+
+// The framings those bits are of: [orthographic], [cascades], [reversed].
+static APREND_LIT_CASCADE_FIT fit_of(int orthographic, uint32_t cascades, int reversed)
+{
+    APREND_LIT_CASCADE_FIT fit;
+    memset(&fit, 0, sizeof(fit));
+    fit.base.type = APRI_STRUCT_TYPE_APREND_LIT_CASCADE_FIT;
+    const float eye[3] = {1.5f, 2.0f, -3.25f}, dir[3] = {0.3f, -0.2f, 1.0f}, up[3] = {0.0f, 1.0f, 0.0f}, light[3] = {-0.4f, 1.0f, 0.25f};
+    memcpy(fit.eye_position, eye, sizeof(eye));
+    memcpy(fit.view_direction, dir, sizeof(dir));
+    memcpy(fit.view_up, up, sizeof(up));
+    memcpy(fit.light_direction, light, sizeof(light));
+    fit.orthographic = orthographic != 0;
+    fit.fov_y = 0.9f;
+    fit.half_height = 12.0f;
+    fit.aspect = 1.6f;
+    fit.near_depth = orthographic ? 0.0f : 0.1f;
+    fit.far_depth = 120.0f;
+    fit.cascade_count = cascades;
+    fit.split_lambda = 0.75f;
+    fit.caster_distance = 30.0f;
+    fit.map_size = 1024;
+    fit.reversed_depth = reversed != 0;
+    return fit;
+}
+
+// The fit of [fit] into maps whose own fields hold markers: the framing is
+// [expected]'s bits, the views and splits past the count are 0, and the
+// rectangles, biases and softness are the markers still.
+static void check_fit(const APREND_LIT_CASCADE_FIT *fit, const uint32_t (*expected)[17])
+{
+    APREND_LIT_SHADOW_MAPS maps;
+    memset(&maps, 0x7f, sizeof(maps));
+    maps.base.type = APRI_STRUCT_TYPE_APREND_LIT_SHADOW_MAPS;
+    maps.base.next = NULL;
+    maps._rects[2]._x = 77;
+    maps._depth_bias = 0.25f;
+    maps._normal_offset = 0.5f;
+    maps._softness = 1.5f;
+    APREND_ERROR error;
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(fit, &maps, &error) == APRESULT_OK);
+    CHECK(maps._view_count == fit->cascade_count);
+    for (uint32_t c = 0; c < fit->cascade_count; ++c)
+    {
+        uint32_t bits[17];
+        memcpy(bits, maps._view_projection[c], sizeof(float) * 16);
+        memcpy(&bits[16], &maps._split_depths[c], sizeof(float));
+        CHECK(memcmp(bits, expected[c], sizeof(bits)) == 0);
+    }
+    for (uint32_t c = fit->cascade_count; c < 6; ++c)
+        for (int i = 0; i < 16; ++i)
+            CHECK(maps._view_projection[c][i] == 0.0f);
+    for (uint32_t c = fit->cascade_count; c < APREND_LIT_MAX_CASCADES; ++c)
+        CHECK(maps._split_depths[c] == 0.0f);
+    CHECK(maps._rects[2]._x == 77);
+    CHECK(maps._depth_bias == 0.25f);
+    CHECK(maps._normal_offset == 0.5f);
+    CHECK(maps._softness == 1.5f);
+}
+
+// aprend_lit_fit_cascades() frames the same bits as
+// aprend_lit_fit_sun_cascades() did, into APREND_LIT_SHADOW_MAPS, and
+// refuses what it did.
+static void test_lit_fit_cascades(void)
+{
+    current_test = "lit_fit_cascades";
+    APREND_LIT_CASCADE_FIT fit = fit_of(0, 4, 0);
+    check_fit(&fit, s_fit_perspective_4);
+    fit = fit_of(1, 3, 0);
+    check_fit(&fit, s_fit_parallel_3);
+    fit = fit_of(0, 2, 1);
+    check_fit(&fit, s_fit_reversed_2);
+
+    APREND_LIT_SHADOW_MAPS maps;
+    memset(&maps, 0, sizeof(maps));
+    maps.base.type = APRI_STRUCT_TYPE_APREND_LIT_SHADOW_MAPS;
+    APREND_ERROR error;
+    fit = fit_of(0, 4, 0);
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(NULL, &maps, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "fit is NULL") == 0);
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(&fit, NULL, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "out_maps is NULL") == 0);
+    maps.base.type = APRI_STRUCT_TYPE_APREND_LIT_LIGHT_SHADOW;
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(&fit, &maps, &error) == APRESULT_STRUCT_WRONG_TYPE);
+    CHECK(strcmp(error.message, "out_maps has a base.type other than its own") == 0);
+    maps.base.type = APRI_STRUCT_TYPE_APREND_LIT_SHADOW_MAPS;
+    fit.cascade_count = 0;
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(&fit, &maps, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "cascade_count is 0") == 0);
+    CHECK(maps._view_count == 0);
+    fit = fit_of(0, 4, 0);
+    fit.light_direction[0] = fit.light_direction[1] = fit.light_direction[2] = 0.0f;
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(&fit, &maps, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "light_direction is 0") == 0);
+    fit = fit_of(0, 4, 0);
+    fit.map_size = 0;
+    dirty(&error);
+    CHECK(aprend_lit_fit_cascades(&fit, &maps, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "map_size is 0") == 0);
+}
+
+// aprend_lit_vertex_color_layout(): one VEC4 named color at 0, a stride of
+// 16 (card A46).
+static void test_lit_vertex_color_layout(void)
+{
+    current_test = "lit_vertex_color_layout";
+    const APREND_VERTEX_LAYOUT layout = aprend_lit_vertex_color_layout();
+    CHECK(layout.count == 1);
+    CHECK(layout.stride == 16);
+    CHECK(layout.elements != NULL);
+    if (layout.elements)
+    {
+        CHECK(layout.elements[0].type == APREND_VERTEX_ELEMENT_TYPE_VEC4);
+        CHECK(layout.elements[0].offset == 0);
+    }
+    CHECK(aprend_vertex_layout_get_element_index(&layout, "color") == 0);
+}
+
+// A light the view-projection helpers refuse, as aprend_lit_scene_set_lights()
+// does (they share its check): [light] refused by [call] with [message].
+static void light_refused(const APREND_LIT_SCENE_LIGHT *light, int spot, const char *message)
+{
+    APREND_ERROR error;
+    float matrix[16];
+    dirty(&error);
+    const APRESULT result = spot ? aprend_lit_spot_shadow_view_projection(light, 0.1f, false, matrix, &error)
+                                 : aprend_lit_point_shadow_view_projection(light, 0, 0.1f, false, matrix, &error);
+    CHECK(result == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, message) == 0);
+    if (strcmp(error.message, message) != 0)
+        printf("  got \"%s\"\n", error.message);
+}
+
+// The light checks set_lights and the helpers share, through the helpers,
+// which need no scene: a radius on a point light, a disc on a spot, a
+// directional light where a spot is wanted. A scene's own refusals (a fifth
+// directional light, a 129th point or spot light, the shadows') need a
+// device, and are apricottests' (test_lit_light_refusals).
+static void test_lit_light_checks(void)
+{
+    current_test = "lit_light_checks";
+    APREND_LIT_SCENE_LIGHT point;
+    memset(&point, 0, sizeof(point));
+    point._type = APREND_LIT_LIGHT_TYPE_POINT;
+    point._radiance[0] = point._radiance[1] = point._radiance[2] = 1.0f;
+    point._range = 10.0f;
+    APREND_ERROR error;
+    float matrix[16];
+    dirty(&error);
+    CHECK(aprend_lit_point_shadow_view_projection(&point, 0, 0.1f, false, matrix, &error) == APRESULT_OK);
+    point._radius = 0.1f;
+    light_refused(&point, 0, "light 0, a point or spot light, has a _radius that is not 0 (card A38)");
+
+    APREND_LIT_SCENE_LIGHT spot = point;
+    spot._type = APREND_LIT_LIGHT_TYPE_SPOT;
+    spot._radius = 0.0f;
+    spot._direction[1] = -1.0f;
+    spot._inner_angle = 0.2f;
+    spot._outer_angle = 0.4f;
+    dirty(&error);
+    CHECK(aprend_lit_spot_shadow_view_projection(&spot, 0.1f, false, matrix, &error) == APRESULT_OK);
+    spot._sky_disc = true;
+    light_refused(&spot, 1, "light 0, a point or spot light, has _sky_disc set");
+    spot._sky_disc = false;
+    spot._outer_angle = 2.0f;
+    light_refused(&spot, 1, "spot light 0's _outer_angle is past pi / 2");
+
+    APREND_LIT_SCENE_LIGHT directional = spot;
+    directional._type = APREND_LIT_LIGHT_TYPE_DIRECTIONAL;
+    directional._outer_angle = 0.4f;
+    directional._radius = 0.00465f;
+    directional._sky_disc = true;
+    light_refused(&directional, 1, "the light is not a spot");
+    directional._type = 3;
+    light_refused(&directional, 1, "the light is not a spot");
+
+    // The scene's calls refuse a NULL scene first.
+    dirty(&error);
+    CHECK(aprend_lit_scene_set_shadow_atlas(NULL, NULL, false, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scene is NULL") == 0);
+    dirty(&error);
+    CHECK(aprend_lit_scene_set_light_shadow(NULL, 0, NULL, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scene is NULL") == 0);
+    CHECK(aprend_lit_scene_get_shadow_pass_material(NULL, 0, 0) == NULL);
+}
+
+// The reflection commands' parameters fit APREND_COMMAND's 120 bytes, at
+// the sizes the approved draft gives on a 64-bit build, and the command
+// stays 128 bytes; APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT is 8. Every
+// refusal of the three reads a view, so needs a device: apricottests'
+// test_lit_reflection_refusals.
+static void test_reflection_commands(void)
+{
+    current_test = "reflection_commands";
+    APREND_COMMAND command;
+    CHECK(sizeof(APREND_COMMAND) == 128);
+    CHECK(APREND_COMMAND_LIT_SSR == 45);
+    CHECK(APREND_COMMAND_LIT_TRACE_REFLECTIONS == 46);
+    CHECK(APREND_COMMAND_LIT_REFLECT == 47);
+    CHECK(APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT == 8);
+    if (sizeof(void *) == 8)
+    {
+        CHECK(sizeof(command._params._lit_ssr) == 64);
+        CHECK(sizeof(command._params._lit_trace_reflections) == 56);
+        CHECK(sizeof(command._params._lit_reflect) == 48);
+    }
+    CHECK(sizeof(command._params._lit_ssr) <= sizeof(command._params._padding));
+    CHECK(sizeof(command._params._lit_trace_reflections) <= sizeof(command._params._padding));
+    CHECK(sizeof(command._params._lit_reflect) <= sizeof(command._params._padding));
+}
+
 int main(void)
 {
     test_instance_create();
@@ -649,6 +887,10 @@ int main(void)
     test_draw_lists_and_swap_chains_null();
     test_command_lists_null();
     test_buffers();
+    test_lit_fit_cascades();
+    test_lit_vertex_color_layout();
+    test_lit_light_checks();
+    test_reflection_commands();
     if (failures)
     {
         printf("aprend_contract_tests: %d failure(s)\n", failures);

@@ -169,9 +169,17 @@ APRESULT aprend_reflect_table_read(
 					return r.corrupt("the reflection's resources aren't ordered by set and binding");
 			}
 			// A block's members lie inside the block, an array without a
-			// size ending it excepted, so writing one stays in its bytes.
+			// size ending it excepted, so writing one stays in its bytes. Such
+			// an array is only ever a storage block's last member (SPIR-V's
+			// rule; the writer lists an unsized array of structs as its
+			// element 0, sized): anywhere else it is refused, so no member
+			// escapes the extent check.
 			for (uint32_t k = 0; k < res.member_count; ++k) {
 				const aprend_reflect_table_member m = r.record<aprend_reflect_table_member>(h.member_offset, res.first_member + k);
+				if (m.array_count == 0 && k + 1 != res.member_count)
+					return r.corrupt("an array without a size isn't its block's last member");
+				if (m.array_count == 0 && res.type != SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+					return r.corrupt("an array without a size ends a block that isn't a storage buffer's");
 				if (m.array_count != 0 && (uint64_t)m.offset + member_extent(m) > res.block_size)
 					return r.corrupt("a member reaches past its block");
 			}

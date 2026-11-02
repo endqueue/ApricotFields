@@ -10,8 +10,8 @@ module aprend_rt_path_trace;
 // papers:
 // - next-event estimation at every hit, with multiple importance sampling
 //   (Veach's power heuristic) between the BSDF and each light it can meet:
-//   the environment, the sun over its disc (today the scene's one
-//   directional light, card A35), and emissive triangles chosen uniformly
+//   the environment, every directional light over its disc, and emissive
+//   triangles chosen uniformly
 //   from the TLAS's emitter table; point and spot lights without MIS (a
 //   BSDF ray can't hit a point);
 // - Owen-scrambled Sobol points (Burley, "Practical Hash-based Owen
@@ -235,24 +235,25 @@ float3 environment(float3 d) {
     return dot(d, u_lit_scene.ambient_up.xyz) >= 0.0 ? u_lit_scene.ambient_sky.rgb : u_lit_scene.ambient_ground.rgb;
 }
 
-// The sun's disc: its solid angle, and the radiance each direction of it
-// carries, so a surface it lights gets the sun's radiance as the raster
+// A directional light's disc of [versine] (1 - cos of its radius): its
+// solid angle, over which the radiance each direction of it carries is
+// spread, so a surface it lights gets the light's radiance as the raster
 // surface's (pi times its value over the disc's solid angle, as the sky's
 // disc is drawn).
-float sun_solid_angle() {
-    return 2.0 * RT_PI * u_lit_scene.sun_radiance.w;
+float disc_solid_angle(float versine) {
+    return 2.0 * RT_PI * versine;
 }
 
 // ---- The scene's geometry at a hit ------------------------------------------
 
-struct Hit {
-    float3 position;
-    float3 geometric;   // the triangle's normal, towards the ray's side
-    float3 normal;      // the shading normal, on the same side
-    float area;         // the triangle's area in the scene's space
-    float4 base_color;
-    float3 emission;
-    float4 surface;     // roughness, metalness, specular
+public struct Hit {
+    public float3 position;
+    public float3 geometric;   // the triangle's normal, towards the ray's side
+    public float3 normal;      // the shading normal, on the same side
+    public float area;         // the triangle's area in the scene's space
+    public float4 base_color;
+    public float3 emission;
+    public float4 surface;     // roughness, metalness, specular
 };
 
 // Words of instance [instance]'s record tail: its BLAS slot, material base,
@@ -309,7 +310,7 @@ void material_of(uint base, uint geometry, uint material_count, inout Hit hit) {
 
 // The triangle of [instance], [geometry], [primitive] at barycentrics [b],
 // seen along [direction].
-Hit hit_at(uint instance, uint geometry, uint primitive, float2 b, float3x4 to_scene, float3 direction, uint material_count) {
+public Hit hit_at(uint instance, uint geometry, uint primitive, float2 b, float3x4 to_scene, float3 direction, uint material_count) {
     Hit hit;
     const uint4 tail   = record_tail(instance);
     const uint4 entry  = rt_blases.Load4((tail.x & RT_SLOT_INDEX_MASK) * RT_BLAS_ENTRY_BYTES);
@@ -439,19 +440,23 @@ float3 next_events<B : IRtBsdf>(B bsdf, Hit hit, float3 origin, TraceParams para
             light += f * env / pdf * power_heuristic(pdf, bsdf_pdf);
         }
     }
-    // The sun over its disc (a delta light with no disc: no MIS).
-    float3 sun = u_lit_scene.sun_radiance.rgb;
-    if (any(sun > float3(0.0, 0.0, 0.0))) {
-        float3 axis    = normalize(u_lit_scene.sun_direction.xyz);
-        float cos_max  = 1.0 - u_lit_scene.sun_radiance.w;
-        bool disc      = cos_max < 1.0;
-        float3 l       = disc ? rt_cone(axis, cos_max, u1) : axis;
+    // Each directional light over its disc (a delta light with no disc: no
+    // MIS).
+    for (uint d = 0u; d < min(u_lit_scene.directional_count, uint(APREND_LIT_MAX_DIRECTIONAL_LIGHTS)); ++d) {
+        float3 sun = u_lit_scene.directional[d].radiance_disc.rgb;
+        if (!any(sun > float3(0.0, 0.0, 0.0)))
+            continue;
+        float versine = u_lit_scene.directional[d].direction_versine.w;
+        float3 axis   = normalize(u_lit_scene.directional[d].direction_versine.xyz);
+        float cos_max = 1.0 - versine;
+        bool disc     = cos_max < 1.0;
+        float3 l      = disc ? rt_cone(axis, cos_max, u1) : axis;
         if (dot(l, hit.geometric) > GRAZING && rt_visible(origin, l, 1e30, params.cull_mask)) {
             float bsdf_pdf;
             float3 f = bsdf.eval(l, bsdf_pdf);
             if (disc) {
-                float pdf = 1.0 / sun_solid_angle();
-                light += f * (RT_PI * sun / sun_solid_angle()) / pdf * power_heuristic(pdf, bsdf_pdf);
+                float pdf = 1.0 / disc_solid_angle(versine);
+                light += f * (RT_PI * sun / disc_solid_angle(versine)) / pdf * power_heuristic(pdf, bsdf_pdf);
             } else {
                 light += f * RT_PI * sun;
             }
@@ -536,7 +541,7 @@ public PathResult trace_path(uint2 pixel, uint index, uint seed, TraceParams par
         Hit hit;
         float3 add = float3(0.0, 0.0, 0.0);
         if (!trace_closest(origin, dir, params.cull_mask, params.material_count, hit)) {
-            // The environment, and the sun's disc where the ray meets it,
+            // The environment, and each directional light's disc the ray meets,
             // each weighted against its own sampling.
             float3 env = environment(dir);
             if (bounce > 0u) {
@@ -544,13 +549,16 @@ public PathResult trace_path(uint2 pixel, uint index, uint seed, TraceParams par
                 env *= power_heuristic(last_bsdf_pdf, env_pdf);
             }
             add = env;
-            float3 sun    = u_lit_scene.sun_radiance.rgb;
-            float cos_max = 1.0 - u_lit_scene.sun_radiance.w;
-            if (cos_max < 1.0 && any(sun > float3(0.0, 0.0, 0.0)) && dot(dir, normalize(u_lit_scene.sun_direction.xyz)) >= cos_max) {
-                float3 disc = RT_PI * sun / sun_solid_angle();
-                if (bounce > 0u)
-                    disc *= power_heuristic(last_bsdf_pdf, 1.0 / sun_solid_angle());
-                add += disc;
+            for (uint d = 0u; d < min(u_lit_scene.directional_count, uint(APREND_LIT_MAX_DIRECTIONAL_LIGHTS)); ++d) {
+                float3 sun    = u_lit_scene.directional[d].radiance_disc.rgb;
+                float versine = u_lit_scene.directional[d].direction_versine.w;
+                float cos_max = 1.0 - versine;
+                if (cos_max < 1.0 && any(sun > float3(0.0, 0.0, 0.0)) && dot(dir, normalize(u_lit_scene.directional[d].direction_versine.xyz)) >= cos_max) {
+                    float3 disc = RT_PI * sun / disc_solid_angle(versine);
+                    if (bounce > 0u)
+                        disc *= power_heuristic(last_bsdf_pdf, 1.0 / disc_solid_angle(versine));
+                    add += disc;
+                }
             }
             add *= throughput;
             if (bounce > 1u && params.clamp > 0.0)

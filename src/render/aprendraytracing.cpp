@@ -131,6 +131,9 @@ void aprend_rt_state_destroy(aprend_instance instance) {
 	aprend_compute_pipeline_destroy(rt->emitter_pipeline);
 	aprend_compute_pipeline_destroy(rt->mask_pipelines[0]);
 	aprend_compute_pipeline_destroy(rt->mask_pipelines[1]);
+	aprend_view_sets_destroy(rt->reflection_sets);
+	aprend_compute_pipeline_destroy(rt->reflection_pipeline);
+	rt->reflection_pipeline = nullptr;
 	for (aprend_compute_pipeline &pipeline : rt->path_pipelines) {
 		aprend_compute_pipeline_destroy(pipeline);
 		pipeline = nullptr;
@@ -141,11 +144,15 @@ void aprend_rt_state_destroy(aprend_instance instance) {
 	aprend_binding_layout_destroy(rt->trace_layout);
 	aprend_binding_layout_destroy(rt->mask_output_layout);
 	aprend_binding_layout_destroy(rt->path_output_layout);
+	aprend_binding_layout_destroy(rt->reflection_output_layout);
+	rt->reflection_output_layout = nullptr;
 	aprend_shader_destroy(rt->writer_row64);
 	aprend_shader_destroy(rt->writer_col72);
 	aprend_shader_destroy(rt->emitter_comp);
 	aprend_shader_destroy(rt->mask_comps[0]);
 	aprend_shader_destroy(rt->mask_comps[1]);
+	aprend_shader_destroy(rt->reflection_comp);
+	rt->reflection_comp = nullptr;
 	for (aprend_shader &shader : rt->path_comps) {
 		aprend_shader_destroy(shader);
 		shader = nullptr;
@@ -1512,10 +1519,8 @@ bool aprend_rt_send_checks(aprend_command_list list, const APREND_COMMAND &comma
 			fault = "a scene, TLAS, depth or target of another instance";
 			break;
 		}
-		// Today the scene's one directional light, the sun (card A35).
-		if (p._light != 0) {
-			aprend_cmd_report(list, APRESULT_INVALID_ARGUMENT,
-			                  "LIT_SHADOW_MASK with a _light of %u, which names no directional light of the scene (only light 0, the sun, until card A35)",
+		if (aprend_lit_scene_directional_slot(p._scene, p._light) == UINT32_MAX) {
+			aprend_cmd_report(list, APRESULT_INVALID_ARGUMENT, "LIT_SHADOW_MASK with a _light of %u, which names no directional light of the scene",
 			                  p._light);
 			return false;
 		}
@@ -1845,6 +1850,29 @@ aprend_compute_pipeline aprend_rt_mask_pipeline(aprend_instance instance, SPUDGP
 	const aprend_binding_layout layouts[3] = {rt->scene_layout, rt->trace_layout, rt->mask_output_layout};
 	rt->mask_pipelines[kind] = aprend_rt_traced_pipeline(instance, shader, entries[kind], layouts, sizeof(aprend_rt_mask_params), "Aprend's shadow mask pipeline");
 	return rt->mask_pipelines[kind];
+}
+
+#include "aprend_rt_reflections_comp.package.inc"
+
+aprend_compute_pipeline aprend_rt_reflection_pipeline(aprend_instance instance) {
+	aprend_rt_state *rt = instance->rt;
+	if (rt->reflection_pipeline)
+		return rt->reflection_pipeline;
+	if (!rt->reflection_comp) {
+		APREND_ERROR error;
+		(void)aprend_shader_create_own(instance, &aprend_rt_reflections_comp_package, &rt->reflection_comp, &error);
+		if (!rt->reflection_comp) {
+			aprend_report(instance, APRESULT_APREND_GPU_FAILURE, "Aprend's traced reflections shader can't be created: %s", error.message);
+			return nullptr;
+		}
+	}
+	aprend_shader shader = rt->reflection_comp;
+	if (!aprend_rt_trace_layouts(instance) || !aprend_rt_layout(instance, shader, 2, &rt->reflection_output_layout, "the traced reflections' output set"))
+		return nullptr;
+	const aprend_binding_layout layouts[3] = {rt->scene_layout, rt->trace_layout, rt->reflection_output_layout};
+	rt->reflection_pipeline = aprend_rt_traced_pipeline(instance, shader, "aprend_rt_reflections_comp", layouts, sizeof(aprend_rt_reflection_params),
+	                                                    "Aprend's traced reflections pipeline");
+	return rt->reflection_pipeline;
 }
 
 aprend_binding_set aprend_rt_tlas_trace_set(aprend_tlas tlas) {

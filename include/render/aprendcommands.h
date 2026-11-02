@@ -655,11 +655,14 @@ enum {
 	 * `_intensity`; below the horizon, the horizon's light times
 	 * `_ground_albedo`, which Hosek and Wilkie's model also takes as the
 	 * light the ground sends back up into the sky. Then prefiltered as
-	 * LIT_ENVIRONMENT's picture is. The sun's disc is not drawn here: the
-	 * sun is the scene's own light (aprend_lit_scene_set_sun()), and a disc
-	 * would only be blurred into the rougher mips; the sky shader draws it
-	 * (APREND_LIT_SUN::disc_angle). Hosek and Wilkie's model is defined for
-	 * a sun at or above the horizon, and one below is taken at it.
+	 * LIT_ENVIRONMENT's picture is. The sun's disc is not drawn here: a
+	 * directional light's disc is the scene's
+	 * (APREND_LIT_SCENE_LIGHT::_sky_disc), drawn by the sky shader, as a
+	 * disc here would only be blurred into the rougher mips.
+	 * `_sun_direction` is which way the sky's own model has its sun, the
+	 * caller's (one of its directional lights, usually). Hosek and Wilkie's
+	 * model is defined for a sun at or above the horizon, and one below is
+	 * taken at it.
 	 *
 	 * Hosek and Wilkie's model is cooked on the CPU at the compile, from
 	 * the authors' dataset, into a material the environment keeps; the
@@ -906,7 +909,7 @@ enum {
 	APREND_COMMAND_BUILD_TLAS                  = 42,
 	/**
 	 * Traces the shadow of directional light `_light` of `_scene`
-	 * (aprendlit.h) over a depth pre-pass into a mask, outside a pass. The
+	 * (aprendlit.h; its place in the scene's lights) over a depth pre-pass into a mask, outside a pass. The
 	 * device has SPUDGPU_FEATURE_RAY_QUERY. The mask is what the lit
 	 * surface reads for that light instead of shadow maps, once
 	 * aprend_lit_scene_set_light_shadow() names it.
@@ -916,8 +919,8 @@ enum {
 	 * the normal its depth's slopes give (the depth's own normals: no
 	 * normal target is read), and `_ray_count` rays are traced from it
 	 * through `_tlas` towards the light, over the light's disc (its
-	 * direction and angular radius as the scene has them, today
-	 * APREND_LIT_SUN's `direction` and `disc_angle`; 0 is a hard shadow),
+	 * APREND_LIT_SCENE_LIGHT `_direction` and `_radius` as the scene has
+	 * them; a radius of 0 is a hard shadow),
 	 * in blue-noise directions, up to `_max_distance`, against the
 	 * instances whose mask shares a bit with `_cull_mask`. The fraction that
 	 * reach the light is filtered over `_filter_radius` texels each way,
@@ -925,8 +928,10 @@ enum {
 	 * `_target`'s red: 1 lit, 0 in shadow. There is no filter over time.
 	 *
 	 * `_scene`'s view has a target size and a view_projection that can be
-	 * inverted, and `_light` names a directional light of it (today only
-	 * 0, the sun, until card A35 is built). `_depth` is a SHADER_RESOURCE
+	 * inverted, and `_light` names a directional light of it (one that
+	 * names no light, or a light that isn't directional, is refused at
+	 * send, and at the compile if the scene's lights changed in between).
+	 * `_depth` is a SHADER_RESOURCE
 	 * view, DEPTH aspect, 2D, of a depth buffer rendered through the
 	 * view's view_projection at its target size, written earlier in the
 	 * list or before it. `_target` is an UNORDERED_ACCESS 2D view of an
@@ -960,7 +965,7 @@ enum {
 	 * metalness and specular: every surface opaque; opacity, transmission,
 	 * the coat, the sheen and the maps are not read).
 	 * Light comes from the environment (importance-sampled), every
-	 * directional light over its disc, emissive triangles (with multiple
+	 * directional light over its disc (each one's `_radius`), emissive triangles (with multiple
 	 * importance sampling; a surface gives off its emission from both its
 	 * faces, as the lit surface lights a face seen from behind as its
 	 * front), and point and spot lights (without). The hemisphere of
@@ -984,6 +989,125 @@ enum {
 	 * not overflow.
 	 */
 	APREND_COMMAND_LIT_PATH_TRACE              = 44,
+	/**
+	 * Screen-space reflections into `_reflection`, outside a pass, over
+	 * the targets of surfaces drawn with
+	 * APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT (aprendlit.h).
+	 *
+	 * Each texel of `_reflection` (half `_depth`'s size each way, rounded
+	 * up) stands for the 2x2 texels of `_depth` under it (fewer at the
+	 * right and bottom edges of an odd size) and takes the one of them
+	 * nearest the eye: its depth, its normal and roughness from
+	 * `_normal_roughness`, its place. It reflects the view ray about that
+	 * normal and marches the reflected ray over a Hi-Z pyramid of `_depth`
+	 * (built here, from the render target pool) for at most `_max_steps`
+	 * steps, up to `_max_distance` in the scene's units. A hit within
+	 * `_thickness` behind the depth it passes reads `_color` at the hit's
+	 * texel, at a mip chosen from the roughness and the distance travelled
+	 * (a cone over the mips). The texel is written rgb the reflected
+	 * radiance (unexposed: `_color` divided by the view's exposure, as
+	 * transmission reads it) and a the confidence: 1 for a hit well inside
+	 * the screen, fading to 0 within `_edge_fade` of its edge and as the
+	 * ray turns back towards the eye; 0 for a miss, for a texel with no
+	 * surface, and for a surface rougher than `_max_roughness`, where
+	 * nothing is marched and the environment stays.
+	 *
+	 * `_scene` gives the view: its view_projection (which can be
+	 * inverted), target size, eye and exposure. `_depth` is a
+	 * SHADER_RESOURCE 2D view, DEPTH aspect, of a depth buffer rendered
+	 * through that view_projection at the view's target size;
+	 * `_normal_roughness` a SHADER_RESOURCE 2D view of R16G16B16A16_FLOAT
+	 * of the same size, the reflecting surfaces' target 1 (cleared to 0
+	 * where nothing was drawn); `_color` a SHADER_RESOURCE 2D view of a
+	 * color texture with its mips (COPY_SCENE_COLOR's target, from the
+	 * opaque surfaces); `_reflection` an UNORDERED_ACCESS 2D view of one
+	 * mip of R16G16B16A16_FLOAT, half the view's target size each way,
+	 * rounded up. Each view but `_reflection` holds what was written
+	 * earlier in the list or before it. `_max_steps` is 1 to 256;
+	 * `_max_distance` and `_thickness` above 0; `_edge_fade` 0 to 0.5;
+	 * `_max_roughness` 0 to 1; all finite. Its write is ordered before
+	 * any later read of `_reflection`.
+	 *
+	 * The frame's order is the caller's to record: the opaque surfaces
+	 * (with the reflecting variant where reflections are wanted),
+	 * COPY_SCENE_COLOR, LIT_SSR, LIT_TRACE_REFLECTIONS, LIT_REFLECT, then
+	 * the transparent surfaces, then the tone map. Transparent surfaces
+	 * write none of the variant's targets: they are drawn after LIT_REFLECT
+	 * and are not reflected.
+	 *
+	 * It binds pipelines and sets of its own: a compute pipeline is set
+	 * again after it before a dispatch.
+	 */
+	APREND_COMMAND_LIT_SSR                     = 45,
+	/**
+	 * Ray-traced reflections into `_reflection` where its confidence is
+	 * short of 1, outside a pass. The device has SPUDGPU_FEATURE_RAY_QUERY.
+	 *
+	 * Each texel of `_reflection` whose a is below 1, and whose surface
+	 * (from `_depth` and `_normal_roughness`, the texel of the 2x2 under it
+	 * nearest the eye, as LIT_SSR takes it) is at most `_max_roughness`
+	 * rough, traces `_ray_count` rays from the surface along its
+	 * reflection (a rough surface's over its GGX lobe, in blue-noise
+	 * directions as LIT_SHADOW_MASK's) through `_tlas`, against the
+	 * instances whose mask shares a bit with `_cull_mask`, up to
+	 * `_max_distance`. A hit is shaded with its lit material's values
+	 * (APREND_LIT_MATERIAL_VALUES' base color, emission, roughness,
+	 * metalness and specular: no maps, opaque), every directional light of
+	 * `_scene` (unshadowed), its point and spot lights and its ambient
+	 * light; a miss reads the scene's ambient light and environment along
+	 * the ray. A hit on an entry of the TLAS's material table that is NULL
+	 * (one only shadows see) is black. The texel becomes the traced
+	 * radiance mixed under what was there by its confidence,
+	 * lerp(traced, rgb, a), with a 1: where the march was sure, its hit is
+	 * kept. A texel with no surface, or a rougher one, is left as it was.
+	 *
+	 * Nothing is denoised: over a rough lobe the result is as noisy as
+	 * `_ray_count` rays make it, so `_max_roughness` is the caller's bound
+	 * on that noise (one ray is noisy above a roughness of about 0.3).
+	 *
+	 * `_scene`, `_depth` and `_normal_roughness` are as LIT_SSR's;
+	 * `_reflection` an UNORDERED_ACCESS 2D view of one mip of
+	 * R16G16B16A16_FLOAT, half the view's target size each way, rounded
+	 * up, holding a march's result or cleared to 0 (a trace alone).
+	 * `_tlas` has been built, by a BUILD_TLAS earlier in the list or
+	 * submitted before. `_ray_count` is 1 or more, `_cull_mask` 1 to 255,
+	 * `_max_distance` above 0 and `_max_roughness` 0 to 1, both finite.
+	 * Its write is ordered before any later read of `_reflection`.
+	 */
+	APREND_COMMAND_LIT_TRACE_REFLECTIONS       = 46,
+	/**
+	 * Puts `_reflection` on `_target`, outside a pass. At each texel of
+	 * `_target` (the view's target size), the reflection is upsampled from
+	 * the four texels of `_reflection` round it, weighted by their
+	 * distance and by how near each one's depth and normal are to the
+	 * texel's (as GTAO's blur is), and added as
+	 * specular x a x (reflection - environment specular) x exposure: the
+	 * specular weight from `_specular`, the environment specular worked
+	 * out again from `_scene`'s ambient light and environment at the
+	 * texel's normal and roughness, as the surface shaded it.
+	 *
+	 * Worked out again from an 8-bit specular weight and a 16-bit float
+	 * normal and roughness, the environment specular cancels what the
+	 * surface added only to within their precision: at a of 1 the picture
+	 * is the reflection to within that, not bit for bit. Where a is 0, or
+	 * no surface was drawn (a normal of 0), nothing is added and the
+	 * picture is unchanged bit for bit.
+	 *
+	 * `_scene` is as LIT_SSR's, its output encoding linear
+	 * (APREND_COLOR_ENCODING_LINEAR): the picture is linear, tone mapped
+	 * after. `_depth` and `_normal_roughness` are as LIT_SSR's;
+	 * `_specular` a SHADER_RESOURCE 2D view of R8G8B8A8_UNORM of the same
+	 * size, the reflecting surfaces' target 2; `_reflection` a
+	 * SHADER_RESOURCE 2D view of one mip of R16G16B16A16_FLOAT, half the
+	 * view's target size each way, rounded up; `_target` a RENDER_TARGET 2D
+	 * view of the picture the surfaces wrote, of a float format
+	 * (R16G16B16A16_FLOAT, R32G32B32A32_FLOAT or R11G11B10_FLOAT) at the
+	 * view's target size, left in COLOR_ATTACHMENT_OPTIMAL. Each view but
+	 * `_target` holds what was written earlier in the list or before it.
+	 *
+	 * It binds pipelines and sets of its own, as BLOOM does.
+	 */
+	APREND_COMMAND_LIT_REFLECT                 = 47,
 };
 
 /**
@@ -1344,7 +1468,8 @@ typedef struct APREND_COMMAND {
 			aprend_lit_scene _scene;
 			/** What the rays are traced through. */
 			aprend_tlas _tlas;
-			/** Which directional light of the scene: today only 0, the sun. */
+			/** Which directional light of the scene: its place in the scene's
+			 * lights (aprend_lit_scene_set_lights()). */
 			uint32_t _light;
 			/** The depth pre-pass. */
 			aprend_texture_view _depth;
@@ -1385,6 +1510,62 @@ typedef struct APREND_COMMAND {
 			/** The most light a bounce after the first brings; 0 for no clamp. */
 			float _clamp;
 		} _lit_path_trace; /**< APREND_COMMAND_LIT_PATH_TRACE. */
+		struct {
+			/** The scene: its view and exposure. */
+			aprend_lit_scene _scene;
+			/** The depth pre-pass: a SHADER_RESOURCE 2D view of depth at the view's target size. */
+			aprend_texture_view _depth;
+			/** The surfaces' normal and roughness: a SHADER_RESOURCE 2D view of R16G16B16A16_FLOAT, that size. */
+			aprend_texture_view _normal_roughness;
+			/** The mipped copy of the opaque picture: a SHADER_RESOURCE 2D view of color with its mips. */
+			aprend_texture_view _color;
+			/** What is written: an UNORDERED_ACCESS 2D view of R16G16B16A16_FLOAT, half the size rounded up. */
+			aprend_texture_view _reflection;
+			/** The most steps a ray marches, 1 to 256. */
+			uint32_t _max_steps;
+			/** How far a ray reaches, in the scene's units; above 0. */
+			float _max_distance;
+			/** How far behind a depth a ray still hits it, in the scene's units; above 0. */
+			float _thickness;
+			/** The share of the screen at each edge a hit fades out over, 0 to 0.5. */
+			float _edge_fade;
+			/** The roughest surface marched, 0 to 1; rougher keeps the environment. */
+			float _max_roughness;
+		} _lit_ssr; /**< APREND_COMMAND_LIT_SSR. */
+		struct {
+			/** The scene: its view, lights and environment. */
+			aprend_lit_scene _scene;
+			/** What the rays are traced through. */
+			aprend_tlas _tlas;
+			/** The depth pre-pass, as LIT_SSR's. */
+			aprend_texture_view _depth;
+			/** The surfaces' normal and roughness, as LIT_SSR's. */
+			aprend_texture_view _normal_roughness;
+			/** What is traced into where its confidence is short of 1, as LIT_SSR writes it. */
+			aprend_texture_view _reflection;
+			/** Rays a texel, 1 or more. */
+			uint32_t _ray_count;
+			/** Which instances the rays see: 1 to 255, against each instance's `_mask`. */
+			uint32_t _cull_mask;
+			/** How far a ray reaches, in the scene's units; above 0. */
+			float _max_distance;
+			/** The roughest surface traced, 0 to 1. */
+			float _max_roughness;
+		} _lit_trace_reflections; /**< APREND_COMMAND_LIT_TRACE_REFLECTIONS. */
+		struct {
+			/** The scene: its view, ambient light, environment and exposure. */
+			aprend_lit_scene _scene;
+			/** The depth pre-pass, as LIT_SSR's. */
+			aprend_texture_view _depth;
+			/** The surfaces' normal and roughness, as LIT_SSR's. */
+			aprend_texture_view _normal_roughness;
+			/** The surfaces' specular weight: a SHADER_RESOURCE 2D view of R8G8B8A8_UNORM at the view's target size. */
+			aprend_texture_view _specular;
+			/** The reflection: a SHADER_RESOURCE 2D view of R16G16B16A16_FLOAT, half the size rounded up. */
+			aprend_texture_view _reflection;
+			/** The picture: a RENDER_TARGET 2D view of a float format at the view's target size. */
+			aprend_texture_view _target;
+		} _lit_reflect; /**< APREND_COMMAND_LIT_REFLECT. */
 		/**
 		 * Never read. Fixes `_params` at 120 bytes, so the command's size
 		 * stays 128 as commands are added: a new command's parameters fit

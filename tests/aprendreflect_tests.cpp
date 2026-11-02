@@ -405,18 +405,25 @@ static void test_slang_shaders()
         CHECK(scene && strcmp(scene->block_name, "AprendLitScene") == 0);
         const APREND_SHADER_MEMBER *matrix = find_member(store, scene, "view_projection");
         CHECK(matrix && matrix->type == APREND_UNIFORM_TYPE_MAT4 && !matrix->row_major && matrix->matrix_stride == 16 && matrix->offset == 0);
-        const APREND_SHADER_MEMBER *cascades = find_member(store, scene, "sun_shadow_view_projection");
-        CHECK(cascades && cascades->type == APREND_UNIFORM_TYPE_MAT4 && cascades->array_count == 4 && cascades->array_stride == 64 &&
-              cascades->offset == 128 && !cascades->row_major);
+        // A matrix in an array of structs: each element's members by name,
+        // 80 bytes apart (a matrix and a rectangle).
+        const APREND_SHADER_MEMBER *view = find_member(store, scene, "shadow_views[1].view_projection");
+        CHECK(view && view->type == APREND_UNIFORM_TYPE_MAT4 && view->offset == 128 + 80 && !view->row_major && view->matrix_stride == 16);
+        const APREND_SHADER_MEMBER *rect = find_member(store, scene, "shadow_views[1].rect");
+        CHECK(rect && rect->type == APREND_UNIFORM_TYPE_VEC4 && rect->offset == 128 + 80 + 64);
         const APREND_SHADER_MEMBER *light = find_member(store, scene, "lights[1].radiance_type");
-        CHECK(light && light->type == APREND_UNIFORM_TYPE_VEC4 && light->offset == 2560 + 64 + 16);
+        CHECK(light && light->type == APREND_UNIFORM_TYPE_VEC4 && light->offset == 7824 + 64 + 16);
+        // An array of vectors: one member, its count and stride.
+        const APREND_SHADER_MEMBER *rotation = find_member(store, scene, "environment_rotation");
+        CHECK(rotation && rotation->type == APREND_UNIFORM_TYPE_VEC4 && rotation->array_count == 3 && rotation->array_stride == 16 &&
+              rotation->offset == 128 + 80 * 64 + 80 * 4 + 32 * 64 + 80);
         CHECK(find_member(store, scene, "lights.data[0].radiance_type") == nullptr);
         const APREND_SHADER_RESOURCE *material = find_resource(store, "u_lit_material");
         CHECK(material && strcmp(material->block_name, "AprendLitMaterial") == 0);
         const APREND_SHADER_MEMBER *uv = find_member(store, material, "uv_transform");
         CHECK(uv && uv->type == APREND_UNIFORM_TYPE_VEC4 && uv->array_count == 2 && uv->array_stride == 16 && uv->offset == 96);
-        const APREND_SHADER_RESOURCE *sun = find_resource(store, "sun_shadow_map");
-        CHECK(sun && sun->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D_ARRAY && sun->image_depth_compare);
+        const APREND_SHADER_RESOURCE *atlas = find_resource(store, "shadow_atlas");
+        CHECK(atlas && atlas->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D && atlas->image_depth_compare);
         const APREND_SHADER_RESOURCE *base = find_resource(store, "base_color_map");
         CHECK(base && base->image_shape == APREND_TEXTURE_VIEW_SHAPE_2D && !base->image_depth_compare);
         const APREND_SHADER_RESOURCE *tiles = find_resource(store, "AprendLitTiles");
@@ -538,6 +545,38 @@ static void test_table_refusals()
         resource.first_member = header.member_count;
         memcpy(bytes.data() + header.resource_offset, &resource, sizeof(resource));
         CHECK(read(bytes, SPUDGPU_SHADER_STAGE_FRAGMENT, entry) == APRESULT_CORRUPT_DATA);
+    }
+    // An array without a size, which only a storage block's last member may
+    // be: refused in the middle of a block, and as a uniform block's last
+    // (APREND_TODO.md item 22).
+    {
+        aprend_reflect_table_resource resource;
+        uint32_t found = UINT32_MAX;
+        for (uint32_t i = 0; i < header.resource_count && found == UINT32_MAX; ++i)
+        {
+            memcpy(&resource, good + header.resource_offset + i * sizeof(resource), sizeof(resource));
+            if (resource.type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER && resource.member_count > 1)
+                found = i;
+        }
+        CHECK(found != UINT32_MAX);
+        const uint32_t which[2] = {0, found != UINT32_MAX ? resource.member_count - 1 : 0};
+        const char *messages[2] = {"an array without a size isn't its block's last member",
+                                   "an array without a size ends a block that isn't a storage buffer's"};
+        for (int c = 0; c < 2 && found != UINT32_MAX; ++c)
+        {
+            bytes.assign(good, good + size);
+            aprend_reflect_table_member member;
+            const size_t at = header.member_offset + (size_t)(resource.first_member + which[c]) * sizeof(member);
+            memcpy(&member, good + at, sizeof(member));
+            member.array_count = 0;
+            memcpy(bytes.data() + at, &member, sizeof(member));
+            aprend_reflection_store store;
+            std::string error;
+            CHECK(aprend_reflect_table_read(bytes.data(), bytes.size(), SPUDGPU_SHADER_STAGE_FRAGMENT, entry, &store, &error) == APRESULT_CORRUPT_DATA);
+            CHECK(error.find(messages[c]) != std::string::npos);
+            if (error.find(messages[c]) == std::string::npos)
+                printf("  got \"%s\"\n", error.c_str());
+        }
     }
     // Cut at every length: the stated size made the cut's, so the parts'
     // bounds are what refuse it, never a read past the end.

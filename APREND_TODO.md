@@ -1905,6 +1905,12 @@ been reproduced.
   0 for a block-compressed format and for one with no known pixel size.
   They now refuse such a format. A compressed texture still has no upload
   path: rows of texels are not what it is made of.
+  **Card A48, decided 2026-11-02 with you: a.** A block-aware update:
+  rows of blocks, a region in whole blocks, a block-compressed format's
+  bytes per block from its format; and ASTC formats in SpudGPU, a SpudLib
+  card of its own written when this is built. The block formats are
+  already chosen, so nothing waits on a measurement. Built when a caller
+  first uploads a compressed texture. Not built.
 - **Done: `aprend_shader_read_from_file_spirv` leaked the file's bytes**
   when the read failed. The SpudFiles rework (2026-10-22) moved the read
   into `aprend_read_spirv_file`, which frees them on every failure.
@@ -2866,7 +2872,13 @@ at build time.
   buffer, so the check and the comment agree. Not a hole today: no write
   goes through such a member's record (`aprend_material_*` refuses one,
   `aprend_material_set_uniform_bytes` is bounded by the block's size). A
-  case in `aprendreflect_tests`' refusals with it.
+  case in `aprendreflect_tests`' refusals with it. **Built 2026-11-01 on
+  macOS:** the reader refuses such a member that isn't its resource's
+  last record, or whose resource isn't a storage buffer
+  (`APRESULT_CORRUPT_DATA`, a message each); `aprendreflect_tests` sets
+  the lit surface's scene block's first and last members to no size and
+  reads each message; it and `aprend_reflection_fuzz_regressions` pass in
+  Debug, Release, `-asan` and `-tsan`.
 - `aprendshader.h` and `apricore.h` from `aprend_shaderreflection_draft.h`:
   `APREND_SHADER_PACKAGE::reflection` and `reflection_size`, SPIR-V
   optional, `APRESULT_APREND_REFLECTION_MISMATCH` (5004),
@@ -3125,7 +3137,7 @@ Left:
       D3D12's depth-only passes. One fix came of it, the clear value of an
       environment never filled (see "What has run" under "State of the
       code").
-- [ ] **Screen-space reflections.** A forward pass has no normal or
+- [x] **Screen-space reflections.** A forward pass has no normal or
       roughness target to reflect from: it needs the surface to write a
       second target (a variant of the surface shader, and a pipeline of
       two targets, item 25), then a ray march over depth and a resolve.
@@ -3141,7 +3153,76 @@ Left:
       item); (6) no G-buffer mode: Aprend stays forward. Godot 4's
       forward renderer is the closest match. Tests: a mirror plane's
       reflection of a known quad read back against its place worked out in
-      C, on every backend. Not started.
+      C, on every backend. Not started. **Drafted 2026-11-01, for
+      approval, not built:** `aprend_reflections_draft.h`: the surface
+      variant writing the normal-and-roughness target (and, over card
+      A30's recommendation c, the specular target), and three commands,
+      LIT_SSR (the march into a reflection target with its confidence),
+      LIT_TRACE_REFLECTIONS (S12's rays where the confidence is short) and
+      LIT_REFLECT (onto the picture). **Card A30 decided 2026-11-02 with you, c:** after the surfaces, the variant writing a second target with the specular color, as the draft has it. **Draft approved 2026-11-02 with you, with six fixes written into it:** the header (written over A30's c), a half-resolution texel taking the nearest-to-the-eye of its 2x2, the trace undenoised (`_max_roughness` bounds its noise; a filter is a card of its own when asked for), the specular target's alpha unused, the frame's order (opaque, COPY_SCENE_COLOR, SSR, trace, REFLECT, transparent, tone map), and the composite cancelling the environment only to the targets' precision (the gold-mirror test a tolerance). Built 2026-11-02 on the Mac (below). Checked against what a
+      caller tracing per view within a distance needs (on or off, a
+      distance, the refusal without ray queries, a top level rebuilt each
+      frame): nothing more is missing in Aprend than what is already
+      recorded (cut-outs opaque to rays and hits reading no maps, card
+      A15; no vertex color at a hit, A43's c).
+      **Built 2026-11-02 on the Mac** (Apple M5 Pro, macOS 27.0.1, Xcode
+      27.2, Slang 2026.18.3-2; the workspace's `ROADMAP.md`, the session of
+      2026-11-02, steps 1 and 2), from the approved draft with its six fixes; D3D12
+      and Vulkan written, not compiled:
+      - `aprendlit.h`: APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT (8),
+        `shaders/aprend_lit_surface_reflect_frag.slang`: target 1 the
+        shading normal and roughness, target 2 the specular weight (alpha
+        0). The shading is now the module `aprend_lit_surface.slang`,
+        which it and `aprend_lit_frag.slang` call; `hemisphere()` and
+        `to_environment()` are `aprend_lit_scene.slang`'s.
+      - `aprendcommands.h`: APREND_COMMAND_LIT_SSR (45),
+        LIT_TRACE_REFLECTIONS (46), LIT_REFLECT (47), their parameters 64,
+        56 and 48 bytes in the union (`aprend_contract_tests`'
+        `test_reflection_commands`), every refusal at the send one `if`
+        each in member order, inside a pass and what the compile can see
+        (a view with nothing in it, the scene's view of another size, an
+        encoded scene for LIT_REFLECT, a TLAS never built) at the compile.
+      - LIT_SSR: a Hi-Z pyramid of nearness from the render target pool
+        (`aprend_lit_hiz_frag`, `aprend_lit_hiz_down_frag`, R32_FLOAT,
+        every level to a texel, the pool's entry given a view of all its
+        levels), then `aprend_lit_ssr_comp`: the 2x2's nearest texel, the
+        reflected ray cut at the eye, Uludag's Hi-Z traversal, a hit
+        within `_thickness` along the view, the color read at a cone's mip,
+        the confidence faded at the edges and as the ray turns back.
+      - LIT_TRACE_REFLECTIONS: `aprend_rt_reflections_comp` (traced, set 2
+        the targets, the scene's environment cubes or the placeholder, the
+        BRDF lookup texture), GGX visible-normal rays in R2 directions
+        turned by interleaved gradient noise, a hit shaded by the path
+        trace's lit BSDF (its `Hit` and `hit_at()` made public), lerp
+        under the march's result. Its read-modify-write of an RGBA16F
+        storage image needs D3D12's typed UAV loads of that format
+        (TypedUAVLoadAdditionalFormats), which every device with ray
+        tracing has; recorded for the D3D12 run.
+      - LIT_REFLECT: `aprend_lit_reflect_frag`, additive, over the scene's
+        own set 0, the upsample weighted by plane distance and normal.
+      - The sets over the commands' views: two caches of 16
+        (`aprend_view_set`, lit and ray tracing), matched by layout, views
+        and serials. `claude_made_decisions.md` (2026-11-02) has every
+        call the draft left open.
+      Ran: ApricotFields' 37 ctests in Debug, Release, `-asan` and
+      `-tsan` (37 before: the new test is a function in
+      `aprend_contract_tests`); `apri_misuse_tests` ten times (119 calls
+      with a destroyed handle, 0 failures; no new function, the harness
+      regenerated unchanged); `../apricottests` whole on Metal, Debug and
+      Release, under API and shader validation with warnings fatal, both
+      devices: `test_lit_ssr` (the floor: 288 texels reflecting the
+      square, 846 reflecting nothing, 546 plain and 1,134 sky against C,
+      0 wrong; gold within 1.04% of its Fresnel; the floor's silhouette
+      18 half texels, 12 the square's, 0 blended; the edge fade within
+      0.047; past `_max_roughness` and at confidence 0 the picture
+      unchanged bit for bit), `test_lit_trace_reflections` (the wall
+      marched: nothing; traced: 784 texels reflecting the square behind
+      the eye and 2,652 nothing, 0 wrong; the floor traced and marched 0
+      steps of 255 apart over 288 texels; refused without ray queries on
+      the device with none), `test_lit_reflection_refusals`, and
+      `test_frame_allocations`' 100 frames of reflections, 0 of Aprend's
+      (with the trace, and without on the device with none). Every
+      existing lit test's image unchanged.
       **Hardware ray tracing (card S12, decided 2026-10-28):** once
       SpudGPU's ray queries exist, Aprend builds and refits acceleration
       structures from what it draws (memory through item 35's allocator),
@@ -3483,6 +3564,62 @@ Left:
       commands are written per light from the start
       (`aprend_raytracing_draft.h`), over today's one sun as directional
       light 0 until this is built.
+      **Shadows per light and in one atlas (cards A36, a, and A37, b,
+      decided 2026-11-01 with you), built with A35:** one setter,
+      `aprend_lit_scene_set_light_shadow()`, for any light of the scene,
+      its kinds a spot's map, a point's map (six faces), cascades and the
+      traced mask, a kind the light's type can't have refused;
+      `aprend_lit_scene_set_spot_shadows()`, `_set_point_shadows()` and
+      their materials' index retire. Every map shadow reads one depth
+      atlas per scene, the caller's: each cascade, spot and point face
+      names its rectangle, sized per light by the caller, and Aprend
+      samples within it, its filter clamped at the edge. A caller needs
+      several directional lights shadowed now, so A35 is next: its draft
+      (`aprend_lights_draft.h`) with A36's and A37's public halves, before
+      item 50 is built.
+      **A35, A36 and A37 built 2026-11-01 on macOS** (Apple M5 Pro, Metal;
+      the approved `aprend_lights_draft.h`, every item as written but one,
+      card A47: the draft renames two of APREND_LIT_CASCADE_FIT's fields
+      and names one new name, so `map_size` keeps its name, its comment
+      the rectangle's width; **decided 2026-11-02 with you: a, `map_size`
+      kept**, "map" being the shadow kinds' word for a view in the atlas). One light list (APREND_LIT_SCENE_LIGHT, up
+      to 4 directional and 128 point and spot lights), `_radius` and
+      `_sky_disc`; `aprend_lit_scene_set_shadow_atlas()`;
+      `aprend_lit_scene_set_light_shadow()` for every kind, map kinds over
+      a chained APREND_LIT_SHADOW_MAPS; 64 shadow pass materials made with
+      the scene (`aprend_lit_scene_get_shadow_pass_material()`);
+      `aprend_lit_fit_cascades()`. The scene block stays one uniform
+      buffer, 16,016 bytes, under Vulkan's guaranteed 16,384 (SpudGPU
+      reports no uniform limit); each directional light's mask is its own
+      binding by its place among them (`directional_mask_0` to `_3`); the
+      surface, the sky (a disc per light that asks), the traced mask (its
+      `_light` any directional light, resolved again at the compile) and
+      the path trace (every directional light over its disc) read the
+      records (`../claude_made_decisions.md`, 2026-11-01). Ran: ApricotFields'
+      37 ctests in Debug, Release, `-asan` and `-tsan`, `apri_misuse_tests`
+      ten times (regenerated), `aprend_contract_tests`' new cases
+      (`aprend_lit_fit_cascades()` the same bits as
+      `aprend_lit_fit_sun_cascades()` in three framings, captured from the
+      old code's Debug and Release builds, which agreed); apricottests whole
+      on Metal, Debug and Release, under API and shader validation with
+      warnings fatal: every lit and shadow test moved to the atlas and
+      passing its old checks, and new ones: two directional lights' cascades
+      in their own squares (green alone under the red one's shadow, red
+      alone under the green's, both between), two spots' maps in squares of
+      64 and 32 texels with a neighbour of depth 0 and a filter of 4 reaching
+      for it (236, 236 against the formula's 236.6), the sky's two discs
+      (red 204 and green 204, the model 204; 9 and 12 texels; none with
+      `_sky_disc` off), the refusals by message (`test_lit_light_refusals`:
+      the 129th point light and the 5th directional, the 65th view, an atlas
+      smaller than a rectangle naming the light, a shadow kept and one taken
+      away when the lights are sent again), the mask naming light 1 (0 and
+      128), the path trace with the sun at light 1 the same bits as at 0, and
+      `test_frame_allocations` with four directional lights and their
+      shadows sent again each frame and drawn into an atlas: none of
+      Aprend's (401,280 and 416,178 allocations apart, the platform's).
+      The workspace's callers built and passed against it unchanged
+      (`../ROADMAP.md`, the same night). D3D12 and Vulkan not built
+      (`../ROADMAP.md`, the handoff).
       **Waiting on Metal's bindless (card A15, decided, not built),
       recorded 2026-10-31 with the user** (`aprend_raytracing_draft.h`, T3
       and T7): alpha-tested geometry in ray queries (a cut-out material's
@@ -4809,10 +4946,10 @@ as glTF 2.0's `COLOR_0` is (core spec: the base color factor times the
 base color texture times `COLOR_0`). It is a second vertex stream beside
 `APREND_LIT_VERTEX`, which doesn't change (a frozen 48 bytes, and every
 BLAS vertex today, A42), and a surface vertex shader that reads it; a mesh
-without one draws as today. Raised by Latran's L7 draft
-(`../latran/core/latran_lighting_draft.h`, approved 2026-11-01), whose
-meshes carry vertex colors that its lit surfaces must keep; general
-purpose, as any glTF asset may have them.
+without one draws as today. Raised by a caller whose meshes carry
+vertex colors that its lit surfaces must keep (the workspace's
+`DECISIONS.md`, card A46); general purpose, as any glTF asset may have
+them.
 
 Its public half is a draft for your approval first. What the draft
 settles: the stream's binding (slot 2, after the instance at 1) and
@@ -4822,8 +4959,27 @@ without, or a second shader; the depth and shadow passes (which need no
 color, but a cut-out reads opacity, which the color's alpha multiplies);
 and what traced passes (item 24) read at a hit, since the arena holds
 `APREND_LIT_VERTEX` alone: none until A43's c (the caller's vertex
-streams, with bindless), or a color in the arena. Not started. Latran's
-L7 waits on it.
+streams, with bindless), or a color in the arena.
+
+**Built 2026-11-01 on macOS from the approved `aprend_litcolor_draft.h`,
+as written** (Apple M5 Pro, Metal): APREND_LIT_SHADER_SURFACE_VERTEX_COLOR
+(6) and APREND_LIT_SHADER_SHADOW_VERTEX_COLOR (7)
+(`shaders/aprend_lit_color_vert.slang`, `aprend_lit_shadow_color_vert.slang`),
+`aprend_lit_vertex_color_layout()`; every lit vertex shader writes location
+4 (white where there is no color), the surface and the cut-out depth
+shader read it; rays read none. Ran: `aprend_contract_tests`' layout case;
+apricottests on Metal, Debug and Release, under validation:
+`test_lit_vertex_color` (the square's corners red, green, blue and white
+under a white sky: each texel within 3 of (white - black) x color + black,
+0 off measured, since the color multiplies the base color and not a
+dielectric's specular part; the centre the diagonal's blend, the square
+being two triangles; a base red of 0.5 halving red, 115 against 114.6; a
+cut-out by the color's alpha: the surface shown only right of x -1/3 and
+its shadow, through the colored shadow shader, under that part only),
+lit_test_vert writing location 4 with test_lit_surface's readings
+unchanged, a BLAS over a colored mesh tracing the same bits as the
+uncolored one, and `test_frame_allocations` with a colored square in the
+frame (none of Aprend's). D3D12 and Vulkan not built.
 
 ## Suggested order
 

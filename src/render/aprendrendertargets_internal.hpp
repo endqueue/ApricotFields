@@ -34,6 +34,10 @@ struct aprend_pooled_target {
 	aprend_texture2d texture{nullptr};
 	std::vector<aprend_texture_view> level_targets{};
 	std::vector<aprend_texture_view> level_sources{};
+	/* Every level as one SHADER_RESOURCE view, for a shader that reads
+	 * them all (APREND_COMMAND_LIT_SSR's Hi-Z march): made by the first that
+	 * asks (aprend_pooled_target_whole). */
+	aprend_texture_view whole{nullptr};
 	/* Whether it has been taken, and the instance's frame_number when it
 	 * last was. */
 	bool taken{false};
@@ -79,6 +83,10 @@ aprend_pooled_target *aprend_render_target_take(
     uint32_t height,
     SPUDGPU_FORMAT format,
     uint32_t levels);
+
+/* [target]'s levels as one SHADER_RESOURCE view, made if it isn't. NULL,
+ * reported, if it can't be. */
+aprend_texture_view aprend_pooled_target_whole(aprend_instance instance, aprend_pooled_target *target);
 
 /* Gives back what [cmd_list]'s takes hold, for a compile that will not be
  * submitted: compiled again, reset, failed or destroyed. Only takes of the
