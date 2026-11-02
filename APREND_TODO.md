@@ -2771,6 +2771,38 @@ histogram exposure (`aprend_exposure_histogram_comp`, `_adapt_histogram_frag`)
 and glyph (`aprend_batch_glyph_frag`) shaders read the wrong members on
 Metal: `apricottests`' `test_lit_sky`, `test_auto_exposure` and
 `test_batch_aptext_glyph` fail there (11 checks a device), and wait on it.
+**Decided 2026-11-01 with you (card S27, a):** a module declares every
+binding of each set it reads, with its layout's type and count, and no
+other; SpudGPU states it for every backend and refuses a module that
+differs on Metal (spudlib's `spudgpu_shaderbindings_draft.h`), and
+`cmake/aprend_slang.cmake` passes Slang's reflection of each shader's
+declared bindings to `spudgpu_msl`, which pads each set, as spudlib's
+step does. Aprend's shaders declare their sets whole through their
+bindings modules; where one declares only what it reads (the histogram
+pair's sampler at 1, the glyph shader's texture at 0, if so), its source
+declares the rest. A binding a bindings module declares that none of a
+layout's shaders reads is refused on Metal (the layout made from shaders
+leaves it out), so the bindings modules declare only what their group
+reads. Aprend's contract changes in comments only, to say so:
+`aprend_shaderbindings_draft.h`, approved 2026-11-01 by you, as written.
+Not built; the three tests
+pass on Metal when it is. **Decided 2026-11-01 with you (card X1c):**
+`cmake/aprend_slang.cmake` writes Metal source and runs `spudgpu_msl` only
+where a .metallib is made, and off Apple only under spudlib's
+`SPUD_SHADERS_CHECK_METAL` (off by default, on in the Linux CI runner).
+**Decided 2026-11-01 with you (card X18, b, in two steps):** first, with
+S27's build, `cmake/aprend_slang.cmake` becomes a wrapper over spudlib's
+one shader step (`spud_add_shader()`, `spudlib/cmake/spud_shaders.cmake`)
+that adds the package embedding, and `CMakeLists.txt` always builds its own
+`spirv-cross-core` rather than taking a target another repository made.
+Then the reflection is made at build time: `src/render/aprendreflect.cpp`
+moves, computing the same view, into a build-machine tool,
+`tools/aprend_reflect`, reading SPIR-V from any compiler (not Slang's
+JSON); `APREND_SHADER_PACKAGE` carries its output, a versioned table of
+plain data checked whole before it is read; SPIR-V becomes optional; a
+shader Aprend can't bind fails the build; SPIRV-Cross leaves the library.
+`aprend_shaderreflection_draft.h` approved 2026-11-01 by you, as
+written. Neither step built; the second follows the first.
 
 
 ### 23. No 2D, line, text or debug drawing
@@ -3259,11 +3291,44 @@ Left:
         BUILD_TLAS in its list; `aprend_blas_create()` and
         `aprend_tlas_create()` can return OUT_OF_MEMORY (the instance's tables
         made) before their later argument checks. Card A44:
-        compiling a submitted BUILD_TLAS again is refused, a refusal no
-        header lists yet.
+        compiling a submitted BUILD_TLAS again is refused. **Decided
+        2026-11-01 with you (card A44, a):** the refusal stays and is the
+        contract. `aprend_command_list_compile()`'s list of refusals, in its
+        BUILD_BLAS ... LIT_PATH_TRACE bullet, gains "a BUILD_TLAS whose list
+        was submitted since it was sent (sent again, it seals the next
+        set)", the card's own sentence, so no draft of its own;
+        `APRESULT_INVALID_ARGUMENT`, the message naming the command by its
+        place as every compile refusal does, and losing its "(card A44)".
+        A test in apricottests: a list holding a BUILD_TLAS, submitted,
+        compiled again, refused; sent again, compiled and submitted. Not
+        b (a set held for good by a list kept, rebuilding what didn't
+        change) or c (the seal at compile, against T5's snapshots per
+        send). Revisited only if lists become prebuilt (compiled once into
+        bundles or indirect command buffers, the compile skipped): then a
+        BUILD_TLAS would read the TLAS's latest sealed state at submit, with
+        instance writes as commands, a new card; refusing now keeps that an
+        addition.
       - **Card A43's measure:** the Dragon of SpudGPUMeshShaders takes
         7,279,648 bytes of the arena (4,855,968 of vertices, 2,423,664 of
         indices); positions alone would make the vertices 1,213,992.
+        On Metal (2026-11-01, the M5 Pro) its BLAS is 19,236,096 bytes,
+        10,831,312 compacted, against 14,150,784 and 5,932,928 on D3D12 and
+        Vulkan: the driver's own format, whatever stride it read, so the
+        arena's 3,641,976 bytes of attributes are 34% of the compacted BLAS
+        there and 61% on the A2000. What the 48-byte stride costs a build
+        isn't measured. **Decided 2026-11-01 with you (card A43): a now,
+        c with A15, b never.** A42 stands until bindless is built: one
+        vertex type, copied whole into the arena. With A15 the arena goes
+        (A41 says it can), and a BLAS geometry takes the caller's position
+        stride and format, chained on its desc (Vulkan's `vertexStride` and
+        `vertexFormat`, D3D12's `StrideInBytes` and `VertexFormat`, Metal's
+        `vertexStride` and `vertexFormat`), the build reading the caller's
+        buffer and a shading trace reading the caller's attributes through
+        bindless: nothing copied. A chained struct breaks no caller, so 1.0
+        doesn't close it. Not b: it tunes a copy that is to go and gives
+        the caller a per-BLAS choice the copy alone makes. If a large
+        model's arena is a measured problem first, that brings A15 forward,
+        not b. A draft for c with A15's.
       Runs (Windows 11, ThinkPad P1 Gen 5, MSVC 14.51, Vulkan SDK 1.4.363.0),
       on the final code: ApricotFields `apricotfields-windows-d3d12` and
       `-vulkan`, Debug and Release, and both `-asan` presets, 36 ctests each,
@@ -3327,7 +3392,10 @@ Left:
       draw, which needs bindless textures on every backend; Vulkan and D3D12
       have them, Metal doesn't yet. Their API is in place (a lit material's
       maps and `alpha_cutoff`, read from the draw list), so each is a change
-      inside Aprend once A15 is built.
+      inside Aprend once A15 is built. With them, card A43 (decided
+      2026-11-01): the geometry arena goes, and a BLAS geometry reads the
+      caller's positions at the caller's stride and format, chained on its
+      desc (a public change: a draft with A15's).
       If ray tracing pipelines come (two sibling SpudGPU EXTs, one on
       Vulkan and D3D12, one translating Metal's function tables; spudlib's
       `SPUDGPU_DEVICE_TODO.md`), Aprend writes that work once per EXT, and
@@ -3997,7 +4065,8 @@ frame of Metal's own without the debug layer (the AGX driver's: 50 in the
 builds, its scratch allocator and resource tracker; 18 in the encoders; 18
 in blit copies; 17 in the compute sets' residency; 10 in the size queries;
 the rest the command buffer and submit). `test_destroyed_handles` 177 of
-177. Failing, not ray tracing: the three tests card S27 holds (item 22).
+177. Failing, not ray tracing: the three tests card S27 holds (item 22;
+decided 2026-11-01, a, not yet built).
 Measured (Release, no validation layer, `test_rt_measure`, beside the A2000's
 D3D12 / Vulkan above): 1% of 100,000 written a frame: the write 16.4 us, the
 compile and submit 101.7 us, the frame 4.73 ms; 10%: 111.8 us, 121.6 us,
