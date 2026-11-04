@@ -3620,8 +3620,8 @@ Left:
       The workspace's callers built and passed against it unchanged
       (`../ROADMAP.md`, the same night). D3D12 and Vulkan not built
       (`../ROADMAP.md`, the handoff).
-      **Built on Windows 2026-11-02** (the ThinkPad, MSVC, in trellislib's
-      `trellislib-windows-d3d12` and `-vulkan` Debug builds): MSVC refused
+      **Built on Windows 2026-11-02** (the ThinkPad, MSVC, in a caller's
+      D3D12 and Vulkan Debug builds): MSVC refused
       `aprendlit.cpp` (C2732: `aprend_lit_scene_layout()` declared static
       outside the `extern "C"` block and defined inside it; the definition
       moved out, nothing else changed). Then every ApricotFields ctest

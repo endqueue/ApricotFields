@@ -164,7 +164,16 @@ function(declare_vendored_or_fetch_sources name dir repo tag probe)
         endif ()
     endforeach ()
     message(STATUS "${name}: no vendored copy under .deps/, fetching ${repo}@${tag}")
-    FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}" GIT_SHALLOW TRUE
+    # A shallow clone holds only the tip of the ref it names, so it can't
+    # check out a commit hash once upstream has moved past it (CMake's
+    # GIT_SHALLOW is for tag and branch names): a pinned commit is cloned
+    # whole.
+    if (tag MATCHES "^[0-9a-f]+$")
+        set(_shallow FALSE)
+    else ()
+        set(_shallow TRUE)
+    endif ()
+    FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}" GIT_SHALLOW ${_shallow}
             SOURCE_SUBDIR sources-only-not-a-directory)
 endfunction()
 

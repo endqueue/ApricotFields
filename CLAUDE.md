@@ -454,7 +454,11 @@ again), `aptext_fuzz` (font files, Hershey fonts and saved atlases) and
   `aprendreflect_tests` link. libdeflate is pinned on
   purpose: its DEFLATE output is part of what makes an archive byte-identical.
   Every fetch fallback names a tag or a commit, never a branch, so a build
-  without `../.deps/` is the same every time. glaze is pinned to the commit
+  without `../.deps/` is the same every time. A tag is cloned shallow and a
+  commit whole (`declare_vendored_or_fetch_sources`): a shallow clone holds
+  only the tip of what it names, so it lost stb's pinned commit once stb
+  moved on, and every fresh build tree without `../.deps/stb` failed to
+  configure (found on Windows 2026-11-03). glaze is pinned to the commit
   of its release v9.0.0, and `../.deps/glaze` is checked out at that tag; to
   upgrade, move the two together, to a release.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.
