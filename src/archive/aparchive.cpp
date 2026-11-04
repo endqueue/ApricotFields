@@ -1449,7 +1449,13 @@ static APRESULT read_entry(aparchive_reader reader, uint32_t index, void *buffer
         result = read_source(reader->source, data_offset, compressed.data(), compressed.size(), error, info.name);
         if (result != APRESULT_OK)
             return result;
-        if (!codec->decompress(codec->user, compressed.data(), compressed.size(), buffer, info.uncompressed_size))
+        // A buffer of 0 bytes is still somewhere to read from and write to,
+        // as aparchive_codecs_compress() has it: a codec is never handed
+        // NULL (an empty entry's buffer, or an empty vector's data()).
+        uint8_t nothing = 0;
+        void *out = buffer ? buffer : &nothing;
+        const void *in = compressed.empty() ? &nothing : compressed.data();
+        if (!codec->decompress(codec->user, in, compressed.size(), out, info.uncompressed_size))
             return fail(error, APRESULT_CORRUPT_DATA, "'%s' doesn't decompress to its declared %llu bytes", info.name,
                         (unsigned long long)info.uncompressed_size);
     }

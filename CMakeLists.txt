@@ -759,6 +759,13 @@ if (APRICOTFIELDS_BUILD_TESTS)
     # state under the platform's allocation hook.
     add_executable(aprinoalloc_tests tests/aprinoalloc_tests.c)
     target_link_libraries(aprinoalloc_tests PRIVATE ApricotFields)
+    # glibc declares dladdr and Dl_info (tests/alloctrace.h) only under
+    # _GNU_SOURCE, which must come before the first system header; and dladdr
+    # names only an executable's exported symbols, so it exports them all.
+    if (UNIX AND NOT APPLE)
+        target_compile_definitions(aprinoalloc_tests PRIVATE _GNU_SOURCE)
+        set_target_properties(aprinoalloc_tests PROPERTIES ENABLE_EXPORTS ON)
+    endif ()
     add_test(NAME aprinoalloc_tests COMMAND aprinoalloc_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/aptext
              ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/apaudio)
 

@@ -144,9 +144,9 @@ typedef struct Bytes
 
 static void put8(Bytes *b, uint32_t v)
 {
-    if (b->size < sizeof(b->data))
-        b->data[b->size] = (uint8_t)v;
-    b->size++;
+    const uint32_t at = b->size++;
+    if (at < sizeof(b->data))
+        b->data[at] = (uint8_t)v;
 }
 
 static void put16(Bytes *b, uint32_t v)

@@ -499,6 +499,15 @@ static APRESULT aprend_pipeline_plan_vertex_input(
 					if (taken < input.location_count)
 						location = input.location + taken;
 				}
+			} else {
+				// By position, an element at a location no input of the
+				// shader covers is not read: no attribute is made of it.
+				bool read = false;
+				for (uint32_t k = 0; k < reflection.input_count && !read; ++k)
+					read = location >= reflection.inputs[k].location &&
+					       location < reflection.inputs[k].location + reflection.inputs[k].location_count;
+				if (!read)
+					location = UINT32_MAX;
 			}
 			plan.push_back({binding, &element, location});
 		}

@@ -14,7 +14,10 @@
 //   VirtualAlloc, a driver's own mappings. Release builds count too.
 // - macOS: malloc_logger, which every malloc zone reports to.
 // - Linux (glibc): malloc and the rest replaced here, forwarding to glibc's
-//   own; every module's calls reach them. Written, not run.
+//   own; every module's calls reach them. The including target defines
+//   _GNU_SOURCE (for dladdr) and exports its symbols (CMake's
+//   ENABLE_EXPORTS), or a frame of its own has no name and an allocation
+//   can't be put down to who asked. Run on Fedora 44 (GCC 16), 2026-11-04.
 // - Under a sanitizer the sanitizer's heap takes over and nothing above is
 //   called: nothing is measured, and alloc_trace_available() says so.
 //

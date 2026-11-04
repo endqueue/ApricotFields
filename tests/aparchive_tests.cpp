@@ -1,6 +1,7 @@
 // Headless tests for ApArchive (include/archive/aparchive.h).
 
 #include "archive/aparchive.h"
+#include <algorithm>
 #include <stdio.h>
 #include <string.h>
 #include <vector>
@@ -1774,8 +1775,8 @@ static void test_data_in_front()
         aparchive_writer_destroy(writer);
 
         std::vector<uint8_t> stub(1000, 0x90);
-        std::vector<uint8_t> shifted = stub;
-        shifted.insert(shifted.end(), inner.begin(), inner.end());
+        std::vector<uint8_t> shifted(stub.size() + inner.size(), 0x90);
+        std::copy(inner.begin(), inner.end(), shifted.begin() + (ptrdiff_t)stub.size());
         APRESULT result = APRESULT_OK;
         aparchive_reader reader = open_memory(shifted, codecs, APARCHIVE_STRICT_NONE, &result);
         CHECK(result == APRESULT_OK);
