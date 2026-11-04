@@ -458,7 +458,10 @@ again), `aptext_fuzz` (font files, Hershey fonts and saved atlases) and
   commit whole (`declare_vendored_or_fetch_sources`): a shallow clone holds
   only the tip of what it names, so it lost stb's pinned commit once stb
   moved on, and every fresh build tree without `../.deps/stb` failed to
-  configure (found on Windows 2026-11-03). glaze is pinned to the commit
+  configure (found on Windows 2026-11-03). No fetch clones a submodule:
+  dr_libs' test-only `tests/external/miniaudio` stopped cloning, and every
+  fresh build tree without `../.deps/dr_libs` failed to configure (found on
+  Linux 2026-11-04). glaze is pinned to the commit
   of its release v9.0.0, and `../.deps/glaze` is checked out at that tag; to
   upgrade, move the two together, to a release.
 - Don't set `CMAKE_MSVC_RUNTIME_LIBRARY` here; the workspace root sets it once.

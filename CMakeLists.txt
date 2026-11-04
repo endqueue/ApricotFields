@@ -167,14 +167,16 @@ function(declare_vendored_or_fetch_sources name dir repo tag probe)
     # A shallow clone holds only the tip of the ref it names, so it can't
     # check out a commit hash once upstream has moved past it (CMake's
     # GIT_SHALLOW is for tag and branch names): a pinned commit is cloned
-    # whole.
+    # whole. Only sources are taken, so no submodule is cloned: a project's
+    # own (dr_libs' tests/external/miniaudio, a repository that no longer
+    # clones) would fail the configure for files never used.
     if (tag MATCHES "^[0-9a-f]+$")
         set(_shallow FALSE)
     else ()
         set(_shallow TRUE)
     endif ()
     FetchContent_Declare(${name} GIT_REPOSITORY "${repo}" GIT_TAG "${tag}" GIT_SHALLOW ${_shallow}
-            SOURCE_SUBDIR sources-only-not-a-directory)
+            GIT_SUBMODULES "" SOURCE_SUBDIR sources-only-not-a-directory)
 endfunction()
 
 # ApSync runs each session on a thread of its own (src/sync/apsyncnet.cpp).
