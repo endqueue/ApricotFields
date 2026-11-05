@@ -2931,7 +2931,7 @@ recommendation is a one-page design approved before it is built.
 items 40, 21, 36 and 24 (written 2026-10-24), and this item comes last,
 after card A3 decides its design.
 
-#### Built 2026-10-30, run on Metal only
+#### Built 2026-10-30, run on Metal, then D3D12 and Vulkan
 
 `include/render/aprendbatch.h`, `src/render/aprendbatch.cpp`, five shaders
 (`aprend_batch*`). `aprend_batch_create` (the color and depth formats,
@@ -2978,7 +2978,13 @@ calls' record counts; a call past `max_shapes` adding nothing; fourteen
 refusals. `test_batch_aptext_glyph`: ApText's 'a' generated as an MTSDF and
 drawn at twice its size, its 100 texels well inside filled and 60 well
 outside empty. Both devices, Metal's validation, and `leaks`: clean.
-**Needs D3D12 and Vulkan runs.** Not built: a depth-tested frame is
+D3D12 and Vulkan ran them on Windows the same day (`../apricottests/README.md`,
+2026-10-30: the Iris Xe, the RTX A2000 and WARP; this file said "Needs
+D3D12 and Vulkan runs" until 2026-11-05) and again on 2026-11-05 (the same
+adapters, D3D12's debug layer, Vulkan's validation and synchronization
+validation, both devices each): `test_batch` and `test_batch_aptext_glyph`
+passing, silent. Linux: on the Iris Xe 2026-11-04 (apricottests' whole
+run). Not built: a depth-tested frame is
 untested on the GPU (only its refusals); bitmap atlases (the design's
 "later"); a 2D batch of filled polygons is ApMath's triangulation and the
 caller's mesh, as the header says.
@@ -3168,7 +3174,13 @@ Left:
       **Built 2026-11-02 on the Mac** (Apple M5 Pro, macOS 27.0.1, Xcode
       27.2, Slang 2026.18.3-2; the workspace's `ROADMAP.md`, the session of
       2026-11-02, steps 1 and 2), from the approved draft with its six fixes; D3D12
-      and Vulkan written, not compiled:
+      and Vulkan written, not compiled then. Compiled and run since: Vulkan
+      on Linux 2026-11-04 (the Iris Xe), D3D12 (Iris Xe, RTX A2000, WARP)
+      and Vulkan (Iris Xe, RTX A2000) on Windows 2026-11-05, every
+      reflection test passing (`../apricottests/README.md`); D3D12's debug
+      layer reports one `[ 1422 ]` a device in `test_lit_ssr`, the test's
+      reflection texture copied back when a compute pass was the first to
+      write it (card S38):
       - `aprendlit.h`: APREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT (8),
         `shaders/aprend_lit_surface_reflect_frag.slang`: target 1 the
         shading normal and roughness, target 2 the specular weight (alpha
@@ -3480,7 +3492,12 @@ Left:
         and free; send BUILD_TLAS again, which seals the next set";
         apricottests' `test_rt_resubmit`, passing on Metal under validation
         with warnings fatal (the device with ray queries; skipped on the one
-        without). Not
+        without). **Run on Windows 2026-11-05** (ThinkPad P1 Gen 5, Debug):
+        passing on D3D12 on the NVIDIA RTX A2000 and WARP under the debug
+        layer, and on Vulkan on the A2000 under validation and
+        synchronization validation, all silent; skipped, saying so, on the
+        Intel Iris Xe (no ray queries on either API) and every bare device.
+        Linux: NVK and llvmpipe offer no ray queries (card S36). Not
         b (a set held for good by a list kept, rebuilding what didn't
         change) or c (the seal at compile, against T5's snapshots per
         send). Revisited only if lists become prebuilt (compiled once into
@@ -3717,8 +3734,13 @@ Left:
       off screen don't show through (ray tracing, card S12, later).
       Tests: a refracted known quad read back against its place worked out
       in C, on every backend.
-      **Done 2026-10-30, run on Metal only** (both devices, under the
-      debug layer and shader validation). `APREND_COMMAND_COPY_SCENE_COLOR`
+      **Done 2026-10-30, run on Metal** (both devices, under the
+      debug layer and shader validation); `test_lit_transmission` ran on
+      D3D12 and Vulkan on Windows the same day (`../apricottests/README.md`,
+      2026-10-30) and again 2026-11-05 (Iris Xe, RTX A2000 and WARP on
+      D3D12 under the debug layer; Iris Xe and RTX A2000 on Vulkan under
+      validation and synchronization validation; passing, silent), and on
+      Linux on the Iris Xe 2026-11-04. `APREND_COMMAND_COPY_SCENE_COLOR`
       (39): `_source` stretched onto `_target`'s level (DRAW_TEXTURE's
       path), then GENERATE_MIPS below it, linear both. The texture is the
       caller's, as GTAO's target is, not the pool's: the scene binds it
@@ -4601,7 +4623,17 @@ in `.deps` and linked privately (never in a header of Aprend's), for the
 bookkeeping only; Aprend keeps the policy. It replaces `aprend_range_list`
 under the pools and the arena too (item 19), so one allocator is tested.
 First, needing no decision: run SpudGPU's heaps on Metal, then D3D12 and
-Vulkan. Not started.
+Vulkan. **Done for SpudGPU's half** (this said "Not started" until
+2026-11-05): `../spudlib`'s `spudgpu_objects_test` has made and used
+placed buffers and images since 2026-10-30 (a buffer heap and an
+attachment-images heap holding its draw's vertices, indices and target,
+read back, and `test_heap_desc`), run on D3D12 and Vulkan on Windows
+2026-10-30 and on Metal the same day under validation with warnings fatal
+(`../spudlib/CLAUDE.md`, "Backend status"), on Linux 2026-11-04, and again
+on Windows 2026-11-05 on every adapter (D3D12: Intel Iris Xe, NVIDIA RTX
+A2000 and WARP, debug layer silent; Vulkan: both GPUs under
+synchronization validation, silent). Aprend's allocator over them is not
+started.
 
 - **VMA keeps books, it allocates nothing.** A virtual block is a number
   line `[0, size)` with alignment; it touches no GPU object and has never

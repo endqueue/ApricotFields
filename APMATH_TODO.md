@@ -14,8 +14,19 @@ and triangulation).
   random volumes against a brute force), `aprinoalloc_tests` (no
   allocation) and `aprioverlap_tests` (two threads, every build) pass in
   Debug, Release, `-asan` and `-tsan`, built inside a caller's presets.
-  Windows and Linux not built. Card T22 holds one sentence of the
-  contract: triangles with no area, which the BVH drops.
+  Card T22 holds one sentence of the contract: triangles with no area,
+  which the BVH drops. (This said "Windows and Linux not built" until
+  2026-11-05: see the Windows and Linux entries below.)
+- **2026-11-05, Windows 11** (ThinkPad P1 Gen 5, MSVC 14.51.36231):
+  `apricotfields-windows-d3d12`, Debug and Release, no warning:
+  `apmathbvh_tests` (the volume tests among them), `apmathpoly_tests` and
+  `apmathpoly_bits_tests` pass, the bits test's hashes macOS's (36 of 37
+  ctests, `aprend_contract_tests`' `lit_fit_cascades` the one, card A49).
+- **2026-11-04, Linux** (Fedora 44, GCC 16.2.1, and clang 22.1.8 under
+  the sanitizers): ApricotFields' ctests on `apricotfields-linux-vulkan`,
+  Debug and Release, `-asan` and `-tsan`, 36 of 37, the same one failing
+  (`../ROADMAP.md`, section 2): ApMath's three, the bits test with
+  macOS's hashes, pass.
 - **2026-10-30, Windows 11** (ThinkPad P1 Gen 5, MSVC 14.51): the first
   Windows build of the polygons. `apmathpoly_tests`, `apmathpoly_bits_tests`
   and `apmathbvh_tests` pass on `windows-d3d12` and `windows-vulkan` in
@@ -23,12 +34,12 @@ and triangulation).
   bits test's hashes are macOS's in every configuration, so the polygons'
   results are the same bits on both platforms. The test needed
   `_USE_MATH_DEFINES` for MSVC's `M_PI`. ApMath's ray casts make no
-  allocation there (`aprinoalloc_tests`). Linux never built.
+  allocation there (`aprinoalloc_tests`). Linux built 2026-11-04 (above).
 - **apmathbvh**: built and tested (`tests/apmathbvh_tests.c`) on macOS.
 - **apmathpoly**: written 2026-10-15; reported the same day to build and
   pass its tests (`tests/apmathpoly_tests.c`) - on one platform, which wasn't
-  recorded (macOS is the one in use). Windows and Linux never built.
-  Clipper2 1.5.4 and earcut.hpp v2.2.4 are fetched at configure time unless
+  recorded (macOS is the one in use). Windows built 2026-10-30 and
+  Linux 2026-11-04 (above). Clipper2 1.5.4 and earcut.hpp v2.2.4 are fetched at configure time unless
   vendored under `../.deps/Clipper2` and `../.deps/earcut.hpp`.
   `apmath_poly_offset_edges` and its tests, added after, likewise build and
   pass (reported 2026-10-15). `apmath_poly_skeleton` and its tests were added
@@ -38,8 +49,9 @@ and triangulation).
   with its new skeleton, location and round-join tests, and
   `apmathpoly_bits_tests`, whose hashes Debug and Release both match;
   plain and under ASan. A caller's model tests (its roofs use the offset
-  and the skeleton) pass over it. **Windows and Linux never built**: the
-  bits test is the one to run there first.
+  and the skeleton) pass over it. Windows and Linux weren't built then;
+  the bits test has passed on both since (2026-10-30 and 2026-11-05 on
+  Windows, 2026-11-04 on Linux, above).
 - **2026-10-17, macOS (Apple M5 Pro), Debug and Release:** all nine of
   ApricotFields' headless tests pass, `apmathpoly_tests` and the skeleton's
   among them, and a caller's model tests (its roofs use the offset) pass over
@@ -51,16 +63,18 @@ and triangulation).
 
 ### Before it's relied on
 
-- [ ] **Build and run the tests** on Windows (MSVC: the 128-bit products are
-      written out for it, and `/fp:contract` must stay off) and Linux.
+- [x] **Build and run the tests** on Windows (MSVC: the 128-bit products are
+      written out for it, and `/fp:contract` must stay off) and Linux:
+      Windows 2026-10-30 and 2026-11-05 (MSVC 14.51), Linux 2026-11-04
+      (GCC 16.2.1, clang 22.1.8), every ApMath test passing.
 - [x] **Same bits everywhere** (2026-10-30): `tests/apmathpoly_bits_tests.c`
       runs a fixed set of booleans (every operation and fill), point
       locations, triangulations, offsets (mitred and round, out and in, a
       hole) and skeletons (a hole, mixed weights, a merge on one line), and
       compares an FNV-1a hash of every output with the 107 values recorded
       on macOS (`tests/data/apmathpoly/bits.inc`), which Debug and Release
-      both give. `--print` writes them out. Left: the same values on
-      Windows and Linux.
+      both give. `--print` writes them out. The same values on Windows
+      (MSVC, 2026-10-30 and 2026-11-05) and Linux (GCC 16.2.1, 2026-11-04).
 - [ ] **Clipper2 under this repo's warnings.** Its sources are built with this
       repo's flags, not its own `-Werror`; they build with C++26 on the one
       platform reported, so check GCC and MSVC.
