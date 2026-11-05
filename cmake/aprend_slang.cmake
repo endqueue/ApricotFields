@@ -13,8 +13,10 @@
 #
 # - <stem>.reflection, the shader's reflection table (aprendshader.h,
 #   APREND_SHADER_PACKAGE::reflection), written from its SPIR-V by
-#   tools/aprend_reflect (card X18), and <stem>.reflection.inc, it as a C
-#   array. A shader Aprend can't bind fails here, not at run time.
+#   tools/aprend_reflect (card X18), a vertex shader's inputs completed from
+#   Slang's reflection JSON (card A51: the inputs it declares and its SPIR-V
+#   dropped), and <stem>.reflection.inc, it as a C array. A shader Aprend
+#   can't bind fails here, not at run time.
 # - <stem>.package.inc: includes the formats' .inc files and defines
 #   `static const APREND_SHADER_PACKAGE <stem>_package`, for a C or C++
 #   source to include after aprendshader.h: the reflection, and the code in
@@ -117,15 +119,25 @@ function(aprend_add_slang_shader out_var)
         INCLUDE_DIRS ${ARG_INCLUDE_DIRS} DEPENDS ${ARG_DEPENDS} SPIRV_CAPABILITIES ${ARG_SPIRV_CAPABILITIES}
         ${route} OUTPUTS outputs)
 
-    # The reflection, from the SPIR-V.
+    # The reflection, from the SPIR-V. It describes the code the package
+    # carries (below): where that is DXIL, a vertex shader's inputs are its
+    # DXIL signature's, every one the shader declares, read from Slang's
+    # reflection JSON beside the SPIR-V (card A51), since D3D12 requires an
+    # input layout to feed each; SPIR-V, and the Metal made from it, keep only
+    # those the entry point reads, and a Vulkan pipeline feeding another is
+    # told the attribute isn't consumed.
     set(out ${ARG_OUT_DIR}/${entry})
+    set(declared "")
+    if(stage_name STREQUAL "vertex" AND GRAPHICS_BACKEND STREQUAL "D3D12" AND "dxil" IN_LIST ${entry}_FORMATS)
+        set(declared --declared ${out}.reflection.json)
+    endif()
     get_filename_component(embed ${SPUD_SHADERS_CMAKE} DIRECTORY)
     set(embed ${embed}/spud_embed.cmake)
     add_custom_command(
         OUTPUT ${out}.reflection ${out}.reflection.inc
-        COMMAND aprend_reflect --stage ${stage_name} ${out}.spv ${out}.reflection
+        COMMAND aprend_reflect --stage ${stage_name} ${declared} ${out}.spv ${out}.reflection
         COMMAND ${CMAKE_COMMAND} -DIN=${out}.reflection -DOUT=${out}.reflection.inc -DNAME=${entry}_reflection -P ${embed}
-        DEPENDS ${out}.spv aprend_reflect ${embed}
+        DEPENDS ${out}.spv ${out}.reflection.json aprend_reflect ${embed}
         COMMENT "Aprend: ${entry}'s reflection")
     list(APPEND outputs ${out}.reflection.inc)
 

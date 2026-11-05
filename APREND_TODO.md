@@ -2907,6 +2907,59 @@ at build time.
   another version, a cut one, another stage's and another entry point's,
   and a package without SPIR-V made on Metal. `aprend_reflection_fuzz`,
   with its corpus (eight of Aprend's tables) and a regression.
+- **Decided 2026-11-05 with the user (card A51, b): a vertex shader's
+  declared inputs, from Slang's reflection.** Slang's SPIR-V keeps only the
+  inputs the entry point reads, and its DXIL keeps every declared input in
+  the signature, which D3D12's `CreateInputLayout` requires the layout to
+  feed (found 2026-11-05 on Windows, `[ 65 ]`, after ApricotFields
+  `7d539c1` left unread locations out of by-position layouts; that was put
+  back the same day). `tools/aprend_reflect` reads the vertex shader's
+  inputs from Slang's reflection JSON beside the SPIR-V
+  (`<stem>.reflection.json`, which the shader step writes), each field of a
+  struct parameter an input, and marks `used` the ones the SPIR-V reads;
+  `aprendshader.h` already promises declared inputs with `used`, so no
+  public declaration changes. A pipeline by position makes an attribute
+  for each element at a declared input's location and none past them
+  (`aprendpipeline.cpp`), so D3D12 gets its signature and Vulkan no
+  attribute nothing consumes. Not changed: a pipeline still requires only
+  the inputs the shader uses to be fed; one that leaves a declared, unread
+  input unfed is refused by D3D12, as before.
+  **Built 2026-11-05 on Windows** (ThinkPad P1 Gen 5, MSVC 14.51), one
+  thing found building it: a table listing the JSON's inputs on a Vulkan
+  build made Vulkan's validation report "vertex attribute at location 1
+  [and 3] not consumed" (the SPIR-V the package carries has no such input).
+  So the table describes the code its package carries: `aprend_slang.cmake`
+  passes `--declared` only where the package carries DXIL (a D3D12 build,
+  the same condition that puts DXIL in it); SPIR-V, and the Metal made from
+  it, keep the SPIR-V's inputs (`../claude_made_decisions.md`, 2026-11-05).
+  - `tools/aprend_reflect/aprend_reflect_inputs.cpp`:
+    `aprend_reflect_declared_inputs()`, a bounded JSON reader of its own
+    (depth 64; the tool links nothing new) and the completion: every SPIR-V
+    input declared at its location and name, each dropped one added, not
+    used; refused, failing the build, are a JSON it can't read, a missing
+    entry point, an input declared elsewhere or by another name, a dropped
+    matrix or array (its locations aren't read; none of the workspace's 46
+    vertex shaders has one), overlapping inputs. No fuzz target: its input
+    is the build's own file, never a caller's.
+  - `aprendreflect_tests`' `test_declared_inputs`: the shadow vertex
+    shader's SPIR-V (6 inputs) completed from its embedded JSON (8; normal
+    and tangent not used), the build's table byte for byte (the completed
+    one on D3D12, the SPIR-V's on Vulkan), read back field for field; a
+    fragment shader left as it is; eleven refusals from JSON built in the
+    test; the real JSON cut at every length, accepted only once whole.
+  - Ran (Windows 11): `apricotfields-windows-d3d12` Debug and Release and
+    `-vulkan` Debug, no warning, 36 of 37 ctests each (A49), both `-asan`
+    presets the same, no report; `apri_misuse_tests` ten times (119 calls
+    with a destroyed handle, 0 failures). apricottests: every check passing
+    on D3D12 (Iris Xe, RTX A2000, WARP; the debug layer's one message a
+    device is card S38's) and on Vulkan (Iris Xe, RTX A2000) under
+    validation, synchronization validation and performance warnings: no
+    attribute reported unconsumed (the 20 a run before), only card A50's
+    batch output at location 9. Two callers' suites rebuilt over it on both
+    backends, A49 the one failure in each (the workspace's `ROADMAP.md`,
+    section 2). Metal
+    and Linux not run (the Metal build passes no `--declared`; its table is
+    the SPIR-V's, as before).
 
 
 ### 23. No 2D, line, text or debug drawing

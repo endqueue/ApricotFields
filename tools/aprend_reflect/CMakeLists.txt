@@ -39,7 +39,7 @@ endif()
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 FetchContent_MakeAvailable(spirv_cross)
 
-add_executable(aprend_reflect aprend_reflect.cpp aprend_reflect_spirv.cpp aprend_reflect_write.cpp)
+add_executable(aprend_reflect aprend_reflect.cpp aprend_reflect_spirv.cpp aprend_reflect_inputs.cpp aprend_reflect_write.cpp)
 target_compile_features(aprend_reflect PRIVATE cxx_std_17)
 target_include_directories(aprend_reflect PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

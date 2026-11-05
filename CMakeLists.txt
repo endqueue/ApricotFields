@@ -847,11 +847,31 @@ if (APRICOTFIELDS_BUILD_TESTS)
     set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
     FetchContent_MakeAvailable(spirv_cross)
     add_executable(aprendreflect_tests tests/aprendreflect_tests.cpp
-            tools/aprend_reflect/aprend_reflect_spirv.cpp tools/aprend_reflect/aprend_reflect_write.cpp)
+            tools/aprend_reflect/aprend_reflect_spirv.cpp tools/aprend_reflect/aprend_reflect_inputs.cpp
+            tools/aprend_reflect/aprend_reflect_write.cpp)
     target_include_directories(aprendreflect_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/render
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/aprend_reflect ${APRICOTFIELDS_SHADER_INC_DIR})
     target_link_libraries(aprendreflect_tests PRIVATE ApricotFields spirv-cross-core)
     add_test(NAME aprendreflect_tests COMMAND aprendreflect_tests)
+    # The shadow vertex shader's reflection JSON, embedded: a shader whose
+    # SPIR-V drops inputs it declares, for the tests of card A51's half.
+    get_filename_component(_aprend_embed ${SPUD_SHADERS_CMAKE} DIRECTORY)
+    set(_aprend_shadow_json ${APRICOTFIELDS_SHADER_INC_DIR}/aprend_lit_shadow_vert.reflection.json)
+    add_custom_command(
+        OUTPUT ${_aprend_shadow_json}.inc
+        COMMAND ${CMAKE_COMMAND} -DIN=${_aprend_shadow_json} -DOUT=${_aprend_shadow_json}.inc
+                -DNAME=aprend_lit_shadow_vert_reflection_json -P ${_aprend_embed}/spud_embed.cmake
+        DEPENDS ${_aprend_shadow_json} ${_aprend_embed}/spud_embed.cmake
+        COMMENT "Aprend: aprend_lit_shadow_vert's reflection JSON, for aprendreflect_tests")
+    target_sources(aprendreflect_tests PRIVATE ${_aprend_shadow_json}.inc)
+    # Whether this build's packages carry DXIL, whose vertex reflections list
+    # every declared input (cmake/aprend_slang.cmake): what the tables the
+    # build wrote are checked against.
+    if(GRAPHICS_BACKEND STREQUAL "D3D12")
+        target_compile_definitions(aprendreflect_tests PRIVATE APREND_TEST_PACKAGES_DXIL=1)
+    else()
+        target_compile_definitions(aprendreflect_tests PRIVATE APREND_TEST_PACKAGES_DXIL=0)
+    endif()
     # The features Aprend's own code uses, from C.
     add_executable(aprendfeatures_tests tests/aprendfeatures_tests.c)
     target_link_libraries(aprendfeatures_tests PRIVATE ApricotFields)

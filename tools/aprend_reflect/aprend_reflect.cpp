@@ -4,7 +4,12 @@
 // build machine; never part of the library, which reads the table and no
 // SPIR-V (card X18).
 //
-//     aprend_reflect --stage vertex|fragment|compute|mesh <in.spv> <out.reflection>
+//     aprend_reflect --stage vertex|fragment|compute|mesh [--declared <in.reflection.json>]
+//                    <in.spv> <out.reflection>
+//
+// --declared names Slang's reflection JSON of the same shader: a vertex
+// shader's inputs it declares and its SPIR-V dropped are added from it, not
+// used (card A51). Read for the vertex stage only.
 //
 // Exits 0, or 1 with the reason on stderr: among them a shader Aprend can't
 // bind (a texel buffer, an input attachment, an array of descriptors
@@ -23,11 +28,14 @@ static int fail(const char *what, const char *detail) {
 
 int main(int argc, char **argv) {
 	const char *stage_name = nullptr;
+	const char *json_path  = nullptr;
 	const char *in_path    = nullptr;
 	const char *out_path   = nullptr;
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "--stage") == 0 && i + 1 < argc)
 			stage_name = argv[++i];
+		else if (strcmp(argv[i], "--declared") == 0 && i + 1 < argc)
+			json_path = argv[++i];
 		else if (!in_path)
 			in_path = argv[i];
 		else if (!out_path)
@@ -36,7 +44,7 @@ int main(int argc, char **argv) {
 			return fail("unexpected argument", argv[i]);
 	}
 	if (!stage_name || !in_path || !out_path)
-		return fail("usage: aprend_reflect --stage vertex|fragment|compute|mesh <in.spv> <out.reflection>", nullptr);
+		return fail("usage: aprend_reflect --stage vertex|fragment|compute|mesh [--declared <in.reflection.json>] <in.spv> <out.reflection>", nullptr);
 	SPUDGPU_SHADER_STAGE stage;
 	if (strcmp(stage_name, "vertex") == 0)
 		stage = SPUDGPU_SHADER_STAGE_VERTEX;
@@ -79,6 +87,22 @@ int main(int argc, char **argv) {
 		std::string error;
 		if (!aprend_reflect_spirv(words.data(), words.size(), stage, &store, &error))
 			return fail(error.c_str(), in_path);
+		if (json_path && stage == SPUDGPU_SHADER_STAGE_VERTEX) {
+			FILE *json_file = fopen(json_path, "rb");
+			if (!json_file)
+				return fail("can't open", json_path);
+			std::string json;
+			char chunk[4096];
+			size_t got;
+			while ((got = fread(chunk, 1, sizeof(chunk), json_file)) > 0)
+				json.append(chunk, got);
+			const bool read_error = ferror(json_file) != 0;
+			fclose(json_file);
+			if (read_error)
+				return fail("can't read", json_path);
+			if (!aprend_reflect_declared_inputs(json.data(), json.size(), &store, &error))
+				return fail(error.c_str(), json_path);
+		}
 		std::vector<uint8_t> table;
 		if (!aprend_reflect_table_write(store, &table, &error))
 			return fail(error.c_str(), in_path);

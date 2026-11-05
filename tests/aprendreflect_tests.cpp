@@ -21,13 +21,17 @@
 #include "aprend_exposure_histogram_comp.spv.inc"
 #include "aprend_lit_cull_comp.spv.inc"
 #include "aprend_lit_frag.spv.inc"
+#include "aprend_lit_shadow_vert.spv.inc"
 #include "aprend_lit_vert.spv.inc"
 // The tables the build wrote for them (cmake/aprend_slang.cmake).
 #include "aprend_exposure_adapt_histogram_frag.reflection.inc"
 #include "aprend_exposure_histogram_comp.reflection.inc"
 #include "aprend_lit_cull_comp.reflection.inc"
 #include "aprend_lit_frag.reflection.inc"
+#include "aprend_lit_shadow_vert.reflection.inc"
 #include "aprend_lit_vert.reflection.inc"
+// Slang's reflection JSON of one, whose SPIR-V drops inputs it declares.
+#include "aprend_lit_shadow_vert.reflection.json.inc"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -506,6 +510,131 @@ static void test_tool_output()
     }
 }
 
+// A vertex shader whose SPIR-V drops inputs it declares (card A51):
+// aprend_lit_shadow_vert reads neither its normal (location 1) nor its
+// tangent (3). Its SPIR-V's reflection lacks both; completed from Slang's
+// reflection JSON it lists them, not used. The table the build wrote is the
+// completed one where the build's packages carry DXIL, and the SPIR-V's
+// otherwise, byte for byte. Then the JSON's refusals, and the JSON cut at
+// every length, in a buffer of exactly that length.
+static std::string shadow_json(const std::string &fields)
+{
+    return "{\"entryPoints\": [{\"name\": \"aprend_lit_shadow_vert\", \"stage\": \"vertex\", \"parameters\": [{\"name\": \"input\", "
+           "\"binding\": {\"kind\": \"varyingInput\", \"index\": 0, \"count\": 8}, \"type\": {\"kind\": \"struct\", \"fields\": [" +
+           fields + "]}}]}]}";
+}
+
+static std::string shadow_field(const char *name, int location, const char *type)
+{
+    char text[512];
+    snprintf(text, sizeof(text), "{\"name\": \"%s\", \"type\": %s, \"binding\": {\"kind\": \"varyingInput\", \"index\": %d}}", name, type,
+             location);
+    return text;
+}
+
+static void test_declared_inputs()
+{
+    current_test = "test_declared_inputs";
+    const SPUDGPU_SHADER_STAGE vertex = SPUDGPU_SHADER_STAGE_VERTEX;
+    const char *json = (const char *)aprend_lit_shadow_vert_reflection_json;
+    const size_t json_size = (size_t)aprend_lit_shadow_vert_reflection_json_size;
+    const size_t words = sizeof(aprend_lit_shadow_vert_spirv) / 4;
+    aprend_reflection_store store;
+    std::string error;
+    CHECK(aprend_reflect_spirv(aprend_lit_shadow_vert_spirv, words, vertex, &store, &error));
+    CHECK(store.view.input_count == 6);
+    CHECK(!find_input(store, "normal") && !find_input(store, "tangent"));
+    std::vector<uint8_t> spirv_table;
+    CHECK(aprend_reflect_table_write(store, &spirv_table, &error));
+    CHECK(aprend_reflect_declared_inputs(json, json_size, &store, &error));
+    CHECK(store.view.input_count == 8);
+    CHECK(store.view.inputs == store.inputs.data());
+    for (uint32_t i = 0; i < store.view.input_count; ++i)
+    {
+        const APREND_SHADER_INPUT &input = store.view.inputs[i];
+        CHECK(input.location == i && input.location_count == 1 && input.scalar_type == APREND_SHADER_SCALAR_TYPE_FLOAT);
+        CHECK(input.used == (i != 1 && i != 3));
+    }
+    const APREND_SHADER_INPUT *normal = find_input(store, "normal");
+    const APREND_SHADER_INPUT *tangent = find_input(store, "tangent");
+    CHECK(normal && normal->location == 1 && normal->components == 3);
+    CHECK(tangent && tangent->location == 3 && tangent->components == 4);
+    std::vector<uint8_t> table;
+    CHECK(aprend_reflect_table_write(store, &table, &error));
+    const std::vector<uint8_t> &built = APREND_TEST_PACKAGES_DXIL ? table : spirv_table;
+    CHECK(built.size() == aprend_lit_shadow_vert_reflection_size &&
+          memcmp(built.data(), aprend_lit_shadow_vert_reflection, built.size()) == 0);
+    aprend_reflection_store read;
+    CHECK(aprend_reflect_table_read(table.data(), table.size(), vertex, "aprend_lit_shadow_vert", &read, &error) == APRESULT_OK);
+    check_same(store, read);
+
+    // Another stage's reflection is left as it is.
+    aprend_reflection_store fragment;
+    CHECK(aprend_reflect_spirv(aprend_lit_frag_spirv, sizeof(aprend_lit_frag_spirv) / 4, SPUDGPU_SHADER_STAGE_FRAGMENT, &fragment, &error));
+    CHECK(aprend_reflect_declared_inputs("not json", 8, &fragment, &error));
+    CHECK(fragment.view.input_count == 0);
+
+    // [text] completing the shader's SPIR-V reflection: true if accepted,
+    // with [inputs] its input count; a refusal says why.
+    auto complete = [&](const std::string &text, uint32_t *inputs) {
+        aprend_reflection_store s;
+        std::string e;
+        CHECK(aprend_reflect_spirv(aprend_lit_shadow_vert_spirv, words, vertex, &s, &e));
+        const std::vector<char> bytes(text.begin(), text.end());
+        const bool ok = aprend_reflect_declared_inputs(bytes.data(), bytes.size(), &s, &e);
+        CHECK(ok || !e.empty());
+        if (inputs)
+            *inputs = s.view.input_count;
+        return ok;
+    };
+    const char *vec2 = "{\"kind\": \"vector\", \"elementCount\": 2, \"elementType\": {\"kind\": \"scalar\", \"scalarType\": \"float32\"}}";
+    const char *vec3 = "{\"kind\": \"vector\", \"elementCount\": 3, \"elementType\": {\"kind\": \"scalar\", \"scalarType\": \"float32\"}}";
+    const char *vec4 = "{\"kind\": \"vector\", \"elementCount\": 4, \"elementType\": {\"kind\": \"scalar\", \"scalarType\": \"float32\"}}";
+    const char *mat = "{\"kind\": \"matrix\", \"rowCount\": 4, \"columnCount\": 4, \"elementType\": {\"kind\": \"scalar\", \"scalarType\": \"float32\"}}";
+    const std::string transforms = shadow_field("transform0", 4, vec4) + ", " + shadow_field("transform1", 5, vec4) + ", " +
+                                   shadow_field("transform2", 6, vec4) + ", " + shadow_field("transform3", 7, vec4);
+    const std::string position = shadow_field("position", 0, vec3);
+    const std::string uv = shadow_field("uv", 2, vec2);
+    uint32_t inputs = 0;
+    CHECK(complete(shadow_json(position + ", " + shadow_field("normal", 1, vec3) + ", " + uv + ", " + shadow_field("tangent", 3, vec4) + ", " +
+                               transforms),
+                   &inputs));
+    CHECK(inputs == 8);
+    // Only what the SPIR-V has: nothing added.
+    CHECK(complete(shadow_json(position + ", " + uv + ", " + transforms), &inputs));
+    CHECK(inputs == 6);
+    // A system value is no input.
+    CHECK(complete(shadow_json(position + ", " + uv + ", " + transforms +
+                               ", {\"name\": \"id\", \"semanticName\": \"SV_VertexID\", \"type\": {\"kind\": \"scalar\", \"scalarType\": "
+                               "\"uint32\"}, \"binding\": {\"kind\": \"varyingInput\", \"index\": 9}}"),
+                   &inputs));
+    CHECK(inputs == 6);
+    // Refused: an input the SPIR-V has, not declared, or declared elsewhere
+    // or by another name; a dropped matrix; inputs that overlap.
+    CHECK(!complete(shadow_json(position + ", " + transforms), nullptr));
+    CHECK(!complete(shadow_json(position + ", " + shadow_field("uv", 3, vec2) + ", " + transforms), nullptr));
+    CHECK(!complete(shadow_json(position + ", " + shadow_field("texcoord", 2, vec2) + ", " + transforms), nullptr));
+    CHECK(!complete(shadow_json(position + ", " + uv + ", " + shadow_field("tangent", 3, mat) + ", " + transforms), nullptr));
+    CHECK(!complete(shadow_json(position + ", " + uv + ", " + shadow_field("extra", 7, vec4) + ", " + transforms), nullptr));
+    // Refused: no JSON, no entry points, not this entry point, bytes after,
+    // nesting past the reader's depth.
+    CHECK(!complete("not json", nullptr));
+    CHECK(!complete("{}", nullptr));
+    CHECK(!complete("{\"entryPoints\": []}", nullptr));
+    CHECK(!complete(shadow_json(position + ", " + uv + ", " + transforms) + " }", nullptr));
+    CHECK(!complete(std::string(100, '['), nullptr));
+
+    // The real JSON cut at every length: accepted only once all of its
+    // value is there.
+    const std::string whole(json, json_size);
+    const size_t last = whole.find_last_of('}');
+    uint32_t wrongly = 0;
+    for (size_t length = 0; length < json_size; ++length)
+        if (complete(whole.substr(0, length), nullptr) != (length > last))
+            ++wrongly;
+    CHECK(wrongly == 0);
+}
+
 // The reader's refusals (aprend_reflect_table_read), each with its code, and
 // a table cut at every length, in a buffer of exactly that length, so a
 // read past its end is an AddressSanitizer report.
@@ -607,6 +736,7 @@ int main()
     test_slang_shaders();
     test_type_sizes();
     test_tool_output();
+    test_declared_inputs();
     test_table_refusals();
     if (failures)
     {

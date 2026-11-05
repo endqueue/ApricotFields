@@ -499,13 +499,20 @@ static APRESULT aprend_pipeline_plan_vertex_input(
 					if (taken < input.location_count)
 						location = input.location + taken;
 				}
+			} else {
+				// By position, an element at a location no input the shader
+				// declares covers is not read: no attribute is made of it.
+				// One at a declared input's location is, read or not: the
+				// reflection lists every declared input (card A51), and
+				// D3D12 refuses an input layout missing one its DXIL
+				// signature declares (CreateInputLayout, [ 65 ]).
+				bool declared = false;
+				for (uint32_t k = 0; k < reflection.input_count && !declared; ++k)
+					declared = location >= reflection.inputs[k].location &&
+					           location < reflection.inputs[k].location + reflection.inputs[k].location_count;
+				if (!declared)
+					location = UINT32_MAX;
 			}
-			// By position, every element keeps its location, whether an input
-			// the reflection lists covers it or not. The reflection is the
-			// SPIR-V's, which drops an input the shader declares and doesn't
-			// read; the DXIL keeps it in its signature, and D3D12 refuses an
-			// input layout missing one the signature declares
-			// (CreateInputLayout, [ 65 ]).
 			plan.push_back({binding, &element, location});
 		}
 	}
