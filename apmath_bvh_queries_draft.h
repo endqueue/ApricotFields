@@ -2,7 +2,15 @@
  * apmath_bvh_queries_draft.h - shape queries on ApMath's BVHs, and an
  * instance BVH that changes in place (apmathbvh.h).
  *
- * DRAFT, 2026-11-05, first version. For review: prompts/latran_02_scene_queries.md.
+ * DRAFT, 2026-11-06, third version (the first 2026-11-05), revised after
+ * two reviews: a sweep walks the tree as a ray against boxes grown by the
+ * shape's, nearest first, not by the box around its whole path; what GJK
+ * reports when it reaches its count, a near miss reported as a touch its
+ * stated price and bound; overlap_all ordered by a heap, not by
+ * insertion; set_instances' marks kept apart from refit's; a new shape
+ * with data of its own is a new type; a box BVH over solid boxes the
+ * caller gives. APPROVED by the user 2026-11-06, as it stands after two
+ * reviews.
  * Not built, not in any target. Not compilable: it repeats declarations of
  * include/math/apmathbvh.h, include/math/apmathpoly.h and apricore.h to show
  * them changed. Every declaration below is marked [ADDED], [CHANGED] or
@@ -48,6 +56,9 @@
  *   as they are, in the memory it has. None of them allocates.
  *   apmath_instance_bvh_get_cost() is the tree's surface-area cost, so the
  *   caller can tell when a refitted tree has grown worse than a rebuild.
+ * - A box BVH (apmath_box_bvh): the same queries and the same changes in
+ *   place over solid axis-aligned boxes the caller gives, for a caller
+ *   that asks about regions, not meshes (below, "Box BVH: solid boxes").
  * - APMATH_ERROR moves out of apmathpoly.h into a header of its own,
  *   math/apmatherror.h, so apmathbvh.h's new call can take one without
  *   including the polygons.
@@ -65,12 +76,43 @@
  * sweep is the first t at which that distance reaches the radius: GJK for
  * the distance (Gilbert, Johnson and Keerthi) and GJK's ray cast for the
  * sweep (van den Bergen, "Ray Casting against General Convex Objects with
- * Application to Continuous Collision Detection", 2004), against each
- * triangle the shape's box at the sweep's start and end reaches in the
- * tree. Jolt's CastShape and CollideShape do the same, with the same
- * "convex radius" split. One algorithm for three shapes, both questions,
- * and any shape a later need adds (a cylinder, a convex hull) that has a
- * support function: no table of shape pairs.
+ * Application to Continuous Collision Detection", 2004). Jolt's CastShape
+ * and CollideShape do the same, with the same "convex radius" split. One
+ * algorithm for three shapes, both questions, and any shape a later need
+ * adds that has a support function (a cylinder, a convex hull): no table
+ * of shape pairs. The algorithm extends so; APMATH_SHAPE doesn't. It is
+ * frozen, so a shape that needs data of its own (a hull's points) is a new
+ * struct type and new calls, sharing the algorithm; a cylinder, which a
+ * radius and a half height describe, would only append a kind.
+ *
+ * How a sweep finds its triangles: as a ray, against every box grown by
+ * the shape's own box (its box at t = 0, about its center): the shape's
+ * center moved along the sweep enters a grown box exactly when the shape
+ * enters the box. Nodes are visited nearest entry first, and a node whose
+ * entry is past the nearest touch found so far is never opened: the walk
+ * a ray cast makes, so a sweep costs about what a ray does whatever
+ * t_max is, INFINITY included. Not the box around the whole path (start
+ * and end), which for a long sweep holds most of the scene and opens every
+ * node in it. The _any form stops at the first touch, nearest or not; the
+ * _all form keeps opening nodes up to t_max. Overlaps, which don't move,
+ * walk the nodes the shape's box meets. Jolt's broad phase and PhysX's
+ * sweeps walk their trees the same way.
+ *
+ * When GJK reaches its iteration count (64) without converging - a
+ * near-degenerate triangle, a shape grazing an edge at a tolerance's
+ * width - its answer is conservative, never optimistic: a sweep reports a
+ * touch at the t it has reached, which is never past the true first touch
+ * (each step of the ray cast advances only as far as the distance found
+ * proves clear), so a shape moved to it is never inside what it meets; an
+ * overlap reports touching. The price, stated in the header: a capped run
+ * can report a touch that never comes, a near miss counted as a hit. It is
+ * small, since GJK fails to converge only where the distance is already
+ * at its tolerance's scale (elsewhere it ends in a few iterations): a
+ * capped touch is never farther than 1e-9 of the shape's and the
+ * triangle's larger size from the surface. A sweep that must not stop
+ * early on a graze can't exist at that scale in double precision anyway.
+ * The same input reaches the count on every machine (the steps are fixed,
+ * contraction off), so the answer is the same bits everywhere.
  *
  * Compared: Jolt (CastRay, CastShape, CollideShape, CollidePoint; GJK and
  * EPA with a convex radius), PhysX (PxScene raycast, sweep, overlap; its
@@ -113,8 +155,9 @@
  * ABI
  * ---------------------------------------------------------------------------
  *
- * No break. Every addition is new; APMATH_ERROR keeps its name, layout and
- * size and moves header (apmathpoly.h includes apmatherror.h, so a caller
+ * No break. Every addition is new (the box BVH's struct type is 4006,
+ * after APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC); APMATH_ERROR keeps its
+ * name, layout and size and moves header (apmathpoly.h includes apmatherror.h, so a caller
  * that included apmathpoly.h for it still compiles). The header's
  * "immutable once created" sentence changes for the instance BVH: a
  * caller that relied on an instance BVH never changing is unaffected unless
@@ -137,6 +180,23 @@
  *   starts overlapping (t 0, started_overlapping), one parallel to a face
  *   it grazes, one that misses by 1e-9, a zero motion (an overlap test), a
  *   shape of radius 0 (a point, a segment).
+ * - GJK's count: sliver triangles (one edge 1e-12 of the others) and
+ *   capsules grazing them along that edge, 1,000 of them, the cases that
+ *   reach the count (found while building it, with a local log, and kept
+ *   as the test's inputs; the tests have no hook into src/): each sweep's
+ *   t no later than the brute-force march's, the shape at that t not
+ *   inside the triangle (the exact distance at least 0); each overlap
+ *   true where the march's says touching; and the other side, every
+ *   touch reported (a sweep's at its t, an overlap's) within 1e-9 of the
+ *   larger size of the exact surface, so no capped run reports a touch
+ *   farther off than the header states. The property is checked
+ *   whichever path an input takes, so a later change to GJK can't make a
+ *   capped answer optimistic unnoticed.
+ * - The sweep's walk: a sweep of t_max INFINITY through the
+ *   100,000-instance scene, its answer the brute force's; and in
+ *   apmathbvh_bench, sweeps of t_max INFINITY against rays along the same
+ *   lines, a second each, the sweep within a small multiple of the ray
+ *   (a walk opening every node would be thousands of times slower).
  * - Tree independence: the same queries against an instance BVH created,
  *   then every instance moved by apmath_instance_bvh_set_instances() and
  *   refitted, then rebuilt, then created fresh over the moved instances:
@@ -432,9 +492,13 @@ bool apmath_instance_bvh_overlaps_shape(apmath_instance_bvh bvh, const APMATH_SH
  * Why the order: so the answer depends on the instances alone, never on
  * how the tree was built, refitted or rebuilt; a caller replays it.
  *
- * Thread: as apmath_instance_bvh_cast(). Allocates nothing: the positions
- * are kept in order in @p out_instances as they are found, the highest let
- * go when it is full.
+ * Thread: as apmath_instance_bvh_cast(). Allocates nothing: @p
+ * out_instances is the working space. While there is room, positions are
+ * appended as found; once it is full, it is kept as a max-heap of the
+ * lowest @p instance_capacity found, each new position replacing the
+ * heap's top if lower. At the end it is sorted. So n found cost about
+ * n log(capacity), not the n times capacity an insertion into a sorted
+ * buffer would (an explosion touching 1,000 instances).
  *
  * @param[in]  bvh               The instances.
  * @param[in]  shape             The shape, in the instance BVH's coordinates.
@@ -447,7 +511,8 @@ bool apmath_instance_bvh_overlaps_shape(apmath_instance_bvh bvh, const APMATH_SH
  * @return How many instances touch the shape, whatever @p instance_capacity is.
  *
  * Tests: brute force; the order against a tree built from shuffled boxes; a
- * capacity of 0, 1 and one short of the count.
+ * capacity of 0, 1 and one short of the count; 10,000 found into a
+ * capacity of 100, the lowest 100 in order.
  */
 uint32_t apmath_instance_bvh_overlap_all(apmath_instance_bvh bvh, const APMATH_SHAPE *shape,
                                          const APMATH_CAST_DESC *desc, uint32_t *out_instances,
@@ -483,7 +548,10 @@ bool apmath_instance_bvh_sweep(apmath_instance_bvh bvh, const APMATH_SWEEP *swee
  * move through some things and stop at others, or to list what a moving
  * shape passes through.
  *
- * Thread: as apmath_instance_bvh_cast(). Allocates nothing.
+ * Thread: as apmath_instance_bvh_cast(). Allocates nothing: @p out_hits is
+ * the working space, kept as apmath_instance_bvh_overlap_all() keeps its
+ * positions (appended while there is room, then a max-heap of the first
+ * @p hit_capacity touches by that order, sorted at the end).
  *
  * @param[in]  bvh          The instances.
  * @param[in]  sweep        The sweep, in the instance BVH's coordinates.
@@ -540,9 +608,19 @@ uint32_t apmath_instance_bvh_sweep_all(apmath_instance_bvh bvh, const APMATH_SWE
  *         0, 0, 0, 1 - the message names which, and the position in
  *         @p indices.
  *
+ * Two marks per instance, in two arrays: the check's (an index given
+ * twice is found by a mark per instance, set as each index is read and
+ * cleared after, so it costs the count, not its square) and refit's (the
+ * instance moved since the last refit or rebuild, which refit reads and
+ * clears). Kept apart, so a set clearing its check's marks never clears
+ * what refit must carry up. Each call sets and clears only its own
+ * indices' marks, one byte each, so calls on disjoint indices at once
+ * never write the same byte.
+ *
  * Tests: each refusal in parameter order, the BVH unchanged after each;
- * an index twice found at any distance apart (it is checked with a mark
- * per instance, cleared after, so it costs the count, not its square).
+ * an index twice found at any distance apart; a set refused for an index
+ * given twice after an earlier set of other instances, then refit: the
+ * earlier set's instances carried up (its refit marks kept).
  */
 APRESULT apmath_instance_bvh_set_instances(apmath_instance_bvh bvh, const uint32_t *indices,
                                            const APMATH_BVH_INSTANCE *instances, uint32_t count,
@@ -614,6 +692,195 @@ void apmath_instance_bvh_rebuild(apmath_instance_bvh bvh);
  */
 double apmath_instance_bvh_get_cost(apmath_instance_bvh bvh);
 
+/* ---- Box BVH: solid boxes -------------------------------------------- */
+
+/*
+ * [ADDED] A BVH over axis-aligned boxes, each a solid: what is inside a box
+ * is in it. Queried by rays, shapes and sweeps as the instance BVH is, and
+ * changed in place the same way, but each entry is a box the caller gives,
+ * not a mesh placed.
+ *
+ * Why it earns its place: a caller that asks about boxes (what is near a
+ * point, what a moving shape's region meets, which bounds a ray enters)
+ * has no mesh to give an instance BVH, and a box made into twelve
+ * triangles would be hollow (a shape wholly inside meets nothing), cost a
+ * mesh walk per box, and answer with triangles that mean nothing. Every
+ * engine compared keeps such a tree beside its meshes: Box2D v3's dynamic
+ * tree, Jolt's and PhysX's broad phases, Bullet's dbvt. It is the instance
+ * BVH's own tree, over boxes the caller gives: one tree code for both
+ * (internal), so the build, refit, rebuild, cost and the sweep's walk are
+ * the same and give the same bits.
+ *
+ * Solid: a ray whose start (t_min) is inside a box meets it at t_min; a
+ * shape that overlaps a box's inside overlaps it, touching a face or not;
+ * a sweep that starts overlapping one touches it at 0, started_overlapping.
+ * A shape against a box is GJK's distance between the box and the shape's
+ * core, as against a triangle (one algorithm, "How the shapes are tested").
+ *
+ * Results, ties and order as the instance BVH's: of hits at the same t, the
+ * earliest position; lists in position order (overlaps) or by t then
+ * position (sweep_all, cast_all); never the tree's order.
+ *
+ * Threads, as the instance BVH's (its @par Threads as this draft changes
+ * it): queries may overlap each other; set_boxes calls on disjoint
+ * positions may overlap each other and nothing else; refit and rebuild
+ * overlap nothing. Debug checks it the same way.
+ *
+ * Memory: about 160 bytes a box (its box and id in doubles and words, its
+ * place in the order, about one node a box at 56 bytes, the rebuild's
+ * scratch and the two marks), stated in apmath_box_bvh_create's comment.
+ *
+ * ABI: additions only - a handle, two structs (frozen), a desc (based,
+ * APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC = 4006 in ApMath's block), a hit
+ * (frozen) and the calls below. The misuse factories gain the handle,
+ * with APRI_STALE_TAG on its struct.
+ *
+ * Tests (tests/apmathbvh_tests.c): every query against brute force over
+ * every box (a slow exact test per box: slab for rays, GJK's brute
+ * distance for shapes, a bisected march for sweeps); starts inside (a ray
+ * from a box's middle meets it at t_min, normal -direction; a sphere
+ * wholly inside overlaps; a sweep from inside at 0, started_overlapping);
+ * an empty box never met; tree independence (create, set and refit,
+ * rebuild, fresh create: the same bits); set_boxes' refusals in parameter
+ * order, nothing changed; aprinoalloc_tests (queries, set, refit and
+ * rebuild of 100,000 boxes); aprioverlap_tests (queries from two threads;
+ * set on disjoint positions from two); the misuse harness regenerated;
+ * apmathbvh_bench beside the instance BVH's.
+ */
+
+/** @brief [ADDED] Opaque handle to a box BVH: solid axis-aligned boxes. */
+typedef struct apmath_box_bvh_t *apmath_box_bvh;
+
+/**
+ * @brief [ADDED] One box of a box BVH.
+ */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
+typedef struct APMATH_BVH_BOX {
+	/** The box, in the BVH's coordinates. One whose lo is above its hi on any axis is empty: never met, no place in the tree. */
+	APMATH_AABB box;
+	/** The caller's, handed back in hits and to the filter. Needn't be unique. */
+	uint64_t id;
+	/** Which queries consider the box, as APMATH_BVH_INSTANCE::mask. */
+	uint32_t mask;
+} APMATH_BVH_BOX;
+
+/**
+ * @brief [ADDED] Configuration descriptor for a box BVH.
+ */
+typedef struct APMATH_BOX_BVH_DESC {
+	/** This struct's type, APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** The boxes. Copied. Their count is the BVH's for its life; an entry not in use is an empty box. */
+	const APMATH_BVH_BOX *boxes;
+	/** How many #boxes holds. */
+	uint32_t box_count;
+} APMATH_BOX_BVH_DESC;
+
+/**
+ * @brief [ADDED] Where a ray or a sweep met a box, in the BVH's
+ * coordinates.
+ */
+/* Frozen: filled on every query. It never changes; a new need gets a new type. */
+typedef struct APMATH_BOX_HIT {
+	/** The box's position in the desc's order. */
+	uint32_t box;
+	/** The box's id. */
+	uint64_t id;
+	/** True if the ray's start or the sweep's shape at t = 0 was already inside the box: #t is then the ray's t_min, or 0. */
+	bool started_inside;
+	/** The ray's or the sweep's t at the meeting. */
+	double t;
+	/** The point met: on the box's surface, or the ray's start when it started inside. */
+	ApriDVec3 point;
+	/** Unit, the way a sweep's shape would be pushed back (as APMATH_SWEEP_HIT::contact_normal); for a ray, the face's. -direction, normalised, when it started inside. */
+	ApriDVec3 contact_normal;
+	/** Unit, out of the face of the box nearest the meeting. -direction, normalised, when it started inside. */
+	ApriDVec3 face_normal;
+} APMATH_BOX_HIT;
+
+/**
+ * @brief [ADDED] Creates a box BVH over the desc's boxes. Allocates: about
+ * 160 bytes a box. Nothing it does after allocates.
+ *
+ * @param[in]  desc    The boxes. Required; its base checked.
+ * @param[out] out_bvh Receives the BVH; NULL on failure. Required.
+ * @param[out] error   Why it failed; NULL to skip.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a NULL @p desc or
+ *         @p out_bvh, NULL boxes with a count above 0, or a box not finite
+ *         (the message names its position); the struct codes for its base;
+ *         APRESULT_OUT_OF_MEMORY.
+ */
+APRESULT apmath_box_bvh_create(const APMATH_BOX_BVH_DESC *desc, apmath_box_bvh *out_bvh, APMATH_ERROR *error);
+
+/** @brief [ADDED] Destroys a box BVH. NULL is ignored. */
+void apmath_box_bvh_destroy(apmath_box_bvh bvh);
+
+/**
+ * @brief [ADDED] Replaces some boxes, as apmath_instance_bvh_set_instances()
+ * replaces instances: checked before any changes, the tree changed only by
+ * the refit or rebuild that follows. Thread and marks as set_instances'.
+ *
+ * @return As apmath_instance_bvh_set_instances(), a box not finite in
+ *         place of a transform's refusals.
+ */
+APRESULT apmath_box_bvh_set_boxes(apmath_box_bvh bvh, const uint32_t *indices, const APMATH_BVH_BOX *boxes,
+                                  uint32_t count, APMATH_ERROR *error);
+
+/** @brief [ADDED] As apmath_instance_bvh_refit(), for boxes. */
+void apmath_box_bvh_refit(apmath_box_bvh bvh);
+
+/** @brief [ADDED] As apmath_instance_bvh_rebuild(), for boxes. */
+void apmath_box_bvh_rebuild(apmath_box_bvh bvh);
+
+/** @brief [ADDED] As apmath_instance_bvh_get_cost(), for boxes. */
+double apmath_box_bvh_get_cost(apmath_box_bvh bvh);
+
+/**
+ * @brief [ADDED] The nearest box a ray meets, a box its start is inside
+ * met at t_min. Of boxes met at the same t, the earliest position.
+ *
+ * @param[out] out_hit The meeting; may be NULL, to ask only whether there
+ *                     is one (the walk then stops at the first found).
+ * @return true if the ray meets a box @p desc lets through.
+ */
+bool apmath_box_bvh_cast(apmath_box_bvh bvh, const APMATH_RAY *ray, const APMATH_CAST_DESC *desc,
+                         APMATH_BOX_HIT *out_hit);
+
+/**
+ * @brief [ADDED] Every box a ray meets, one meeting each, by t then
+ * position; the caller's buffer kept as overlap_all's.
+ *
+ * @return How many boxes the ray meets, whatever @p hit_capacity is.
+ */
+uint32_t apmath_box_bvh_cast_all(apmath_box_bvh bvh, const APMATH_RAY *ray, const APMATH_CAST_DESC *desc,
+                                 APMATH_BOX_HIT *out_hits, uint32_t hit_capacity);
+
+/** @brief [ADDED] Whether any box overlaps a shape (a solid: inside counts). */
+bool apmath_box_bvh_overlaps_shape(apmath_box_bvh bvh, const APMATH_SHAPE *shape, const APMATH_CAST_DESC *desc);
+
+/**
+ * @brief [ADDED] Which boxes overlap a shape, in position order; the
+ * caller's buffer kept as apmath_instance_bvh_overlap_all()'s.
+ *
+ * @return How many boxes overlap it, whatever @p box_capacity is.
+ */
+uint32_t apmath_box_bvh_overlap_all(apmath_box_bvh bvh, const APMATH_SHAPE *shape, const APMATH_CAST_DESC *desc,
+                                    uint32_t *out_boxes, uint32_t box_capacity);
+
+/** @brief [ADDED] The first box a sweep touches; one it starts in at 0, started_inside. */
+bool apmath_box_bvh_sweep(apmath_box_bvh bvh, const APMATH_SWEEP *sweep, const APMATH_CAST_DESC *desc,
+                          APMATH_BOX_HIT *out_hit);
+
+/**
+ * @brief [ADDED] Every box a sweep touches, one touch each, by t then
+ * position; the caller's buffer kept as overlap_all's.
+ *
+ * @return How many boxes the sweep touches, whatever @p hit_capacity is.
+ */
+uint32_t apmath_box_bvh_sweep_all(apmath_box_bvh bvh, const APMATH_SWEEP *sweep, const APMATH_CAST_DESC *desc,
+                                  APMATH_BOX_HIT *out_hits, uint32_t hit_capacity);
+
 /*
  * [CHANGED] apmath_instance_bvh_cast(): with out_hit NULL ("to ask only
  * whether the ray hits") the cast now stops at the first hit it finds,
@@ -622,8 +889,9 @@ double apmath_instance_bvh_get_cost(apmath_instance_bvh bvh);
  * after.
  *
  * [CHANGED] apmath_instance_bvh_create(): its memory grows by the rebuild's
- * scratch (about 40 bytes an instance) and the refit's marks (1 byte a node
- * and an instance). Stated in its comment, with the whole: about 245 bytes
+ * scratch (about 40 bytes an instance), the refit's marks (1 byte a node
+ * and an instance) and set_instances' check's marks (1 byte an instance).
+ * Stated in its comment, with the whole: about 245 bytes
  * an instance (its record in doubles and its place in the order) and 56 a
  * node, about one node an instance, today; so about 350 bytes an instance
  * in all.
@@ -636,4 +904,16 @@ double apmath_instance_bvh_get_cost(apmath_instance_bvh bvh);
 /*
  * APMATH_ERROR_MESSAGE_SIZE and APMATH_ERROR leave it for apmatherror.h,
  * which it includes. Nothing else changes.
+ */
+
+/* ===========================================================================
+ * apricore.h  [CHANGED]
+ * ========================================================================= */
+
+/*
+ * APRI_STRUCT_TYPE, in ApMath's block, after
+ * APRI_STRUCT_TYPE_APMATH_POLY_SKELETON_DESC:
+ *
+ *     [ADDED] APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC = 4006,
+ *         APMATH_BOX_BVH_DESC.
  */

@@ -63,3 +63,17 @@ and a reference pool a caller may create. Decided in the workspace's
   caller orders tasks by waiting. If one is ever needed (a physics engine's
   job graph through this interface), it is a new callback chained on, and
   the pool learns to help with other tasks while it waits.
+  **Drafted 2026-11-05** (the ThinkPad P1, Windows 11), revised
+  2026-11-06 after two reviews, approved by the user 2026-11-06, not
+  built:
+  `apjobs_groups_draft.h`. Groups, Grand Central Dispatch's
+  `dispatch_group`: an `APJOBS_SCHEDULER_GROUPS` chained onto the
+  scheduler's base (struct type 7002), its four callbacks making a group,
+  letting one go, enqueuing a task into one (from the holder, or from
+  inside a task of the group: the one call a task may make) and waiting
+  for all of it, those its tasks enqueued included. Dependencies stay the
+  caller's to count; a task still never waits for another, so the pool
+  stays free of deadlock without work stealing. No layout changes, so every
+  scheduler and every caller today (ApAudio's streams) is untouched;
+  `apjobs_scheduler_check` accepts the new chained struct, and
+  `apjobs_pool_get_scheduler` points its base at the pool's own.

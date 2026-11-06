@@ -59,6 +59,20 @@ and triangulation).
   `offset_moves`: a square moved in past half its width came out as a 2x2
   square, not nothing (see "Offset: edges that go", below).
 
+## apmathbvh: shapes and an instance BVH changed in place
+
+**Drafted 2026-11-05, revised 2026-11-06 after two reviews, approved by the
+user 2026-11-06, not built:** `apmath_bvh_queries_draft.h`. Spheres, capsules and boxes
+(`APMATH_SHAPE`) tested against a mesh or an instance BVH (overlaps) and
+moved along a line to their first touch (sweeps), by one GJK algorithm,
+a sweep walking the tree as a ray against boxes grown by the shape's;
+an instance BVH's instances set in place, refitted and rebuilt with no
+allocation, its surface-area cost read to choose between them; a box BVH
+over solid boxes the caller gives, with the same queries and upkeep;
+`APMATH_ERROR` moved to `math/apmatherror.h`; `apmathbvh.cpp` built
+without floating-point contraction. No ABI break. Its tests and numbers
+are listed in the draft.
+
 ## apmathpoly
 
 ### Before it's relied on
