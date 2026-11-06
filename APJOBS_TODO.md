@@ -41,6 +41,37 @@ and a reference pool a caller may create. Decided in the workspace's
   enqueue, a slot freed and taken again; 500 tasks in a row.
 - **The Debug build's overlap check** (`src/aprioverlap.hpp`, every
   module's, 2026-10-30) on the pool's enqueue, wait and get_scheduler.
+- **Groups** (`APJOBS_SCHEDULER_GROUPS`, struct type 7002, chained onto
+  `APJOBS_SCHEDULER`; `apjobs_groups_draft.h`, approved 2026-11-06, built
+  the same day on Windows): tasks that may enqueue tasks into their own
+  group, the one call a task may make, naming its worker index; a wait for
+  every task of the group, those enqueued while it waits included. Grand
+  Central Dispatch's `dispatch_group`. `apjobs_scheduler_check` walks the
+  chain (the groups struct once, nothing else, each of its four callbacks
+  checked in field order). The pool's groups: a group is a count on a
+  cache line of its own, made in `group_create`; a group's task takes a
+  slot as any task does, the slot freed by whoever leaves it last once its
+  last range has run, and only then the count lowered; past `max_tasks`
+  the task runs in its enqueue as the worker index given, nested in the
+  calling range; a group's wait runs its own group's tasks, oldest first,
+  and sleeps on the pool's `finished` until the count is 0 or a task of
+  its group has a range to claim. No allocation in a group's enqueue or
+  wait. The overlap check on `group_create`, `_destroy` and `_wait`, not on
+  `group_enqueue` (a `Thread:` exception). ApAudio's mixer now drops the
+  chain from its copy of the scheduler, keeping no pointer into the
+  caller's struct.
+  Tests: `apjobs_tests` (the chain check's refusals, the pool's groups
+  chained on) and `apjobs_groups_tests` (C++ for `std::thread` and
+  `std::atomic`, the C API only: a tree of 8,191 tasks at 0, 1, 3 and 7
+  threads, a chain of 10,000, slots coming back with `max_tasks` 4, a
+  layered graph the same bits at every thread count, a group reused 1,000
+  times and two in flight, past `max_tasks` each nested range finding its
+  index held only by its enqueuer, the holder's plain tasks and a second
+  group overlapping a group's tree 1,000 times, no thread in enqueue order,
+  and the reference scheduler over an executor with no worker indices: at
+  most `worker_count - 1` blocks, each with an index from 1 up, at 2, 4 and
+  8 workers, and with blocks that start late); `aprinoalloc_tests` (a tree
+  of 1,000 tasks in one group a hundred times: none of ours).
 
 ## What has run where
 
@@ -51,6 +82,14 @@ and a reference pool a caller may create. Decided in the workspace's
   passes on `windows-d3d12` and `windows-vulkan` in Debug, Release and
   RelWithDebInfo, and under both `-asan` presets (MSVC has no TSan); the
   pool's waiting thread makes no allocation (`aprinoalloc_tests`).
+- Windows 11 (the same ThinkPad, MSVC 14.51), 2026-11-06, the groups:
+  `apjobs_tests` and `apjobs_groups_tests` on `apricotfields-windows-d3d12`
+  in Debug and Release (every other ctest too, A49's `aprend_contract_tests`
+  the only failure, as before), `apjobs_groups_tests` 100 times in Release
+  and 30 in Debug without a failure, `aprinoalloc_tests`' group tree none
+  of ours in both; `apjobs_tests` and `apjobs_groups_tests` under
+  `apricotfields-windows-d3d12-asan`, no report. **Not run with the
+  groups:** macOS and Linux, and TSan anywhere (Windows has none).
 
 ## Not done
 

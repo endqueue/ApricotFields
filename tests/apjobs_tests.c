@@ -226,6 +226,121 @@ static void test_scheduler_check(void)
     CHECK(apjobs_scheduler_check(&bad, &error) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN);
 }
 
+static void *never_group_create(void *user)
+{
+    (void)user;
+    return NULL;
+}
+
+static void never_group_destroy(void *group, void *user)
+{
+    (void)group;
+    (void)user;
+}
+
+static void never_group_enqueue(void *group, uint32_t worker_index, APJOBS_TASK_FUNCTION function, uint32_t item_count, uint32_t min_range,
+                                void *task_data, void *user)
+{
+    (void)group;
+    (void)worker_index;
+    (void)function;
+    (void)item_count;
+    (void)min_range;
+    (void)task_data;
+    (void)user;
+}
+
+static void never_group_wait(void *group, void *user)
+{
+    (void)group;
+    (void)user;
+}
+
+// A groups struct chained on is accepted and checked, field by field.
+static void test_scheduler_check_groups(void)
+{
+    current_test = "scheduler_check_groups";
+    test_pending = false;
+    APJOBS_SCHEDULER_GROUPS g;
+    memset(&g, 0, sizeof(g));
+    g.base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER_GROUPS;
+    g.group_create = never_group_create;
+    g.group_destroy = never_group_destroy;
+    g.group_enqueue = never_group_enqueue;
+    g.group_wait = never_group_wait;
+    APJOBS_SCHEDULER s;
+    memset(&s, 0, sizeof(s));
+    s.base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER;
+    s.base.next = &g.base;
+    s.worker_count = 1;
+    s.enqueue = never_enqueue;
+    s.wait = never_wait;
+    APJOBS_ERROR error;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_OK);
+    CHECK(error.message[0] == '\0');
+
+    APJOBS_SCHEDULER_GROUPS bad = g;
+    bad.group_create = NULL;
+    s.base.next = &bad.base;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scheduler's groups' group_create is NULL") == 0);
+    bad = g;
+    bad.group_destroy = NULL;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scheduler's groups' group_destroy is NULL") == 0);
+    bad = g;
+    bad.group_enqueue = NULL;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scheduler's groups' group_enqueue is NULL") == 0);
+    bad = g;
+    bad.group_wait = NULL;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scheduler's groups' group_wait is NULL") == 0);
+    // Every field NULL: the first in field order is the one named.
+    memset(&bad, 0, sizeof(bad));
+    bad.base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER_GROUPS;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scheduler's groups' group_create is NULL") == 0);
+
+    // Its own base: the wrong type is a struct this build doesn't take
+    // there; the groups struct twice is a duplicate.
+    bad = g;
+    bad.base.type = APRI_STRUCT_TYPE_APJOBS_POOL_DESC;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN);
+    APJOBS_SCHEDULER_GROUPS second = g;
+    bad = g;
+    bad.base.next = &second.base;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_STRUCT_DUPLICATE_IN_CHAIN);
+    // The scheduler's own checks still come first, then the groups'.
+    s.base.next = &g.base;
+    s.worker_count = 0;
+    CHECK(apjobs_scheduler_check(&s, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strcmp(error.message, "scheduler's worker_count is 0") == 0);
+}
+
+// The pool's scheduler has its groups chained on.
+static void test_pool_scheduler_groups(void)
+{
+    current_test = "pool_scheduler_groups";
+    test_pending = false;
+    APJOBS_POOL_DESC pd = pool_desc(2, 4);
+    apjobs_pool pool = NULL;
+    CHECK(apjobs_pool_create(&pd, &pool, NULL) == APRESULT_OK);
+    if (!pool)
+        return;
+    APJOBS_SCHEDULER scheduler;
+    CHECK(apjobs_pool_get_scheduler(pool, &scheduler) == APRESULT_OK);
+    CHECK(scheduler.base.next != NULL);
+    if (scheduler.base.next)
+    {
+        CHECK(scheduler.base.next->type == APRI_STRUCT_TYPE_APJOBS_SCHEDULER_GROUPS);
+        const APJOBS_SCHEDULER_GROUPS *g = (const APJOBS_SCHEDULER_GROUPS *)scheduler.base.next;
+        CHECK(g->base.next == NULL);
+        CHECK(apjobs_scheduler_check(&scheduler, NULL) == APRESULT_OK);
+    }
+    apjobs_pool_destroy(pool);
+}
+
 // ---- apjobs_run with no scheduler: serial, worker 0, in order ----
 
 static void test_run_serial(void)
@@ -305,7 +420,8 @@ static void run_on_pool(uint32_t thread_count, uint32_t item_count, uint32_t min
     memset(&s, 0xFF, sizeof(s));
     CHECK(apjobs_pool_get_scheduler(pool, &s) == APRESULT_OK);
     CHECK(s.base.type == APRI_STRUCT_TYPE_APJOBS_SCHEDULER);
-    CHECK(s.base.next == NULL);
+    // The pool's groups, chained on (apjobs_groups_draft.h).
+    CHECK(s.base.next != NULL && s.base.next->type == APRI_STRUCT_TYPE_APJOBS_SCHEDULER_GROUPS);
     CHECK(s.worker_count == thread_count + 1);
     CHECK(s.user == (void *)pool);
     CHECK(apjobs_scheduler_check(&s, NULL) == APRESULT_OK);
@@ -415,6 +531,8 @@ static void test_pool_many_tasks(void)
 int main(void)
 {
     test_scheduler_check();
+    test_scheduler_check_groups();
+    test_pool_scheduler_groups();
     test_run_serial();
     test_pool_refusals();
     test_pool_runs();

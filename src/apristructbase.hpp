@@ -5,9 +5,10 @@
 // apricore.h) before it reads any other field, written once so that every
 // module returns the same result for the same struct.
 //
-// No struct can be chained onto any ApricotFields struct yet, so anything in
-// a chain is a struct this build doesn't take there. When the first chained
-// struct is added, the call that takes it walks its own chain instead.
+// These refuse any chain: for every struct but APJOBS_SCHEDULER, anything in
+// a chain is a struct this build doesn't take there. A call that takes a
+// chained struct walks its own chain instead (apjobs_scheduler_check, which
+// takes APJOBS_SCHEDULER_GROUPS).
 
 #include "apricore.h"
 #include <stddef.h>

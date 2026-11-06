@@ -809,6 +809,15 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apjobs_tests tests/apjobs_tests.c)
     target_link_libraries(apjobs_tests PRIVATE ApricotFields)
     add_test(NAME apjobs_tests COMMAND apjobs_tests)
+    # ApJobs' groups (apjobs_groups_draft.h): trees, chains and graphs of
+    # tasks that enqueue tasks, on the pool at 0-7 threads and on the
+    # reference scheduler over an executor with no worker indices. C++ for
+    # std::thread and std::atomic; it calls the C API only. Run under -tsan
+    # too; the timeout catches a wait that never ends.
+    add_executable(apjobs_groups_tests tests/apjobs_groups_tests.cpp)
+    target_link_libraries(apjobs_groups_tests PRIVATE ApricotFields Threads::Threads)
+    add_test(NAME apjobs_groups_tests COMMAND apjobs_groups_tests)
+    set_tests_properties(apjobs_groups_tests PROPERTIES TIMEOUT 120)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)

@@ -615,6 +615,84 @@ static void test_jobs(void)
     apjobs_pool_destroy(pool);
 }
 
+// A tree of tasks in one group, each enqueuing its two children into it
+// (apjobs.h, APJOBS_SCHEDULER_GROUPS).
+#define JOBS_TREE_COUNT 1000
+
+struct JobsTree;
+
+typedef struct JobsTreeNode
+{
+    struct JobsTree *tree;
+    uint32_t id;
+} JobsTreeNode;
+
+typedef struct JobsTree
+{
+    const APJOBS_SCHEDULER_GROUPS *groups;
+    void *group;
+    void *user;
+    JobsTreeNode nodes[JOBS_TREE_COUNT];
+    uint8_t hits[JOBS_TREE_COUNT];
+} JobsTree;
+
+static void tree_task(uint32_t first, uint32_t end, uint32_t worker, void *data)
+{
+    (void)first;
+    (void)end;
+    JobsTreeNode *node = (JobsTreeNode *)data;
+    JobsTree *tree = node->tree;
+    tree->hits[node->id] = 1;
+    for (uint32_t c = node->id * 2 + 1; c <= node->id * 2 + 2 && c < JOBS_TREE_COUNT; c++)
+        tree->groups->group_enqueue(tree->group, worker, tree_task, 1, 1, &tree->nodes[c], tree->user);
+}
+
+static void test_job_groups(void)
+{
+    APJOBS_POOL_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APJOBS_POOL_DESC;
+    desc.thread_count = 3;
+    desc.max_tasks = 64;
+    apjobs_pool pool = NULL;
+    CHECK(apjobs_pool_create(&desc, &pool, NULL) == APRESULT_OK);
+    if (!pool)
+        return;
+    APJOBS_SCHEDULER scheduler;
+    CHECK(apjobs_pool_get_scheduler(pool, &scheduler) == APRESULT_OK);
+    CHECK(scheduler.base.next != NULL);
+    if (!scheduler.base.next)
+    {
+        apjobs_pool_destroy(pool);
+        return;
+    }
+    static JobsTree tree;
+    tree.groups = (const APJOBS_SCHEDULER_GROUPS *)scheduler.base.next;
+    tree.user = scheduler.user;
+    tree.group = tree.groups->group_create(scheduler.user);
+    CHECK(tree.group != NULL);
+    for (uint32_t i = 0; i < JOBS_TREE_COUNT; i++)
+    {
+        tree.nodes[i].tree = &tree;
+        tree.nodes[i].id = i;
+    }
+    start_counting();
+    for (int f = 0; f < 100; f++)
+    {
+        memset(tree.hits, 0, sizeof(tree.hits));
+        tree.groups->group_enqueue(tree.group, 0, tree_task, 1, 1, &tree.nodes[0], tree.user);
+        tree.groups->group_wait(tree.group, tree.user);
+    }
+    stop_counting();
+    uint32_t ran = 0;
+    for (uint32_t i = 0; i < JOBS_TREE_COUNT; i++)
+        ran += tree.hits[i];
+    CHECK(ran == JOBS_TREE_COUNT);
+    report("ApJobs' pool running a tree of 1,000 tasks in one group, 100 times, the waiting thread counted");
+    tree.groups->group_destroy(tree.group, tree.user);
+    apjobs_pool_destroy(pool);
+}
+
 // ---- ApText ----------------------------------------------------------------------
 
 static void test_text(const char *dir)
@@ -688,6 +766,7 @@ int main(int argc, char **argv)
     test_audio_streams(argc > 2 ? argv[2] : NULL);
     test_bvh();
     test_jobs();
+    test_job_groups();
     test_text(argc > 1 ? argv[1] : NULL);
     if (failures)
     {

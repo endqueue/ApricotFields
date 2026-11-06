@@ -3810,7 +3810,13 @@ extern "C"
                         m->voice_streams.resize(m->record_count) == EQ_SUCCESS;
             m->has_scheduler = d.scheduler != nullptr;
             if (d.scheduler)
+            {
                 m->scheduler = *d.scheduler;
+                // The mixer runs no groups, so it keeps no pointer into the
+                // caller's chain (apjobs.h: the struct needn't outlive this
+                // call).
+                m->scheduler.base.next = nullptr;
+            }
         }
         if (!allocated)
         {

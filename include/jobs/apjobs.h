@@ -30,16 +30,18 @@ extern "C" {
  * them does so in item order, which is how the same inputs give the same
  * results however many threads there are.
  *
- * Not built here: dependencies between tasks (a caller orders tasks by
- * waiting), priorities, and a task that waits for another (see
- * APJOBS_SCHEDULER, which calls may come from where).
+ * Not built here: dependencies between tasks (a caller that has them counts
+ * them, and enqueues a task into a group when its last one ends:
+ * APJOBS_SCHEDULER_GROUPS), priorities, and a task that waits for another.
  *
  * @par Threads
  * apricore.h's rule ("Threads"): a pool, and a scheduler the caller
  * implements, is used by one caller at a time - enqueue and wait are called
  * by the code that holds the scheduler, never from inside a task. The
  * task's function is the exception: it runs on the scheduler's threads,
- * several ranges of one task at once.
+ * several ranges of one task at once. A group's enqueue is the one call a
+ * task may make (APJOBS_SCHEDULER_GROUPS), and it may overlap any call on
+ * the scheduler.
  *
  * @par Results
  * Calls return APRESULT (apricore.h): APRESULT_OK or a general code. The
@@ -56,8 +58,10 @@ extern "C" {
  * "Struct bases"): the caller sets `base.type` to the struct's own
  * APRI_STRUCT_TYPE_APJOBS_* and `base.next` to NULL. A wrong type is
  * APRESULT_STRUCT_WRONG_TYPE and a chained struct
- * APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto either yet.
- * APJOBS_ERROR is frozen and has none.
+ * APRESULT_STRUCT_UNKNOWN_IN_CHAIN: APJOBS_SCHEDULER_GROUPS may be chained
+ * onto APJOBS_SCHEDULER (once; twice is APRESULT_STRUCT_DUPLICATE_IN_CHAIN);
+ * nothing chains onto APJOBS_POOL_DESC. APJOBS_ERROR is frozen and has
+ * none.
  */
 
 /* ---- Conventions ----------------------------------------------------- */
@@ -79,7 +83,12 @@ typedef struct APJOBS_ERROR {
  * @brief A task's work on one range of its items.
  *
  * Thread: runs on the scheduler's threads, several ranges of one task at
- * once; each range is given to one call. It must not call the scheduler.
+ * once; each range is given to one call. It must not call the scheduler,
+ * but for a group's enqueue into the group its task was enqueued into,
+ * passing its own @p worker_index (#APJOBS_GROUP_ENQUEUE_FUNCTION). A range
+ * that call runs there and then runs nested inside this one, on the same
+ * index, while this one is paused: per-worker scratch indexed by
+ * @p worker_index is not kept in use across the call.
  *
  * @param[in] first_item   The range's first item.
  * @param[in] end_item     One past its last item; above @p first_item.
@@ -128,15 +137,17 @@ typedef void (*APJOBS_WAIT_FUNCTION)(void *task, void *user);
  *
  * Filled by the caller over its own threads, or by
  * apjobs_pool_get_scheduler(). A library that takes one keeps a copy, so
- * the struct needn't outlive the call that took it; `user` must outlive
- * every task the library starts with it.
+ * the struct needn't outlive the call that took it, and a copy of an
+ * APJOBS_SCHEDULER_GROUPS chained on, which needn't outlive it either;
+ * `user` must outlive every task the library starts with it.
  *
  * Two tasks may be in flight at once, waited for in any order.
  *
  * Thread: its callbacks are called by the code that holds the scheduler,
  * one call at a time, never from inside a task (a task never waits for
  * another); the tasks' functions run on whatever threads the scheduler
- * runs them on.
+ * runs them on. A group's enqueue is the exception: see
+ * #APJOBS_GROUP_ENQUEUE_FUNCTION.
  */
 typedef struct APJOBS_SCHEDULER {
 	/** This struct's type, APRI_STRUCT_TYPE_APJOBS_SCHEDULER, and its chain (apricore.h, "Struct bases"). */
@@ -155,15 +166,137 @@ typedef struct APJOBS_SCHEDULER {
 	APJOBS_WAIT_FUNCTION wait;
 } APJOBS_SCHEDULER;
 
+/* ---- Groups ---------------------------------------------------------- */
+
+/**
+ * @brief Makes a group: a set of tasks waited for together.
+ *
+ * Called by the code that holds the scheduler, at setup, never in a task.
+ * A group is reused for wait after wait. Making one may allocate; whether
+ * a group's enqueue or wait allocates is the scheduler's own, as for
+ * #APJOBS_ENQUEUE_FUNCTION (Grand Central Dispatch's dispatch_group_async
+ * does; the pool's groups don't, apjobs_pool_get_scheduler()).
+ *
+ * @param[in] user The scheduler's APJOBS_SCHEDULER::user.
+ *
+ * @return The group, or NULL if the scheduler couldn't make one (out of
+ *         memory), which the caller reports as APRESULT_OUT_OF_MEMORY.
+ */
+typedef void *(*APJOBS_GROUP_CREATE_FUNCTION)(void *user);
+
+/**
+ * @brief Lets go of a group no task is in.
+ *
+ * Called by the code that holds the scheduler, never in a task.
+ *
+ * @param[in] group A group #APJOBS_GROUP_CREATE_FUNCTION made, waited for
+ *                  since its last enqueue; never NULL.
+ * @param[in] user  The scheduler's APJOBS_SCHEDULER::user.
+ */
+typedef void (*APJOBS_GROUP_DESTROY_FUNCTION)(void *group, void *user);
+
+/**
+ * @brief Starts a task in a group: @p function over `[0, item_count)`,
+ * split into ranges of at least @p min_range items, as
+ * #APJOBS_ENQUEUE_FUNCTION does.
+ *
+ * It never fails: a scheduler that can't queue the task (past its own
+ * limit) runs every range before returning, on the calling thread, as
+ * @p worker_index, from inside a task too, so a caller's graph is as deep
+ * as it lets the calls nest. A range run so from inside a task runs nested
+ * in the calling range, on its index, while that range is paused: no two
+ * ranges run at once with one index, but the calling range keeps no
+ * per-worker scratch in use across the call.
+ *
+ * Thread: by the code that holds the scheduler, or from inside a task of
+ * the same group (the one call a task may make to the scheduler), from
+ * several tasks at once. Not from a task of another group. From a task it
+ * may overlap any call on the scheduler: other group enqueues, and the
+ * holder's enqueue and wait, of plain tasks or of any group.
+ *
+ * @param[in] group        The group; never NULL.
+ * @param[in] worker_index The `worker_index` of the range calling, or 0
+ *                         from the code that holds the scheduler; below
+ *                         the scheduler's `worker_count`. A range the call
+ *                         runs itself runs as this index.
+ * @param[in] function     The task's function. Never NULL.
+ * @param[in] item_count   How many items; above 0.
+ * @param[in] min_range    The fewest items worth a call; above 0.
+ * @param[in] task_data    Passed to every call of @p function.
+ * @param[in] user         The scheduler's APJOBS_SCHEDULER::user.
+ */
+typedef void (*APJOBS_GROUP_ENQUEUE_FUNCTION)(void *group, uint32_t worker_index, APJOBS_TASK_FUNCTION function, uint32_t item_count, uint32_t min_range, void *task_data, void *user);
+
+/**
+ * @brief Waits until every task enqueued into a group has run every range:
+ * those enqueued before the wait and those its tasks enqueued while it
+ * waited.
+ *
+ * The thread that waits may run ranges of the group's tasks itself, as
+ * worker 0. Once it returns, every write the tasks made is visible to the
+ * caller, and the group is empty and may be enqueued into again. A group
+ * with nothing enqueued returns at once.
+ *
+ * Thread: by the code that holds the scheduler, never from inside a task.
+ *
+ * @param[in] group The group; never NULL.
+ * @param[in] user  The scheduler's APJOBS_SCHEDULER::user.
+ */
+typedef void (*APJOBS_GROUP_WAIT_FUNCTION)(void *group, void *user);
+
+/**
+ * @brief What a scheduler offers to run groups, chained onto its
+ * APJOBS_SCHEDULER (`base.next`).
+ *
+ * Why: work shaped as a graph queues each task when the tasks it waited for
+ * end, from inside them; without groups it can only hold workers in loops
+ * of its own. A library that needs groups finds this struct in the
+ * scheduler's chain and says so when it is missing; one that doesn't
+ * ignores it. A library that keeps the scheduler keeps a copy of this
+ * struct too, its `base.next` set to NULL, so the caller's needn't outlive
+ * the call that took it.
+ *
+ * A scheduler a caller writes over Grand Central Dispatch or the .NET
+ * thread pool keeps a group as a count raised on enqueue, lowered when a
+ * task's last range ends, and waited on (dispatch_group_enter, _leave and
+ * _wait on GCD). Neither pool gives a block a worker index, and either may
+ * run more blocks at once than `worker_count`, so such a scheduler gives
+ * indices itself: its own queue of ranges, and at most `worker_count - 1`
+ * blocks submitted at once, each taking a free index from 1 up, running
+ * ranges from the queue as that index until it is empty, giving the index
+ * back, and then looking at the queue once more, so no range is left with
+ * no block to run it; the waiting thread is index 0 and runs ranges from
+ * the queue too. No block waits, so the pool never sees a blocked thread
+ * to add one for. dispatch_apply is not the mapping: it blocks its caller,
+ * and its iteration number counts iterations, not threads.
+ */
+typedef struct APJOBS_SCHEDULER_GROUPS {
+	/** This struct's type, APRI_STRUCT_TYPE_APJOBS_SCHEDULER_GROUPS, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** @see APJOBS_GROUP_CREATE_FUNCTION. Not NULL. */
+	APJOBS_GROUP_CREATE_FUNCTION group_create;
+	/** @see APJOBS_GROUP_DESTROY_FUNCTION. Not NULL. */
+	APJOBS_GROUP_DESTROY_FUNCTION group_destroy;
+	/** @see APJOBS_GROUP_ENQUEUE_FUNCTION. Not NULL. */
+	APJOBS_GROUP_ENQUEUE_FUNCTION group_enqueue;
+	/** @see APJOBS_GROUP_WAIT_FUNCTION. Not NULL. */
+	APJOBS_GROUP_WAIT_FUNCTION group_wait;
+} APJOBS_SCHEDULER_GROUPS;
+
 /**
  * @brief Checks a scheduler as a library that takes one does.
+ *
+ * Accepts an APJOBS_SCHEDULER_GROUPS chained on, and checks it; any other
+ * chained struct is refused, as before.
  *
  * @param[in]  scheduler The scheduler.
  * @param[out] out_error Why it was refused, when it was. May be NULL.
  *
  * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT if @p scheduler is NULL,
- *         its `worker_count` is 0 or its `enqueue` or `wait` is NULL; or
- *         the struct codes for `scheduler->base`.
+ *         its `worker_count` is 0, its `enqueue` or `wait` is NULL, or a
+ *         chained APJOBS_SCHEDULER_GROUPS has any of its four NULL (each its
+ *         own message, in field order); or the struct codes for
+ *         `scheduler->base` and for the groups struct's base.
  */
 APRESULT apjobs_scheduler_check(
 	const APJOBS_SCHEDULER *scheduler,
@@ -271,8 +404,18 @@ void apjobs_pool_destroy(apjobs_pool pool);
  * @brief Fills a scheduler that runs tasks on a pool.
  *
  * Its `worker_count` is the pool's `thread_count` plus 1, and its `user`
- * the pool. The whole struct is written, `base` included. A wait runs
- * ranges of the task it waits for on the waiting thread, as worker 0.
+ * the pool. The whole struct is written, `base` included: `base.next`
+ * points at the pool's own APJOBS_SCHEDULER_GROUPS, alive as long as the
+ * pool. A wait runs ranges of the task it waits for on the waiting thread,
+ * as worker 0; a group's wait, of the group's tasks.
+ *
+ * The pool's groups: a group is a small record the pool allocates in
+ * group_create; enqueuing into one and waiting for it allocate nothing.
+ * Tasks enqueued into groups take the pool's task slots as any task does
+ * (APJOBS_POOL_DESC::max_tasks), each slot free again as soon as its
+ * task's last range ends; past them, a task runs in its enqueue, on the
+ * thread enqueuing it, as the worker index it was given. A group's wait
+ * runs only its own group's tasks.
  *
  * @param[in]  pool          The pool.
  * @param[out] out_scheduler Receives the scheduler.
