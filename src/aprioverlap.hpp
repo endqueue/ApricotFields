@@ -85,10 +85,84 @@ class apri_overlap_entry
 #endif
 };
 
+// A guard for an object whose header lets some calls overlap: calls that
+// only read it may overlap each other (APRI_ROLE_READ), calls that each
+// write only their own parts may overlap each other (APRI_ROLE_SHARE, as
+// ApMath's set_instances on disjoint instances), and the rest overlap
+// nothing (APRI_ROLE_ALONE). A call entering while another of a role it may
+// not overlap is inside is reported, naming that role's last call. Counts,
+// not thread ids: reads overlap by design, so "which thread" means nothing.
+// Present in every build, read only in Debug.
+enum apri_role : uint32_t
+{
+    APRI_ROLE_READ  = 0,
+    APRI_ROLE_SHARE = 1,
+    APRI_ROLE_ALONE = 2,
+};
+
+struct apri_shared_overlap
+{
+    std::atomic<uint32_t> inside[3]{};
+    // Each role's last call to enter, for the message: a string literal.
+    std::atomic<const char *> call[3]{};
+    // Overlaps found on this object, for tests/aprioverlap_tests.cpp.
+    std::atomic<uint32_t> reports{0};
+};
+
+class apri_shared_entry
+{
+  public:
+    apri_shared_entry(apri_shared_overlap &guard, apri_role role, const char *module, const char *who, const char *unit)
+    {
+#if _DEBUG
+        guard_ = &guard;
+        role_  = role;
+        guard.inside[role].fetch_add(1);
+        guard.call[role].store(who);
+        for (uint32_t other = 0; other < 3; ++other)
+        {
+            uint32_t count = guard.inside[other].load();
+            if (other == (uint32_t)role)
+                --count; // this call
+            const bool allowed = other == (uint32_t)role && role != APRI_ROLE_ALONE;
+            if (count == 0 || allowed)
+                continue;
+            const char *inside = other == (uint32_t)role ? nullptr : guard.call[other].load();
+            guard.reports.fetch_add(1);
+            fprintf(stderr, "%s: %s: called while %s is inside the same %s (its header says which calls may overlap)\n",
+                    module, who, inside ? inside : "another call", unit);
+            break;
+        }
+#else
+        (void)guard;
+        (void)role;
+        (void)module;
+        (void)who;
+        (void)unit;
+#endif
+    }
+    ~apri_shared_entry()
+    {
+#if _DEBUG
+        guard_->inside[role_].fetch_sub(1);
+#endif
+    }
+    apri_shared_entry(const apri_shared_entry &)            = delete;
+    apri_shared_entry &operator=(const apri_shared_entry &) = delete;
+
+  private:
+#if _DEBUG
+    apri_shared_overlap *guard_{nullptr};
+    apri_role role_{APRI_ROLE_READ};
+#endif
+};
+
 // One guard a line, so a call may enter two units (an Aprend list and its
 // instance).
 #define APRI_OVERLAP_NAME_(line) apri_overlap_guard_##line
 #define APRI_OVERLAP_NAME(line) APRI_OVERLAP_NAME_(line)
 #define APRI_ENTER(guard, module, who, unit) apri_overlap_entry APRI_OVERLAP_NAME(__LINE__)((guard), (module), (who), (unit))
+#define APRI_ENTER_SHARED(guard, role, module, who, unit) \
+    apri_shared_entry APRI_OVERLAP_NAME(__LINE__)((guard), (role), (module), (who), (unit))
 
 #endif // APRIOVERLAP_HPP

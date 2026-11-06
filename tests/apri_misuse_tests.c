@@ -678,6 +678,120 @@ static void calls_with_destroyed_handles(void)
             expect_refused("apjobs_pool_get_scheduler", apjobs_pool_get_scheduler(dead, (APJOBS_SCHEDULER *){0}));
     }
     {
+        _Bool for_null = apmath_box_bvh_cast((apmath_box_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_cast");
+        else
+        {
+            _Bool got = apmath_box_bvh_cast(dead, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0});
+            expect_null_fallback("apmath_box_bvh_cast", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_box_bvh_cast_all((apmath_box_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0}, (uint32_t){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_cast_all");
+        else
+        {
+            uint32_t got = apmath_box_bvh_cast_all(dead, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0}, (uint32_t){0});
+            expect_null_fallback("apmath_box_bvh_cast_all", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_destroy");
+        else
+        {
+            apmath_box_bvh_destroy(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        double for_null = apmath_box_bvh_get_cost((apmath_box_bvh){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_get_cost");
+        else
+        {
+            double got = apmath_box_bvh_get_cost(dead);
+            expect_null_fallback("apmath_box_bvh_get_cost", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_box_bvh_overlap_all((apmath_box_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0}, (uint32_t *){0}, (uint32_t){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_overlap_all");
+        else
+        {
+            uint32_t got = apmath_box_bvh_overlap_all(dead, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0}, (uint32_t *){0}, (uint32_t){0});
+            expect_null_fallback("apmath_box_bvh_overlap_all", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        _Bool for_null = apmath_box_bvh_overlaps_shape((apmath_box_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_overlaps_shape");
+        else
+        {
+            _Bool got = apmath_box_bvh_overlaps_shape(dead, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0});
+            expect_null_fallback("apmath_box_bvh_overlaps_shape", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_rebuild");
+        else
+        {
+            apmath_box_bvh_rebuild(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_refit");
+        else
+        {
+            apmath_box_bvh_refit(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_set_boxes");
+        else
+            expect_refused("apmath_box_bvh_set_boxes", apmath_box_bvh_set_boxes(dead, (const uint32_t *){0}, (const APMATH_BVH_BOX *){0}, (uint32_t){0}, (APMATH_ERROR *){0}));
+    }
+    {
+        _Bool for_null = apmath_box_bvh_sweep((apmath_box_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_sweep");
+        else
+        {
+            _Bool got = apmath_box_bvh_sweep(dead, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0});
+            expect_null_fallback("apmath_box_bvh_sweep", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_box_bvh_sweep_all((apmath_box_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0}, (uint32_t){0});
+        apmath_box_bvh dead = dead_apmath_box_bvh();
+        if (!dead)
+            factory_missing("apmath_box_bvh_sweep_all");
+        else
+        {
+            uint32_t got = apmath_box_bvh_sweep_all(dead, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0}, (uint32_t){0});
+            expect_null_fallback("apmath_box_bvh_sweep_all", &got, &for_null, sizeof(got));
+        }
+    }
+    {
         _Bool for_null = apmath_instance_bvh_cast((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0});
         apmath_instance_bvh dead = dead_apmath_instance_bvh();
         if (!dead)
@@ -721,6 +835,17 @@ static void calls_with_destroyed_handles(void)
         }
     }
     {
+        double for_null = apmath_instance_bvh_get_cost((apmath_instance_bvh){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_get_cost");
+        else
+        {
+            double got = apmath_instance_bvh_get_cost(dead);
+            expect_null_fallback("apmath_instance_bvh_get_cost", &got, &for_null, sizeof(got));
+        }
+    }
+    {
         uint32_t for_null = apmath_instance_bvh_get_instance_count((apmath_instance_bvh){0});
         apmath_instance_bvh dead = dead_apmath_instance_bvh();
         if (!dead)
@@ -729,6 +854,77 @@ static void calls_with_destroyed_handles(void)
         {
             uint32_t got = apmath_instance_bvh_get_instance_count(dead);
             expect_null_fallback("apmath_instance_bvh_get_instance_count", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_instance_bvh_overlap_all((apmath_instance_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0}, (uint32_t *){0}, (uint32_t){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_overlap_all");
+        else
+        {
+            uint32_t got = apmath_instance_bvh_overlap_all(dead, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0}, (uint32_t *){0}, (uint32_t){0});
+            expect_null_fallback("apmath_instance_bvh_overlap_all", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        _Bool for_null = apmath_instance_bvh_overlaps_shape((apmath_instance_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_overlaps_shape");
+        else
+        {
+            _Bool got = apmath_instance_bvh_overlaps_shape(dead, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0});
+            expect_null_fallback("apmath_instance_bvh_overlaps_shape", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_rebuild");
+        else
+        {
+            apmath_instance_bvh_rebuild(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_refit");
+        else
+        {
+            apmath_instance_bvh_refit(dead);
+            destroyed_calls++;
+        }
+    }
+    {
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_set_instances");
+        else
+            expect_refused("apmath_instance_bvh_set_instances", apmath_instance_bvh_set_instances(dead, (const uint32_t *){0}, (const APMATH_BVH_INSTANCE *){0}, (uint32_t){0}, (APMATH_ERROR *){0}));
+    }
+    {
+        _Bool for_null = apmath_instance_bvh_sweep((apmath_instance_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_SWEEP_HIT *){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_sweep");
+        else
+        {
+            _Bool got = apmath_instance_bvh_sweep(dead, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_SWEEP_HIT *){0});
+            expect_null_fallback("apmath_instance_bvh_sweep", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        uint32_t for_null = apmath_instance_bvh_sweep_all((apmath_instance_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_SWEEP_HIT *){0}, (uint32_t){0});
+        apmath_instance_bvh dead = dead_apmath_instance_bvh();
+        if (!dead)
+            factory_missing("apmath_instance_bvh_sweep_all");
+        else
+        {
+            uint32_t got = apmath_instance_bvh_sweep_all(dead, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_SWEEP_HIT *){0}, (uint32_t){0});
+            expect_null_fallback("apmath_instance_bvh_sweep_all", &got, &for_null, sizeof(got));
         }
     }
     {
@@ -775,6 +971,17 @@ static void calls_with_destroyed_handles(void)
         }
     }
     {
+        _Bool for_null = apmath_mesh_bvh_overlaps_shape((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_SHAPE *){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_overlaps_shape");
+        else
+        {
+            _Bool got = apmath_mesh_bvh_overlaps_shape(dead, (const ApriDMat4 *){0}, (const APMATH_SHAPE *){0});
+            expect_null_fallback("apmath_mesh_bvh_overlaps_shape", &got, &for_null, sizeof(got));
+        }
+    }
+    {
         _Bool for_null = apmath_mesh_bvh_overlaps_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
         apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
         if (!dead)
@@ -783,6 +990,17 @@ static void calls_with_destroyed_handles(void)
         {
             _Bool got = apmath_mesh_bvh_overlaps_volume(dead, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
             expect_null_fallback("apmath_mesh_bvh_overlaps_volume", &got, &for_null, sizeof(got));
+        }
+    }
+    {
+        _Bool for_null = apmath_mesh_bvh_sweep((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_SWEEP *){0}, (APMATH_SWEEP_HIT *){0});
+        apmath_mesh_bvh dead = dead_apmath_mesh_bvh();
+        if (!dead)
+            factory_missing("apmath_mesh_bvh_sweep");
+        else
+        {
+            _Bool got = apmath_mesh_bvh_sweep(dead, (const ApriDMat4 *){0}, (const APMATH_SWEEP *){0}, (APMATH_SWEEP_HIT *){0});
+            expect_null_fallback("apmath_mesh_bvh_sweep", &got, &for_null, sizeof(got));
         }
     }
     {
@@ -1293,6 +1511,30 @@ int main(void)
     calls++;
     (void)apmath_aabb_test_volume((const APMATH_AABB *){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
     calls++;
+    (void)apmath_box_bvh_cast((apmath_box_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0});
+    calls++;
+    (void)apmath_box_bvh_cast_all((apmath_box_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0}, (uint32_t){0});
+    calls++;
+    expect_error("apmath_box_bvh_create", apmath_box_bvh_create((const APMATH_BOX_BVH_DESC *){0}, (apmath_box_bvh *){0}, (APMATH_ERROR *){0}));
+    calls++;
+    apmath_box_bvh_destroy((apmath_box_bvh){0});
+    calls++;
+    (void)apmath_box_bvh_get_cost((apmath_box_bvh){0});
+    calls++;
+    (void)apmath_box_bvh_overlap_all((apmath_box_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0}, (uint32_t *){0}, (uint32_t){0});
+    calls++;
+    (void)apmath_box_bvh_overlaps_shape((apmath_box_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0});
+    calls++;
+    apmath_box_bvh_rebuild((apmath_box_bvh){0});
+    calls++;
+    apmath_box_bvh_refit((apmath_box_bvh){0});
+    calls++;
+    expect_error("apmath_box_bvh_set_boxes", apmath_box_bvh_set_boxes((apmath_box_bvh){0}, (const uint32_t *){0}, (const APMATH_BVH_BOX *){0}, (uint32_t){0}, (APMATH_ERROR *){0}));
+    calls++;
+    (void)apmath_box_bvh_sweep((apmath_box_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0});
+    calls++;
+    (void)apmath_box_bvh_sweep_all((apmath_box_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_BOX_HIT *){0}, (uint32_t){0});
+    calls++;
     (void)apmath_instance_bvh_cast((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0});
     calls++;
     (void)apmath_instance_bvh_cast_all((apmath_instance_bvh){0}, (const APMATH_RAY *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_INSTANCE_HIT *){0}, (uint32_t){0});
@@ -1303,7 +1545,23 @@ int main(void)
     calls++;
     (void)apmath_instance_bvh_get_bounds((apmath_instance_bvh){0});
     calls++;
+    (void)apmath_instance_bvh_get_cost((apmath_instance_bvh){0});
+    calls++;
     (void)apmath_instance_bvh_get_instance_count((apmath_instance_bvh){0});
+    calls++;
+    (void)apmath_instance_bvh_overlap_all((apmath_instance_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0}, (uint32_t *){0}, (uint32_t){0});
+    calls++;
+    (void)apmath_instance_bvh_overlaps_shape((apmath_instance_bvh){0}, (const APMATH_SHAPE *){0}, (const APMATH_CAST_DESC *){0});
+    calls++;
+    apmath_instance_bvh_rebuild((apmath_instance_bvh){0});
+    calls++;
+    apmath_instance_bvh_refit((apmath_instance_bvh){0});
+    calls++;
+    expect_error("apmath_instance_bvh_set_instances", apmath_instance_bvh_set_instances((apmath_instance_bvh){0}, (const uint32_t *){0}, (const APMATH_BVH_INSTANCE *){0}, (uint32_t){0}, (APMATH_ERROR *){0}));
+    calls++;
+    (void)apmath_instance_bvh_sweep((apmath_instance_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_SWEEP_HIT *){0});
+    calls++;
+    (void)apmath_instance_bvh_sweep_all((apmath_instance_bvh){0}, (const APMATH_SWEEP *){0}, (const APMATH_CAST_DESC *){0}, (APMATH_SWEEP_HIT *){0}, (uint32_t){0});
     calls++;
     (void)apmath_mesh_bvh_cast((apmath_mesh_bvh){0}, (const APMATH_RAY *){0}, (APMATH_MESH_HIT *){0});
     calls++;
@@ -1315,7 +1573,11 @@ int main(void)
     calls++;
     (void)apmath_mesh_bvh_get_triangle_count((apmath_mesh_bvh){0});
     calls++;
+    (void)apmath_mesh_bvh_overlaps_shape((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_SHAPE *){0});
+    calls++;
     (void)apmath_mesh_bvh_overlaps_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
+    calls++;
+    (void)apmath_mesh_bvh_sweep((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_SWEEP *){0}, (APMATH_SWEEP_HIT *){0});
     calls++;
     (void)apmath_mesh_bvh_within_volume((apmath_mesh_bvh){0}, (const ApriDMat4 *){0}, (const APMATH_VOLUME *){0});
     calls++;
@@ -1836,7 +2098,7 @@ int main(void)
     _CrtSetDbgFlag(_CrtSetDbgFlag(_CRTDBG_REPORT_FLAG) | _CRTDBG_DELAY_FREE_MEM_DF);
 #endif
     calls_with_destroyed_handles();
-    printf("apri_misuse_tests: %d calls with a destroyed handle (of 119 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
+    printf("apri_misuse_tests: %d calls with a destroyed handle (of 140 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
 #elif _DEBUG
     printf("apri_misuse_tests: calls with a destroyed handle skipped: under a sanitizer, whose heap reports the read of freed memory itself\n");
 #else

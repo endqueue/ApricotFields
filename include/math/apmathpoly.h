@@ -64,6 +64,7 @@
 #define APMATHPOLY_H
 
 #include "../apricore.h"
+#include "apmatherror.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -73,18 +74,8 @@ extern "C" {
 
 /* ---- Conventions ----------------------------------------------------- */
 
-/** @brief The size of APMATH_ERROR's message buffer, its NUL included. */
-#define APMATH_ERROR_MESSAGE_SIZE 256
-
-/**
- * @brief Why a call failed, filled by calls that take one (see "Results"
- * above).
- */
-/* Frozen: filled per call. It never changes; a new need gets a new type. */
-typedef struct APMATH_ERROR {
-	/** NUL-terminated, truncated to fit. Empty on success. */
-	char message[APMATH_ERROR_MESSAGE_SIZE];
-} APMATH_ERROR;
+/* APMATH_ERROR, the per-call message (see "Results" above), is in
+ * apmatherror.h, which this header includes. */
 
 /* ---- Polygon sets ---------------------------------------------------- */
 

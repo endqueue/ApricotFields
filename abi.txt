@@ -48,6 +48,10 @@ const APMATH_POLY_OP_XOR = 3
 const APMATH_POLY_PLACE_INSIDE = 1
 const APMATH_POLY_PLACE_ON_EDGE = 2
 const APMATH_POLY_PLACE_OUTSIDE = 0
+const APMATH_SHAPE_KIND_BOX = 3
+const APMATH_SHAPE_KIND_CAPSULE = 2
+const APMATH_SHAPE_KIND_NONE = 0
+const APMATH_SHAPE_KIND_SPHERE = 1
 const APREND_BATCH_CAP_BUTT = 1
 const APREND_BATCH_CAP_ROUND = 3
 const APREND_BATCH_CAP_SQUARE = 2
@@ -267,6 +271,7 @@ const APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC = 3005
 const APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC = 3004
 const APRI_STRUCT_TYPE_APJOBS_POOL_DESC = 7001
 const APRI_STRUCT_TYPE_APJOBS_SCHEDULER = 7000
+const APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC = 4006
 const APRI_STRUCT_TYPE_APMATH_CAST_DESC = 4002
 const APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC = 4001
 const APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC = 4000
@@ -466,18 +471,40 @@ fn apjobs_pool_get_scheduler APRESULT (apjobs_pool, APJOBS_SCHEDULER *)
 fn apjobs_run APRESULT (const APJOBS_SCHEDULER *, APJOBS_TASK_FUNCTION, uint32_t, uint32_t, void *)
 fn apjobs_scheduler_check APRESULT (const APJOBS_SCHEDULER *, APJOBS_ERROR *)
 fn apmath_aabb_test_volume APMATH_OVERLAP (const APMATH_AABB *, const ApriDMat4 *, const APMATH_VOLUME *)
+fn apmath_box_bvh_cast _Bool (apmath_box_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_BOX_HIT *)
+fn apmath_box_bvh_cast_all uint32_t (apmath_box_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_BOX_HIT *, uint32_t)
+fn apmath_box_bvh_create APRESULT (const APMATH_BOX_BVH_DESC *, apmath_box_bvh *, APMATH_ERROR *)
+fn apmath_box_bvh_destroy void (apmath_box_bvh)
+fn apmath_box_bvh_get_cost double (apmath_box_bvh)
+fn apmath_box_bvh_overlap_all uint32_t (apmath_box_bvh, const APMATH_SHAPE *, const APMATH_CAST_DESC *, uint32_t *, uint32_t)
+fn apmath_box_bvh_overlaps_shape _Bool (apmath_box_bvh, const APMATH_SHAPE *, const APMATH_CAST_DESC *)
+fn apmath_box_bvh_rebuild void (apmath_box_bvh)
+fn apmath_box_bvh_refit void (apmath_box_bvh)
+fn apmath_box_bvh_set_boxes APRESULT (apmath_box_bvh, const uint32_t *, const APMATH_BVH_BOX *, uint32_t, APMATH_ERROR *)
+fn apmath_box_bvh_sweep _Bool (apmath_box_bvh, const APMATH_SWEEP *, const APMATH_CAST_DESC *, APMATH_BOX_HIT *)
+fn apmath_box_bvh_sweep_all uint32_t (apmath_box_bvh, const APMATH_SWEEP *, const APMATH_CAST_DESC *, APMATH_BOX_HIT *, uint32_t)
 fn apmath_instance_bvh_cast _Bool (apmath_instance_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_INSTANCE_HIT *)
 fn apmath_instance_bvh_cast_all uint32_t (apmath_instance_bvh, const APMATH_RAY *, const APMATH_CAST_DESC *, APMATH_INSTANCE_HIT *, uint32_t)
 fn apmath_instance_bvh_create APRESULT (const APMATH_INSTANCE_BVH_DESC *, apmath_instance_bvh *)
 fn apmath_instance_bvh_destroy void (apmath_instance_bvh)
 fn apmath_instance_bvh_get_bounds APMATH_AABB (apmath_instance_bvh)
+fn apmath_instance_bvh_get_cost double (apmath_instance_bvh)
 fn apmath_instance_bvh_get_instance_count uint32_t (apmath_instance_bvh)
+fn apmath_instance_bvh_overlap_all uint32_t (apmath_instance_bvh, const APMATH_SHAPE *, const APMATH_CAST_DESC *, uint32_t *, uint32_t)
+fn apmath_instance_bvh_overlaps_shape _Bool (apmath_instance_bvh, const APMATH_SHAPE *, const APMATH_CAST_DESC *)
+fn apmath_instance_bvh_rebuild void (apmath_instance_bvh)
+fn apmath_instance_bvh_refit void (apmath_instance_bvh)
+fn apmath_instance_bvh_set_instances APRESULT (apmath_instance_bvh, const uint32_t *, const APMATH_BVH_INSTANCE *, uint32_t, APMATH_ERROR *)
+fn apmath_instance_bvh_sweep _Bool (apmath_instance_bvh, const APMATH_SWEEP *, const APMATH_CAST_DESC *, APMATH_SWEEP_HIT *)
+fn apmath_instance_bvh_sweep_all uint32_t (apmath_instance_bvh, const APMATH_SWEEP *, const APMATH_CAST_DESC *, APMATH_SWEEP_HIT *, uint32_t)
 fn apmath_mesh_bvh_cast _Bool (apmath_mesh_bvh, const APMATH_RAY *, APMATH_MESH_HIT *)
 fn apmath_mesh_bvh_create APRESULT (const APMATH_MESH_BVH_DESC *, apmath_mesh_bvh *)
 fn apmath_mesh_bvh_destroy void (apmath_mesh_bvh)
 fn apmath_mesh_bvh_get_bounds APMATH_AABB (apmath_mesh_bvh)
 fn apmath_mesh_bvh_get_triangle_count uint32_t (apmath_mesh_bvh)
+fn apmath_mesh_bvh_overlaps_shape _Bool (apmath_mesh_bvh, const ApriDMat4 *, const APMATH_SHAPE *)
 fn apmath_mesh_bvh_overlaps_volume _Bool (apmath_mesh_bvh, const ApriDMat4 *, const APMATH_VOLUME *)
+fn apmath_mesh_bvh_sweep _Bool (apmath_mesh_bvh, const ApriDMat4 *, const APMATH_SWEEP *, APMATH_SWEEP_HIT *)
 fn apmath_mesh_bvh_within_volume _Bool (apmath_mesh_bvh, const ApriDMat4 *, const APMATH_VOLUME *)
 fn apmath_poly_boolean APRESULT (const APMATH_POLY_BOOLEAN_DESC *, apmath_poly *, APMATH_ERROR *)
 fn apmath_poly_destroy void (apmath_poly)
@@ -794,6 +821,7 @@ opaque aparchive_writer_t
 opaque apaudio_cues_t
 opaque apaudio_mixer_t
 opaque apjobs_pool_t
+opaque apmath_box_bvh_t
 opaque apmath_instance_bvh_t
 opaque apmath_mesh_bvh_t
 opaque apmath_poly_t
@@ -1058,6 +1086,22 @@ field APJOBS_SCHEDULER.wait @40 APJOBS_WAIT_FUNCTION
 struct APMATH_AABB size=48 align=8
 field APMATH_AABB.lo @0 ApriDVec3
 field APMATH_AABB.hi @24 ApriDVec3
+struct APMATH_BOX_BVH_DESC size=32 align=8
+field APMATH_BOX_BVH_DESC.base @0 APRI_STRUCT_BASE
+field APMATH_BOX_BVH_DESC.boxes @16 const APMATH_BVH_BOX *
+field APMATH_BOX_BVH_DESC.box_count @24 uint32_t
+struct APMATH_BOX_HIT size=104 align=8
+field APMATH_BOX_HIT.box @0 uint32_t
+field APMATH_BOX_HIT.id @8 uint64_t
+field APMATH_BOX_HIT.started_inside @16 _Bool
+field APMATH_BOX_HIT.t @24 double
+field APMATH_BOX_HIT.point @32 ApriDVec3
+field APMATH_BOX_HIT.contact_normal @56 ApriDVec3
+field APMATH_BOX_HIT.face_normal @80 ApriDVec3
+struct APMATH_BVH_BOX size=64 align=8
+field APMATH_BVH_BOX.box @0 APMATH_AABB
+field APMATH_BVH_BOX.id @48 uint64_t
+field APMATH_BVH_BOX.mask @56 uint32_t
 struct APMATH_BVH_INSTANCE size=32 align=8
 field APMATH_BVH_INSTANCE.mesh @0 apmath_mesh_bvh
 field APMATH_BVH_INSTANCE.transform @8 const ApriDMat4 *
@@ -1135,6 +1179,26 @@ field APMATH_RAY.origin @0 ApriDVec3
 field APMATH_RAY.direction @24 ApriDVec3
 field APMATH_RAY.t_min @48 double
 field APMATH_RAY.t_max @56 double
+struct APMATH_SHAPE size=104 align=8
+field APMATH_SHAPE.kind @0 APMATH_SHAPE_KIND
+field APMATH_SHAPE.center @8 ApriDVec3
+field APMATH_SHAPE.rotation @32 ApriDVec4
+field APMATH_SHAPE.half_extents @64 ApriDVec3
+field APMATH_SHAPE.half_height @88 double
+field APMATH_SHAPE.radius @96 double
+struct APMATH_SWEEP size=136 align=8
+field APMATH_SWEEP.shape @0 APMATH_SHAPE
+field APMATH_SWEEP.direction @104 ApriDVec3
+field APMATH_SWEEP.t_max @128 double
+struct APMATH_SWEEP_HIT size=104 align=8
+field APMATH_SWEEP_HIT.instance @0 uint32_t
+field APMATH_SWEEP_HIT.id @8 uint64_t
+field APMATH_SWEEP_HIT.triangle @16 uint32_t
+field APMATH_SWEEP_HIT.started_overlapping @20 _Bool
+field APMATH_SWEEP_HIT.t @24 double
+field APMATH_SWEEP_HIT.point @32 ApriDVec3
+field APMATH_SWEEP_HIT.contact_normal @56 ApriDVec3
+field APMATH_SWEEP_HIT.face_normal @80 ApriDVec3
 struct APMATH_VOLUME size=32 align=8
 field APMATH_VOLUME.planes @0 const APMATH_PLANE *
 field APMATH_VOLUME.plane_count @8 uint32_t
@@ -2162,6 +2226,9 @@ typedef APJOBS_SCHEDULER = struct APJOBS_SCHEDULER
 typedef APJOBS_TASK_FUNCTION = void (*)(uint32_t, uint32_t, uint32_t, void *)
 typedef APJOBS_WAIT_FUNCTION = void (*)(void *, void *)
 typedef APMATH_AABB = struct APMATH_AABB
+typedef APMATH_BOX_BVH_DESC = struct APMATH_BOX_BVH_DESC
+typedef APMATH_BOX_HIT = struct APMATH_BOX_HIT
+typedef APMATH_BVH_BOX = struct APMATH_BVH_BOX
 typedef APMATH_BVH_INSTANCE = struct APMATH_BVH_INSTANCE
 typedef APMATH_CAST_DESC = struct APMATH_CAST_DESC
 typedef APMATH_CAST_FILTER = _Bool (*)(void *, uint32_t, uint64_t)
@@ -2184,6 +2251,10 @@ typedef APMATH_POLY_POINT = struct APMATH_POLY_POINT
 typedef APMATH_POLY_SET = struct APMATH_POLY_SET
 typedef APMATH_POLY_SKELETON_DESC = struct APMATH_POLY_SKELETON_DESC
 typedef APMATH_RAY = struct APMATH_RAY
+typedef APMATH_SHAPE = struct APMATH_SHAPE
+typedef APMATH_SHAPE_KIND = enum APMATH_SHAPE_KIND
+typedef APMATH_SWEEP = struct APMATH_SWEEP
+typedef APMATH_SWEEP_HIT = struct APMATH_SWEEP_HIT
 typedef APMATH_VOLUME = struct APMATH_VOLUME
 typedef APREND_BATCH_CAP = enum APREND_BATCH_CAP
 typedef APREND_BATCH_CIRCLE = struct APREND_BATCH_CIRCLE
@@ -2336,6 +2407,7 @@ typedef aparchive_writer = struct aparchive_writer_t *
 typedef apaudio_cues = struct apaudio_cues_t *
 typedef apaudio_mixer = struct apaudio_mixer_t *
 typedef apjobs_pool = struct apjobs_pool_t *
+typedef apmath_box_bvh = struct apmath_box_bvh_t *
 typedef apmath_instance_bvh = struct apmath_instance_bvh_t *
 typedef apmath_mesh_bvh = struct apmath_mesh_bvh_t *
 typedef apmath_poly = struct apmath_poly_t *

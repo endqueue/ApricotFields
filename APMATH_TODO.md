@@ -62,7 +62,7 @@ and triangulation).
 ## apmathbvh: shapes and an instance BVH changed in place
 
 **Drafted 2026-11-05, revised 2026-11-06 after two reviews, approved by the
-user 2026-11-06, not built:** `apmath_bvh_queries_draft.h`. Spheres, capsules and boxes
+user 2026-11-06:** `apmath_bvh_queries_draft.h`. Spheres, capsules and boxes
 (`APMATH_SHAPE`) tested against a mesh or an instance BVH (overlaps) and
 moved along a line to their first touch (sweeps), by one GJK algorithm,
 a sweep walking the tree as a ray against boxes grown by the shape's;
@@ -70,8 +70,66 @@ an instance BVH's instances set in place, refitted and rebuilt with no
 allocation, its surface-area cost read to choose between them; a box BVH
 over solid boxes the caller gives, with the same queries and upkeep;
 `APMATH_ERROR` moved to `math/apmatherror.h`; `apmathbvh.cpp` built
-without floating-point contraction. No ABI break. Its tests and numbers
-are listed in the draft.
+without floating-point contraction. No ABI break.
+
+**Built 2026-11-06 on Windows 11** (ThinkPad P1 Gen 5, MSVC 14.51;
+`apricotfields-windows-d3d12` and `-vulkan`, Debug and Release; macOS and
+Linux not built, so the contraction flag and the bits test's hashes on
+Clang and GCC are still to see). Every ctest passes on both presets in
+both configurations but `aprend_contract_tests` (card A49's
+`lit_fit_cascades`, as before), and under both `-asan` presets (from a
+Visual Studio developer prompt) the same, no sanitizer report. New or grown: `apmathbvh_tests` (exact
+cases; 3,000 overlaps and 3,000 sweeps against brute force - exact
+point-, segment- and separating-axis distances, a march of them bisected
+to 1e-9 - with no near touch to skip; 1,000 sliver triangles grazed by
+capsules, GJK's capped cases; sweeps of INFINITY through 100,000
+instances against each instance's own; tree independence - created, set
+and refitted, rebuilt, created fresh: the same bits; the in-place calls'
+refusals in parameter order, each changing nothing; the box BVH against
+brute force; the cast's early stop), `apmathbvh_bits_tests` (new: casts,
+overlaps, sweeps, a refit, a rebuild's cost and the box BVH hashed,
+recorded here, Debug and Release alike, `tests/data/apmathbvh/bits.inc`),
+`aprinoalloc_tests` (an instance BVH of 10,000 moving, set, refit or
+rebuilt, 8 shapes overlapped and swept a frame; a box BVH of 100,000, every
+call: none of ours), `aprioverlap_tests` (queries, overlaps and sweeps
+from two threads; sets on disjoint instances from two threads, then a
+refit; in Debug, the six overlaps the rule forbids reported and the two
+it allows not), and the misuse harness (140 calls with a destroyed handle,
+ten times in Debug, no failure). The Debug check of shared roles is new
+(`apri_shared_overlap`, `src/aprioverlap.hpp`). How the build differs from
+the draft, none in a contract: `../claude_made_decisions.md`, 2026-11-06.
+
+Numbers, Release, the ThinkPad (`tests/apmathbvh_bench.c`, a 224-triangle
+ball placed 100, 10,000 and 100,000 times at the density of 10,000 in a
+100 m cube). Casts before and after (`--casts`, best of three runs each):
+nearest 1.42-1.50 M / 367-376 k / 225-234 k rays a second before, 1.43-1.50
+M / 365-379 k / 217-227 k after - unchanged; the early stop of a cast that
+asks only whether is worth little here (the scene's first hit is near the
+nearest); create 4.8 and 60 ms before at 10,000 and 100,000, 6.0 and 70-78
+ms after (each instance is placed twice: checked before anything is
+allocated, then filled). Shapes and sweeps (100 / 10,000 / 100,000):
+overlaps_shape 5.6 M / 3.1 M / 1.9 M a second; overlap_all 5.4 M / 2.1 M
+/ 1.4 M; a sweep of 10 m 259 k / 119 k / 115 k; of INFINITY 220 k / 70 k /
+54 k, beside rays along the same lines 1.31 M / 249 k / 159 k (the
+sweep's walk is a ray's: within 5 times). Upkeep a step, set and refit
+against set and rebuild against a fresh create:
+
+| instances | moving | set + refit | set + rebuild | create | cost: built, refitted 60 steps, rebuilt |
+|---|---|---|---|---|---|
+| 100 | all | 15 us | 40 us | 44 us | 8.6, 11.3, 7.0 |
+| 100 | 1% | 0.4 us | 21 us | 41 us | 7.0, 7.0, 7.0 |
+| 10,000 | all | 2.07 ms | 6.62 ms | 7.74 ms | 55.4, 104.3, 52.2 |
+| 10,000 | 1% | 52 us | 5.51 ms | 8.76 ms | 52.2, 49.9, 48.7 |
+| 100,000 | all | 22.3 ms | 91.3 ms | 101 ms | 127.6, 257.5, 122.8 |
+| 100,000 | 1% | 0.75 ms | 73.1 ms | 101 ms | 122.8, 120.2, 117.3 |
+
+Refitting all of them for 60 steps of random drift doubles the cost a ray
+pays; with 1% moving it doesn't move. The ratio to rebuild at is the
+caller's. A set computes each instance twice (checked, then placed, so a
+refused set changes nothing): about half of an all-moving step's set.
+
+- [ ] Build and run on macOS and Linux: the bits test against these
+  hashes, `-tsan` on `aprioverlap_tests`.
 
 ## apmathpoly
 

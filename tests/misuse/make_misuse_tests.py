@@ -50,6 +50,7 @@ FACTORIES = {
     'apjobs_pool': 'dead_apjobs_pool',
     'apmath_mesh_bvh': 'dead_apmath_mesh_bvh',
     'apmath_instance_bvh': 'dead_apmath_instance_bvh',
+    'apmath_box_bvh': 'dead_apmath_box_bvh',
     'apmath_poly': 'dead_apmath_poly',
     'apsync_session': 'dead_apsync_session',
     'aptext_face': 'dead_aptext_face',

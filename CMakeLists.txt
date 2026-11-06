@@ -65,6 +65,7 @@ add_library(ApricotFields STATIC
         src/audio/apaudio_decode.cpp
         src/audio/apaudiocues.cpp
         src/math/apmathbvh.cpp
+        src/math/apmathbvh_internal.hpp
         src/math/apmathpoly_internal.hpp
         src/math/apmathpoly.cpp
         src/sync/apsync_internal.hpp
@@ -101,6 +102,7 @@ add_library(ApricotFields STATIC
         include/audio/apaudio.h
         include/audio/apaudiocues.h
         include/math/apmathbvh.h
+        include/math/apmatherror.h
         include/math/apmathpoly.h
         include/sync/apsyncnet.h
         include/text/aptext.h
@@ -725,6 +727,9 @@ set(APRICOTFIELDS_HOSEK_RGB_INC ${APRICOTFIELDS_SHADER_INC_DIR}/aprend_hosek_rgb
 if (NOT MSVC)
     target_compile_options(apmath_clipper2 PRIVATE -ffp-contract=off)
     set_source_files_properties(src/math/apmathpoly.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+    # The same for ApMath's BVHs: a cast, an overlap and a sweep give the
+    # same bits everywhere (apmathbvh.h, "Same bits").
+    set_source_files_properties(src/math/apmathbvh.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
     # The same for ApText: a layout's positions and a glyph's distance field
     # are the same bits on every platform (aptext.h).
     foreach (target aptext_harfbuzz aptext_msdfgen aptext_sheenbidi aptext_unibreak)
@@ -807,6 +812,10 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
+    # Numbers, not a test: casts, sweeps and overlaps a second, and refit
+    # against rebuild against create (APMATH_TODO.md). Run by hand, Release.
+    add_executable(apmathbvh_bench tests/apmathbvh_bench.c)
+    target_link_libraries(apmathbvh_bench PRIVATE ApricotFields)
     add_executable(apmathpoly_tests tests/apmathpoly_tests.c)
     target_link_libraries(apmathpoly_tests PRIVATE ApricotFields)
     add_test(NAME apmathpoly_tests COMMAND apmathpoly_tests)
@@ -815,6 +824,11 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apmathpoly_bits_tests tests/apmathpoly_bits_tests.c)
     target_link_libraries(apmathpoly_bits_tests PRIVATE ApricotFields)
     add_test(NAME apmathpoly_bits_tests COMMAND apmathpoly_bits_tests)
+    # The same for the BVHs' casts, overlaps and sweeps, against values
+    # recorded on the first machine to run it (tests/data/apmathbvh).
+    add_executable(apmathbvh_bits_tests tests/apmathbvh_bits_tests.c)
+    target_link_libraries(apmathbvh_bits_tests PRIVATE ApricotFields)
+    add_test(NAME apmathbvh_bits_tests COMMAND apmathbvh_bits_tests)
     # The range list under Aprend's pools: an internal header with no GPU in
     # it, which is why this one test sees src/render.
     add_executable(aprendranges_tests tests/aprendranges_tests.cpp)

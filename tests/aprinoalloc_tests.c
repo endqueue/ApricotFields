@@ -402,7 +402,180 @@ static void test_bvh(void)
     stop_counting();
     CHECK(found == FRAMES * 3);
     report("ApMath's volume tests, a box, its mesh's overlap and within, a frame");
+
+    // An instance BVH of 10,000 placements of the grid that move: each frame
+    // 1% of them set and refitted, every eighth frame all of them set and
+    // the tree rebuilt, then shapes overlapped and swept (the in-place calls
+    // and the shape queries, apmath_bvh_queries_draft.h).
+    enum
+    {
+        INSTANCES = 10000
+    };
+    static ApriDMat4 matrices[INSTANCES];
+    static APMATH_BVH_INSTANCE instances[INSTANCES];
+    static uint32_t indices_all[INSTANCES];
+    for (uint32_t i = 0; i < INSTANCES; i++)
+    {
+        memset(&matrices[i], 0, sizeof(ApriDMat4));
+        matrices[i].m[0] = matrices[i].m[5] = matrices[i].m[10] = 0.05;
+        matrices[i].m[12] = (double)(i % 100);
+        matrices[i].m[13] = (double)(i / 100);
+        matrices[i].m[15] = 1.0;
+        instances[i].mesh = bvh;
+        instances[i].transform = &matrices[i];
+        instances[i].id = i;
+        instances[i].mask = 1;
+        indices_all[i] = i;
+    }
+    APMATH_INSTANCE_BVH_DESC instance_desc;
+    memset(&instance_desc, 0, sizeof(instance_desc));
+    instance_desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
+    instance_desc.instances = instances;
+    instance_desc.instance_count = INSTANCES;
+    apmath_instance_bvh placed = NULL;
+    CHECK(apmath_instance_bvh_create(&instance_desc, &placed) == APRESULT_OK);
+    if (!placed)
+    {
+        apmath_mesh_bvh_destroy(bvh);
+        return;
+    }
+    unsigned long touches = 0;
+    start_counting();
+    for (int f = 0; f < FRAMES; f++)
+    {
+        for (uint32_t i = 0; i < INSTANCES; i++)
+            matrices[i].m[14] = (double)((f + (int)i) % 3) * 0.1;
+        if (f % 8 == 7)
+        {
+            CHECK(apmath_instance_bvh_set_instances(placed, indices_all, instances, INSTANCES, NULL) == APRESULT_OK);
+            apmath_instance_bvh_rebuild(placed);
+        }
+        else
+        {
+            CHECK(apmath_instance_bvh_set_instances(placed, indices_all + (f % 100) * 100, instances + (f % 100) * 100,
+                                                    100, NULL) == APRESULT_OK);
+            apmath_instance_bvh_refit(placed);
+        }
+        touches += apmath_instance_bvh_get_cost(placed) > 0.0;
+        for (int s = 0; s < 8; s++)
+        {
+            APMATH_SHAPE shape;
+            memset(&shape, 0, sizeof(shape));
+            shape.kind = (APMATH_SHAPE_KIND)(1 + s % 3);
+            shape.center.x = 0.3 + (double)((f * 7 + s * 13) % 100);
+            shape.center.y = 0.3 + (double)((f * 3 + s * 29) % 100);
+            shape.center.z = 2.0;
+            shape.rotation.w = 1.0;
+            shape.radius = shape.kind == APMATH_SHAPE_KIND_BOX ? 0.0 : 0.2;
+            shape.half_height = 0.3;
+            shape.half_extents.x = shape.half_extents.y = shape.half_extents.z = 0.2;
+            uint32_t list[16];
+            touches += apmath_instance_bvh_overlaps_shape(placed, &shape, NULL);
+            touches += apmath_instance_bvh_overlap_all(placed, &shape, NULL, list, 16) > 0;
+            APMATH_SWEEP sweep;
+            memset(&sweep, 0, sizeof(sweep));
+            sweep.shape = shape;
+            sweep.direction.z = -1.0;
+            sweep.t_max = 10.0;
+            APMATH_SWEEP_HIT hit, hits[4];
+            touches += apmath_instance_bvh_sweep(placed, &sweep, NULL, &hit);
+            touches += apmath_instance_bvh_sweep_all(placed, &sweep, NULL, hits, 4) > 0;
+        }
+    }
+    stop_counting();
+    CHECK(touches > 0);
+    report("ApMath's instance BVH, 10,000 moving: set, refit or rebuild, and 8 shapes overlapped and swept a frame");
+    apmath_instance_bvh_destroy(placed);
     apmath_mesh_bvh_destroy(bvh);
+
+    // A box BVH of 100,000 solid boxes: set, refit, rebuild and every query.
+    enum
+    {
+        BOXES = 100000
+    };
+    APMATH_BVH_BOX *boxes = (APMATH_BVH_BOX *)malloc(sizeof(APMATH_BVH_BOX) * BOXES);
+    uint32_t *box_indices = (uint32_t *)malloc(sizeof(uint32_t) * BOXES);
+    CHECK(boxes && box_indices);
+    if (!boxes || !box_indices)
+    {
+        free(boxes);
+        free(box_indices);
+        return;
+    }
+    for (uint32_t i = 0; i < BOXES; i++)
+    {
+        double x = (double)(i % 316), y = (double)(i / 316 % 316), z = (double)(i / 99856);
+        boxes[i].box.lo.x = x;
+        boxes[i].box.lo.y = y;
+        boxes[i].box.lo.z = z;
+        boxes[i].box.hi.x = x + 0.5;
+        boxes[i].box.hi.y = y + 0.5;
+        boxes[i].box.hi.z = z + 0.5;
+        boxes[i].id = i;
+        boxes[i].mask = 1;
+        box_indices[i] = i;
+    }
+    APMATH_BOX_BVH_DESC box_desc;
+    memset(&box_desc, 0, sizeof(box_desc));
+    box_desc.base.type = APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC;
+    box_desc.boxes = boxes;
+    box_desc.box_count = BOXES;
+    apmath_box_bvh box_bvh = NULL;
+    CHECK(apmath_box_bvh_create(&box_desc, &box_bvh, NULL) == APRESULT_OK);
+    unsigned long met = 0;
+    if (box_bvh)
+    {
+        start_counting();
+        for (int f = 0; f < FRAMES; f++)
+        {
+            for (uint32_t i = 0; i < 1000; i++)
+            {
+                boxes[(f * 1000 + i) % BOXES].box.lo.z += 0.01;
+                boxes[(f * 1000 + i) % BOXES].box.hi.z += 0.01;
+            }
+            CHECK(apmath_box_bvh_set_boxes(box_bvh, box_indices + (f * 1000) % BOXES, boxes + (f * 1000) % BOXES, 1000,
+                                           NULL) == APRESULT_OK);
+            if (f % 16 == 15)
+                apmath_box_bvh_rebuild(box_bvh);
+            else
+                apmath_box_bvh_refit(box_bvh);
+            APMATH_RAY ray;
+            memset(&ray, 0, sizeof(ray));
+            ray.origin.x = 0.25 + (double)(f % 316);
+            ray.origin.y = 0.25;
+            ray.origin.z = 5.0;
+            ray.direction.y = 1.0;
+            ray.direction.z = -0.02;
+            ray.t_max = 400.0;
+            APMATH_BOX_HIT hit, hits[8];
+            met += apmath_box_bvh_cast(box_bvh, &ray, NULL, &hit);
+            met += apmath_box_bvh_cast_all(box_bvh, &ray, NULL, hits, 8) > 0;
+            APMATH_SHAPE shape;
+            memset(&shape, 0, sizeof(shape));
+            shape.kind = APMATH_SHAPE_KIND_SPHERE;
+            shape.center.x = 10.0 + f % 50;
+            shape.center.y = 10.0;
+            shape.center.z = 0.25;
+            shape.radius = 2.0;
+            uint32_t list[8];
+            met += apmath_box_bvh_overlaps_shape(box_bvh, &shape, NULL);
+            met += apmath_box_bvh_overlap_all(box_bvh, &shape, NULL, list, 8) > 0;
+            APMATH_SWEEP sweep;
+            memset(&sweep, 0, sizeof(sweep));
+            sweep.shape = shape;
+            sweep.shape.center.z = 6.0;
+            sweep.direction.z = -1.0;
+            sweep.t_max = 10.0;
+            met += apmath_box_bvh_sweep(box_bvh, &sweep, NULL, &hit);
+            met += apmath_box_bvh_sweep_all(box_bvh, &sweep, NULL, hits, 8) > 0;
+        }
+        stop_counting();
+        CHECK(met > 0);
+        report("ApMath's box BVH, 100,000 boxes, 1,000 set a frame, refit or rebuilt, every query");
+        apmath_box_bvh_destroy(box_bvh);
+    }
+    free(box_indices);
+    free(boxes);
 }
 
 // ---- ApJobs ----------------------------------------------------------------------

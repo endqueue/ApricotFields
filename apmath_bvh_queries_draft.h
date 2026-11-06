@@ -10,7 +10,10 @@
  * insertion; set_instances' marks kept apart from refit's; a new shape
  * with data of its own is a new type; a box BVH over solid boxes the
  * caller gives. APPROVED by the user 2026-11-06, as it stands after two
- * reviews.
+ * reviews. BUILT 2026-11-06 on Windows 11 (APMATH_TODO.md); what the
+ * build chose where this left room is in the
+ * workspace's claude_made_decisions.md, 2026-11-06, and this file is not
+ * edited to match.
  * Not built, not in any target. Not compilable: it repeats declarations of
  * include/math/apmathbvh.h, include/math/apmathpoly.h and apricore.h to show
  * them changed. Every declaration below is marked [ADDED], [CHANGED] or

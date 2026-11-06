@@ -328,6 +328,25 @@ static apmath_instance_bvh dead_apmath_instance_bvh(void)
     return bvh;
 }
 
+static apmath_box_bvh dead_apmath_box_bvh(void)
+{
+    APMATH_BVH_BOX box;
+    memset(&box, 0, sizeof(box));
+    box.box.hi.x = box.box.hi.y = box.box.hi.z = 1.0;
+    box.mask = 1;
+    APMATH_BOX_BVH_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC;
+    desc.boxes = &box;
+    desc.box_count = 1;
+    apmath_box_bvh bvh = NULL;
+    APRESULT result = apmath_box_bvh_create(&desc, &bvh, NULL);
+    if (result != APRESULT_OK)
+        factory_failed("apmath_box_bvh", "apmath_box_bvh_create", result);
+    apmath_box_bvh_destroy(bvh);
+    return bvh;
+}
+
 static apmath_poly dead_apmath_poly(void)
 {
     static const APMATH_POLY_POINT square[4] = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};

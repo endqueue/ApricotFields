@@ -10,6 +10,7 @@
 
 #include "../src/aprioverlap.hpp"
 #include "../src/audio/apaudio_internal.hpp"
+#include "../src/math/apmathbvh_internal.hpp"
 #include "math/apmathbvh.h"
 #include "../src/render/aprendlit_internal.hpp"
 #include "../src/render/aprendraytracing_internal.hpp"
@@ -94,6 +95,148 @@ static void test_volume_reads()
     apmath_mesh_bvh_destroy(bvh);
 }
 
+// ApMath's instance and box BVHs (apmathbvh.h, "Threads"), in every build so
+// ThreadSanitizer sees it: casts, overlaps and sweeps from two threads on one
+// BVH, each getting the main thread's answers; then set_instances on disjoint
+// instances from two threads at once, then a refit, and the answers after.
+static apmath_mesh_bvh make_cube_bvh()
+{
+    static const ApriDVec3 positions[8] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0},
+                                           {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1}};
+    static const uint32_t indices[36] = {0, 4, 6, 0, 6, 2, 1, 3, 7, 1, 7, 5, 0, 1, 5, 0, 5, 4,
+                                         2, 6, 7, 2, 7, 3, 0, 2, 3, 0, 3, 1, 4, 5, 7, 4, 7, 6};
+    APMATH_MESH_BVH_DESC desc{};
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
+    desc.positions = positions;
+    desc.position_count = 8;
+    desc.indices = indices;
+    desc.index_count = 36;
+    apmath_mesh_bvh bvh = nullptr;
+    CHECK(apmath_mesh_bvh_create(&desc, &bvh) == APRESULT_OK);
+    return bvh;
+}
+
+static void test_bvh_reads()
+{
+    apmath_mesh_bvh cube = make_cube_bvh();
+    if (!cube)
+        return;
+    enum
+    {
+        COUNT = 200
+    };
+    static ApriDMat4 matrices[COUNT];
+    static APMATH_BVH_INSTANCE instances[COUNT];
+    static uint32_t indices[COUNT];
+    for (uint32_t i = 0; i < COUNT; i++)
+    {
+        matrices[i] = ApriDMat4{};
+        matrices[i].m[0] = matrices[i].m[5] = matrices[i].m[10] = matrices[i].m[15] = 1.0;
+        matrices[i].m[12] = (double)(i % 20) * 2.0;
+        matrices[i].m[14] = (double)(i / 20) * 2.0;
+        instances[i] = APMATH_BVH_INSTANCE{cube, &matrices[i], i, 1};
+        indices[i] = i;
+    }
+    APMATH_INSTANCE_BVH_DESC desc{};
+    desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
+    desc.instances = instances;
+    desc.instance_count = COUNT;
+    apmath_instance_bvh bvh = nullptr;
+    CHECK(apmath_instance_bvh_create(&desc, &bvh) == APRESULT_OK);
+    if (!bvh)
+    {
+        apmath_mesh_bvh_destroy(cube);
+        return;
+    }
+    auto answer = [bvh](int i) {
+        uint64_t a = 0;
+        APMATH_RAY ray = {{(double)(i % 40) + 0.5, 5.0, (double)(i % 20) + 0.5}, {0.0, -1.0, 0.0}, 0.0, 10.0};
+        APMATH_INSTANCE_HIT hit{};
+        a = a * 31 + apmath_instance_bvh_cast(bvh, &ray, nullptr, &hit) + hit.instance;
+        APMATH_SHAPE shape{};
+        shape.kind = APMATH_SHAPE_KIND_SPHERE;
+        shape.center = {(double)(i % 40) + 0.5, 1.2, (double)(i % 20) + 0.5};
+        shape.rotation.w = 1.0;
+        shape.radius = 0.4;
+        uint32_t list[8];
+        a = a * 31 + apmath_instance_bvh_overlap_all(bvh, &shape, nullptr, list, 8);
+        APMATH_SWEEP sweep{};
+        sweep.shape = shape;
+        sweep.shape.center.y = 5.0;
+        sweep.direction.y = -1.0;
+        sweep.t_max = 10.0;
+        APMATH_SWEEP_HIT sh{};
+        a = a * 31 + apmath_instance_bvh_sweep(bvh, &sweep, nullptr, &sh) + sh.instance;
+        return a;
+    };
+    uint64_t expected[40];
+    for (int i = 0; i < 40; i++)
+        expected[i] = answer(i);
+    std::atomic<int> wrong{0};
+    auto run = [&]() {
+        for (int i = 0; i < 400; i++)
+            if (answer(i) != expected[i % 40])
+                wrong++;
+    };
+    std::thread a(run), b(run);
+    a.join();
+    b.join();
+    CHECK(wrong.load() == 0);
+    // Disjoint sets from two threads, then one refit: every instance up 10.
+    for (uint32_t i = 0; i < COUNT; i++)
+        matrices[i].m[13] = 10.0;
+    std::atomic<int> refused{0};
+    std::thread low([&] {
+        if (apmath_instance_bvh_set_instances(bvh, indices, instances, COUNT / 2, nullptr) != APRESULT_OK)
+            refused++;
+    });
+    std::thread high([&] {
+        if (apmath_instance_bvh_set_instances(bvh, indices + COUNT / 2, instances + COUNT / 2, COUNT / 2, nullptr) !=
+            APRESULT_OK)
+            refused++;
+    });
+    low.join();
+    high.join();
+    CHECK(refused.load() == 0);
+    apmath_instance_bvh_refit(bvh);
+    CHECK(apmath_instance_bvh_guard(bvh).reports.load() == 0);
+    APMATH_RAY ray = {{0.5, 20.0, 0.5}, {0.0, -1.0, 0.0}, 0.0, 100.0};
+    APMATH_INSTANCE_HIT hit{};
+    CHECK(apmath_instance_bvh_cast(bvh, &ray, nullptr, &hit) && hit.t > 8.9 && hit.t < 9.1);
+    apmath_instance_bvh_destroy(bvh);
+    apmath_mesh_bvh_destroy(cube);
+}
+
+// Enters a shared guard in [role] and stays until [release] is set.
+static void hold_shared(apri_shared_overlap *guard, apri_role role, std::atomic<bool> *inside,
+                        std::atomic<bool> *release)
+{
+    APRI_ENTER_SHARED(*guard, role, "test", "hold_shared", "object");
+    inside->store(true);
+    while (!release->load())
+        std::this_thread::yield();
+}
+
+// Calls [call] on another thread while [guard] is held in [role]: [expected]
+// reports, by the call.
+template <typename F>
+static void shared_overlap_once(apri_shared_overlap &guard, apri_role role, const char *what, uint32_t expected, F call)
+{
+    std::atomic<bool> inside{false};
+    std::atomic<bool> release{false};
+    std::thread holder(hold_shared, &guard, role, &inside, &release);
+    while (!inside.load())
+        std::this_thread::yield();
+    const uint32_t before = guard.reports.load();
+    std::thread caller(call);
+    caller.join();
+    release.store(true);
+    holder.join();
+    if (guard.reports.load() != before + expected)
+        printf("FAIL: %s: %u overlap report(s), %u expected\n", what, guard.reports.load() - before, expected);
+    CHECK(guard.reports.load() == before + expected);
+}
+
 // Calls [call] on another thread while [guard] is held: one overlap report,
 // by the call, if it opens with APREND_ENTER on that guard.
 template <typename F>
@@ -117,6 +260,7 @@ static void overlap_once(apri_overlap &guard, const char *what, F call)
 int main()
 {
     test_volume_reads();
+    test_bvh_reads();
 #if !_DEBUG
     printf("aprioverlap_tests: Release build, which checks no overlaps: those skipped\n");
     if (failures)
@@ -186,6 +330,54 @@ int main()
         tb.join();
         CHECK(a.reports.load() == 0);
         CHECK(b.reports.load() == 0);
+    }
+    // ApMath's instance and box BVHs (apmathbvh.h, "Threads"): queries
+    // beside queries and sets beside sets go unreported; a cast beside a set,
+    // a set beside a cast, and a refit or rebuild beside anything, reported.
+    {
+        apmath_mesh_bvh cube = make_cube_bvh();
+        ApriDMat4 m{};
+        m.m[0] = m.m[5] = m.m[10] = m.m[15] = 1.0;
+        APMATH_BVH_INSTANCE instance = {cube, &m, 1, 1};
+        APMATH_INSTANCE_BVH_DESC desc{};
+        desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
+        desc.instances = &instance;
+        desc.instance_count = 1;
+        apmath_instance_bvh bvh = nullptr;
+        CHECK(apmath_instance_bvh_create(&desc, &bvh) == APRESULT_OK);
+        APMATH_BVH_BOX box = {{{0, 0, 0}, {1, 1, 1}}, 1, 1};
+        APMATH_BOX_BVH_DESC box_desc{};
+        box_desc.base.type = APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC;
+        box_desc.boxes = &box;
+        box_desc.box_count = 1;
+        apmath_box_bvh boxes = nullptr;
+        CHECK(apmath_box_bvh_create(&box_desc, &boxes, nullptr) == APRESULT_OK);
+        if (bvh && boxes)
+        {
+            apri_shared_overlap &guard = apmath_instance_bvh_guard(bvh);
+            apri_shared_overlap &box_guard = apmath_box_bvh_guard(boxes);
+            APMATH_RAY ray = {{0.5, 5.0, 0.5}, {0.0, -1.0, 0.0}, 0.0, 10.0};
+            uint32_t zero = 0;
+            shared_overlap_once(guard, APRI_ROLE_READ, "a cast beside a cast", 0,
+                                [&] { (void)apmath_instance_bvh_cast(bvh, &ray, nullptr, nullptr); });
+            shared_overlap_once(guard, APRI_ROLE_SHARE, "a set beside a set", 0,
+                                [&] { (void)apmath_instance_bvh_set_instances(bvh, &zero, &instance, 1, nullptr); });
+            printf("aprioverlap_tests: six overlap reports are expected next\n");
+            fflush(stdout);
+            shared_overlap_once(guard, APRI_ROLE_SHARE, "a cast beside a set", 1,
+                                [&] { (void)apmath_instance_bvh_cast(bvh, &ray, nullptr, nullptr); });
+            shared_overlap_once(guard, APRI_ROLE_READ, "a set beside a cast", 1,
+                                [&] { (void)apmath_instance_bvh_set_instances(bvh, &zero, &instance, 1, nullptr); });
+            shared_overlap_once(guard, APRI_ROLE_READ, "a refit beside a cast", 1, [&] { apmath_instance_bvh_refit(bvh); });
+            shared_overlap_once(guard, APRI_ROLE_SHARE, "a rebuild beside a set", 1,
+                                [&] { apmath_instance_bvh_rebuild(bvh); });
+            shared_overlap_once(box_guard, APRI_ROLE_SHARE, "a box cast beside a set", 1,
+                                [&] { (void)apmath_box_bvh_cast(boxes, &ray, nullptr, nullptr); });
+            apmath_instance_bvh_refit(bvh);
+        }
+        apmath_box_bvh_destroy(boxes);
+        apmath_instance_bvh_destroy(bvh);
+        apmath_mesh_bvh_destroy(cube);
     }
     // A mixer's control calls (apaudio.h, "Threads"): an update while
     // another control call is inside is reported; the underrun count, an
