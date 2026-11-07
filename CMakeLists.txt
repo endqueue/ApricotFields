@@ -63,6 +63,7 @@ add_library(ApricotFields STATIC
         src/audio/apaudio_stream_reader.h
         src/audio/apaudio.cpp
         src/audio/apaudio_decode.cpp
+        src/audio/apaudio_encode.cpp
         src/audio/apaudiocues.cpp
         src/math/apmathbvh.cpp
         src/math/apmathbvh_internal.hpp

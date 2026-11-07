@@ -509,6 +509,24 @@ the next work; binaural later.
   users listen on headphones or laptop speakers.
 - **Ambisonics,** for many simultaneous sources.
 
+### 17. Resampling and encoding offline - built
+
+From `apaudio_encode_draft.h`, approved 2026-11-06 after one review, built
+the same day on Windows 11 (ThinkPad P1 Gen 5, MSVC 14.51,
+`apricotfields-windows-d3d12`, Debug and Release; macOS and Linux not
+built): `apaudio_pcm_resample()` (any channel count, the mixer's LINEAR or
+windowed sinc, its table shared through `apaudio_internal.hpp`; the same
+rate copies) and `apaudio_opus_encode()` (RFC 7845's Ogg Opus over the
+libopus and libogg already built: mono or stereo at Opus's five rates,
+every choice in `APAUDIO_OPUS_ENCODE_DESC`, the last granule trimming the
+decode to the input's frames), `apaudio_encoded_free()`. Tests in
+`apaudio_tests` (`test_resample`, `test_opus_encode`), seen pending before
+the code: SNR measured once and floored a few dB under it (44.1 to 48 kHz
+of a 1 kHz sine: LINEAR 54.6 dB, SINC 97.4; Opus at 96 kb/s VBR: 44.3 dB
+mono, 40.0 stereo), lengths at every rate, the same bytes twice, every
+refusal. Not built: a test of each allocation failing (ApAudio has no hook
+to make one fail).
+
 ## Platform behavior a caller has to handle
 
 Not ApAudio's to decide, but nothing in the design prompts its callers to handle it.

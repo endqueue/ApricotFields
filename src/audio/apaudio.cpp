@@ -983,8 +983,10 @@ APRI_PLAIN_DATA(RankEntry);
 // Windowed sinc: SINC_ZEROS zero crossings each side, SINC_RESOLUTION table
 // entries per crossing. Playing faster than the mixer's rate stretches it (a
 // lower cutoff), up to SINC_MAX_STRETCH.
-constexpr int SINC_ZEROS = 8;
-constexpr int SINC_RESOLUTION = 256;
+// The table's numbers are apaudio_internal.hpp's, which apaudio_encode.cpp's
+// offline resampler shares.
+constexpr int SINC_ZEROS = APAUDIO_SINC_ZEROS;
+constexpr int SINC_RESOLUTION = APAUDIO_SINC_RESOLUTION;
 constexpr float SINC_MAX_STRETCH = 16.0f;
 
 // ---- Streams: records ---------------------------------------------------------
@@ -1416,7 +1418,7 @@ static void format_apply(Mixer *m, const APAUDIO_FORMAT &format, uint32_t max_fr
     limiter_reset(m);
 }
 
-static float *sinc_table_build()
+float *apaudio_sinc_table_build()
 {
     int size = SINC_ZEROS * SINC_RESOLUTION;
     float *table = alloc_array<float>((size_t)size + 2);
@@ -3798,7 +3800,7 @@ extern "C"
             allocated = m->decisions[i] && config_alloc(m, m->configs[i]);
         }
         if (allocated && m->resampler == APAUDIO_RESAMPLER_SINC)
-            allocated = (m->sinc = sinc_table_build()) != nullptr;
+            allocated = (m->sinc = apaudio_sinc_table_build()) != nullptr;
         // Streams: every record now, zeroed (STREAM_FREE); a stream's block
         // only when the decoding opens it.
         m->max_streams = d.max_streams;

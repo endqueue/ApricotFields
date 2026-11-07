@@ -1443,6 +1443,8 @@ int main(void)
     calls++;
     apaudio_cues_update((apaudio_cues){0});
     calls++;
+    apaudio_encoded_free((APAUDIO_ENCODED *){0});
+    calls++;
     expect_error("apaudio_flac_decode", apaudio_flac_decode((const void *){0}, (uint64_t){0}, (uint64_t){0}, (APAUDIO_PCM *){0}, (APAUDIO_ERROR *){0}));
     calls++;
     (void)apaudio_format_from_spudaudio((const SPUDAUDIO_FORMAT *){0});
@@ -1471,7 +1473,11 @@ int main(void)
     calls++;
     expect_error("apaudio_opus_decode", apaudio_opus_decode((const void *){0}, (uint64_t){0}, (uint64_t){0}, (APAUDIO_PCM *){0}, (APAUDIO_ERROR *){0}));
     calls++;
+    expect_error("apaudio_opus_encode", apaudio_opus_encode((const APAUDIO_PCM *){0}, (const APAUDIO_OPUS_ENCODE_DESC *){0}, (APAUDIO_ENCODED *){0}, (APAUDIO_ERROR *){0}));
+    calls++;
     apaudio_pcm_free((APAUDIO_PCM *){0});
+    calls++;
+    expect_error("apaudio_pcm_resample", apaudio_pcm_resample((const APAUDIO_PCM *){0}, (uint32_t){0}, (APAUDIO_RESAMPLER){0}, (APAUDIO_PCM *){0}, (APAUDIO_ERROR *){0}));
     calls++;
     expect_error("apaudio_play", apaudio_play((apaudio_mixer){0}, (APAUDIO_SOUND){0}, (const APAUDIO_PLAY_DESC *){0}, (APAUDIO_VOICE *){0}));
     calls++;

@@ -3156,6 +3156,323 @@ static void test_stream_lifetime(void)
     apjobs_pool_destroy(pool);
 }
 
+/* ---- Resampling and encoding (apaudio_encode_draft.h) ----
+ *
+ * Written from the approved draft before the implementation, and not to be
+ * edited by it: a call that returns APRESULT_NOT_IMPLEMENTED marks its test
+ * pending and ends it. The SNR floors were measured once, on Windows 11
+ * (ThinkPad P1 Gen 5, MSVC), and set a few dB under what was measured. */
+
+/* [frames] frames of a sine of [hz] at [rate], [channels] alike. */
+static float *make_sine(uint64_t frames, uint32_t channels, uint32_t rate, double hz, double amplitude)
+{
+    float *samples = (float *)malloc((size_t)(frames ? frames : 1) * channels * sizeof(float));
+    for (uint64_t i = 0; i < frames; i++)
+        for (uint32_t c = 0; c < channels; c++)
+            samples[i * channels + c] = (float)(amplitude * sin(2.0 * 3.14159265358979323846 * hz * (double)i / rate));
+    return samples;
+}
+
+/* The SNR in dB of channel [channel] of [pcm] against a sine of [hz] and
+ * [amplitude] at its rate, over its frames from [skip] to [frames - skip]. */
+static double sine_snr(const APAUDIO_PCM *pcm, uint32_t channel, double hz, double amplitude, uint64_t skip)
+{
+    double signal = 0.0, noise = 0.0;
+    for (uint64_t i = skip; i + skip < pcm->frame_count; i++)
+    {
+        double want = amplitude * sin(2.0 * 3.14159265358979323846 * hz * (double)i / pcm->sample_rate);
+        double got = pcm->samples[i * pcm->channel_count + channel];
+        signal += want * want;
+        noise += (got - want) * (got - want);
+    }
+    if (noise == 0.0)
+        return 1000.0;
+    return 10.0 * log10(signal / noise);
+}
+
+static APAUDIO_PCM pcm_of(float *samples, uint64_t frames, uint32_t channels, uint32_t rate)
+{
+    APAUDIO_PCM pcm;
+    memset(&pcm, 0, sizeof(pcm));
+    pcm.samples = samples;
+    pcm.frame_count = frames;
+    pcm.channel_count = channels;
+    pcm.sample_rate = rate;
+    return pcm;
+}
+
+static bool pcm_is_zero(const APAUDIO_PCM *pcm)
+{
+    return pcm->samples == NULL && pcm->frame_count == 0 && pcm->channel_count == 0 && pcm->sample_rate == 0;
+}
+
+static void test_resample(void)
+{
+    current_test = "resample";
+    test_pending = false;
+    APAUDIO_ERROR error;
+    float *sine = make_sine(22050, 1, 44100, 1000.0, 0.5);
+    APAUDIO_PCM in = pcm_of(sine, 22050, 1, 44100);
+    APAUDIO_PCM out;
+    if (!BUILT(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_LINEAR, &out, &error)))
+    {
+        free(sine);
+        return;
+    }
+    /* The length rule: 22,050 frames at 44.1 kHz are 24,000 at 48 kHz. */
+    CHECK(out.frame_count == 24000 && out.channel_count == 1 && out.sample_rate == 48000);
+    double linear = sine_snr(&out, 0, 1000.0, 0.5, 64);
+    printf("resample 44.1 -> 48 kHz, 1 kHz sine: LINEAR SNR %.1f dB\n", linear);
+    CHECK(linear > 50.0); /* 54.6 dB measured */
+    apaudio_pcm_free(&out);
+    CHECK(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == 24000);
+    double sinc = sine_snr(&out, 0, 1000.0, 0.5, 64);
+    printf("resample 44.1 -> 48 kHz, 1 kHz sine: SINC SNR %.1f dB\n", sinc);
+    CHECK(sinc > 90.0); /* 97.4 dB measured */
+    apaudio_pcm_free(&out);
+
+    /* Down: 48 kHz to 44.1 kHz, the length rule rounding to nearest. */
+    float *high = make_sine(1001, 1, 48000, 440.0, 0.5);
+    APAUDIO_PCM down_in = pcm_of(high, 1001, 1, 48000);
+    CHECK(apaudio_pcm_resample(&down_in, 44100, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == 920); /* 1001 * 44100 / 48000 = 919.67 */
+    apaudio_pcm_free(&out);
+    free(high);
+
+    /* Stereo, each channel its own. */
+    float *pair = (float *)malloc(4410 * 2 * sizeof(float));
+    for (int i = 0; i < 4410; i++)
+    {
+        pair[i * 2] = (float)(0.5 * sin(2.0 * 3.14159265358979323846 * 440.0 * i / 44100.0));
+        pair[i * 2 + 1] = (float)(0.25 * sin(2.0 * 3.14159265358979323846 * 660.0 * i / 44100.0));
+    }
+    APAUDIO_PCM stereo_in = pcm_of(pair, 4410, 2, 44100);
+    CHECK(apaudio_pcm_resample(&stereo_in, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == 4800 && out.channel_count == 2);
+    CHECK(sine_snr(&out, 0, 440.0, 0.5, 64) > 85.0);
+    CHECK(sine_snr(&out, 1, 660.0, 0.25, 64) > 85.0);
+    apaudio_pcm_free(&out);
+    free(pair);
+
+    /* The same rate in and out: the same samples, by either resampler. */
+    CHECK(apaudio_pcm_resample(&in, 44100, APAUDIO_RESAMPLER_LINEAR, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == in.frame_count && memcmp(out.samples, in.samples, 22050 * sizeof(float)) == 0);
+    apaudio_pcm_free(&out);
+    CHECK(apaudio_pcm_resample(&in, 44100, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == in.frame_count && memcmp(out.samples, in.samples, 22050 * sizeof(float)) == 0);
+    apaudio_pcm_free(&out);
+
+    /* One frame: still one. */
+    APAUDIO_PCM one = pcm_of(sine + 100, 1, 1, 44100);
+    CHECK(apaudio_pcm_resample(&one, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == 1);
+    apaudio_pcm_free(&out);
+    CHECK(apaudio_pcm_resample(&one, 8000, APAUDIO_RESAMPLER_LINEAR, &out, &error) == APRESULT_OK);
+    CHECK(out.frame_count == 1);
+    apaudio_pcm_free(&out);
+
+    /* Refusals, each with out_pcm zeroed and nothing allocated. */
+    memset(&out, 0xAB, sizeof(out));
+    CHECK(apaudio_pcm_resample(NULL, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(pcm_is_zero(&out));
+    APAUDIO_PCM bad = in;
+    bad.channel_count = 0;
+    memset(&out, 0xAB, sizeof(out));
+    CHECK(apaudio_pcm_resample(&bad, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(pcm_is_zero(&out) && strstr(error.message, "channel") != NULL);
+    bad = in;
+    bad.sample_rate = 7999;
+    CHECK(apaudio_pcm_resample(&bad, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    bad.sample_rate = 192001;
+    CHECK(apaudio_pcm_resample(&bad, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.frame_count = 0;
+    CHECK(apaudio_pcm_resample(&bad, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.samples = NULL;
+    CHECK(apaudio_pcm_resample(&bad, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    float saved = sine[300];
+    sine[300] = NAN;
+    CHECK(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(pcm_is_zero(&out) && strstr(error.message, "finite") != NULL);
+    sine[300] = INFINITY;
+    CHECK(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    sine[300] = saved;
+    CHECK(apaudio_pcm_resample(&in, 7999, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_pcm_resample(&in, 192001, APAUDIO_RESAMPLER_SINC, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_UNSPECIFIED, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "resampler") != NULL);
+    CHECK(apaudio_pcm_resample(&in, 48000, 99, &out, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_SINC, NULL, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_pcm_resample(&in, 48000, APAUDIO_RESAMPLER_SINC, &out, NULL) == APRESULT_OK);
+    apaudio_pcm_free(&out);
+    free(sine);
+}
+
+static APAUDIO_OPUS_ENCODE_DESC valid_opus_desc(void)
+{
+    APAUDIO_OPUS_ENCODE_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_OPUS_ENCODE_DESC;
+    desc.bitrate = 96000;
+    desc.complexity = 10;
+    desc.application = APAUDIO_OPUS_APPLICATION_AUDIO;
+    desc.original_sample_rate = 48000;
+    desc.ogg_serial = 0x4C54524E;
+    desc.vbr = true;
+    return desc;
+}
+
+static bool encoded_is_zero(const APAUDIO_ENCODED *encoded)
+{
+    return encoded->data == NULL && encoded->size == 0;
+}
+
+/* Encodes [frames] frames of a 440 Hz sine (and 660 Hz on a second
+ * channel) at [rate], decodes it, and checks the decoded length and, for a
+ * long enough sound, its SNR against [floor]. */
+static void encode_round_trip(uint64_t frames, uint32_t channels, uint32_t rate, double floor)
+{
+    float *samples = (float *)malloc((size_t)frames * channels * sizeof(float));
+    for (uint64_t i = 0; i < frames; i++)
+    {
+        samples[i * channels] = (float)(0.5 * sin(2.0 * 3.14159265358979323846 * 440.0 * (double)i / rate));
+        if (channels == 2)
+            samples[i * channels + 1] = (float)(0.25 * sin(2.0 * 3.14159265358979323846 * 660.0 * (double)i / rate));
+    }
+    APAUDIO_PCM in = pcm_of(samples, frames, channels, rate);
+    APAUDIO_OPUS_ENCODE_DESC desc = valid_opus_desc();
+    desc.original_sample_rate = rate;
+    APAUDIO_ENCODED encoded;
+    APAUDIO_ERROR error;
+    CHECK(apaudio_opus_encode(&in, &desc, &encoded, &error) == APRESULT_OK);
+    CHECK(encoded.size > 47 && memcmp(encoded.data, "OggS", 4) == 0 && memcmp((char *)encoded.data + 28, "OpusHead", 8) == 0);
+    APAUDIO_PCM decoded;
+    CHECK(apaudio_opus_decode(encoded.data, encoded.size, 100000000, &decoded, &error) == APRESULT_OK);
+    CHECK(decoded.frame_count == frames * (48000 / rate));
+    CHECK(decoded.channel_count == channels);
+    if (floor > 0.0 && rate == 48000)
+    {
+        double snr = sine_snr(&decoded, 0, 440.0, 0.5, 960);
+        printf("opus %u ch at %u Hz, 96 kb/s VBR: SNR %.1f dB\n", channels, rate, snr);
+        CHECK(snr > floor);
+        if (channels == 2)
+            CHECK(sine_snr(&decoded, 1, 660.0, 0.25, 960) > floor - 6.0);
+    }
+    apaudio_pcm_free(&decoded);
+    apaudio_encoded_free(&encoded);
+    free(samples);
+}
+
+static void test_opus_encode(void)
+{
+    current_test = "opus_encode";
+    test_pending = false;
+    APAUDIO_ERROR error;
+    float *sine = make_sine(48000, 1, 48000, 440.0, 0.5);
+    APAUDIO_PCM in = pcm_of(sine, 48000, 1, 48000);
+    APAUDIO_OPUS_ENCODE_DESC desc = valid_opus_desc();
+    APAUDIO_ENCODED encoded;
+    if (!BUILT(apaudio_opus_encode(&in, &desc, &encoded, &error)))
+    {
+        free(sine);
+        return;
+    }
+    /* The same input and desc: the same bytes. */
+    APAUDIO_ENCODED again;
+    CHECK(apaudio_opus_encode(&in, &desc, &again, &error) == APRESULT_OK);
+    CHECK(again.size == encoded.size && memcmp(again.data, encoded.data, (size_t)encoded.size) == 0);
+    apaudio_encoded_free(&again);
+    apaudio_encoded_free(&encoded);
+    CHECK(encoded_is_zero(&encoded));
+    apaudio_encoded_free(NULL);
+
+    encode_round_trip(48000, 1, 48000, 38.0); /* 44.3 dB measured */
+    encode_round_trip(48000, 2, 48000, 35.0); /* 40.0 dB measured */
+    encode_round_trip(24000, 1, 24000, 0.0);
+    encode_round_trip(8000, 1, 8000, 0.0);
+    encode_round_trip(1, 1, 48000, 0.0);
+    encode_round_trip(959, 1, 48000, 0.0);
+    encode_round_trip(9600, 2, 48000, 0.0);
+    encode_round_trip(12345, 1, 16000, 0.0);
+    encode_round_trip(5000, 2, 12000, 0.0);
+
+    /* Silence. */
+    float *silence = (float *)calloc(4800, sizeof(float));
+    APAUDIO_PCM quiet = pcm_of(silence, 4800, 1, 48000);
+    CHECK(apaudio_opus_encode(&quiet, &desc, &encoded, &error) == APRESULT_OK);
+    APAUDIO_PCM decoded;
+    CHECK(apaudio_opus_decode(encoded.data, encoded.size, 100000000, &decoded, &error) == APRESULT_OK);
+    CHECK(decoded.frame_count == 4800);
+    apaudio_pcm_free(&decoded);
+    apaudio_encoded_free(&encoded);
+    free(silence);
+
+    /* Speech and low delay, and a constant bit rate. */
+    desc.application = APAUDIO_OPUS_APPLICATION_VOIP;
+    desc.vbr = false;
+    CHECK(apaudio_opus_encode(&in, &desc, &encoded, &error) == APRESULT_OK);
+    apaudio_encoded_free(&encoded);
+    desc.application = APAUDIO_OPUS_APPLICATION_RESTRICTED_LOWDELAY;
+    CHECK(apaudio_opus_encode(&in, &desc, &encoded, &error) == APRESULT_OK);
+    apaudio_encoded_free(&encoded);
+
+    /* Refusals, each with out_encoded zeroed. */
+    desc = valid_opus_desc();
+    memset(&encoded, 0xAB, sizeof(encoded));
+    CHECK(apaudio_opus_encode(NULL, &desc, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(encoded_is_zero(&encoded));
+    APAUDIO_PCM bad = in;
+    bad.channel_count = 0;
+    CHECK(apaudio_opus_encode(&bad, &desc, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.sample_rate = 44100;
+    memset(&encoded, 0xAB, sizeof(encoded));
+    CHECK(apaudio_opus_encode(&bad, &desc, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(encoded_is_zero(&encoded) && strstr(error.message, "apaudio_pcm_resample") != NULL);
+    bad = in;
+    bad.frame_count = 0;
+    CHECK(apaudio_opus_encode(&bad, &desc, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.samples = NULL;
+    CHECK(apaudio_opus_encode(&bad, &desc, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    sine[10] = NAN;
+    CHECK(apaudio_opus_encode(&in, &desc, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "finite") != NULL);
+    sine[10] = 0.0f;
+    float three[9] = {0};
+    APAUDIO_PCM wide = pcm_of(three, 3, 3, 48000);
+    CHECK(apaudio_opus_encode(&wide, &desc, &encoded, &error) == APRESULT_UNSUPPORTED);
+    CHECK(apaudio_opus_encode(&in, NULL, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    APAUDIO_OPUS_ENCODE_DESC wrong = desc;
+    wrong.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) != APRESULT_OK);
+    CHECK(encoded_is_zero(&encoded));
+    wrong = desc;
+    wrong.bitrate = 5999;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "bitrate") != NULL);
+    wrong.bitrate = 510001;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    wrong = desc;
+    wrong.complexity = 11;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "complexity") != NULL);
+    wrong = desc;
+    wrong.application = APAUDIO_OPUS_APPLICATION_UNSPECIFIED;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "application") != NULL);
+    wrong.application = 4;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    wrong = desc;
+    wrong.original_sample_rate = 0;
+    CHECK(apaudio_opus_encode(&in, &wrong, &encoded, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "original_sample_rate") != NULL);
+    CHECK(apaudio_opus_encode(&in, &desc, NULL, &error) == APRESULT_INVALID_ARGUMENT);
+    free(sine);
+}
+
 int main(int argc, char **argv)
 {
     test_format_from_spudaudio();
@@ -3189,6 +3506,8 @@ int main(int argc, char **argv)
     test_stream_failures();
     test_stream_threads();
     test_stream_lifetime();
+    test_resample();
+    test_opus_encode();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);
