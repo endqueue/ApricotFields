@@ -824,6 +824,11 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
     # Numbers, not a test: casts, sweeps and overlaps a second, and refit
     # against rebuild against create (APMATH_TODO.md). Run by hand, Release.
+    # Numbers, not a test: an update and a render with 32, 256 and 1,024
+    # moving voices, by angles and in the world (APAUDIO_TODO.md item 16).
+    # Run by hand, Release.
+    add_executable(apaudio_bench tests/apaudio_bench.c)
+    target_link_libraries(apaudio_bench PRIVATE ApricotFields)
     add_executable(apmathbvh_bench tests/apmathbvh_bench.c)
     target_link_libraries(apmathbvh_bench PRIVATE ApricotFields)
     add_executable(apmathpoly_tests tests/apmathpoly_tests.c)

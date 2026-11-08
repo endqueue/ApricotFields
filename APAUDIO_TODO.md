@@ -46,6 +46,16 @@ two-thread test among them; the misuse harness ten times; no allocation in
 any streamed steady state; `apaudio_fuzz`'s streamed mode 15 minutes
 clean after two fixes (item 15). **macOS and Linux haven't built streams,
 and ThreadSanitizer (none on Windows) hasn't seen them.**
+**Windows, 2026-11-08** (the same machine; item 16's spatial audio): the
+contract, then the implementation, build with no warning and pass
+`apaudio_tests`, `aprinoalloc_tests` and the misuse harness on
+`windows-d3d12` and `windows-vulkan`, Debug and Release, and under both
+`-asan` presets; the harness ten times in Debug; `apaudio_tests` ten times
+through ctest. `aprend_contract_tests`' `lit_fit_cascades` fails as card
+A49 says, nothing of ApAudio's. The workspace's caller that plays through
+the cues built and tested over
+it. **macOS and Linux haven't built it, and ThreadSanitizer hasn't seen
+its two-thread test.**
 
 ## Wrong things: design bugs in the draft
 
@@ -497,14 +507,64 @@ emitter components feed world places here each step, so world-space sources,
 distance attenuation, cones and doppler, with streamed voices (item 15), are
 the next work; binaural later.
 
-- **World-space sources and a listener:** frameworks place sources and a listener in
-  3D, with distance attenuation curves, directional cones and doppler. Angles are
-  enough for a sound placed once, but a moving listener needs updates (item 5).
-  Items 6 and 11 made this the next game-engine step: audibility should include
-  distance attenuation, `apaudio_mixer_update()` is where listener and emitter maths
-  goes, and it enables a `STOP_FARTHEST` resolution and distance-based priority
-  offsets. The voice record should leave room for a world position alongside its
-  direction.
+- **World-space sources and a listener - built 2026-11-08** from
+  `apaudio_spatial_draft.h` (approved 2026-11-08 by the user's standing
+  instruction, "do all that is recommended", the session running
+  unattended; every answer its recommendation), on Windows 11 (ThinkPad P1
+  Gen 5, MSVC 14.51), `apricotfields-windows-d3d12` and `-vulkan`, Debug
+  and Release, and both `-asan` presets; macOS and Linux not built, and
+  ThreadSanitizer (none on Windows) hasn't seen it. What it is:
+  - `APAUDIO_SPATIAL_DESC`, chained onto `APAUDIO_MIXER_DESC` (the first
+    chain ApAudio takes): handedness, `max_listeners`, `max_attenuations`,
+    the speed of sound in the caller's units.
+  - Listeners set all at once, `apaudio_mixer_set_listeners()`; each world
+    voice heard from its nearest (Unreal's and FMOD's rule). Zero
+    listeners: gain 0.
+  - `APAUDIO_PLAY_DESC` `placement` (ANGLES or WORLD, 0 refused), `emitter`
+    and `attenuation` - the one ABI break, the desc 80 to 96 bytes.
+    `apaudio_mixer_set_emitters()` moves many voices at once (control role),
+    applied at the next update; `apaudio_voice_set_direction()` refuses a
+    world voice.
+  - `APAUDIO_ATTENUATION`, a shared settings object (create, destroy):
+    NONE, INVERSE, LINEAR, EXPONENT (OpenAL's clamped models) or TABLE
+    (points over the normalised range), a cone, a doppler factor, a
+    priority offset at `max_distance`. A destroyed one leaves its voices
+    heard with none.
+  - `APAUDIO_RESOLUTION_STOP_FARTHEST`.
+  - The maths in `apaudio_mixer_update()`, one pass over the voice records
+    before ranking (`spatial_pass`, `place_voice`); results posted beside
+    the decisions through the same triple buffer; the render ramps gain
+    and pan and glides the rate. A play's first place is read as atomic
+    words (`PlayPlace`), so the update reads a record a play may be reusing
+    without a race. A world voice starts on the first render after an
+    update has placed it. The voice record stays in five cache lines.
+  - Tests (`apaudio_tests`, `test_spatial_*`, nine, seen pending before the
+    code): each rolloff's rendered gain, cones, handedness, the nearest of
+    two listeners, no listener, a destroyed attenuation, doppler's rate from
+    a ramp's slope, a source circling the listener with no frame step over
+    0.001, ranking by distance, the priority offset, STOP_FARTHEST, every
+    refusal, the same bits at no scheduler and 1 and 4 workers, and a
+    two-thread test. Two corrections made to tests after the code ran,
+    neither to the contract: silence after removing the listener is checked
+    a render later (the gain ramps to 0 across the first, as every gain
+    change does), and the two-thread test takes `APRESULT_LIMIT` from a play
+    once its render loop has ended. `aprinoalloc_tests`: 256 moving world
+    voices with two listeners, set + update + render, nothing allocated,
+    plain and with a pool of four.
+  - **Numbers** (Release, `tests/apaudio_bench.c`, one step's placing and
+    update, then one render of 512 stereo frames at 48 kHz; medians of
+    400; Windows 11, ThinkPad P1 Gen 5): before, by angles (the caller
+    setting each voice's direction), 32 / 256 / 1,024 voices: 0.7 / 6.7 /
+    29 us a step, 50 / 394 / 1,640 us a render. After, in the world,
+    still: 2.6 / 25 / 116 us a step (set_emitters and the update's maths),
+    50 / 391 / 1,592 us a render, the same as by angles; moving (doppler
+    resampling every voice): the same step, 61 / 501 / 2,060 us a render.
+    The pass is on the caller's thread, not the scheduler: 116 us at 1,024
+    voices. macOS and Linux not measured.
+  - Not built (later additions, each named in the draft): a low-pass by
+    distance or outside the cone (item 12's filter), per-voice readback of
+    gain or distance, changing an attenuation in place, a listener cone,
+    spread, world-placed cues.
 - **Binaural (HRTF) rendering:** elevation can't be heard on ordinary stereo, and most
   users listen on headphones or laptop speakers.
 - **Ambisonics,** for many simultaneous sources.

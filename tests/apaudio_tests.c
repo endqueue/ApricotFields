@@ -131,6 +131,7 @@ static void test_null_arguments(void)
     play.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
     play.gain = 1.0f;
     play.rate = 1.0f;
+    play.placement = APAUDIO_PLACEMENT_ANGLES;
     APAUDIO_VOICE voice = 99;
     CHECK(apaudio_play(NULL, 1, &play, &voice) == APRESULT_INVALID_ARGUMENT);
     CHECK(voice == 0);
@@ -374,6 +375,7 @@ static APAUDIO_PLAY_DESC play_desc(float gain)
     desc.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
     desc.gain = gain;
     desc.rate = 1.0f;
+    desc.placement = APAUDIO_PLACEMENT_ANGLES;
     return desc;
 }
 
@@ -3473,6 +3475,780 @@ static void test_opus_encode(void)
     free(sine);
 }
 
+/* ---- Spatial audio (APAUDIO_TODO.md item 16) ----
+ *
+ * Written from apaudio_spatial_draft.h before the implementation, and not
+ * to be edited by it: a call that returns APRESULT_NOT_IMPLEMENTED marks
+ * its test pending and ends it. Every listener here faces -Z with +Y up,
+ * so in a right-handed world +X is on its right: on stereo, a source there
+ * plays on FR alone, one straight ahead on both at 0.7071. Gains are
+ * rendered, from a sound of ones, not read back. */
+
+#define SQRT_HALF 0.70710678f
+
+static APAUDIO_SPATIAL_DESC spatial_desc(APAUDIO_HANDEDNESS handedness, uint32_t listeners)
+{
+    APAUDIO_SPATIAL_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_SPATIAL_DESC;
+    desc.handedness = handedness;
+    desc.max_listeners = listeners;
+    desc.max_attenuations = 4;
+    desc.speed_of_sound = 343.0f;
+    return desc;
+}
+
+/* A mixer from [desc] with [spatial] chained on, or NULL with the test
+ * pending. */
+static apaudio_mixer make_spatial_mixer(APAUDIO_MIXER_DESC *desc, APAUDIO_SPATIAL_DESC *spatial)
+{
+    desc->base.next = &spatial->base;
+    apaudio_mixer mixer = NULL;
+    APAUDIO_ERROR error;
+    APRESULT result = apaudio_mixer_create(desc, &mixer, &error);
+    if (!BUILT(result))
+        return NULL;
+    if (result != APRESULT_OK)
+        printf("FAIL %s: apaudio_mixer_create: %s\n", current_test, error.message);
+    CHECK(result == APRESULT_OK && mixer != NULL);
+    return mixer;
+}
+
+static APAUDIO_LISTENER listener_at(double x, double y, double z)
+{
+    APAUDIO_LISTENER listener;
+    memset(&listener, 0, sizeof(listener));
+    listener.position.x = x;
+    listener.position.y = y;
+    listener.position.z = z;
+    listener.forward.z = -1.0f;
+    listener.up.y = 1.0f;
+    return listener;
+}
+
+static APAUDIO_EMITTER emitter_at(double x, double y, double z)
+{
+    APAUDIO_EMITTER emitter;
+    memset(&emitter, 0, sizeof(emitter));
+    emitter.position.x = x;
+    emitter.position.y = y;
+    emitter.position.z = z;
+    return emitter;
+}
+
+/* min 1, max 10, no cone, no doppler, no offset. */
+static APAUDIO_ATTENUATION_DESC attenuation_desc(APAUDIO_ROLLOFF rolloff, float factor)
+{
+    APAUDIO_ATTENUATION_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_ATTENUATION_DESC;
+    desc.rolloff = rolloff;
+    desc.min_distance = 1.0f;
+    desc.max_distance = 10.0f;
+    desc.rolloff_factor = factor;
+    desc.cone_inner_angle = 6.28318531f;
+    desc.cone_outer_angle = 6.28318531f;
+    desc.cone_outer_gain = 1.0f;
+    return desc;
+}
+
+/* An attenuation, or 0 with the test pending or failed. */
+static APAUDIO_ATTENUATION make_attenuation(apaudio_mixer mixer, const APAUDIO_ATTENUATION_DESC *desc)
+{
+    APAUDIO_ATTENUATION attenuation = 0;
+    APAUDIO_ERROR error;
+    APRESULT result = apaudio_attenuation_create(mixer, desc, &attenuation, &error);
+    if (!BUILT(result))
+        return 0;
+    if (result != APRESULT_OK)
+        printf("FAIL %s: apaudio_attenuation_create: %s\n", current_test, error.message);
+    CHECK(result == APRESULT_OK && attenuation != 0);
+    return attenuation;
+}
+
+static APAUDIO_PLAY_DESC world_play_desc(const APAUDIO_EMITTER *emitter, APAUDIO_ATTENUATION attenuation)
+{
+    APAUDIO_PLAY_DESC desc = play_desc(1.0f);
+    desc.placement = APAUDIO_PLACEMENT_WORLD;
+    desc.emitter = emitter;
+    desc.attenuation = attenuation;
+    desc.loop = true;
+    desc.virtual_behavior = APAUDIO_VIRTUAL_CONTINUE;
+    return desc;
+}
+
+/* A looping voice of [sound] at [emitter], or 0 with the test pending. */
+static APAUDIO_VOICE play_world(apaudio_mixer mixer, APAUDIO_SOUND sound, APAUDIO_EMITTER emitter,
+                                APAUDIO_ATTENUATION attenuation, uint8_t priority)
+{
+    APAUDIO_PLAY_DESC desc = world_play_desc(&emitter, attenuation);
+    desc.priority = priority;
+    APAUDIO_VOICE voice = 0;
+    APRESULT result = apaudio_play(mixer, sound, &desc, &voice);
+    if (!BUILT(result))
+        return 0;
+    CHECK(result == APRESULT_OK && voice != 0);
+    return voice;
+}
+
+static bool set_one_listener(apaudio_mixer mixer, APAUDIO_LISTENER listener)
+{
+    return BUILT(apaudio_mixer_set_listeners(mixer, &listener, 1, NULL));
+}
+
+/* An update, then a render of [frames]: what a world voice needs to sound. */
+static bool update_render(apaudio_mixer mixer, uint32_t frames)
+{
+    if (!BUILT(apaudio_mixer_update(mixer, NULL)))
+        return false;
+    render(mixer, frames);
+    return true;
+}
+
+/* The gain a source of ones at (x, 0, z) plays with on FR, rendered; the
+ * listener at the origin. -1 if pending. */
+static float rendered_gain(APAUDIO_ROLLOFF rolloff, float factor, const APAUDIO_ATTENUATION_POINT *points,
+                           uint32_t point_count, double x, double z)
+{
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return -1.0f;
+    float gain = -1.0f;
+    APAUDIO_ATTENUATION_DESC ad = attenuation_desc(rolloff, factor);
+    ad.points = points;
+    ad.point_count = point_count;
+    APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    APAUDIO_SOUND sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)) &&
+        play_world(mixer, sound, emitter_at(x, 0, z), attenuation, 0) && update_render(mixer, 64))
+        gain = out[2 * 63 + 1];
+    apaudio_mixer_destroy(mixer);
+    return gain;
+}
+
+static void test_spatial_rolloff(void)
+{
+    current_test = "spatial_rolloff";
+    test_pending = false;
+    float g = rendered_gain(APAUDIO_ROLLOFF_INVERSE, 1.0f, NULL, 0, 4.0, 0.0);
+    if (test_pending)
+        return;
+    CHECK(close_to(g, 0.25f));          /* 1 / (1 + 3) */
+    CHECK(close_to(out[2 * 63], 0.0f)); /* on the right: FR alone */
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_INVERSE, 1.0f, NULL, 0, 0.5, 0.0), 1.0f));  /* inside min */
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_INVERSE, 1.0f, NULL, 0, 30.0, 0.0), 0.1f)); /* held past max */
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_INVERSE, 2.0f, NULL, 0, 4.0, 0.0), 1.0f / 7.0f));
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_LINEAR, 1.0f, NULL, 0, 4.0, 0.0), 1.0f - 3.0f / 9.0f));
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_LINEAR, 2.0f, NULL, 0, 8.0, 0.0), 0.0f)); /* not below 0 */
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_EXPONENT, 2.0f, NULL, 0, 4.0, 0.0), 1.0f / 16.0f));
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_NONE, 1.0f, NULL, 0, 9.0, 0.0), 1.0f));
+    static const APAUDIO_ATTENUATION_POINT table[3] = {{0.0f, 1.0f}, {0.5f, 0.2f}, {1.0f, 0.1f}};
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_TABLE, 1.0f, table, 3, 5.5, 0.0), 0.2f));
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_TABLE, 1.0f, table, 3, 3.25, 0.0), 0.6f));
+    CHECK(close_to(rendered_gain(APAUDIO_ROLLOFF_TABLE, 1.0f, table, 3, 50.0, 0.0), 0.1f));
+    /* Straight ahead at distance 1: both front speakers. */
+    g = rendered_gain(APAUDIO_ROLLOFF_NONE, 1.0f, NULL, 0, 0.0, -1.0);
+    CHECK(close_to(g, SQRT_HALF) && close_to(out[2 * 63], SQRT_HALF));
+}
+
+/* A sound of ones at (x, 0, z) facing [forward], through a cone of [inner]
+ * and [outer] degrees with an outer gain of 0.2, on FR. -1 if pending. */
+static float cone_gain(double x, double z, ApriVec3 forward, float inner, float outer)
+{
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return -1.0f;
+    float gain = -1.0f;
+    APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_NONE, 1.0f);
+    ad.cone_inner_angle = inner * 3.14159265f / 180.0f;
+    ad.cone_outer_angle = outer * 3.14159265f / 180.0f;
+    ad.cone_outer_gain = 0.2f;
+    APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    APAUDIO_SOUND sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_EMITTER emitter = emitter_at(x, 0, z);
+    emitter.forward = forward;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)) &&
+        play_world(mixer, sound, emitter, attenuation, 0) && update_render(mixer, 64))
+        gain = out[2 * 63 + 1];
+    apaudio_mixer_destroy(mixer);
+    return gain;
+}
+
+static void test_spatial_cone(void)
+{
+    current_test = "spatial_cone";
+    test_pending = false;
+    /* A source on the right, 4 away, facing the listener (-X), away (+X),
+     * and across (-Z), 90 degrees off its axis. */
+    ApriVec3 toward = {-1.0f, 0.0f, 0.0f}, away = {1.0f, 0.0f, 0.0f}, across = {0.0f, 0.0f, -1.0f};
+    ApriVec3 none = {0.0f, 0.0f, 0.0f};
+    float g = cone_gain(4.0, 0.0, toward, 90.0f, 180.0f);
+    if (test_pending)
+        return;
+    CHECK(close_to(g, 1.0f));
+    CHECK(close_to(cone_gain(4.0, 0.0, away, 90.0f, 180.0f), 0.2f));
+    /* 90 degrees off: halfway between the half-angles 45 and 135. */
+    CHECK(close_to(cone_gain(4.0, 0.0, across, 90.0f, 270.0f), 0.6f));
+    CHECK(close_to(cone_gain(4.0, 0.0, across, 90.0f, 180.0f), 0.2f));
+    /* No forward: no cone. */
+    CHECK(close_to(cone_gain(4.0, 0.0, none, 90.0f, 180.0f), 1.0f));
+}
+
+static void test_spatial_listeners(void)
+{
+    current_test = "spatial_listeners";
+    test_pending = false;
+    /* Left-handed: right is up x forward, so +X is on the left. */
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_LEFT, 2);
+    apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+    APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_INVERSE, 1.0f);
+    APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    APAUDIO_SOUND sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_VOICE voice = 0;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)))
+        voice = play_world(mixer, sound, emitter_at(4, 0, 0), attenuation, 0);
+    if (voice && update_render(mixer, 64))
+        CHECK(close_to(out[2 * 63], 0.25f) && close_to(out[2 * 63 + 1], 0.0f));
+    apaudio_mixer_destroy(mixer);
+    if (test_pending)
+        return;
+
+    /* Two listeners, right-handed: the voice is heard from the nearest. */
+    desc = plain_mixer_desc();
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 2);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    attenuation = make_attenuation(mixer, &ad);
+    sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_LISTENER two[2] = {listener_at(0, 0, 0), listener_at(100, 0, 0)};
+    CHECK(apaudio_mixer_set_listeners(mixer, two, 2, NULL) == APRESULT_OK);
+    voice = play_world(mixer, sound, emitter_at(98, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64));
+    /* 2 to the second listener's left: 1 / (1 + 1). */
+    CHECK(close_to(out[2 * 63], 0.5f) && close_to(out[2 * 63 + 1], 0.0f));
+    /* Moved next to the first, on its right. */
+    APAUDIO_EMITTER moved = emitter_at(2, 0, 0);
+    CHECK(apaudio_mixer_set_emitters(mixer, &voice, &moved, 1, NULL) == APRESULT_OK);
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63], 0.0f) && close_to(out[2 * 63 + 1], 0.5f));
+    /* No listener: nobody hears it, and it lives on. The gain ramps to 0
+     * across the first render, as every gain change does. */
+    CHECK(apaudio_mixer_set_listeners(mixer, NULL, 0, NULL) == APRESULT_OK);
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63 + 1], 0.0f));
+    CHECK(update_render(mixer, 64));
+    CHECK(frames_are(0, 63, 0.0f, 0.0f));
+    CHECK(apaudio_voice_is_live(mixer, voice));
+    /* Its attenuation destroyed: heard with none, placed all the same. */
+    CHECK(apaudio_mixer_set_listeners(mixer, two, 1, NULL) == APRESULT_OK);
+    apaudio_attenuation_destroy(mixer, attenuation);
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63], 0.0f) && close_to(out[2 * 63 + 1], 1.0f));
+    apaudio_mixer_destroy(mixer);
+}
+
+/* A ramp, so a rendered frame says where in the sound it was read: the
+ * slope between frames is the voice's rate over the ramp's length. */
+static float ramp[48000];
+
+static void test_spatial_doppler(void)
+{
+    current_test = "spatial_doppler";
+    test_pending = false;
+    for (int i = 0; i < 48000; i++)
+        ramp[i] = (float)i / 48000.0f;
+    /* A source on the right at 0.5 (inside min: gain 1), moving at a tenth
+     * of the speed of sound: toward the listener, away, and toward with a
+     * factor of 0. */
+    static const float speeds[3] = {-34.3f, 34.3f, -34.3f};
+    static const float factors[3] = {1.0f, 1.0f, 0.0f};
+    static const float rates[3] = {343.0f / (343.0f - 34.3f), 343.0f / (343.0f + 34.3f), 1.0f};
+    for (int c = 0; c < 3; c++)
+    {
+        APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+        APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+        apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+        if (!mixer)
+            return;
+        APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_INVERSE, 1.0f);
+        ad.doppler_factor = factors[c];
+        APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+        APAUDIO_SOUND sound = make_sound(mixer, ramp, 48000, 1, 48000, APAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        APAUDIO_EMITTER emitter = emitter_at(0.5, 0, 0);
+        emitter.velocity.x = speeds[c];
+        if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)) &&
+            play_world(mixer, sound, emitter, attenuation, 0) && update_render(mixer, 256))
+        {
+            float slope = (out[2 * 200 + 1] - out[2 * 100 + 1]) / 100.0f * 48000.0f;
+            if (fabsf(slope - rates[c]) > 1e-3f)
+                printf("     case %d: rate %g, not %g\n", c, slope, rates[c]);
+            CHECK(fabsf(slope - rates[c]) <= 1e-3f);
+        }
+        apaudio_mixer_destroy(mixer);
+        if (test_pending)
+            return;
+    }
+}
+
+static void test_spatial_moving(void)
+{
+    current_test = "spatial_moving";
+    test_pending = false;
+    /* A source of ones circling the listener at 2 (gain 0.5), a degree a
+     * render of 64 frames: no frame steps far from the one before. */
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+    APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_INVERSE, 1.0f);
+    APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    APAUDIO_SOUND sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_VOICE voice = 0;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)))
+        voice = play_world(mixer, sound, emitter_at(2, 0, 0), attenuation, 0);
+    if (!voice || !update_render(mixer, 64))
+    {
+        apaudio_mixer_destroy(mixer);
+        return;
+    }
+    float last[2] = {out[2 * 63], out[2 * 63 + 1]};
+    float worst = 0.0f;
+    for (int step = 1; step <= 720; step++)
+    {
+        double angle = step * 3.14159265358979323846 / 180.0;
+        APAUDIO_EMITTER e = emitter_at(2.0 * cos(angle), 0.0, -2.0 * sin(angle));
+        CHECK(apaudio_mixer_set_emitters(mixer, &voice, &e, 1, NULL) == APRESULT_OK);
+        CHECK(update_render(mixer, 64));
+        for (int i = 0; i < 64; i++)
+            for (int ch = 0; ch < 2; ch++)
+            {
+                float jump = fabsf(out[2 * i + ch] - last[ch]);
+                if (jump > worst)
+                    worst = jump;
+                last[ch] = out[2 * i + ch];
+            }
+    }
+    /* A degree moves a speaker's gain by under 0.01 at 0.5, ramped across
+     * the render: a frame's step stays far below 0.001. */
+    if (worst >= 0.001f)
+        printf("     largest step %g\n", worst);
+    CHECK(worst < 0.001f);
+    apaudio_mixer_destroy(mixer);
+}
+
+static void test_spatial_ranking(void)
+{
+    current_test = "spatial_ranking";
+    test_pending = false;
+    /* A far voice goes virtual under the threshold, and comes back near. */
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.virtual_threshold = 0.01f;
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+    APAUDIO_ATTENUATION_DESC linear = attenuation_desc(APAUDIO_ROLLOFF_LINEAR, 1.0f);
+    APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &linear);
+    APAUDIO_SOUND sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_VOICE far_voice = 0;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)))
+        far_voice = play_world(mixer, sound, emitter_at(20, 0, 0), attenuation, 0);
+    if (!far_voice || !update_render(mixer, 64))
+    {
+        apaudio_mixer_destroy(mixer);
+        return;
+    }
+    CHECK(update_render(mixer, 64));
+    CHECK(frames_are(0, 63, 0.0f, 0.0f));
+    CHECK(apaudio_voice_is_live(mixer, far_voice)); /* virtual, CONTINUE */
+    APAUDIO_EMITTER near_place = emitter_at(1, 0, 0);
+    CHECK(apaudio_mixer_set_emitters(mixer, &far_voice, &near_place, 1, NULL) == APRESULT_OK);
+    CHECK(update_render(mixer, 64));
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63 + 1], 1.0f));
+    apaudio_mixer_destroy(mixer);
+
+    /* The priority offset: one real slot; A has priority 100 but is far
+     * enough for -100, B is near with 50. B plays. */
+    desc = plain_mixer_desc();
+    desc.max_real_voices = 1;
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    APAUDIO_ATTENUATION_DESC offset = attenuation_desc(APAUDIO_ROLLOFF_NONE, 1.0f);
+    offset.priority_offset = -100;
+    attenuation = make_attenuation(mixer, &offset);
+    sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+    CHECK(set_one_listener(mixer, listener_at(0, 0, 0)));
+    APAUDIO_VOICE a = play_world(mixer, sound, emitter_at(-10, 0, 0), attenuation, 100);
+    APAUDIO_VOICE b = play_world(mixer, sound, emitter_at(1, 0, 0), attenuation, 50);
+    CHECK(a && b);
+    for (int i = 0; i < 3; i++)
+        CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63], 0.0f) && close_to(out[2 * 63 + 1], 1.0f));
+    apaudio_mixer_destroy(mixer);
+
+    /* STOP_FARTHEST, one at a time: a nearer play stops the farther voice;
+     * a farther one is dropped. */
+    desc = plain_mixer_desc();
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    APAUDIO_CONCURRENCY_DESC gd;
+    memset(&gd, 0, sizeof(gd));
+    gd.base.type = APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC;
+    gd.max_instances = 1;
+    gd.resolution = APAUDIO_RESOLUTION_STOP_FARTHEST;
+    gd.older_instance_gain = 1.0f;
+    APAUDIO_CONCURRENCY group = 0;
+    CHECK(apaudio_concurrency_create(mixer, &gd, &group, NULL) == APRESULT_OK);
+    attenuation = make_attenuation(mixer, &linear);
+    sound = make_sound(mixer, ones, 4096, 1, 48000, APAUDIO_VIRTUAL_CONTINUE, group, 0);
+    CHECK(set_one_listener(mixer, listener_at(0, 0, 0)));
+    a = play_world(mixer, sound, emitter_at(5, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64) && update_render(mixer, 64));
+    b = play_world(mixer, sound, emitter_at(-2, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64) && update_render(mixer, 64) && update_render(mixer, 64));
+    CHECK(!apaudio_voice_is_live(mixer, a) && apaudio_voice_is_live(mixer, b));
+    CHECK(out[2 * 63] > 0.5f && close_to(out[2 * 63 + 1], 0.0f));
+    APAUDIO_VOICE c = play_world(mixer, sound, emitter_at(8, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64) && update_render(mixer, 64) && update_render(mixer, 64));
+    CHECK(!apaudio_voice_is_live(mixer, c) && apaudio_voice_is_live(mixer, b));
+    apaudio_mixer_destroy(mixer);
+}
+
+static void test_spatial_refusals(void)
+{
+    current_test = "spatial_refusals";
+    test_pending = false;
+    APAUDIO_ERROR error;
+    /* No spatial desc: every spatial call is unsupported. */
+    APAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    apaudio_mixer plain = make_mixer(&desc);
+    APAUDIO_LISTENER listener = listener_at(0, 0, 0);
+    APRESULT r = apaudio_mixer_set_listeners(plain, &listener, 1, &error);
+    if (!BUILT(r))
+    {
+        apaudio_mixer_destroy(plain);
+        return;
+    }
+    CHECK(r == APRESULT_UNSUPPORTED);
+    APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_INVERSE, 1.0f);
+    APAUDIO_ATTENUATION attenuation = 7;
+    CHECK(apaudio_attenuation_create(plain, &ad, &attenuation, &error) == APRESULT_UNSUPPORTED && attenuation == 0);
+    APAUDIO_VOICE nobody = 0;
+    APAUDIO_EMITTER emitter = emitter_at(1, 0, 0);
+    CHECK(apaudio_mixer_set_emitters(plain, &nobody, &emitter, 1, &error) == APRESULT_UNSUPPORTED);
+    APAUDIO_SOUND plain_sound = make_ones(plain, 64, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_PLAY_DESC world = world_play_desc(&emitter, 1);
+    APAUDIO_VOICE voice = 9;
+    CHECK(apaudio_play(plain, plain_sound, &world, &voice) == APRESULT_UNSUPPORTED && voice == 0);
+    APAUDIO_PLAY_DESC unplaced = play_desc(1.0f);
+    unplaced.placement = APAUDIO_PLACEMENT_UNSPECIFIED;
+    CHECK(apaudio_play(plain, plain_sound, &unplaced, &voice) == APRESULT_INVALID_ARGUMENT);
+    unplaced.placement = 3;
+    CHECK(apaudio_play(plain, plain_sound, &unplaced, &voice) == APRESULT_INVALID_ARGUMENT);
+    apaudio_mixer_destroy(plain);
+
+    /* The spatial desc's fields, and its chain. */
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    apaudio_mixer mixer = NULL;
+    desc.base.next = &spatial.base;
+    spatial.handedness = APAUDIO_HANDEDNESS_UNSPECIFIED;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "handedness"));
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 0);
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "max_listeners"));
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    spatial.max_attenuations = 0;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "max_attenuations"));
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    spatial.speed_of_sound = 0.0f;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "speed_of_sound"));
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    APAUDIO_SPATIAL_DESC twice = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    spatial.base.next = &twice.base;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_STRUCT_DUPLICATE_IN_CHAIN);
+    APRI_STRUCT_BASE stranger = {APRI_STRUCT_TYPE_APAUDIO_BUS_DESC, NULL};
+    spatial.base.next = &stranger;
+    CHECK(apaudio_mixer_create(&desc, &mixer, &error) == APRESULT_STRUCT_UNKNOWN_IN_CHAIN);
+    CHECK(mixer == NULL);
+
+    spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 1);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+
+    /* Listeners. */
+    APAUDIO_LISTENER two[2] = {listener_at(0, 0, 0), listener_at(1, 0, 0)};
+    CHECK(apaudio_mixer_set_listeners(mixer, two, 2, &error) == APRESULT_LIMIT);
+    CHECK(apaudio_mixer_set_listeners(mixer, NULL, 1, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_mixer_set_listeners(NULL, two, 1, &error) == APRESULT_INVALID_ARGUMENT);
+    APAUDIO_LISTENER bad = listener_at(0, 0, 0);
+    bad.position.x = NAN;
+    CHECK(apaudio_mixer_set_listeners(mixer, &bad, 1, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "position"));
+    bad = listener_at(0, 0, 0);
+    bad.velocity.y = INFINITY;
+    CHECK(apaudio_mixer_set_listeners(mixer, &bad, 1, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "velocity"));
+    bad = listener_at(0, 0, 0);
+    bad.forward.z = 0.0f;
+    CHECK(apaudio_mixer_set_listeners(mixer, &bad, 1, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "forward"));
+    bad = listener_at(0, 0, 0);
+    bad.up.y = 0.0f;
+    CHECK(apaudio_mixer_set_listeners(mixer, &bad, 1, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "up"));
+    bad = listener_at(0, 0, 0);
+    bad.up.y = 0.0f;
+    bad.up.z = 2.0f; /* parallel to forward */
+    CHECK(apaudio_mixer_set_listeners(mixer, &bad, 1, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "parallel"));
+    CHECK(apaudio_mixer_set_listeners(mixer, &listener, 1, &error) == APRESULT_OK);
+
+    /* Attenuation descs, field by field. */
+    static const char *names[11] = {"rolloff",          "min_distance",     "max_distance",    "rolloff_factor",
+                                    "points",           "point_count",      "cone_inner_angle", "cone_outer_angle",
+                                    "cone_outer_gain",  "doppler_factor",   "priority_offset"};
+    static const APAUDIO_ATTENUATION_POINT one_point[1] = {{0.0f, 1.0f}};
+    APAUDIO_ATTENUATION_DESC wrong;
+    for (int f = 0; f < 11; f++)
+    {
+        wrong = attenuation_desc(f == 4 || f == 5 ? APAUDIO_ROLLOFF_TABLE : APAUDIO_ROLLOFF_INVERSE, 1.0f);
+        switch (f)
+        {
+        case 0:
+            wrong.rolloff = APAUDIO_ROLLOFF_UNSPECIFIED;
+            break;
+        case 1:
+            wrong.min_distance = 0.0f;
+            break;
+        case 2:
+            wrong.max_distance = 1.0f;
+            break;
+        case 3:
+            wrong.rolloff_factor = 0.0f;
+            break;
+        case 4:
+            wrong.points = NULL;
+            wrong.point_count = 2;
+            break;
+        case 5:
+            wrong.points = one_point;
+            wrong.point_count = 1;
+            break;
+        case 6:
+            wrong.cone_inner_angle = 0.0f;
+            break;
+        case 7:
+            wrong.cone_inner_angle = 1.0f;
+            wrong.cone_outer_angle = 0.5f;
+            break;
+        case 8:
+            wrong.cone_outer_gain = 1.5f;
+            break;
+        case 9:
+            wrong.doppler_factor = -1.0f;
+            break;
+        default:
+            wrong.priority_offset = 256;
+            break;
+        }
+        attenuation = 7;
+        r = apaudio_attenuation_create(mixer, &wrong, &attenuation, &error);
+        if (r != APRESULT_INVALID_ARGUMENT || !strstr(error.message, names[f]))
+            printf("     field %s: %d, \"%s\"\n", names[f], (int)r, error.message);
+        CHECK(r == APRESULT_INVALID_ARGUMENT && strstr(error.message, names[f]) && attenuation == 0);
+    }
+    static const APAUDIO_ATTENUATION_POINT unsorted[3] = {{0.0f, 1.0f}, {0.6f, 0.5f}, {0.5f, 0.2f}};
+    wrong = attenuation_desc(APAUDIO_ROLLOFF_TABLE, 1.0f);
+    wrong.points = unsorted;
+    wrong.point_count = 3;
+    CHECK(apaudio_attenuation_create(mixer, &wrong, &attenuation, &error) == APRESULT_INVALID_ARGUMENT);
+    wrong = attenuation_desc(APAUDIO_ROLLOFF_INVERSE, 1.0f);
+    wrong.base.type = APRI_STRUCT_TYPE_APAUDIO_BUS_DESC;
+    CHECK(apaudio_attenuation_create(mixer, &wrong, &attenuation, &error) == APRESULT_STRUCT_WRONG_TYPE);
+    /* The slots: four, then LIMIT. */
+    APAUDIO_ATTENUATION slots[4];
+    for (int i = 0; i < 4; i++)
+        slots[i] = make_attenuation(mixer, &ad);
+    CHECK(apaudio_attenuation_create(mixer, &ad, &attenuation, &error) == APRESULT_LIMIT && attenuation == 0);
+    for (int i = 1; i < 4; i++)
+        apaudio_attenuation_destroy(mixer, slots[i]);
+    apaudio_attenuation_destroy(mixer, 0);
+    apaudio_attenuation_destroy(mixer, slots[1]); /* stale: nothing */
+
+    /* Plays. */
+    APAUDIO_SOUND sound = make_ones(mixer, 64, APAUDIO_VIRTUAL_CONTINUE);
+    APAUDIO_DIRECTION ahead = {0.0, 0.0};
+    APAUDIO_PLAY_DESC p = world_play_desc(&emitter, slots[0]);
+    p.direction = &ahead;
+    CHECK(apaudio_play(mixer, sound, &p, &voice) == APRESULT_INVALID_ARGUMENT);
+    p = world_play_desc(NULL, slots[0]);
+    CHECK(apaudio_play(mixer, sound, &p, &voice) == APRESULT_INVALID_ARGUMENT);
+    p = world_play_desc(&emitter, 0);
+    CHECK(apaudio_play(mixer, sound, &p, &voice) == APRESULT_INVALID_ARGUMENT);
+    p = world_play_desc(&emitter, slots[1]); /* destroyed */
+    CHECK(apaudio_play(mixer, sound, &p, &voice) == APRESULT_NOT_FOUND);
+    APAUDIO_EMITTER nan_emitter = emitter_at(NAN, 0, 0);
+    p = world_play_desc(&nan_emitter, slots[0]);
+    CHECK(apaudio_play(mixer, sound, &p, &voice) == APRESULT_INVALID_ARGUMENT);
+    APAUDIO_PLAY_DESC angles = play_desc(1.0f);
+    angles.emitter = &emitter;
+    CHECK(apaudio_play(mixer, sound, &angles, &voice) == APRESULT_INVALID_ARGUMENT);
+    angles = play_desc(1.0f);
+    angles.attenuation = slots[0];
+    CHECK(apaudio_play(mixer, sound, &angles, &voice) == APRESULT_INVALID_ARGUMENT);
+
+    /* set_direction on a world voice; set_emitters with an angles voice. */
+    APAUDIO_VOICE placed = play_world(mixer, sound, emitter, slots[0], 0);
+    APAUDIO_VOICE angled = play(mixer, sound, 1.0f, 0, true);
+    CHECK(apaudio_voice_set_direction(mixer, placed, &ahead) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_voice_set_direction(mixer, angled, &ahead) == APRESULT_OK);
+    APAUDIO_VOICE both[2] = {placed, angled};
+    APAUDIO_EMITTER places[2] = {emitter, emitter};
+    CHECK(apaudio_mixer_set_emitters(mixer, both, places, 2, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "voices[1]"));
+    places[0].velocity.z = NAN;
+    CHECK(apaudio_mixer_set_emitters(mixer, both, places, 1, &error) == APRESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "emitters[0]"));
+    CHECK(apaudio_mixer_set_emitters(mixer, NULL, places, 1, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_mixer_set_emitters(mixer, both, NULL, 1, &error) == APRESULT_INVALID_ARGUMENT);
+    CHECK(apaudio_mixer_set_emitters(mixer, NULL, NULL, 0, &error) == APRESULT_OK);
+    APAUDIO_VOICE gone[1] = {12345};
+    CHECK(apaudio_mixer_set_emitters(mixer, gone, &emitter, 1, &error) == APRESULT_OK); /* unknown: skipped */
+    apaudio_mixer_destroy(mixer);
+}
+
+/* The same moving world rendered on three mixers - no scheduler, one
+ * worker, four - is the same bits. */
+static void test_spatial_determinism(void)
+{
+    current_test = "spatial_determinism";
+    test_pending = false;
+    APJOBS_SCHEDULER one, four;
+    apjobs_pool pool_one = make_pool(0, &one);
+    apjobs_pool pool_four = make_pool(3, &four);
+    const APJOBS_SCHEDULER *schedulers[3] = {NULL, &one, &four};
+    static float results[3][2 * 128 * 50];
+    for (int i = 0; i < 48000; i++)
+        ramp[i] = (float)sin(i * 0.05);
+    for (int s = 0; s < 3 && !test_pending; s++)
+    {
+        APAUDIO_MIXER_DESC desc = valid_mixer_desc();
+        desc.max_frames = 128;
+        desc.max_streams = 1;
+        desc.scheduler = schedulers[s];
+        APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 2);
+        apaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+        if (!mixer)
+            break;
+        APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_EXPONENT, 1.0f);
+        ad.doppler_factor = 1.0f;
+        ad.cone_inner_angle = 1.0f;
+        ad.cone_outer_angle = 4.0f;
+        ad.cone_outer_gain = 0.3f;
+        APAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+        APAUDIO_SOUND sound = make_sound(mixer, ramp, 48000, 1, 48000, APAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        APAUDIO_LISTENER listeners[2] = {listener_at(0, 0, 0), listener_at(30, 0, 0)};
+        CHECK(apaudio_mixer_set_listeners(mixer, listeners, 2, NULL) == APRESULT_OK);
+        APAUDIO_VOICE voices[8];
+        APAUDIO_EMITTER places[8];
+        for (int v = 0; v < 8; v++)
+        {
+            places[v] = emitter_at(4.0 * v, 0.0, -3.0);
+            places[v].forward.x = 1.0f;
+            voices[v] = play_world(mixer, sound, places[v], attenuation, (uint8_t)v);
+        }
+        for (int step = 0; step < 50; step++)
+        {
+            for (int v = 0; v < 8; v++)
+            {
+                places[v].position.z = -3.0 + sin(step * 0.1 + v);
+                places[v].velocity.z = (float)(cos(step * 0.1 + v) * 10.0);
+            }
+            CHECK(apaudio_mixer_set_emitters(mixer, voices, places, 8, NULL) == APRESULT_OK);
+            CHECK(update_render(mixer, 128));
+            memcpy(results[s] + step * 256, out, 256 * sizeof(float));
+        }
+        apaudio_mixer_destroy(mixer);
+    }
+    if (!test_pending)
+    {
+        CHECK(memcmp(results[0], results[1], sizeof(results[0])) == 0);
+        CHECK(memcmp(results[0], results[2], sizeof(results[0])) == 0);
+    }
+    apjobs_pool_destroy(pool_one);
+    apjobs_pool_destroy(pool_four);
+}
+
+/* Two threads: one renders in a loop (a one-thread pool's worker) while
+ * this one sets listeners, moves emitters, plays, stops, updates, and
+ * creates and destroys attenuations. For ASan and -tsan. */
+static void test_spatial_threads(void)
+{
+    current_test = "spatial_threads";
+    test_pending = false;
+    APJOBS_SCHEDULER rendering;
+    apjobs_pool render_pool = make_pool(1, &rendering);
+    APAUDIO_MIXER_DESC desc = valid_mixer_desc();
+    APAUDIO_SPATIAL_DESC spatial = spatial_desc(APAUDIO_HANDEDNESS_RIGHT, 2);
+    apaudio_mixer mixer = render_pool ? make_spatial_mixer(&desc, &spatial) : NULL;
+    APAUDIO_ATTENUATION_DESC ad = attenuation_desc(APAUDIO_ROLLOFF_INVERSE, 1.0f);
+    ad.doppler_factor = 1.0f;
+    APAUDIO_ATTENUATION attenuation = mixer ? make_attenuation(mixer, &ad) : 0;
+    if (mixer && attenuation)
+    {
+        APAUDIO_SOUND sound = make_ones(mixer, 4096, APAUDIO_VIRTUAL_CONTINUE);
+        static render_loop loop;
+        loop.mixer = mixer;
+        loop.renders = 3000;
+        void *task = rendering.enqueue(render_loop_task, 1, 1, &loop, rendering.user);
+        APAUDIO_VOICE voices[16] = {0};
+        APAUDIO_EMITTER places[16];
+        for (int v = 0; v < 16; v++)
+            places[v] = emitter_at(v, 0, -2);
+        for (int i = 0; i < 400; i++)
+        {
+            APAUDIO_LISTENER listeners[2] = {listener_at(sin(i * 0.1), 0, 0), listener_at(20, 0, cos(i * 0.1))};
+            CHECK(apaudio_mixer_set_listeners(mixer, listeners, (uint32_t)(1 + i % 2), NULL) == APRESULT_OK);
+            int slot = i % 16;
+            if (voices[slot])
+                apaudio_voice_stop(mixer, voices[slot], 64);
+            places[slot] = emitter_at(slot, 0, -2);
+            /* The render loop may have ended first (it counts renders, not
+             * steps): then the queue fills, and a play is refused. */
+            APAUDIO_PLAY_DESC pd = world_play_desc(&places[slot], attenuation);
+            pd.priority = (uint8_t)slot;
+            voices[slot] = 0;
+            APRESULT played = apaudio_play(mixer, sound, &pd, &voices[slot]);
+            CHECK(played == APRESULT_OK || played == APRESULT_LIMIT);
+            for (int v = 0; v < 16; v++)
+                places[v].position.x += 0.01;
+            CHECK(apaudio_mixer_set_emitters(mixer, voices, places, 16, NULL) == APRESULT_OK);
+            if (i % 50 == 49)
+            {
+                apaudio_attenuation_destroy(mixer, attenuation);
+                attenuation = make_attenuation(mixer, &ad);
+            }
+            CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+            apaudio_mixer_collect(mixer);
+        }
+        rendering.wait(task, rendering.user);
+    }
+    apaudio_mixer_destroy(mixer);
+    apjobs_pool_destroy(render_pool);
+}
+
 int main(int argc, char **argv)
 {
     test_format_from_spudaudio();
@@ -3508,6 +4284,15 @@ int main(int argc, char **argv)
     test_stream_lifetime();
     test_resample();
     test_opus_encode();
+    test_spatial_rolloff();
+    test_spatial_cone();
+    test_spatial_listeners();
+    test_spatial_doppler();
+    test_spatial_moving();
+    test_spatial_ranking();
+    test_spatial_refusals();
+    test_spatial_determinism();
+    test_spatial_threads();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);

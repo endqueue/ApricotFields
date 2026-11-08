@@ -753,6 +753,7 @@ APRESULT play_plan(apaudio_cues_t *cues, const play_plan_t &plan, APAUDIO_VOICE 
     desc.direction = plan.has_direction ? &plan.direction : nullptr;
     desc.start_time_ns = plan.start_time_ns;
     desc.loop = plan.settings.loop;
+    desc.placement = APAUDIO_PLACEMENT_ANGLES;
     APRESULT played = apaudio_play(cues->mixer, plan.sound, &desc, &out_voice);
     if (played == APRESULT_LIMIT)
         return APRESULT_LIMIT;

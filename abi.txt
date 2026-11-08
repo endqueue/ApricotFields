@@ -5,6 +5,9 @@ const APARCHIVE_STRICT_NO_ARCHIVE_COMMENT = 1
 const APARCHIVE_STRICT_NO_DIRECTORY_ENTRIES = 3
 const APARCHIVE_STRICT_NO_ENTRY_COMMENTS = 2
 const APARCHIVE_STRICT_NO_GAPS = 4
+const APAUDIO_HANDEDNESS_LEFT = 2
+const APAUDIO_HANDEDNESS_RIGHT = 1
+const APAUDIO_HANDEDNESS_UNSPECIFIED = 0
 const APAUDIO_LIMITER_OFF = 1
 const APAUDIO_LIMITER_ON = 2
 const APAUDIO_LIMITER_UNSPECIFIED = 0
@@ -12,14 +15,24 @@ const APAUDIO_OPUS_APPLICATION_AUDIO = 1
 const APAUDIO_OPUS_APPLICATION_RESTRICTED_LOWDELAY = 3
 const APAUDIO_OPUS_APPLICATION_UNSPECIFIED = 0
 const APAUDIO_OPUS_APPLICATION_VOIP = 2
+const APAUDIO_PLACEMENT_ANGLES = 1
+const APAUDIO_PLACEMENT_UNSPECIFIED = 0
+const APAUDIO_PLACEMENT_WORLD = 2
 const APAUDIO_RESAMPLER_LINEAR = 1
 const APAUDIO_RESAMPLER_SINC = 2
 const APAUDIO_RESAMPLER_UNSPECIFIED = 0
 const APAUDIO_RESOLUTION_REJECT_NEW = 1
+const APAUDIO_RESOLUTION_STOP_FARTHEST = 5
 const APAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY = 4
 const APAUDIO_RESOLUTION_STOP_OLDEST = 2
 const APAUDIO_RESOLUTION_STOP_QUIETEST = 3
 const APAUDIO_RESOLUTION_UNSPECIFIED = 0
+const APAUDIO_ROLLOFF_EXPONENT = 4
+const APAUDIO_ROLLOFF_INVERSE = 2
+const APAUDIO_ROLLOFF_LINEAR = 3
+const APAUDIO_ROLLOFF_NONE = 1
+const APAUDIO_ROLLOFF_TABLE = 5
+const APAUDIO_ROLLOFF_UNSPECIFIED = 0
 const APAUDIO_STREAM_CODEC_FLAC = 1
 const APAUDIO_STREAM_CODEC_NONE = 0
 const APAUDIO_STREAM_CODEC_OPUS = 3
@@ -264,6 +277,7 @@ const APRI_STRUCT_TYPE_APARCHIVE_ENTRY_INFO = 1004
 const APRI_STRUCT_TYPE_APARCHIVE_READER_DESC = 1003
 const APRI_STRUCT_TYPE_APARCHIVE_UPDATE_DESC = 1005
 const APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC = 1001
+const APRI_STRUCT_TYPE_APAUDIO_ATTENUATION_DESC = 3011
 const APRI_STRUCT_TYPE_APAUDIO_BUS_DESC = 3001
 const APRI_STRUCT_TYPE_APAUDIO_CONCURRENCY_DESC = 3003
 const APRI_STRUCT_TYPE_APAUDIO_CUES_DESC = 3006
@@ -274,6 +288,7 @@ const APRI_STRUCT_TYPE_APAUDIO_MODIFIER_DESC = 3002
 const APRI_STRUCT_TYPE_APAUDIO_OPUS_ENCODE_DESC = 3009
 const APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC = 3005
 const APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC = 3004
+const APRI_STRUCT_TYPE_APAUDIO_SPATIAL_DESC = 3010
 const APRI_STRUCT_TYPE_APJOBS_POOL_DESC = 7001
 const APRI_STRUCT_TYPE_APJOBS_SCHEDULER = 7000
 const APRI_STRUCT_TYPE_APJOBS_SCHEDULER_GROUPS = 7002
@@ -418,6 +433,8 @@ fn aparchive_writer_get_offset uint64_t (aparchive_writer)
 fn aparchive_writer_remove_entry APRESULT (aparchive_writer, const char *, APARCHIVE_ERROR *)
 fn aparchive_writer_set_comment APRESULT (aparchive_writer, const void *, uint16_t, APARCHIVE_ERROR *)
 fn aparchive_writer_write_entry_data APRESULT (aparchive_writer, const void *, uint64_t, APARCHIVE_ERROR *)
+fn apaudio_attenuation_create APRESULT (apaudio_mixer, const APAUDIO_ATTENUATION_DESC *, APAUDIO_ATTENUATION *, APAUDIO_ERROR *)
+fn apaudio_attenuation_destroy void (apaudio_mixer, APAUDIO_ATTENUATION)
 fn apaudio_bus_create APRESULT (apaudio_mixer, const APAUDIO_BUS_DESC *, APAUDIO_BUS *, APAUDIO_ERROR *)
 fn apaudio_bus_destroy void (apaudio_mixer, APAUDIO_BUS)
 fn apaudio_bus_set_gain APRESULT (apaudio_mixer, APAUDIO_BUS, float, uint32_t)
@@ -451,7 +468,9 @@ fn apaudio_mixer_create APRESULT (const APAUDIO_MIXER_DESC *, apaudio_mixer *, A
 fn apaudio_mixer_destroy void (apaudio_mixer)
 fn apaudio_mixer_get_master_bus APAUDIO_BUS (apaudio_mixer)
 fn apaudio_mixer_render void (apaudio_mixer, void *, uint32_t, const SPUDAUDIO_CALLBACK_INFO *)
+fn apaudio_mixer_set_emitters APRESULT (apaudio_mixer, const APAUDIO_VOICE *, const APAUDIO_EMITTER *, uint32_t, APAUDIO_ERROR *)
 fn apaudio_mixer_set_format APRESULT (apaudio_mixer, const APAUDIO_FORMAT *, uint32_t, APAUDIO_ERROR *)
+fn apaudio_mixer_set_listeners APRESULT (apaudio_mixer, const APAUDIO_LISTENER *, uint32_t, APAUDIO_ERROR *)
 fn apaudio_mixer_stream_callback void (spudaudio_stream, void *, uint32_t, const SPUDAUDIO_CALLBACK_INFO *, void *)
 fn apaudio_mixer_update APRESULT (apaudio_mixer, APAUDIO_ERROR *)
 fn apaudio_modifier_create APRESULT (apaudio_mixer, const APAUDIO_MODIFIER_DESC *, APAUDIO_MODIFIER *, APAUDIO_ERROR *)
@@ -952,6 +971,22 @@ field APARCHIVE_WRITER_DESC.base @0 APRI_STRUCT_BASE
 field APARCHIVE_WRITER_DESC.sink @16 APARCHIVE_SINK
 field APARCHIVE_WRITER_DESC.codecs @32 aparchive_codecs
 field APARCHIVE_WRITER_DESC.allow_directory_entries @40 _Bool
+struct APAUDIO_ATTENUATION_DESC size=64 align=8
+field APAUDIO_ATTENUATION_DESC.base @0 APRI_STRUCT_BASE
+field APAUDIO_ATTENUATION_DESC.rolloff @16 APAUDIO_ROLLOFF
+field APAUDIO_ATTENUATION_DESC.min_distance @20 float
+field APAUDIO_ATTENUATION_DESC.max_distance @24 float
+field APAUDIO_ATTENUATION_DESC.rolloff_factor @28 float
+field APAUDIO_ATTENUATION_DESC.points @32 const APAUDIO_ATTENUATION_POINT *
+field APAUDIO_ATTENUATION_DESC.point_count @40 uint32_t
+field APAUDIO_ATTENUATION_DESC.cone_inner_angle @44 float
+field APAUDIO_ATTENUATION_DESC.cone_outer_angle @48 float
+field APAUDIO_ATTENUATION_DESC.cone_outer_gain @52 float
+field APAUDIO_ATTENUATION_DESC.doppler_factor @56 float
+field APAUDIO_ATTENUATION_DESC.priority_offset @60 int32_t
+struct APAUDIO_ATTENUATION_POINT size=8 align=4
+field APAUDIO_ATTENUATION_POINT.place @0 float
+field APAUDIO_ATTENUATION_POINT.gain @4 float
 struct APAUDIO_BANK_SOURCE size=24 align=8
 field APAUDIO_BANK_SOURCE.user @0 void *
 field APAUDIO_BANK_SOURCE.get_size @8 _Bool (*)(void *, const char *, uint64_t *)
@@ -1005,6 +1040,10 @@ field APAUDIO_CUE_PLAY_DESC.start_time_ns @32 uint64_t
 struct APAUDIO_DIRECTION size=16 align=8
 field APAUDIO_DIRECTION.azimuth @0 double
 field APAUDIO_DIRECTION.elevation @8 double
+struct APAUDIO_EMITTER size=48 align=8
+field APAUDIO_EMITTER.position @0 ApriDVec3
+field APAUDIO_EMITTER.velocity @24 ApriVec3
+field APAUDIO_EMITTER.forward @36 ApriVec3
 struct APAUDIO_ENCODED size=16 align=8
 field APAUDIO_ENCODED.data @0 void *
 field APAUDIO_ENCODED.size @8 uint64_t
@@ -1016,6 +1055,11 @@ field APAUDIO_FORMAT.sample_rate @4 uint32_t
 field APAUDIO_FORMAT.channel_count @8 uint32_t
 field APAUDIO_FORMAT.interleaved @12 _Bool
 field APAUDIO_FORMAT.positions @16 const SPUDAUDIO_CHANNEL_POSITION *
+struct APAUDIO_LISTENER size=64 align=8
+field APAUDIO_LISTENER.position @0 ApriDVec3
+field APAUDIO_LISTENER.velocity @24 ApriVec3
+field APAUDIO_LISTENER.forward @36 ApriVec3
+field APAUDIO_LISTENER.up @48 ApriVec3
 struct APAUDIO_MIXER_DESC size=128 align=8
 field APAUDIO_MIXER_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_MIXER_DESC.format @16 APAUDIO_FORMAT
@@ -1063,7 +1107,7 @@ field APAUDIO_PCM.samples @0 float *
 field APAUDIO_PCM.frame_count @8 uint64_t
 field APAUDIO_PCM.channel_count @16 uint32_t
 field APAUDIO_PCM.sample_rate @20 uint32_t
-struct APAUDIO_PLAY_DESC size=80 align=8
+struct APAUDIO_PLAY_DESC size=96 align=8
 field APAUDIO_PLAY_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_PLAY_DESC.gain @16 float
 field APAUDIO_PLAY_DESC.priority @20 uint8_t
@@ -1074,6 +1118,9 @@ field APAUDIO_PLAY_DESC.rate @48 float
 field APAUDIO_PLAY_DESC.direction @56 const APAUDIO_DIRECTION *
 field APAUDIO_PLAY_DESC.start_time_ns @64 uint64_t
 field APAUDIO_PLAY_DESC.loop @72 _Bool
+field APAUDIO_PLAY_DESC.placement @76 APAUDIO_PLACEMENT
+field APAUDIO_PLAY_DESC.emitter @80 const APAUDIO_EMITTER *
+field APAUDIO_PLAY_DESC.attenuation @88 APAUDIO_ATTENUATION
 struct APAUDIO_SOUND_DESC size=104 align=8
 field APAUDIO_SOUND_DESC.base @0 APRI_STRUCT_BASE
 field APAUDIO_SOUND_DESC.samples @16 const float *
@@ -1090,6 +1137,12 @@ struct APAUDIO_SOURCE size=24 align=8
 field APAUDIO_SOURCE.user @0 void *
 field APAUDIO_SOURCE.size @8 uint64_t
 field APAUDIO_SOURCE.read @16 _Bool (*)(void *, uint64_t, void *, uint64_t)
+struct APAUDIO_SPATIAL_DESC size=32 align=8
+field APAUDIO_SPATIAL_DESC.base @0 APRI_STRUCT_BASE
+field APAUDIO_SPATIAL_DESC.handedness @16 APAUDIO_HANDEDNESS
+field APAUDIO_SPATIAL_DESC.max_listeners @20 uint32_t
+field APAUDIO_SPATIAL_DESC.max_attenuations @24 uint32_t
+field APAUDIO_SPATIAL_DESC.speed_of_sound @28 float
 struct APJOBS_ERROR size=256 align=1
 field APJOBS_ERROR.message @0 char[256]
 struct APJOBS_POOL_DESC size=32 align=8
@@ -2217,6 +2270,9 @@ typedef APARCHIVE_SOURCE = struct APARCHIVE_SOURCE
 typedef APARCHIVE_STRICT = enum APARCHIVE_STRICT
 typedef APARCHIVE_UPDATE_DESC = struct APARCHIVE_UPDATE_DESC
 typedef APARCHIVE_WRITER_DESC = struct APARCHIVE_WRITER_DESC
+typedef APAUDIO_ATTENUATION = uint64_t
+typedef APAUDIO_ATTENUATION_DESC = struct APAUDIO_ATTENUATION_DESC
+typedef APAUDIO_ATTENUATION_POINT = struct APAUDIO_ATTENUATION_POINT
 typedef APAUDIO_BANK_SOURCE = struct APAUDIO_BANK_SOURCE
 typedef APAUDIO_BUS = uint64_t
 typedef APAUDIO_BUS_DESC = struct APAUDIO_BUS_DESC
@@ -2228,10 +2284,13 @@ typedef APAUDIO_CUES_DESC = struct APAUDIO_CUES_DESC
 typedef APAUDIO_CUE_INFO = struct APAUDIO_CUE_INFO
 typedef APAUDIO_CUE_PLAY_DESC = struct APAUDIO_CUE_PLAY_DESC
 typedef APAUDIO_DIRECTION = struct APAUDIO_DIRECTION
+typedef APAUDIO_EMITTER = struct APAUDIO_EMITTER
 typedef APAUDIO_ENCODED = struct APAUDIO_ENCODED
 typedef APAUDIO_ERROR = struct APAUDIO_ERROR
 typedef APAUDIO_FORMAT = struct APAUDIO_FORMAT
+typedef APAUDIO_HANDEDNESS = uint32_t
 typedef APAUDIO_LIMITER = uint32_t
+typedef APAUDIO_LISTENER = struct APAUDIO_LISTENER
 typedef APAUDIO_MIXER_DESC = struct APAUDIO_MIXER_DESC
 typedef APAUDIO_MODIFIER = uint64_t
 typedef APAUDIO_MODIFIER_DESC = struct APAUDIO_MODIFIER_DESC
@@ -2239,12 +2298,15 @@ typedef APAUDIO_MODIFIER_TARGET = struct APAUDIO_MODIFIER_TARGET
 typedef APAUDIO_OPUS_APPLICATION = uint32_t
 typedef APAUDIO_OPUS_ENCODE_DESC = struct APAUDIO_OPUS_ENCODE_DESC
 typedef APAUDIO_PCM = struct APAUDIO_PCM
+typedef APAUDIO_PLACEMENT = uint32_t
 typedef APAUDIO_PLAY_DESC = struct APAUDIO_PLAY_DESC
 typedef APAUDIO_RESAMPLER = uint32_t
 typedef APAUDIO_RESOLUTION = uint32_t
+typedef APAUDIO_ROLLOFF = uint32_t
 typedef APAUDIO_SOUND = uint64_t
 typedef APAUDIO_SOUND_DESC = struct APAUDIO_SOUND_DESC
 typedef APAUDIO_SOURCE = struct APAUDIO_SOURCE
+typedef APAUDIO_SPATIAL_DESC = struct APAUDIO_SPATIAL_DESC
 typedef APAUDIO_STREAM_CODEC = uint32_t
 typedef APAUDIO_VIRTUAL_BEHAVIOR = uint32_t
 typedef APAUDIO_VOICE = uint64_t

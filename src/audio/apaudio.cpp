@@ -795,6 +795,9 @@ struct Voice
     // The voice's ID while the last render panned it folded from behind; 0
     // otherwise. apaudio_voice_is_folded()'s.
     std::atomic<uint64_t> folded_id{0};
+    // Its APAUDIO_PLACEMENT, written by apaudio_play() before live_id: what
+    // the update and the any-role calls check a voice's placement by.
+    std::atomic<uint8_t> placement{0};
 
     // apaudio_play()'s, written before the voice is queued; then the audio
     // thread's, which keeps them up to date with the voice's changes.
@@ -803,7 +806,8 @@ struct Voice
     uint64_t sound_id{0};
     float gain{1.0f};
     float rate{1.0f};
-    uint8_t priority{0};
+    uint8_t priority{0};      // a world-placed voice's: offset by its distance, as last posted
+    uint8_t base_priority{0}; // the play's
     APAUDIO_VIRTUAL_BEHAVIOR behavior{0};
     APAUDIO_CONCURRENCY concurrency{0};
     APAUDIO_BUS bus{0};
@@ -826,6 +830,8 @@ struct Voice
     bool snap{true};            // nothing mixed yet to ramp from
     bool pan_changed{false};
     bool ended{false}; // played to its sound's end
+    bool world{false};  // placed in the world (apaudio.h, "Spatial audio")
+    bool placed{false}; // ...and given its first place by an update
     const Sound *sound{nullptr};
     uint32_t bus_index{0};
     uint32_t bus_generation{0};
@@ -840,7 +846,13 @@ struct Voice
     float group_gain{1.0f};
     float envelope{1.0f}; // fades and releases
     float envelope_step{0.0f};
-    float score{0.0f}; // audibility
+    float score{0.0f};          // audibility
+    float unplaced_score{0.0f}; // audibility before the gain from distance and cone, for the update
+    // A world-placed voice's, as the last update posted them: its gain from
+    // distance and cone, its doppler rate and its distance to its listener.
+    float spatial_gain{1.0f};
+    float doppler{1.0f};
+    float distance{0.0f};
     uint64_t serial{0}; // start order
     uint64_t real_frames{0};
     uint64_t fade_serial{0};
@@ -851,7 +863,8 @@ struct Voice
     bool stream_failed{false};
 };
 // Read for every active voice each render: 272 bytes before streams, 288
-// with them, five cache lines either way.
+// with them, about 312 with spatial audio's place and results - five cache
+// lines each time.
 APRI_HOT_RECORD(Voice, 5 * APRI_CACHE_LINE);
 
 struct Bus
@@ -979,6 +992,87 @@ struct RankEntry // apaudio_mixer_update()'s
     uint64_t sound;
 };
 APRI_PLAIN_DATA(RankEntry);
+
+// ---- Spatial records ------------------------------------------------------------
+//
+// apaudio.h, "Spatial audio". Each apaudio_mixer_update() works out every
+// world-placed voice, in one pass over the voice records, from these, and
+// posts a SpatialResult per voice beside its decision, through the same
+// triple buffer: the render reads values, and does none of the maths.
+
+// A listener as apaudio_mixer_set_listeners() stored it, its frame made
+// orthonormal there, once. The control role's.
+struct ListenerFrame
+{
+    double position[3];
+    float velocity[3];
+    float forward[3];
+    float up[3];
+    float right[3];
+};
+APRI_PLAIN_DATA(ListenerFrame);
+
+// An attenuation's settings: the control role's, but for live_id, which
+// apaudio_play() checks from any thread.
+struct Attenuation
+{
+    std::atomic<uint64_t> live_id{0};
+    uint32_t generation{0};
+    bool live{false};
+    APAUDIO_ROLLOFF rolloff{0};
+    float min_distance{0.0f};
+    float max_distance{0.0f};
+    float factor{0.0f};
+    APAUDIO_ATTENUATION_POINT *points{nullptr}; // TABLE's, allocated at create
+    uint32_t point_count{0};
+    float inner_half{0.0f}; // half the cone's angles, radians
+    float outer_half{0.0f};
+    float outer_gain{1.0f};
+    float doppler{0.0f};
+    int32_t priority_offset{0};
+};
+
+// A world-placed voice's latest emitter from apaudio_mixer_set_emitters(),
+// for the voice record's generation. The control role's.
+struct Place
+{
+    uint32_t generation; // 0: none
+    double position[3];
+    float velocity[3];
+    float forward[3];
+};
+APRI_PLAIN_DATA(Place);
+
+// apaudio_play()'s first place, attenuation and priority, from any thread,
+// as words: the update reads a record a play may be reusing without a race,
+// and tells by the voice's live_id, read again, that it did.
+enum : uint32_t
+{
+    PLAY_PLACE_POSITION = 0,     // three doubles' bits
+    PLAY_PLACE_VELOCITY_XY = 3,  // two floats' bits
+    PLAY_PLACE_VELOCITY_Z_FORWARD_X = 4,
+    PLAY_PLACE_FORWARD_YZ = 5,
+    PLAY_PLACE_ATTENUATION = 6,
+    PLAY_PLACE_PRIORITY = 7,
+    PLAY_PLACE_WORDS = 8,
+};
+
+struct PlayPlace
+{
+    std::atomic<uint64_t> words[PLAY_PLACE_WORDS];
+};
+
+// What an update posts for a world-placed voice, beside its decision.
+struct SpatialResult
+{
+    uint32_t generation; // the voice record's; 0: none
+    uint32_t direction;  // as pack_direction() packs it; 0 keeps the one it has
+    float gain;          // from distance and cone
+    float rate;          // doppler
+    float distance;      // to its listener
+    uint8_t priority;    // offset by distance
+};
+APRI_PLAIN_DATA(SpatialResult);
 
 // Windowed sinc: SINC_ZEROS zero crossings each side, SINC_RESOLUTION table
 // entries per crossing. Playing faster than the mixer's rate stretches it (a
@@ -1180,6 +1274,24 @@ struct apaudio_mixer_t
     // The decoding an update started on the scheduler: waited for before
     // anything it touches changes.
     void *decoding{nullptr};
+    // Spatial audio (apaudio.h, "Spatial audio"), made with the mixer when
+    // an APAUDIO_SPATIAL_DESC is chained on: the control role's listeners,
+    // attenuations and each voice record's latest place; the plays' first
+    // places (any thread's, as words); and the results each update posts with
+    // its decisions, which the render takes with them.
+    bool spatial{false};
+    bool right_handed{true};
+    uint32_t max_listeners{0};
+    uint32_t max_attenuations{0};
+    float speed_of_sound{0.0f};
+    uint32_t listener_count{0};
+    uint32_t attenuation_cursor{0};
+    ListenerFrame *listeners{nullptr};
+    Attenuation *attenuations{nullptr};
+    Place *places{nullptr};
+    PlayPlace *play_places{nullptr};
+    SpatialResult *spatial_results[3]{nullptr, nullptr, nullptr};
+    const SpatialResult *results{nullptr}; // the render's: the last ones it took
 
     // Debug builds' check of apricore.h's "Threads" rule (../aprioverlap.hpp).
     apri_overlap overlap{};
@@ -1616,7 +1728,7 @@ static void take_slot(Mixer *m, Voice &v)
 // Source frames per output frame, 32.32.
 static uint64_t voice_step(const Mixer *m, const Voice &v)
 {
-    float rate = clamp_float(v.rate * m->buses[v.bus_index].effective_rate, RATE_MIN, RATE_MAX);
+    float rate = clamp_float(v.rate * m->buses[v.bus_index].effective_rate * v.doppler, RATE_MIN, RATE_MAX);
     return (uint64_t)((double)v.sound->sample_rate * (double)rate / (double)m->sample_rate * 4294967296.0 + 0.5);
 }
 
@@ -1665,12 +1777,22 @@ static void resolve_bus(const Mixer *m, Voice &v)
 
 static void score_voice(const Mixer *m, Voice &v)
 {
-    v.score = v.gain * v.group_gain * m->buses[v.bus_index].effective_gain * v.sound->loudness;
+    v.unplaced_score = v.gain * v.group_gain * m->buses[v.bus_index].effective_gain * v.sound->loudness;
+    v.score = v.unplaced_score * v.spatial_gain;
 }
 
 static bool audible_enough(const Mixer *m, float score)
 {
     return m->virtual_threshold <= 0.0f || score >= m->virtual_threshold;
+}
+
+// A direction packed by pack_direction().
+static void unpack_direction(Voice &v, uint32_t payload)
+{
+    v.has_direction = (payload & DIRECTION_PRESENT) != 0;
+    v.azimuth = (float)(payload & 0xFFFFu) * (360.0f / 65536.0f);
+    v.elevation = ((float)((payload >> 16) & 0x3FFFu) / 16383.0f - 0.5f) * 180.0f;
+    v.pan_changed = true;
 }
 
 // Applies the latest apaudio_voice_set_*() values.
@@ -1682,12 +1804,28 @@ static void take_changes(Voice &v)
     if (tagged_take(v.rate_word, v.generation, FLOAT_NONE, payload))
         v.rate = bits_float(payload);
     if (tagged_take(v.direction_word, v.generation, 0, payload))
+        unpack_direction(v, payload);
+}
+
+// Takes what the last update posted for a world-placed voice, if it posted
+// anything for this one.
+static void take_spatial(const Mixer *m, Voice &v, uint32_t index)
+{
+    const SpatialResult &r = m->results[index];
+    if (r.generation != v.generation)
+        return;
+    v.spatial_gain = r.gain;
+    v.doppler = r.rate;
+    v.distance = r.distance;
+    v.priority = r.priority;
+    if (r.direction)
     {
-        v.has_direction = (payload & DIRECTION_PRESENT) != 0;
-        v.azimuth = (float)(payload & 0xFFFFu) * (360.0f / 65536.0f);
-        v.elevation = ((float)((payload >> 16) & 0x3FFFu) / 16383.0f - 0.5f) * 180.0f;
-        v.pan_changed = true;
+        float azimuth = v.azimuth, elevation = v.elevation;
+        bool had = v.has_direction;
+        unpack_direction(v, r.direction);
+        v.pan_changed = !had || v.azimuth != azimuth || v.elevation != elevation;
     }
+    v.placed = true;
 }
 
 static bool stop_requested(const Voice &v, uint64_t &release)
@@ -1742,7 +1880,7 @@ static bool group_admit(Mixer *m, Voice &v, uint64_t now)
         return false;
 
     uint32_t count = 0;
-    Voice *oldest = nullptr, *quietest = nullptr, *lowest = nullptr;
+    Voice *oldest = nullptr, *quietest = nullptr, *lowest = nullptr, *farthest = nullptr;
     for (uint32_t i = 0; i < m->active_count; i++)
     {
         Voice &other = m->voices[m->active[i]];
@@ -1756,6 +1894,9 @@ static bool group_admit(Mixer *m, Voice &v, uint64_t now)
         if (!lowest || other.priority < lowest->priority ||
             (other.priority == lowest->priority && other.serial < lowest->serial))
             lowest = &other;
+        if (!farthest || other.distance > farthest->distance ||
+            (other.distance == farthest->distance && other.serial < farthest->serial))
+            farthest = &other;
     }
     if (count >= group.max_instances)
     {
@@ -1770,6 +1911,9 @@ static bool group_admit(Mixer *m, Voice &v, uint64_t now)
             break;
         case APAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY:
             victim = lowest && lowest->priority <= v.priority ? lowest : nullptr;
+            break;
+        case APAUDIO_RESOLUTION_STOP_FARTHEST:
+            victim = farthest && farthest->distance >= v.distance ? farthest : nullptr;
             break;
         default:
             break;
@@ -1896,6 +2040,12 @@ static bool admit_voice(Mixer *m, uint32_t index, uint32_t frames, bool host_val
     v.real_frames = 0;
     v.stream = NO_STREAM;
     v.stream_wait = v.stream_failed = false;
+    v.world = v.placement.load(std::memory_order_relaxed) == APAUDIO_PLACEMENT_WORLD;
+    v.placed = false;
+    v.spatial_gain = 1.0f;
+    v.doppler = 1.0f;
+    v.distance = 0.0f;
+    v.unplaced_score = 0.0f;
 
     // The sound may have been destroyed since apaudio_play() checked.
     uint32_t sound_index, sound_generation;
@@ -1911,9 +2061,12 @@ static bool admit_voice(Mixer *m, uint32_t index, uint32_t frames, bool host_val
     take_changes(v);
     if (v.behavior == APAUDIO_VIRTUAL_UNSPECIFIED)
         v.behavior = sound.virtual_behavior;
+    // A world-placed voice starts once an update has placed it.
+    if (v.world && m->results)
+        take_spatial(m, v, index);
 
-    uint32_t offset;
-    bool starts = start_offset(m, v, frames, host_valid, host_ns, offset);
+    uint32_t offset = 0;
+    bool starts = (!v.world || v.placed) && start_offset(m, v, frames, host_valid, host_ns, offset);
     if (starts && !group_admit(m, v, m->clock + offset))
         return false;
     if (!ensure_capacity(m, v))
@@ -2603,7 +2756,7 @@ static void mix_voice(Mixer *m, Voice &v, uint32_t frames)
     uint32_t count = frames - offset;
     v.start_offset = 0;
 
-    float gain = v.cut ? 0.0f : v.gain * v.group_gain * m->buses[v.bus_index].effective_gain;
+    float gain = v.cut ? 0.0f : v.gain * v.group_gain * m->buses[v.bus_index].effective_gain * v.spatial_gain;
     uint64_t step = voice_step(m, v);
     float *pan = m->pan + (size_t)v.slot * 2 * channels;
     float *pan_end = pan;
@@ -2750,7 +2903,10 @@ static void publish(Mixer *m)
         }
         if (v.loop)
             flags |= PUBLISHED_LOOP;
-        v.published_info.store((uint64_t)float_bits(v.score) | ((uint64_t)v.priority << 32) | ((uint64_t)flags << 40),
+        // The update multiplies a world-placed voice's by its own, newer,
+        // gain from distance and cone, and offsets the play's priority.
+        v.published_info.store((uint64_t)float_bits(v.unplaced_score) | ((uint64_t)v.base_priority << 32) |
+                                   ((uint64_t)flags << 40),
                                std::memory_order_relaxed);
         v.published_sound.store(v.sound_id, std::memory_order_relaxed);
         v.published_id.store(v.id, std::memory_order_release);
@@ -2773,6 +2929,17 @@ static void render_block(Mixer *m, uint32_t frames, bool host_valid, uint64_t ho
         m->config = &m->configs[m->config_buffer.read];
     update_buses(m, frames);
     const uint64_t *decisions = m->decision_buffer.take() ? m->decisions[m->decision_buffer.read] : nullptr;
+    if (decisions && m->spatial)
+    {
+        // World-placed voices' places, with the decisions they were ranked by.
+        m->results = m->spatial_results[m->decision_buffer.read];
+        for (uint32_t i = 0; i < m->active_count; i++)
+        {
+            Voice &v = m->voices[m->active[i]];
+            if (!v.dead && v.world)
+                take_spatial(m, v, m->active[i]);
+        }
+    }
 
     if (decisions && m->max_streams)
     {
@@ -2820,7 +2987,11 @@ static void render_block(Mixer *m, uint32_t frames, bool host_valid, uint64_t ho
     {
         Voice &v = m->voices[m->active[i]];
         uint32_t offset;
-        if (v.dead || v.state != VOICE_WAITING || !start_offset(m, v, frames, host_valid, host_ns, offset))
+        if (v.dead || v.state != VOICE_WAITING)
+            continue;
+        if (v.world && !v.placed)
+            continue; // not placed yet
+        if (!start_offset(m, v, frames, host_valid, host_ns, offset))
             continue;
         if (group_admit(m, v, m->clock + offset))
             begin_voice(m, v, offset);
@@ -3406,6 +3577,222 @@ static APRESULT streams_report(Mixer *m, const StreamReport &report, APAUDIO_ERR
     return fail(error, s.failure.result, "voice %llu: its %s stream: %s", voice, codec, part);
 }
 
+// ---- Spatial audio: the update's maths (control thread) ---------------------------
+
+static bool finite_d3(const ApriDVec3 &v)
+{
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
+}
+
+static bool finite_f3(const ApriVec3 &v)
+{
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
+}
+
+static double dot3(const double *a, const float *b)
+{
+    return a[0] * (double)b[0] + a[1] * (double)b[1] + a[2] * (double)b[2];
+}
+
+static double dot3f(const float *a, const float *b)
+{
+    return (double)a[0] * (double)b[0] + (double)a[1] * (double)b[1] + (double)a[2] * (double)b[2];
+}
+
+static uint64_t double_word(double value)
+{
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static double word_double(uint64_t bits)
+{
+    double value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static uint64_t float_pair(float low, float high)
+{
+    return (uint64_t)float_bits(low) | ((uint64_t)float_bits(high) << 32);
+}
+
+// The gain from distance [d], 1 at min_distance and nearer, held past
+// max_distance.
+static float distance_gain(const Attenuation &a, double d)
+{
+    double lo = a.min_distance, hi = a.max_distance;
+    double at = d < lo ? lo : (d > hi ? hi : d);
+    switch (a.rolloff)
+    {
+    case APAUDIO_ROLLOFF_INVERSE:
+        return (float)(lo / (lo + a.factor * (at - lo)));
+    case APAUDIO_ROLLOFF_LINEAR:
+    {
+        double g = 1.0 - a.factor * (at - lo) / (hi - lo);
+        return (float)(g < 0.0 ? 0.0 : g);
+    }
+    case APAUDIO_ROLLOFF_EXPONENT:
+        return (float)pow(at / lo, -(double)a.factor);
+    case APAUDIO_ROLLOFF_TABLE:
+    {
+        double place = (at - lo) / (hi - lo);
+        const APAUDIO_ATTENUATION_POINT *pts = a.points;
+        uint32_t i = 1;
+        while (i + 1 < a.point_count && place > pts[i].place)
+            i++;
+        double span = pts[i].place - pts[i - 1].place;
+        double t = span > 0.0 ? (place - pts[i - 1].place) / span : 1.0;
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        return (float)(pts[i - 1].gain + (pts[i].gain - pts[i - 1].gain) * t);
+    }
+    default:
+        return 1.0f;
+    }
+}
+
+// One world-placed voice, worked out from the listener nearest it.
+static SpatialResult place_voice(const Mixer *m, uint32_t generation, const double *position, const float *velocity,
+                                 const float *forward, APAUDIO_ATTENUATION attenuation, uint8_t base_priority)
+{
+    SpatialResult r{};
+    r.generation = generation;
+    r.direction = 0;
+    r.rate = 1.0f;
+    r.priority = base_priority;
+    if (m->listener_count == 0)
+    {
+        // Nobody hears it.
+        r.gain = 0.0f;
+        r.distance = INFINITY;
+        return r;
+    }
+    const ListenerFrame *listener = &m->listeners[0];
+    double best = INFINITY;
+    for (uint32_t l = 0; l < m->listener_count; l++)
+    {
+        const ListenerFrame &f = m->listeners[l];
+        double dx = position[0] - f.position[0], dy = position[1] - f.position[1], dz = position[2] - f.position[2];
+        double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best)
+        {
+            best = d2;
+            listener = &f;
+        }
+    }
+    double rel[3] = {position[0] - listener->position[0], position[1] - listener->position[1],
+                     position[2] - listener->position[2]};
+    double d = sqrt(best);
+    r.distance = (float)d;
+    if (d > 0.0)
+    {
+        double x = dot3(rel, listener->right), y = dot3(rel, listener->up), z = dot3(rel, listener->forward);
+        APAUDIO_DIRECTION direction;
+        direction.azimuth = atan2(x, z);
+        direction.elevation = atan2(y, sqrt(x * x + z * z));
+        r.direction = pack_direction(&direction);
+    }
+
+    // Its attenuation, if it still has one: none, it is heard as it is.
+    uint32_t index, attenuation_generation;
+    r.gain = 1.0f;
+    if (!split_id(attenuation, m->max_attenuations, index, attenuation_generation))
+        return r;
+    const Attenuation &a = m->attenuations[index];
+    if (!a.live || a.generation != attenuation_generation)
+        return r;
+    float gain = distance_gain(a, d);
+
+    // The cone, around the emitter's forward, by the angle to the listener.
+    double length = sqrt(dot3f(forward, forward));
+    if (length > 0.0 && d > 0.0)
+    {
+        double cosine = -dot3(rel, forward) / (d * length);
+        cosine = cosine < -1.0 ? -1.0 : (cosine > 1.0 ? 1.0 : cosine);
+        double angle = acos(cosine);
+        float cone = 1.0f;
+        if (angle >= a.outer_half)
+            cone = a.outer_gain;
+        else if (angle > a.inner_half)
+            cone = (float)(1.0 + (a.outer_gain - 1.0) * (angle - a.inner_half) / (a.outer_half - a.inner_half));
+        gain *= cone;
+    }
+    r.gain = gain;
+
+    // Doppler, OpenAL 1.1's: each velocity's part along the line from the
+    // source to the listener, held below the speed of sound over the factor.
+    if (a.doppler > 0.0f && d > 0.0)
+    {
+        double toward[3] = {-rel[0] / d, -rel[1] / d, -rel[2] / d};
+        double limit = (double)m->speed_of_sound / a.doppler;
+        double vls = dot3(toward, listener->velocity);
+        double vss = dot3(toward, velocity);
+        vls = vls > limit ? limit : vls;
+        vss = vss > limit ? limit : vss;
+        double above = (double)m->speed_of_sound - a.doppler * vls;
+        double below = (double)m->speed_of_sound - a.doppler * vss;
+        double ratio = below > 0.0 ? above / below : (double)RATE_MAX;
+        r.rate = clamp_float((float)ratio, RATE_MIN, RATE_MAX);
+    }
+
+    // The priority offset, scaled over the range.
+    if (a.priority_offset != 0)
+    {
+        double t = (d - a.min_distance) / ((double)a.max_distance - a.min_distance);
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        double offset = a.priority_offset * t;
+        int32_t priority = (int32_t)base_priority + (int32_t)(offset < 0.0 ? offset - 0.5 : offset + 0.5);
+        r.priority = (uint8_t)(priority < 0 ? 0 : (priority > 255 ? 255 : priority));
+    }
+    return r;
+}
+
+// Every world-placed voice, live or queued, in one pass over the records:
+// its place from the control role's latest, or its play's.
+static void spatial_pass(Mixer *m, SpatialResult *results)
+{
+    for (uint32_t i = 0; i < m->record_count; i++)
+    {
+        Voice &v = m->voices[i];
+        uint64_t id = v.live_id.load(std::memory_order_acquire);
+        if (id == 0)
+            continue;
+        if (v.placement.load(std::memory_order_relaxed) != APAUDIO_PLACEMENT_WORLD)
+            continue;
+        uint64_t words[PLAY_PLACE_WORDS];
+        for (uint32_t w = 0; w < PLAY_PLACE_WORDS; w++)
+            words[w] = m->play_places[i].words[w].load(std::memory_order_relaxed);
+        // Read again: a play reusing the record meanwhile would have changed it.
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (v.live_id.load(std::memory_order_relaxed) != id)
+            continue;
+        uint32_t generation = (uint32_t)(id >> 32);
+        double position[3];
+        float velocity[3], forward[3];
+        const Place &own = m->places[i];
+        if (own.generation == generation)
+        {
+            memcpy(position, own.position, sizeof(position));
+            memcpy(velocity, own.velocity, sizeof(velocity));
+            memcpy(forward, own.forward, sizeof(forward));
+        }
+        else
+        {
+            for (int c = 0; c < 3; c++)
+                position[c] = word_double(words[PLAY_PLACE_POSITION + c]);
+            velocity[0] = bits_float((uint32_t)words[PLAY_PLACE_VELOCITY_XY]);
+            velocity[1] = bits_float((uint32_t)(words[PLAY_PLACE_VELOCITY_XY] >> 32));
+            velocity[2] = bits_float((uint32_t)words[PLAY_PLACE_VELOCITY_Z_FORWARD_X]);
+            forward[0] = bits_float((uint32_t)(words[PLAY_PLACE_VELOCITY_Z_FORWARD_X] >> 32));
+            forward[1] = bits_float((uint32_t)words[PLAY_PLACE_FORWARD_YZ]);
+            forward[2] = bits_float((uint32_t)(words[PLAY_PLACE_FORWARD_YZ] >> 32));
+        }
+        results[i] = place_voice(m, generation, position, velocity, forward, words[PLAY_PLACE_ATTENUATION],
+                                 (uint8_t)words[PLAY_PLACE_PRIORITY]);
+    }
+}
+
 // ---- Control-thread helpers ----------------------------------------------------
 
 // A free slot of [count], looking from [cursor] on so the slot freed longest
@@ -3455,6 +3842,17 @@ static void mixer_free(Mixer *m)
     free(m->rank);
     free(m->active);
     free(m->free_slots);
+    if (m->attenuations)
+    {
+        for (uint32_t i = 0; i < m->max_attenuations; i++)
+            free(m->attenuations[i].points);
+    }
+    free(m->attenuations);
+    free(m->listeners);
+    free(m->places);
+    free(m->play_places);
+    for (SpatialResult *results : m->spatial_results)
+        free(results);
     // Every stream, after the decoding the last update started.
     streams_wait(m);
     for (Stream &stream : m->streams)
@@ -3715,8 +4113,20 @@ extern "C"
             *out_mixer = nullptr;
         if (!desc || !out_mixer)
             return fail(error, APRESULT_INVALID_ARGUMENT, "desc or out_mixer is null");
-        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC))
-            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        if (desc->base.type != APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC)
+            return fail(error, APRESULT_STRUCT_WRONG_TYPE, "desc %s",
+                        apri_struct_check_message(APRESULT_STRUCT_WRONG_TYPE));
+        // Its chain: APAUDIO_SPATIAL_DESC, once, and nothing else.
+        const APAUDIO_SPATIAL_DESC *spatial = nullptr;
+        for (const APRI_STRUCT_BASE *link = desc->base.next; link; link = link->next)
+        {
+            if (link->type != APRI_STRUCT_TYPE_APAUDIO_SPATIAL_DESC)
+                return fail(error, APRESULT_STRUCT_UNKNOWN_IN_CHAIN,
+                            "desc has a struct chained on other than APAUDIO_SPATIAL_DESC, the one it takes");
+            if (spatial)
+                return fail(error, APRESULT_STRUCT_DUPLICATE_IN_CHAIN, "desc has APAUDIO_SPATIAL_DESC chained on twice");
+            spatial = (const APAUDIO_SPATIAL_DESC *)link;
+        }
         const APAUDIO_MIXER_DESC &d = *desc;
         Layout layout;
         if (APRESULT result = layout_build(d.format, d.max_frames, layout, error))
@@ -3755,6 +4165,21 @@ extern "C"
             APJOBS_ERROR scheduler_error;
             if (APRESULT result = apjobs_scheduler_check(d.scheduler, &scheduler_error))
                 return fail(error, result, "scheduler: %s", scheduler_error.message);
+        }
+        if (spatial)
+        {
+            if (spatial->handedness != APAUDIO_HANDEDNESS_RIGHT && spatial->handedness != APAUDIO_HANDEDNESS_LEFT)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "spatial desc's handedness %u isn't RIGHT or LEFT",
+                            spatial->handedness);
+            if (spatial->max_listeners == 0)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "spatial desc's max_listeners is 0");
+            if (spatial->max_attenuations == 0)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "spatial desc's max_attenuations is 0");
+            if (spatial->max_attenuations == UINT32_MAX)
+                return fail(error, APRESULT_INVALID_ARGUMENT,
+                            "spatial desc's max_attenuations is more than the mixer can index");
+            if (!(isfinite(spatial->speed_of_sound) && spatial->speed_of_sound > 0.0f))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "spatial desc's speed_of_sound isn't finite and > 0");
         }
 
         void *memory = malloc(sizeof(Mixer));
@@ -3819,6 +4244,21 @@ extern "C"
                 // call).
                 m->scheduler.base.next = nullptr;
             }
+        }
+        if (allocated && spatial)
+        {
+            m->spatial = true;
+            m->right_handed = spatial->handedness == APAUDIO_HANDEDNESS_RIGHT;
+            m->max_listeners = spatial->max_listeners;
+            m->max_attenuations = spatial->max_attenuations;
+            m->speed_of_sound = spatial->speed_of_sound;
+            m->listeners = alloc_array<ListenerFrame>(m->max_listeners);
+            m->attenuations = alloc_array<Attenuation>(m->max_attenuations);
+            m->places = alloc_array<Place>(m->record_count);
+            m->play_places = alloc_array<PlayPlace>(m->record_count);
+            allocated = m->listeners && m->attenuations && m->places && m->play_places;
+            for (int i = 0; i < 3 && allocated; i++)
+                allocated = (m->spatial_results[i] = alloc_array<SpatialResult>(m->record_count)) != nullptr;
         }
         if (!allocated)
         {
@@ -3943,6 +4383,11 @@ extern "C"
         // priority until it has had it for min_real_us.
         uint64_t *decisions = m->decisions[m->decision_buffer.write];
         memset(decisions, 0, m->record_count * sizeof(uint64_t));
+        // World-placed voices first: ranking counts their gain from distance
+        // and cone, and their priority offset, as of now.
+        SpatialResult *results = m->spatial ? m->spatial_results[m->decision_buffer.write] : nullptr;
+        if (results)
+            spatial_pass(m, results);
         uint32_t count = 0;
         uint32_t capacity = m->max_real_voices;
         for (uint32_t i = 0; i < m->record_count; i++)
@@ -3975,6 +4420,11 @@ extern "C"
             entry.at_start = (flags & PUBLISHED_AT_START) != 0;
             entry.loop = (flags & PUBLISHED_LOOP) != 0;
             entry.score = bits_float((uint32_t)info);
+            if (results && results[i].generation == entry.generation)
+            {
+                entry.score *= results[i].gain;
+                entry.priority = results[i].priority;
+            }
             entry.key = !real ? entry.score : (flags & PUBLISHED_SETTLED) ? entry.score * TIE_MARGIN : INFINITY;
             entry.sound = sound;
         }
@@ -4343,7 +4793,7 @@ extern "C"
         const APAUDIO_CONCURRENCY_DESC &d = *desc;
         if (d.max_instances == 0)
             return fail(error, APRESULT_INVALID_ARGUMENT, "max_instances is 0");
-        if (d.resolution < APAUDIO_RESOLUTION_REJECT_NEW || d.resolution > APAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY)
+        if (d.resolution < APAUDIO_RESOLUTION_REJECT_NEW || d.resolution > APAUDIO_RESOLUTION_STOP_FARTHEST)
             return fail(error, APRESULT_INVALID_ARGUMENT, "resolution %u isn't one of APAUDIO_RESOLUTION", d.resolution);
         if (!(d.older_instance_gain > 0.0f && d.older_instance_gain <= 1.0f))
             return fail(error, APRESULT_INVALID_ARGUMENT, "an older_instance_gain of %g, outside (0, 1]",
@@ -4520,9 +4970,41 @@ extern "C"
             return APRESULT_INVALID_ARGUMENT;
         if (d.direction && (!isfinite(d.direction->azimuth) || !isfinite(d.direction->elevation)))
             return APRESULT_INVALID_ARGUMENT;
+        if (d.placement != APAUDIO_PLACEMENT_ANGLES && d.placement != APAUDIO_PLACEMENT_WORLD)
+            return APRESULT_INVALID_ARGUMENT;
+        bool world = d.placement == APAUDIO_PLACEMENT_WORLD;
+        if (world)
+        {
+            if (d.direction)
+                return APRESULT_INVALID_ARGUMENT;
+            if (!d.emitter)
+                return APRESULT_INVALID_ARGUMENT;
+            if (d.attenuation == 0)
+                return APRESULT_INVALID_ARGUMENT;
+            if (!finite_d3(d.emitter->position))
+                return APRESULT_INVALID_ARGUMENT;
+            if (!finite_f3(d.emitter->velocity))
+                return APRESULT_INVALID_ARGUMENT;
+            if (!finite_f3(d.emitter->forward))
+                return APRESULT_INVALID_ARGUMENT;
+            if (!m->spatial)
+                return APRESULT_UNSUPPORTED;
+        }
+        else
+        {
+            if (d.emitter)
+                return APRESULT_INVALID_ARGUMENT;
+            if (d.attenuation != 0)
+                return APRESULT_INVALID_ARGUMENT;
+        }
         uint32_t sound_index, sound_generation;
         if (!split_id(sound, m->max_sounds, sound_index, sound_generation) ||
             m->sounds[sound_index].live_id.load() != sound)
+            return APRESULT_NOT_FOUND;
+        uint32_t attenuation_index = 0, attenuation_generation = 0;
+        if (world && !split_id(d.attenuation, m->max_attenuations, attenuation_index, attenuation_generation))
+            return APRESULT_NOT_FOUND;
+        if (world && m->attenuations[attenuation_index].live_id.load(std::memory_order_acquire) != d.attenuation)
             return APRESULT_NOT_FOUND;
 
         // A place in the queue, then a record: with queue_capacity plays
@@ -4545,6 +5027,7 @@ extern "C"
         v.gain = d.gain;
         v.rate = d.rate;
         v.priority = d.priority;
+        v.base_priority = d.priority;
         v.behavior = d.virtual_behavior;
         v.concurrency = d.concurrency;
         v.bus = d.bus;
@@ -4560,6 +5043,22 @@ extern "C"
         v.gain_word.store(tagged(v.generation, FLOAT_NONE), std::memory_order_relaxed);
         v.rate_word.store(tagged(v.generation, FLOAT_NONE), std::memory_order_relaxed);
         v.direction_word.store(tagged(v.generation, 0), std::memory_order_relaxed);
+        v.placement.store((uint8_t)d.placement, std::memory_order_relaxed);
+        if (world)
+        {
+            // Its first place, for the update, which reads it as words.
+            std::atomic<uint64_t> *words = m->play_places[index].words;
+            const APAUDIO_EMITTER &e = *d.emitter;
+            words[PLAY_PLACE_POSITION + 0].store(double_word(e.position.x), std::memory_order_relaxed);
+            words[PLAY_PLACE_POSITION + 1].store(double_word(e.position.y), std::memory_order_relaxed);
+            words[PLAY_PLACE_POSITION + 2].store(double_word(e.position.z), std::memory_order_relaxed);
+            words[PLAY_PLACE_VELOCITY_XY].store(float_pair(e.velocity.x, e.velocity.y), std::memory_order_relaxed);
+            words[PLAY_PLACE_VELOCITY_Z_FORWARD_X].store(float_pair(e.velocity.z, e.forward.x),
+                                                         std::memory_order_relaxed);
+            words[PLAY_PLACE_FORWARD_YZ].store(float_pair(e.forward.y, e.forward.z), std::memory_order_relaxed);
+            words[PLAY_PLACE_ATTENUATION].store(d.attenuation, std::memory_order_relaxed);
+            words[PLAY_PLACE_PRIORITY].store(d.priority, std::memory_order_relaxed);
+        }
         v.live_id.store(v.id, std::memory_order_release);
         if (out_voice)
             *out_voice = v.id;
@@ -4642,8 +5141,16 @@ extern "C"
         if (direction && (!isfinite(direction->azimuth) || !isfinite(direction->elevation)))
             return APRESULT_INVALID_ARGUMENT;
         uint32_t index, generation;
-        if (split_id(voice, mixer->record_count, index, generation))
-            tagged_store(mixer->voices[index].direction_word, generation, pack_direction(direction));
+        if (!split_id(voice, mixer->record_count, index, generation))
+            return APRESULT_OK;
+        Voice &v = mixer->voices[index];
+        // A world-placed voice's direction is the update's.
+        if (v.live_id.load(std::memory_order_acquire) == voice)
+        {
+            if (v.placement.load(std::memory_order_relaxed) == APAUDIO_PLACEMENT_WORLD)
+                return APRESULT_INVALID_ARGUMENT;
+        }
+        tagged_store(v.direction_word, generation, pack_direction(direction));
         return APRESULT_OK;
     }
 
@@ -4659,6 +5166,285 @@ extern "C"
         if (split_id(voice, mixer->record_count, index, generation))
             tagged_store(mixer->voices[index].rate_word, generation, float_bits(rate));
         return APRESULT_OK;
+    }
+
+    // ---- Spatial audio ------------------------------------------------------
+
+    APRESULT apaudio_mixer_set_listeners(apaudio_mixer mixer, const APAUDIO_LISTENER *listeners, uint32_t count,
+                                         APAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_mixer_set_listeners", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_set_listeners", "mixer's control calls");
+        Mixer *m = mixer;
+        if (!m->spatial)
+            return fail(error, APRESULT_UNSUPPORTED, "the mixer was made with no APAUDIO_SPATIAL_DESC");
+        if (!listeners && count > 0)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "listeners is null with a count of %u", count);
+        if (count > m->max_listeners)
+            return fail(error, APRESULT_LIMIT, "%u listeners, more than the spatial desc's max_listeners (%u)", count,
+                        m->max_listeners);
+        // Every one checked before any is stored.
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const APAUDIO_LISTENER &l = listeners[i];
+            if (!finite_d3(l.position))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s position isn't finite", i);
+            if (!finite_f3(l.velocity))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s velocity isn't finite", i);
+            if (!finite_f3(l.forward))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s forward isn't finite", i);
+            float f[3] = {l.forward.x, l.forward.y, l.forward.z};
+            double f_length = sqrt(dot3f(f, f));
+            if (f_length == 0.0)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s forward is zero", i);
+            if (!finite_f3(l.up))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s up isn't finite", i);
+            float u[3] = {l.up.x, l.up.y, l.up.z};
+            double u_length = sqrt(dot3f(u, u));
+            if (u_length == 0.0)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s up is zero", i);
+            double along = dot3f(f, u) / (f_length * u_length);
+            if (fabs(along) > 0.9999)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "listeners[%u]'s up is parallel to its forward", i);
+        }
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const APAUDIO_LISTENER &l = listeners[i];
+            ListenerFrame &frame = m->listeners[i];
+            frame.position[0] = l.position.x;
+            frame.position[1] = l.position.y;
+            frame.position[2] = l.position.z;
+            frame.velocity[0] = l.velocity.x;
+            frame.velocity[1] = l.velocity.y;
+            frame.velocity[2] = l.velocity.z;
+            // Forward normalized; up made perpendicular to it; right from the
+            // two by the world's handedness.
+            double f[3] = {l.forward.x, l.forward.y, l.forward.z};
+            double f_length = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+            for (int c = 0; c < 3; c++)
+                f[c] /= f_length;
+            double u[3] = {l.up.x, l.up.y, l.up.z};
+            double along = u[0] * f[0] + u[1] * f[1] + u[2] * f[2];
+            for (int c = 0; c < 3; c++)
+                u[c] -= along * f[c];
+            double u_length = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+            for (int c = 0; c < 3; c++)
+                u[c] /= u_length;
+            double r[3];
+            if (m->right_handed)
+            {
+                r[0] = f[1] * u[2] - f[2] * u[1];
+                r[1] = f[2] * u[0] - f[0] * u[2];
+                r[2] = f[0] * u[1] - f[1] * u[0];
+            }
+            else
+            {
+                r[0] = u[1] * f[2] - u[2] * f[1];
+                r[1] = u[2] * f[0] - u[0] * f[2];
+                r[2] = u[0] * f[1] - u[1] * f[0];
+            }
+            for (int c = 0; c < 3; c++)
+            {
+                frame.forward[c] = (float)f[c];
+                frame.up[c] = (float)u[c];
+                frame.right[c] = (float)r[c];
+            }
+        }
+        m->listener_count = count;
+        return APRESULT_OK;
+    }
+
+    APRESULT apaudio_mixer_set_emitters(apaudio_mixer mixer, const APAUDIO_VOICE *voices,
+                                        const APAUDIO_EMITTER *emitters, uint32_t count, APAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_mixer_set_emitters", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_mixer_set_emitters", "mixer's control calls");
+        Mixer *m = mixer;
+        if (!m->spatial)
+            return fail(error, APRESULT_UNSUPPORTED, "the mixer was made with no APAUDIO_SPATIAL_DESC");
+        if (!voices && count > 0)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "voices is null with a count of %u", count);
+        if (!emitters && count > 0)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "emitters is null with a count of %u", count);
+        // Every one checked before any is stored.
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const APAUDIO_EMITTER &e = emitters[i];
+            if (!finite_d3(e.position))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "emitters[%u]'s position isn't finite", i);
+            if (!finite_f3(e.velocity))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "emitters[%u]'s velocity isn't finite", i);
+            if (!finite_f3(e.forward))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "emitters[%u]'s forward isn't finite", i);
+            uint32_t index, generation;
+            if (!split_id(voices[i], m->record_count, index, generation))
+                continue; // unknown: skipped
+            const Voice &v = m->voices[index];
+            if (v.live_id.load(std::memory_order_acquire) != voices[i])
+                continue; // finished: skipped
+            if (v.placement.load(std::memory_order_relaxed) != APAUDIO_PLACEMENT_WORLD)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "voices[%u] is placed by angles, not in the world", i);
+        }
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t index, generation;
+            if (!split_id(voices[i], m->record_count, index, generation))
+                continue;
+            if (m->voices[index].live_id.load(std::memory_order_acquire) != voices[i])
+                continue;
+            const APAUDIO_EMITTER &e = emitters[i];
+            Place &place = m->places[index];
+            place.generation = generation;
+            place.position[0] = e.position.x;
+            place.position[1] = e.position.y;
+            place.position[2] = e.position.z;
+            place.velocity[0] = e.velocity.x;
+            place.velocity[1] = e.velocity.y;
+            place.velocity[2] = e.velocity.z;
+            place.forward[0] = e.forward.x;
+            place.forward[1] = e.forward.y;
+            place.forward[2] = e.forward.z;
+        }
+        return APRESULT_OK;
+    }
+
+    APRESULT apaudio_attenuation_create(apaudio_mixer mixer, const APAUDIO_ATTENUATION_DESC *desc,
+                                        APAUDIO_ATTENUATION *out_attenuation, APAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_attenuation)
+            *out_attenuation = 0;
+        if (!mixer)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is null");
+        if (APRI_STALE(mixer, "apaudio_attenuation_create", "mixer"))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "desc is null");
+        if (!out_attenuation)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "out_attenuation is null");
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_attenuation_create", "mixer's control calls");
+        Mixer *m = mixer;
+        if (APRESULT result = apri_struct_check(&desc->base, APRI_STRUCT_TYPE_APAUDIO_ATTENUATION_DESC))
+            return fail(error, result, "desc %s", apri_struct_check_message(result));
+        if (!m->spatial)
+            return fail(error, APRESULT_UNSUPPORTED, "the mixer was made with no APAUDIO_SPATIAL_DESC");
+        const APAUDIO_ATTENUATION_DESC &d = *desc;
+        if (d.rolloff < APAUDIO_ROLLOFF_NONE || d.rolloff > APAUDIO_ROLLOFF_TABLE)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "rolloff %u isn't NONE, INVERSE, LINEAR, EXPONENT or TABLE",
+                        d.rolloff);
+        if (!(isfinite(d.min_distance) && d.min_distance > 0.0f))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "min_distance isn't finite and > 0");
+        if (!(isfinite(d.max_distance) && d.max_distance > d.min_distance))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "max_distance isn't finite and > min_distance");
+        bool curve = d.rolloff == APAUDIO_ROLLOFF_INVERSE || d.rolloff == APAUDIO_ROLLOFF_LINEAR ||
+                     d.rolloff == APAUDIO_ROLLOFF_EXPONENT;
+        if (curve && !(isfinite(d.rolloff_factor) && d.rolloff_factor > 0.0f))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "rolloff_factor isn't finite and > 0");
+        bool table = d.rolloff == APAUDIO_ROLLOFF_TABLE;
+        if (table && !d.points)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "points is null for a TABLE");
+        if (table && d.point_count < 2)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "point_count is %u: a TABLE needs at least 2", d.point_count);
+        for (uint32_t i = 0; table && i < d.point_count; i++)
+        {
+            const APAUDIO_ATTENUATION_POINT &point = d.points[i];
+            if (!(isfinite(point.place) && point.place >= 0.0f && point.place <= 1.0f))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "points[%u]'s place isn't in [0, 1]", i);
+            if (i == 0 && point.place != 0.0f)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "points[0]'s place isn't 0");
+            if (i > 0 && !(point.place > d.points[i - 1].place))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "points[%u]'s place doesn't rise from the one before", i);
+            if (i + 1 == d.point_count && point.place != 1.0f)
+                return fail(error, APRESULT_INVALID_ARGUMENT, "points[%u]'s place, the last, isn't 1", i);
+            if (!(isfinite(point.gain) && point.gain >= 0.0f && point.gain <= 1.0f))
+                return fail(error, APRESULT_INVALID_ARGUMENT, "points[%u]'s gain isn't in [0, 1]", i);
+        }
+        const float full_turn = 2.0f * PI_F * (1.0f + 1e-6f);
+        if (!(isfinite(d.cone_inner_angle) && d.cone_inner_angle > 0.0f && d.cone_inner_angle <= full_turn))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "cone_inner_angle isn't in (0, 2 pi]");
+        if (!(isfinite(d.cone_outer_angle) && d.cone_outer_angle >= d.cone_inner_angle &&
+              d.cone_outer_angle <= full_turn))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "cone_outer_angle isn't in [cone_inner_angle, 2 pi]");
+        if (!(isfinite(d.cone_outer_gain) && d.cone_outer_gain >= 0.0f && d.cone_outer_gain <= 1.0f))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "cone_outer_gain isn't in [0, 1]");
+        if (!(isfinite(d.doppler_factor) && d.doppler_factor >= 0.0f))
+            return fail(error, APRESULT_INVALID_ARGUMENT, "doppler_factor isn't finite and >= 0");
+        if (d.priority_offset < -255 || d.priority_offset > 255)
+            return fail(error, APRESULT_INVALID_ARGUMENT, "priority_offset is %d, outside [-255, 255]",
+                        (int)d.priority_offset);
+
+        // A free slot, from where the last one was found.
+        uint32_t index = UINT32_MAX;
+        for (uint32_t n = 0; n < m->max_attenuations; n++)
+        {
+            uint32_t at = (m->attenuation_cursor + n) % m->max_attenuations;
+            if (!m->attenuations[at].live)
+            {
+                index = at;
+                break;
+            }
+        }
+        if (index == UINT32_MAX)
+            return fail(error, APRESULT_LIMIT, "every one of the %u attenuation slots is in use", m->max_attenuations);
+        APAUDIO_ATTENUATION_POINT *points = nullptr;
+        if (table)
+        {
+            points = (APAUDIO_ATTENUATION_POINT *)malloc((size_t)d.point_count * sizeof(APAUDIO_ATTENUATION_POINT));
+            if (!points)
+                return fail(error, APRESULT_OUT_OF_MEMORY, "no memory for the attenuation's %u points", d.point_count);
+            memcpy(points, d.points, (size_t)d.point_count * sizeof(APAUDIO_ATTENUATION_POINT));
+        }
+        Attenuation &a = m->attenuations[index];
+        a.generation = next_generation(a.generation);
+        a.live = true;
+        a.rolloff = d.rolloff;
+        a.min_distance = d.min_distance;
+        a.max_distance = d.max_distance;
+        a.factor = curve ? d.rolloff_factor : 0.0f;
+        a.points = points;
+        a.point_count = table ? d.point_count : 0;
+        a.inner_half = d.cone_inner_angle * 0.5f;
+        a.outer_half = d.cone_outer_angle * 0.5f;
+        a.outer_gain = d.cone_outer_gain;
+        a.doppler = d.doppler_factor;
+        a.priority_offset = d.priority_offset;
+        m->attenuation_cursor = (index + 1) % m->max_attenuations;
+        APAUDIO_ATTENUATION id = make_id(index, a.generation);
+        a.live_id.store(id, std::memory_order_release);
+        *out_attenuation = id;
+        return APRESULT_OK;
+    }
+
+    void apaudio_attenuation_destroy(apaudio_mixer mixer, APAUDIO_ATTENUATION attenuation)
+    {
+        if (!mixer)
+            return;
+        if (APRI_STALE(mixer, "apaudio_attenuation_destroy", "mixer"))
+            return;
+        APRI_ENTER(mixer->overlap, "apaudio", "apaudio_attenuation_destroy", "mixer's control calls");
+        Mixer *m = mixer;
+        uint32_t index, generation;
+        if (!m->spatial)
+            return;
+        if (!split_id(attenuation, m->max_attenuations, index, generation))
+            return;
+        Attenuation &a = m->attenuations[index];
+        if (!a.live || a.generation != generation)
+            return;
+        // Only the update reads it, and the update is this role's: it can go at once.
+        a.live_id.store(0, std::memory_order_release);
+        a.live = false;
+        free(a.points);
+        a.points = nullptr;
+        a.point_count = 0;
     }
 
     // ---- WAV ----------------------------------------------------------------

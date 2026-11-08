@@ -8,6 +8,7 @@
 #define APAUDIO_H
 
 #include "../apricore.h"
+#include "../aprimath.h"
 #include "../jobs/apjobs.h"
 #include <spudaudio.h>
 #include <stdbool.h>
@@ -52,10 +53,14 @@ extern "C" {
  * A sound is decoded samples in memory, or streamed: decoded from an
  * encoded source as its voices play (this file's "Streamed sounds").
  *
- * Out of scope: effects (filters, reverb), distance attenuation (the caller
- * sets the gain), and decoding formats other than WAV, FLAC, Ogg Vorbis and
- * Ogg Opus. Binaural (HRTF) rendering for headphones is a possible later
- * addition.
+ * A voice is placed by angles from the listener, or in the world, heard
+ * from the nearest of the caller's listeners with distance attenuation,
+ * cones and doppler (this file's "Spatial audio").
+ *
+ * Out of scope: effects (filters, reverb, a low-pass by distance or cone),
+ * occlusion, and decoding formats other than WAV, FLAC, Ogg Vorbis and
+ * Ogg Opus. Binaural (HRTF) rendering for headphones and ambisonics are
+ * possible later additions.
  *
  * @par Threads
  * apricore.h's rule ("Threads"), with a mixer shared on purpose between
@@ -118,9 +123,12 @@ extern "C" {
  * The descs start with a `base` (apricore.h, "Struct bases"): the caller
  * sets `base.type` to the desc's own APRI_STRUCT_TYPE_APAUDIO_* and
  * `base.next` to NULL. A wrong type is APRESULT_STRUCT_WRONG_TYPE and a
- * chained struct APRESULT_STRUCT_UNKNOWN_IN_CHAIN: nothing chains onto any
- * of them yet. APAUDIO_ERROR, APAUDIO_FORMAT, APAUDIO_MODIFIER_TARGET,
- * APAUDIO_DIRECTION and APAUDIO_PCM are frozen: they never grow (a new
+ * chained struct APRESULT_STRUCT_UNKNOWN_IN_CHAIN: APAUDIO_SPATIAL_DESC may
+ * be chained onto APAUDIO_MIXER_DESC (once; twice is
+ * APRESULT_STRUCT_DUPLICATE_IN_CHAIN), and nothing chains onto any other.
+ * APAUDIO_ERROR, APAUDIO_FORMAT, APAUDIO_MODIFIER_TARGET,
+ * APAUDIO_DIRECTION, APAUDIO_LISTENER, APAUDIO_EMITTER,
+ * APAUDIO_ATTENUATION_POINT and APAUDIO_PCM are frozen: they never grow (a new
  * need gets a new type), which is what lets a desc hold one by value. No
  * desc holds another module's struct by value - its layout isn't ApAudio's
  * to keep fixed - so SpudAudio's formats come in through APAUDIO_FORMAT.
@@ -131,8 +139,11 @@ extern "C" {
  * Voices are ranked by priority (APAUDIO_PLAY_DESC `priority`), then by
  * audibility: the voice's current gain, times its bus chain's gain and
  * active modifiers (see APAUDIO_BUS), times its sound's loudness (RMS,
- * measured when the sound is created) - so turning a bus down or muting it
- * frees its voices' mixing slots. The top `max_real_voices` are real; the
+ * measured when the sound is created), times, for a voice placed in the
+ * world, its gain from distance and cone as of this update - so turning a
+ * bus down or muting it, or a listener moving away, frees its voices'
+ * mixing slots. A world-placed voice's priority is offset by its distance
+ * (APAUDIO_ATTENUATION_DESC `priority_offset`). The top `max_real_voices` are real; the
  * rest are virtual, and so is any voice quieter than the mixer's
  * `virtual_threshold` even when real slots are free. A voice never loses
  * its real slot to one of lower priority. Ties within a few dB, and a voice
@@ -213,6 +224,37 @@ extern "C" {
  * caps real slots: a streamed voice ranked real with every stream taken is
  * virtual. Each voice decodes on its own, so one streamed sound plays any
  * number of times at once.
+ *
+ * @par Spatial audio
+ * A mixer made with an APAUDIO_SPATIAL_DESC chained on its desc places
+ * voices in the caller's world as well as by angles. Each voice says which
+ * when it is played (APAUDIO_PLAY_DESC `placement`), for its whole life.
+ * @par
+ * The caller sets its listeners (apaudio_mixer_set_listeners()) and its
+ * world-placed voices' emitters (APAUDIO_PLAY_DESC `emitter`, then
+ * apaudio_mixer_set_emitters()), as often as they move - once a step, many
+ * at once - and each apaudio_mixer_update() works out, for every
+ * world-placed voice, from the listener nearest it: its direction in that
+ * listener's frame, its gain from distance and its cone (its
+ * APAUDIO_ATTENUATION), its doppler shift, and its priority offset by
+ * distance. The render takes those values with the update's ranking,
+ * ramps the gain and the pan across its block and glides the rate, as a
+ * voice change does, so a moving source doesn't click; the audio thread
+ * does none of the maths. Ranking counts the gain from distance and cone
+ * (this file's "Prioritization"): a voice too far to hear goes virtual,
+ * by its virtual behavior, and comes back as a listener nears it.
+ * @par
+ * A world-placed voice starts on the first render after an update has
+ * placed it, never before, so it never sounds unplaced: at most one
+ * update's interval later than one placed by angles (its `start_time_ns`
+ * keeps the latency constant). With no listener, world-placed voices have
+ * a gain of 0. A stereo sound placed in the world takes the gain and the
+ * doppler shift and ignores the direction, as it does an angle. A source
+ * exactly at its listener keeps the direction it had.
+ * @par
+ * Positions, velocities and distances are in the caller's units, and
+ * APAUDIO_SPATIAL_DESC says what they are through `speed_of_sound`;
+ * velocities are the caller's, never derived from places between updates.
  */
 
 /* ---- Conventions ----------------------------------------------------- */
@@ -381,6 +423,9 @@ enum {
 /**
  * @brief Configuration descriptor for a mixer.
  *
+ * An APAUDIO_SPATIAL_DESC may be chained on (`base.next`), giving the mixer
+ * listeners and voices placed in the world (this file's "Spatial audio").
+ *
  * Integer output: 16-bit output is dithered (TPDF, one least significant
  * bit), always, so quiet sounds fade into noise rather than distortion;
  * 24- and 32-bit output isn't, its rounding being below any converter's
@@ -487,9 +532,11 @@ typedef struct APAUDIO_MIXER_DESC {
  * @brief Creates a mixer.
  *
  * Thread: control. Allocates everything the mixer will need while
- * rendering.
+ * rendering, and, with an APAUDIO_SPATIAL_DESC chained on, its listeners,
+ * attenuation slots and each voice record's place.
  *
- * @param[in]  desc      Mixer configuration. Only read during the call.
+ * @param[in]  desc      Mixer configuration, and its chain. Only read
+ *                       during the call.
  * @param[out] out_mixer The new mixer; set to NULL on failure.
  * @param[out] error     Why it failed, if it did. May be NULL.
  *
@@ -939,6 +986,14 @@ enum {
 	 * oldest.
 	 */
 	APAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY = 4,
+	/**
+	 * The group's voice farthest from its listener stops, if it is at least
+	 * as far as the new one; otherwise the new play is dropped. Ties go to
+	 * the oldest. A voice placed by angles counts as at distance 0, and so
+	 * does every voice on a mixer with no spatial desc (this file's
+	 * "Spatial audio").
+	 */
+	APAUDIO_RESOLUTION_STOP_FARTHEST = 5,
 };
 
 /**
@@ -1197,6 +1252,267 @@ uint64_t apaudio_sound_get_underrun_frames(
     apaudio_mixer mixer,
     APAUDIO_SOUND sound);
 
+/* ---- Spatial audio --------------------------------------------------- */
+
+/**
+ * @brief Which way the caller's world turns: what makes a listener's right
+ * from its forward and up.
+ */
+typedef uint32_t APAUDIO_HANDEDNESS;
+enum {
+	/** Rejected (zeroed descs choose nothing). */
+	APAUDIO_HANDEDNESS_UNSPECIFIED = 0,
+	/** Right-handed: right is forward x up. */
+	APAUDIO_HANDEDNESS_RIGHT = 1,
+	/** Left-handed: right is up x forward. */
+	APAUDIO_HANDEDNESS_LEFT = 2,
+};
+
+/**
+ * @brief A mixer's spatial settings, chained onto its APAUDIO_MIXER_DESC
+ * (`base.next`). See this file's "Spatial audio".
+ *
+ * Without it, a play placed in the world, apaudio_mixer_set_listeners(),
+ * apaudio_mixer_set_emitters() and apaudio_attenuation_create() are
+ * APRESULT_UNSUPPORTED.
+ */
+typedef struct APAUDIO_SPATIAL_DESC {
+	/** This struct's type, APRI_STRUCT_TYPE_APAUDIO_SPATIAL_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** The caller's world's handedness. Not UNSPECIFIED. */
+	APAUDIO_HANDEDNESS handedness;
+	/** How many listeners can be set at once (apaudio_mixer_set_listeners()). At least 1. */
+	uint32_t max_listeners;
+	/** Attenuation slots (APAUDIO_ATTENUATION). At least 1. */
+	uint32_t max_attenuations;
+	/**
+	 * The speed of sound in the caller's units per second, for doppler:
+	 * 343 for metres, ApricotFields' own unit. Finite, > 0. Every position,
+	 * velocity and distance the mixer takes is in the same units.
+	 */
+	float speed_of_sound;
+} APAUDIO_SPATIAL_DESC;
+
+/**
+ * @brief Where a listener is, how it moves and which way it faces.
+ */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
+typedef struct APAUDIO_LISTENER {
+	/** Its place, in the caller's units. Finite. */
+	ApriDVec3 position;
+	/** Units per second, for doppler. Finite. */
+	ApriVec3 velocity;
+	/** Which way it faces. Finite, not zero; normalized by the mixer. */
+	ApriVec3 forward;
+	/**
+	 * Its up. Finite, not zero, not parallel to #forward; made
+	 * perpendicular to it by the mixer.
+	 */
+	ApriVec3 up;
+} APAUDIO_LISTENER;
+
+/**
+ * @brief Sets every listener at once.
+ *
+ * Thread: control. Replaces the listeners there were; the next
+ * apaudio_mixer_update() hears every world-placed voice from the one
+ * nearest it. Zero listeners: world-placed voices have a gain of 0. On
+ * failure nothing changes.
+ *
+ * @param[in]  mixer     Mixer to set them on.
+ * @param[in]  listeners @p count listeners, copied. May be NULL only if
+ *                       @p count is 0.
+ * @param[in]  count     How many: 0 to APAUDIO_SPATIAL_DESC `max_listeners`.
+ * @param[out] error     Why it failed, if it did, naming the listener and
+ *                       the field. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a null @p mixer, a null
+ *         @p listeners with a count, or a listener's value outside its
+ *         range (each its own check, in order); APRESULT_UNSUPPORTED for a
+ *         mixer with no spatial desc; APRESULT_LIMIT for more than
+ *         `max_listeners`.
+ */
+APRESULT apaudio_mixer_set_listeners(
+    apaudio_mixer mixer,
+    const APAUDIO_LISTENER *listeners,
+    uint32_t count,
+    APAUDIO_ERROR *error);
+
+/**
+ * @brief An attenuation: how distance, a cone and movement change the voices
+ * that name it - shared by many, as a settings object.
+ *
+ * A generational ID like APAUDIO_BUS: never 0, stale at once when
+ * destroyed. Destroying one leaves its voices heard with none - no gain
+ * from distance or cone, no doppler, no priority offset - placed in the
+ * world all the same, as a destroyed concurrency group's voices play with
+ * no group. Its settings are fixed: another set is another attenuation,
+ * named by the next plays.
+ */
+typedef uint64_t APAUDIO_ATTENUATION;
+
+/**
+ * @brief How gain falls with distance, `d`, between APAUDIO_ATTENUATION_DESC's
+ * `min_distance` and `max_distance`.
+ *
+ * Every curve is 1 at `min_distance` and nearer, and holds its value at
+ * `max_distance` farther away. `f` is the desc's `rolloff_factor`; INVERSE,
+ * LINEAR and EXPONENT are OpenAL's clamped distance models.
+ */
+typedef uint32_t APAUDIO_ROLLOFF;
+enum {
+	/** Rejected (zeroed descs choose nothing). */
+	APAUDIO_ROLLOFF_UNSPECIFIED = 0,
+	/** 1 at every distance: an attenuation that only cones, shifts or offsets. */
+	APAUDIO_ROLLOFF_NONE = 1,
+	/** min / (min + f (d - min)): the inverse square law's amplitude at f = 1. */
+	APAUDIO_ROLLOFF_INVERSE = 2,
+	/** 1 - f (d - min) / (max - min), not below 0. */
+	APAUDIO_ROLLOFF_LINEAR = 3,
+	/**
+	 * (d / min) ^ -f: a straight line in decibels against the distance's
+	 * logarithm, -6 dB per doubling at f = 1 - what "logarithmic" curves are
+	 * in most tools.
+	 */
+	APAUDIO_ROLLOFF_EXPONENT = 4,
+	/** The caller's points (APAUDIO_ATTENUATION_POINT), interpolated linearly in gain. */
+	APAUDIO_ROLLOFF_TABLE = 5,
+};
+
+/**
+ * @brief One point of an APAUDIO_ROLLOFF_TABLE curve.
+ */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
+typedef struct APAUDIO_ATTENUATION_POINT {
+	/**
+	 * Where it is in the range: 0 at `min_distance`, 1 at `max_distance`.
+	 * The first point's is 0, the last's 1, rising strictly between.
+	 */
+	float place;
+	/** Its gain, linear, in [0, 1]. */
+	float gain;
+} APAUDIO_ATTENUATION_POINT;
+
+/**
+ * @brief Configuration descriptor for an attenuation. Nothing is defaulted.
+ */
+typedef struct APAUDIO_ATTENUATION_DESC {
+	/** This struct's type, APRI_STRUCT_TYPE_APAUDIO_ATTENUATION_DESC, and its chain (apricore.h, "Struct bases"). */
+	APRI_STRUCT_BASE base;
+	/** How gain falls with distance. Not UNSPECIFIED. */
+	APAUDIO_ROLLOFF rolloff;
+	/**
+	 * Where the curve starts, in the caller's units: gain 1 this near or
+	 * nearer. Finite, > 0. Read for every rolloff: with NONE, it bounds
+	 * #priority_offset's range.
+	 */
+	float min_distance;
+	/** Where the curve ends, its value held past it. Finite, > #min_distance. */
+	float max_distance;
+	/** INVERSE, LINEAR and EXPONENT's `f`: finite, > 0. Not read for the others. */
+	float rolloff_factor;
+	/** TABLE: #point_count points, copied. Not read for the others. */
+	const APAUDIO_ATTENUATION_POINT *points;
+	/** TABLE: how many #points holds, at least 2. Not read for the others. */
+	uint32_t point_count;
+	/**
+	 * The cone's inner full angle, in radians, around the emitter's
+	 * `forward`: gain 1 inside it. In (0, 2 pi]; 2 pi with #cone_outer_angle
+	 * 2 pi is no cone.
+	 */
+	float cone_inner_angle;
+	/**
+	 * The cone's outer full angle: #cone_outer_gain outside it, and linear
+	 * in angle from 1 to that between the two. In [#cone_inner_angle, 2 pi].
+	 */
+	float cone_outer_angle;
+	/** The gain outside the outer angle: linear, in [0, 1]. */
+	float cone_outer_gain;
+	/**
+	 * How much doppler shift: 1 is physical, 0 none. Finite, >= 0. The
+	 * shift is OpenAL's, each velocity's part along the line between them
+	 * held below the speed of sound over this factor; the voice's rate,
+	 * times it, is held in [0.125, 8].
+	 */
+	float doppler_factor;
+	/**
+	 * Added to a voice's priority at #max_distance and farther, scaled
+	 * linearly from 0 at #min_distance; the sum held in [0, 255]. In
+	 * [-255, 255]; 0: none.
+	 */
+	int32_t priority_offset;
+} APAUDIO_ATTENUATION_DESC;
+
+/**
+ * @brief Creates an attenuation.
+ *
+ * Thread: control. Allocates a TABLE's points.
+ *
+ * @param[in]  mixer           Mixer to create it in.
+ * @param[in]  desc            Its settings. Only read during the call.
+ * @param[out] out_attenuation The new attenuation; set to 0 on failure.
+ * @param[out] error           Why it failed, if it did. May be NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a null argument or a
+ *         desc field out of its range (each its own check, in field order,
+ *         the message naming it); a struct-base code for @p desc's base;
+ *         APRESULT_UNSUPPORTED for a mixer with no spatial desc;
+ *         APRESULT_LIMIT with every slot taken; APRESULT_OUT_OF_MEMORY.
+ *
+ * @see apaudio_attenuation_destroy()
+ */
+APRESULT apaudio_attenuation_create(
+    apaudio_mixer mixer,
+    const APAUDIO_ATTENUATION_DESC *desc,
+    APAUDIO_ATTENUATION *out_attenuation,
+    APAUDIO_ERROR *error);
+/**
+ * @brief Destroys an attenuation.
+ *
+ * Thread: control. Its ID is stale at once; from the next update its
+ * voices are heard with none (APAUDIO_ATTENUATION).
+ *
+ * @param[in] mixer       Mixer it belongs to.
+ * @param[in] attenuation Attenuation to destroy. A stale or 0 one does nothing.
+ */
+void apaudio_attenuation_destroy(apaudio_mixer mixer, APAUDIO_ATTENUATION attenuation);
+
+/**
+ * @brief Where a world-placed voice is, how it moves and which way it faces.
+ */
+/* Frozen: an array element. It never changes; a new need gets a new type. */
+typedef struct APAUDIO_EMITTER {
+	/** Its place, in the caller's units. Finite. */
+	ApriDVec3 position;
+	/** Units per second, for doppler. Finite. */
+	ApriVec3 velocity;
+	/**
+	 * Its cone's axis. Finite; normalized by the mixer. Zero: it faces no
+	 * way, and its cone isn't applied.
+	 */
+	ApriVec3 forward;
+} APAUDIO_EMITTER;
+
+/**
+ * @brief How a voice is placed, for its whole life.
+ */
+typedef uint32_t APAUDIO_PLACEMENT;
+enum {
+	/** Rejected (zeroed descs choose nothing). */
+	APAUDIO_PLACEMENT_UNSPECIFIED = 0,
+	/**
+	 * By angles from the listener (APAUDIO_PLAY_DESC `direction`,
+	 * apaudio_voice_set_direction()), or from no direction.
+	 */
+	APAUDIO_PLACEMENT_ANGLES = 1,
+	/**
+	 * In the world: by its emitter (APAUDIO_PLAY_DESC `emitter`,
+	 * apaudio_mixer_set_emitters()), heard from the nearest listener through
+	 * its attenuation. Needs a spatial desc on the mixer.
+	 */
+	APAUDIO_PLACEMENT_WORLD = 2,
+};
+
 /* ---- Voices ---------------------------------------------------------- */
 
 /**
@@ -1270,8 +1586,9 @@ typedef struct APAUDIO_PLAY_DESC {
 	 */
 	float rate;
 	/**
-	 * NULL: no direction - a mono sound plays equally from the front
-	 * speakers' centre (FC, or FL and FR). Ignored for stereo sounds.
+	 * Placed by ANGLES: where it comes from, copied; NULL: no direction - a
+	 * mono sound plays equally from the front speakers' centre (FC, or FL
+	 * and FR). Ignored for stereo sounds. Placed in the WORLD: NULL.
 	 */
 	const APAUDIO_DIRECTION *direction;
 	/**
@@ -1286,6 +1603,18 @@ typedef struct APAUDIO_PLAY_DESC {
 	uint64_t start_time_ns;
 	/** Loops until stopped. */
 	bool loop;
+	/**
+	 * How the voice is placed, for its life: ANGLES (#direction) or WORLD
+	 * (#emitter and #attenuation). Not UNSPECIFIED.
+	 */
+	APAUDIO_PLACEMENT placement;
+	/**
+	 * WORLD: its first place, copied; required. Later ones come through
+	 * apaudio_mixer_set_emitters(). ANGLES: NULL.
+	 */
+	const APAUDIO_EMITTER *emitter;
+	/** WORLD: the attenuation it is heard through; required, and live. ANGLES: 0. */
+	APAUDIO_ATTENUATION attenuation;
 } APAUDIO_PLAY_DESC;
 
 /**
@@ -1302,13 +1631,22 @@ typedef struct APAUDIO_PLAY_DESC {
  * the audio thread checks the ID again as it starts the voice and drops it
  * if it's stale - like a voice stopped before it started.
  *
+ * A play placed in the world starts on the first render after an update
+ * has placed it (this file's "Spatial audio").
+ *
  * @param[in]  mixer     Mixer to play it on.
  * @param[in]  sound     Sound to play.
  * @param[in]  desc      How to play it. Only read during the call.
  * @param[out] out_voice Its voice; set to 0 on failure. May be NULL.
  *
- * @return APRESULT_OK; APRESULT_LIMIT if the queue is full - the request is
- *         dropped; APRESULT_NOT_FOUND if @p sound is 0 or destroyed.
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a null argument, or a
+ *         desc value outside its range: an UNSPECIFIED placement, a
+ *         direction with WORLD, an emitter or attenuation with ANGLES, a
+ *         WORLD play with no emitter or attenuation, or an emitter's value
+ *         not finite; APRESULT_UNSUPPORTED for WORLD on a mixer with no
+ *         spatial desc; APRESULT_NOT_FOUND if @p sound is 0 or destroyed,
+ *         or a WORLD play's attenuation is destroyed; APRESULT_LIMIT if
+ *         the queue is full - the request is dropped.
  */
 APRESULT apaudio_play(
     apaudio_mixer mixer,
@@ -1397,14 +1735,16 @@ APRESULT apaudio_voice_set_gain(
  *
  * Ignored for stereo sounds, as at play. The pan moves smoothly between the
  * old and new direction's speaker gains. The rules are in this file's
- * "Changing a voice".
+ * "Changing a voice". A voice placed in the world is refused: its direction
+ * is the update's.
  *
  * @param[in] mixer     Mixer it belongs to.
  * @param[in] voice     Voice to change.
  * @param[in] direction As APAUDIO_PLAY_DESC `direction`: copied; NULL for no
  *                      direction.
  *
- * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT.
+ * @return APRESULT_OK, or APRESULT_INVALID_ARGUMENT - also for a live voice
+ *         placed in the world.
  */
 APRESULT apaudio_voice_set_direction(
     apaudio_mixer mixer,
@@ -1427,6 +1767,35 @@ APRESULT apaudio_voice_set_rate(
     apaudio_mixer mixer,
     APAUDIO_VOICE voice,
     float rate);
+
+/**
+ * @brief Moves many world-placed voices at once.
+ *
+ * Thread: control. Stores each voice's place for the next
+ * apaudio_mixer_update(), which works them out (this file's "Spatial
+ * audio"); the last place given before it wins. Checked whole before
+ * anything is stored: a failure stores nothing. A voice finished,
+ * unknown or 0 is skipped, as every voice call skips one.
+ *
+ * @param[in]  mixer    Mixer they belong to.
+ * @param[in]  voices   @p count voices. May be NULL only if @p count is 0.
+ * @param[in]  emitters @p count places, one per voice, copied. May be NULL
+ *                      only if @p count is 0.
+ * @param[in]  count    How many.
+ * @param[out] error    Why it failed, if it did, naming the entry. May be
+ *                      NULL.
+ *
+ * @return APRESULT_OK; APRESULT_INVALID_ARGUMENT for a null @p mixer, a
+ *         null array with a count, a value not finite, or a live voice
+ *         placed by angles (each its own check, in order);
+ *         APRESULT_UNSUPPORTED for a mixer with no spatial desc.
+ */
+APRESULT apaudio_mixer_set_emitters(
+    apaudio_mixer mixer,
+    const APAUDIO_VOICE *voices,
+    const APAUDIO_EMITTER *emitters,
+    uint32_t count,
+    APAUDIO_ERROR *error);
 
 /* ---- Decoding -------------------------------------------------------- */
 

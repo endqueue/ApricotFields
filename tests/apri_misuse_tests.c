@@ -302,6 +302,23 @@ static void calls_with_destroyed_handles(void)
     {
         apaudio_mixer dead = dead_apaudio_mixer();
         if (!dead)
+            factory_missing("apaudio_attenuation_create");
+        else
+            expect_refused("apaudio_attenuation_create", apaudio_attenuation_create(dead, (const APAUDIO_ATTENUATION_DESC *){0}, (APAUDIO_ATTENUATION *){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_attenuation_destroy");
+        else
+        {
+            apaudio_attenuation_destroy(dead, (APAUDIO_ATTENUATION){0});
+            destroyed_calls++;
+        }
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
             factory_missing("apaudio_bus_create");
         else
             expect_refused("apaudio_bus_create", apaudio_bus_create(dead, (const APAUDIO_BUS_DESC *){0}, (APAUDIO_BUS *){0}, (APAUDIO_ERROR *){0}));
@@ -540,9 +557,23 @@ static void calls_with_destroyed_handles(void)
     {
         apaudio_mixer dead = dead_apaudio_mixer();
         if (!dead)
+            factory_missing("apaudio_mixer_set_emitters");
+        else
+            expect_refused("apaudio_mixer_set_emitters", apaudio_mixer_set_emitters(dead, (const APAUDIO_VOICE *){0}, (const APAUDIO_EMITTER *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
             factory_missing("apaudio_mixer_set_format");
         else
             expect_refused("apaudio_mixer_set_format", apaudio_mixer_set_format(dead, (const APAUDIO_FORMAT *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
+    }
+    {
+        apaudio_mixer dead = dead_apaudio_mixer();
+        if (!dead)
+            factory_missing("apaudio_mixer_set_listeners");
+        else
+            expect_refused("apaudio_mixer_set_listeners", apaudio_mixer_set_listeners(dead, (const APAUDIO_LISTENER *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
     }
     {
         apaudio_mixer dead = dead_apaudio_mixer();
@@ -1393,6 +1424,10 @@ int main(void)
     calls++;
     expect_error("aparchive_writer_write_entry_data", aparchive_writer_write_entry_data((aparchive_writer){0}, (const void *){0}, (uint64_t){0}, (APARCHIVE_ERROR *){0}));
     calls++;
+    expect_error("apaudio_attenuation_create", apaudio_attenuation_create((apaudio_mixer){0}, (const APAUDIO_ATTENUATION_DESC *){0}, (APAUDIO_ATTENUATION *){0}, (APAUDIO_ERROR *){0}));
+    calls++;
+    apaudio_attenuation_destroy((apaudio_mixer){0}, (APAUDIO_ATTENUATION){0});
+    calls++;
     expect_error("apaudio_bus_create", apaudio_bus_create((apaudio_mixer){0}, (const APAUDIO_BUS_DESC *){0}, (APAUDIO_BUS *){0}, (APAUDIO_ERROR *){0}));
     calls++;
     apaudio_bus_destroy((apaudio_mixer){0}, (APAUDIO_BUS){0});
@@ -1459,7 +1494,11 @@ int main(void)
     calls++;
     apaudio_mixer_render((apaudio_mixer){0}, (void *){0}, (uint32_t){0}, (const SPUDAUDIO_CALLBACK_INFO *){0});
     calls++;
+    expect_error("apaudio_mixer_set_emitters", apaudio_mixer_set_emitters((apaudio_mixer){0}, (const APAUDIO_VOICE *){0}, (const APAUDIO_EMITTER *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
+    calls++;
     expect_error("apaudio_mixer_set_format", apaudio_mixer_set_format((apaudio_mixer){0}, (const APAUDIO_FORMAT *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
+    calls++;
+    expect_error("apaudio_mixer_set_listeners", apaudio_mixer_set_listeners((apaudio_mixer){0}, (const APAUDIO_LISTENER *){0}, (uint32_t){0}, (APAUDIO_ERROR *){0}));
     calls++;
     apaudio_mixer_stream_callback((spudaudio_stream){0}, (void *){0}, (uint32_t){0}, (const SPUDAUDIO_CALLBACK_INFO *){0}, (void *){0});
     calls++;
@@ -2104,7 +2143,7 @@ int main(void)
     _CrtSetDbgFlag(_CrtSetDbgFlag(_CRTDBG_REPORT_FLAG) | _CRTDBG_DELAY_FREE_MEM_DF);
 #endif
     calls_with_destroyed_handles();
-    printf("apri_misuse_tests: %d calls with a destroyed handle (of 140 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
+    printf("apri_misuse_tests: %d calls with a destroyed handle (of 144 generated), %d failure(s)\n", destroyed_calls, failures - zero_failures);
 #elif _DEBUG
     printf("apri_misuse_tests: calls with a destroyed handle skipped: under a sanitizer, whose heap reports the read of freed memory itself\n");
 #else

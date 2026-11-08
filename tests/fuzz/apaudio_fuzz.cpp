@@ -157,6 +157,7 @@ void streamed(APAUDIO_STREAM_CODEC codec, bool loop, const uint8_t *data, size_t
     play.rate = 1.0f;
     play.priority = 128;
     play.loop = loop;
+    play.placement = APAUDIO_PLACEMENT_ANGLES;
     APAUDIO_VOICE voice = 0;
     APRIFUZZ_CHECK(apaudio_play(mixer, sound, &play, &voice) == APRESULT_OK);
     if (whole_sound)

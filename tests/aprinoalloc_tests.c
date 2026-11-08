@@ -19,6 +19,7 @@
 #include "jobs/apjobs.h"
 #include "math/apmathbvh.h"
 #include "text/aptext.h"
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -130,6 +131,7 @@ static void test_audio(void)
     play.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
     play.gain = 1.0f;
     play.rate = 1.0f;
+    play.placement = APAUDIO_PLACEMENT_ANGLES;
     play.virtual_behavior = APAUDIO_VIRTUAL_KILL;
     play.priority = 128;
     play.loop = true;
@@ -255,6 +257,7 @@ static void stream_scenario(const char *dir, const char *name, APAUDIO_STREAM_CO
         play.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
         play.gain = 1.0f;
         play.rate = 1.0f;
+        play.placement = APAUDIO_PLACEMENT_ANGLES;
         play.priority = 128;
         play.loop = true;
         APAUDIO_VOICE voice = 0;
@@ -322,6 +325,144 @@ static void test_audio_streams(const char *dir)
 }
 
 // ---- ApMath ----------------------------------------------------------------------
+
+// ApAudio's spatial audio (APAUDIO_TODO.md item 16): 256 world-placed
+// voices, every one moved each frame (apaudio_mixer_set_emitters()), two
+// listeners set each frame, then the update and the render; with no
+// scheduler, and on a pool of four (the mixer's scheduler, read only for
+// streams, so nothing differs but that it is given one).
+
+static void spatial_scenario(const APJOBS_SCHEDULER *scheduler)
+{
+    enum
+    {
+        VOICES = 256
+    };
+    APAUDIO_SPATIAL_DESC spatial;
+    memset(&spatial, 0, sizeof(spatial));
+    spatial.base.type = APRI_STRUCT_TYPE_APAUDIO_SPATIAL_DESC;
+    spatial.handedness = APAUDIO_HANDEDNESS_RIGHT;
+    spatial.max_listeners = 2;
+    spatial.max_attenuations = 2;
+    spatial.speed_of_sound = 343.0f;
+    APAUDIO_MIXER_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC;
+    desc.base.next = &spatial.base;
+    desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+    desc.format.sample_rate = 48000;
+    desc.format.channel_count = 2;
+    desc.format.interleaved = true;
+    desc.format.positions = stereo;
+    desc.max_frames = 512;
+    desc.max_voices = VOICES;
+    desc.max_real_voices = 64;
+    desc.max_fading_voices = 8;
+    desc.transition_fade_us = 10000;
+    desc.max_sounds = 2;
+    desc.max_streams = scheduler ? 1 : 0;
+    desc.scheduler = scheduler;
+    desc.queue_capacity = VOICES;
+    desc.resampler = APAUDIO_RESAMPLER_LINEAR;
+    desc.limiter = APAUDIO_LIMITER_OFF;
+    desc.virtual_threshold = 0.001f;
+    desc.gain = 1.0f;
+    apaudio_mixer mixer = NULL;
+    CHECK(apaudio_mixer_create(&desc, &mixer, NULL) == APRESULT_OK);
+    if (!mixer)
+        return;
+    APAUDIO_SOUND_DESC sd;
+    memset(&sd, 0, sizeof(sd));
+    sd.base.type = APRI_STRUCT_TYPE_APAUDIO_SOUND_DESC;
+    sd.samples = tone;
+    sd.frame_count = sizeof(tone) / sizeof(tone[0]);
+    sd.channel_count = 1;
+    sd.sample_rate = 48000;
+    sd.virtual_behavior = APAUDIO_VIRTUAL_CONTINUE;
+    APAUDIO_SOUND sound = 0;
+    CHECK(apaudio_sound_create(mixer, &sd, &sound, NULL) == APRESULT_OK);
+    APAUDIO_ATTENUATION_DESC ad;
+    memset(&ad, 0, sizeof(ad));
+    ad.base.type = APRI_STRUCT_TYPE_APAUDIO_ATTENUATION_DESC;
+    ad.rolloff = APAUDIO_ROLLOFF_INVERSE;
+    ad.min_distance = 1.0f;
+    ad.max_distance = 50.0f;
+    ad.rolloff_factor = 1.0f;
+    ad.cone_inner_angle = 2.0f;
+    ad.cone_outer_angle = 4.0f;
+    ad.cone_outer_gain = 0.3f;
+    ad.doppler_factor = 1.0f;
+    ad.priority_offset = -50;
+    APAUDIO_ATTENUATION attenuation = 0;
+    CHECK(apaudio_attenuation_create(mixer, &ad, &attenuation, NULL) == APRESULT_OK);
+    static APAUDIO_VOICE voices[VOICES];
+    static APAUDIO_EMITTER places[VOICES];
+    for (int v = 0; v < VOICES; v++)
+    {
+        memset(&places[v], 0, sizeof(places[v]));
+        places[v].position.x = 2.0 * cos(v);
+        places[v].position.z = 2.0 + v * 0.2;
+        places[v].forward.x = 1.0f;
+        APAUDIO_PLAY_DESC play;
+        memset(&play, 0, sizeof(play));
+        play.base.type = APRI_STRUCT_TYPE_APAUDIO_PLAY_DESC;
+        play.gain = 0.1f;
+        play.rate = 1.0f;
+        play.priority = (uint8_t)(v % 200);
+        play.loop = true;
+        play.placement = APAUDIO_PLACEMENT_WORLD;
+        play.emitter = &places[v];
+        play.attenuation = attenuation;
+        CHECK(apaudio_play(mixer, sound, &play, &voices[v]) == APRESULT_OK);
+    }
+    APAUDIO_LISTENER listeners[2];
+    memset(listeners, 0, sizeof(listeners));
+    listeners[0].forward.z = -1.0f;
+    listeners[0].up.y = 1.0f;
+    listeners[1] = listeners[0];
+    listeners[1].position.x = 40.0;
+    for (int f = 0; f < FRAMES + 4; f++)
+    {
+        if (f == 4)
+            start_counting();
+        for (int v = 0; v < VOICES; v++)
+        {
+            places[v].position.x += 0.01;
+            places[v].velocity.x = 0.6f;
+        }
+        listeners[0].position.z = 0.05 * f;
+        CHECK(apaudio_mixer_set_listeners(mixer, listeners, 2, NULL) == APRESULT_OK);
+        CHECK(apaudio_mixer_set_emitters(mixer, voices, places, VOICES, NULL) == APRESULT_OK);
+        CHECK(apaudio_mixer_update(mixer, NULL) == APRESULT_OK);
+        apaudio_mixer_render(mixer, out, 512, NULL);
+    }
+    stop_counting();
+    report(scheduler ? "ApAudio's spatial audio, 256 moving voices, two listeners, a pool of four"
+                     : "ApAudio's spatial audio, 256 moving voices, two listeners");
+    apaudio_mixer_destroy(mixer);
+}
+
+static void test_audio_spatial(void)
+{
+    spatial_scenario(NULL);
+    APJOBS_POOL_DESC pd;
+    memset(&pd, 0, sizeof(pd));
+    pd.base.type = APRI_STRUCT_TYPE_APJOBS_POOL_DESC;
+    pd.thread_count = 3;
+    pd.max_tasks = 4;
+    pd.debug_name = "aprinoalloc_tests spatial";
+    apjobs_pool pool = NULL;
+    CHECK(apjobs_pool_create(&pd, &pool, NULL) == APRESULT_OK);
+    if (pool)
+    {
+        APJOBS_SCHEDULER scheduler;
+        memset(&scheduler, 0, sizeof(scheduler));
+        scheduler.base.type = APRI_STRUCT_TYPE_APJOBS_SCHEDULER;
+        CHECK(apjobs_pool_get_scheduler(pool, &scheduler) == APRESULT_OK);
+        spatial_scenario(&scheduler);
+    }
+    apjobs_pool_destroy(pool);
+}
 
 static void test_bvh(void)
 {
@@ -764,6 +905,7 @@ int main(int argc, char **argv)
     test_hook_counts();
     test_audio();
     test_audio_streams(argc > 2 ? argv[2] : NULL);
+    test_audio_spatial();
     test_bvh();
     test_jobs();
     test_job_groups();
