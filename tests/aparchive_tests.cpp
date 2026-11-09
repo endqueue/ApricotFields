@@ -5,6 +5,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <vector>
+#if defined(_MSC_VER) && _DEBUG
+#include <crtdbg.h>
+#endif
+
+// The CRT's debug heap counts blocks in a Debug build with MSVC, unless
+// AddressSanitizer's heap has taken its place.
+#if defined(_MSC_VER) && _DEBUG && !defined(__SANITIZE_ADDRESS__)
+#define CRT_HEAP_COUNTS 1
+#else
+#define CRT_HEAP_COUNTS 0
+#endif
 
 static int failures = 0;
 static const char *current_test = "";
@@ -1819,6 +1830,71 @@ static void test_data_in_front()
     aparchive_codecs_destroy(codecs);
 }
 
+// Card X27: in a Debug build a destroyed entry reader's block stays its
+// reader's until the reader is destroyed, so the entry reader's stale check
+// (card X16) still refuses it after many entry readers of the same size
+// have been made and destroyed since, any of which the heap could have put
+// in its place. Destroying the reader frees every block it kept: counted by
+// the CRT's debug heap with MSVC, by AddressSanitizer's leak check on Linux
+// and macOS.
+static void test_destroyed_entry_reader_kept()
+{
+    current_test = "destroyed entry reader kept";
+#if !_DEBUG
+    printf("  %s: skipped, a Release build doesn't check for a destroyed handle\n", current_test);
+#else
+    enum
+    {
+        CYCLES = 1000
+    };
+    aparchive_codecs codecs = deflate_codecs();
+    std::vector<uint8_t> archive = write_sample(codecs);
+#if CRT_HEAP_COUNTS
+    _CrtMemState before, opened, held, after, difference;
+    _CrtMemCheckpoint(&before);
+#endif
+    aparchive_reader reader = open_memory(archive, codecs);
+    CHECK(reader);
+    if (reader)
+    {
+#if CRT_HEAP_COUNTS
+        _CrtMemCheckpoint(&opened);
+#endif
+        // Entry 1 is DEFLATE: a codec state as well as the read buffer.
+        aparchive_entry_reader dead = nullptr;
+        CHECK(aparchive_reader_open_entry(reader, 1, &dead, nullptr) == APRESULT_OK && dead);
+        aparchive_entry_reader_destroy(dead);
+        uint32_t made = 0;
+        for (uint32_t i = 0; i < CYCLES; i++)
+        {
+            aparchive_entry_reader entry = nullptr;
+            if (aparchive_reader_open_entry(reader, 1, &entry, nullptr) == APRESULT_OK)
+                made++;
+            aparchive_entry_reader_destroy(entry);
+        }
+        CHECK(made == CYCLES);
+        uint8_t byte = 0;
+        uint64_t got = 0;
+        CHECK(aparchive_entry_reader_read(dead, &byte, 1, &got, nullptr) == APRESULT_INVALID_ARGUMENT);
+        aparchive_entry_reader_destroy(dead); // a second destroy, refused
+#if CRT_HEAP_COUNTS
+        // Held: one block for each entry reader destroyed, nothing else.
+        _CrtMemCheckpoint(&held);
+        _CrtMemDifference(&difference, &opened, &held);
+        CHECK(difference.lCounts[_NORMAL_BLOCK] == CYCLES + 1);
+#endif
+        aparchive_reader_destroy(reader);
+    }
+#if CRT_HEAP_COUNTS
+    // All of it gone with the reader.
+    _CrtMemCheckpoint(&after);
+    _CrtMemDifference(&difference, &before, &after);
+    CHECK(difference.lCounts[_NORMAL_BLOCK] == 0);
+#endif
+    aparchive_codecs_destroy(codecs);
+#endif
+}
+
 int main()
 {
     test_codecs();
@@ -1842,6 +1918,7 @@ int main()
     test_extra_helpers();
     test_strict();
     test_data_in_front();
+    test_destroyed_entry_reader_kept();
     if (failures)
     {
         printf("%d check(s) failed\n", failures);

@@ -180,6 +180,11 @@ struct aprend_material_arena {
 typedef struct aprend_instance_t {
 	char *debug_name{nullptr};
 	APRI_STALE_TAG
+	/* Debug builds' blocks of every handle made on the instance and
+	 * destroyed (../apristale.hpp, card X27), freed after everything else
+	 * of the instance: declared ahead of the rest, so destroyed after it,
+	 * once the destructor has released the queue into it. */
+	APRI_QUARANTINE
 	aprend_instance_t() = default;
 	~aprend_instance_t();
 	/* The serial the next view, sampler or buffer made on the instance
@@ -446,12 +451,12 @@ void aprend_instance_forget(
  * destroy call. Cheap when there is nothing to do. */
 void aprend_instance_collect(aprend_instance instance);
 
-/* The release function of a handle struct T: its destructor, then free.
- * For aprend_instance_retire. */
+/* The release function of a handle struct T: its destructor, then free, or
+ * in Debug its block kept in its instance's quarantine until the instance
+ * goes (../apristale.hpp, card X27). For aprend_instance_retire. */
 template <typename T> void aprend_release_handle(void *object) {
 	T *handle = (T *)object;
-	handle->~T();
-	free(handle);
+	APRI_RETIRE(handle->instance, handle, T);
 }
 /* An aprend_shader of one of Aprend's own packages: aprend_shader_create()
  * but that its entry point may use a top level (SPUDGPU_EXT_RAY_QUERY),

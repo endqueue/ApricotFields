@@ -90,7 +90,7 @@ void aprend_swap_chain_destroy(aprend_swap_chain swap_chain) {
 		return;
 	// A compiled list that presents into it would read it at submit.
 	aprend_instance_forget(swap_chain->instance, swap_chain);
-	APREND_DESTRUCT__T(swap_chain, aprend_swap_chain_t);
+	APRI_RETIRE(swap_chain->instance, swap_chain, aprend_swap_chain_t);
 }
 APRESULT aprend_swap_chain_resize(
 	aprend_swap_chain swap_chain,

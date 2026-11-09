@@ -180,8 +180,7 @@ void aprend_framebuffer_destroy(aprend_framebuffer framebuffer) {
 		return;
 	if (APRI_STALE(framebuffer, "aprend_framebuffer_destroy", "framebuffer"))
 		return;
-	framebuffer->~aprend_framebuffer_t();
-	free(framebuffer);
+	APRI_RETIRE(framebuffer->instance, framebuffer, aprend_framebuffer_t);
 }
 APRESULT aprend_framebuffer_get_desc(
     aprend_framebuffer framebuffer,

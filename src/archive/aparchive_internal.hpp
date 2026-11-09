@@ -89,6 +89,9 @@ struct aparchive_reader_t
 {
     const char *debug_name{nullptr};
     APRI_STALE_TAG
+    // Debug builds' blocks of the entry readers destroyed on it
+    // (../apristale.hpp, card X27), freed with it.
+    APRI_QUARANTINE
     APARCHIVE_SOURCE source{};
     aparchive_codecs codecs{nullptr};
     // Where the central directory starts: every entry's header and data end

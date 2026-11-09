@@ -96,8 +96,10 @@ static void set4(float *out, float x, float y, float z, float w) {
 }
 
 // Everything the batch made, in reverse, for its destroy and a failed
-// create alike.
-static void aprend_batch_free(aprend_batch batch) {
+// create alike. The batch itself is the caller's to free: at once after a
+// failed create, and with APRI_RETIRE after a destroy (../apristale.hpp,
+// card X27).
+static void aprend_batch_free_parts(aprend_batch batch) {
 	aprend_material_destroy(batch->material);
 	for (auto &mode : batch->pipelines)
 		for (aprend_graphics_pipeline pipeline : mode)
@@ -111,8 +113,6 @@ static void aprend_batch_free(aprend_batch batch) {
 	aprend_texture_view_destroy(batch->placeholder_2d);
 	aprend_texture2d_destroy(batch->placeholder);
 	free(batch->name_copy);
-	batch->~aprend_batch_t();
-	free(batch);
 }
 
 // The pipeline for a kind and a depth mode (0 over, 1 tested, 2 tested
@@ -389,7 +389,8 @@ APRESULT aprend_batch_create(aprend_instance instance, const APREND_BATCH_DESC *
 		const size_t size = strlen(desc->debug_name) + 1;
 		batch->name_copy  = (char *)malloc(size);
 		if (!batch->name_copy) {
-			aprend_batch_free(batch);
+			aprend_batch_free_parts(batch);
+			APREND_DESTRUCT__T(batch, aprend_batch_t);
 			return aprend_fail(out_error, APRESULT_OUT_OF_MEMORY, "out of memory creating the batch");
 		}
 		memcpy(batch->name_copy, desc->debug_name, size);
@@ -455,7 +456,8 @@ APRESULT aprend_batch_create(aprend_instance instance, const APREND_BATCH_DESC *
 	if (result == APRESULT_OK)
 		result = aprend_material_set_sampler(batch->material, "batch_sampler", 0, batch->sampler, out_error);
 	if (result != APRESULT_OK) {
-		aprend_batch_free(batch);
+		aprend_batch_free_parts(batch);
+		APREND_DESTRUCT__T(batch, aprend_batch_t);
 		return result;
 	}
 	*out_batch = batch;
@@ -467,7 +469,8 @@ void aprend_batch_destroy(aprend_batch batch) {
 		return;
 	if (APRI_STALE(batch, "aprend_batch_destroy", "batch"))
 		return;
-	aprend_batch_free(batch);
+	aprend_batch_free_parts(batch);
+	APRI_RETIRE(batch->instance, batch, aprend_batch_t);
 }
 
 APRESULT aprend_batch_begin(aprend_batch batch, const APREND_BATCH_FRAME *frame, APREND_ERROR *out_error) {

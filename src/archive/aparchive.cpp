@@ -2262,8 +2262,7 @@ extern "C"
             return;
         if (entry_reader->codec && entry_reader->state)
             entry_reader->codec->stream_end(entry_reader->codec->user, entry_reader->state);
-        entry_reader->~aparchive_entry_reader_t();
-        free(entry_reader);
+        APRI_RETIRE(entry_reader->reader, entry_reader, aparchive_entry_reader_t);
     }
 
     // ---- Extra fields ---------------------------------------------------------

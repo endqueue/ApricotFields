@@ -1511,7 +1511,7 @@ void aprend_lit_environment_destroy(aprend_lit_environment environment) {
 		return;
 	// What it holds on the GPU goes through the release queue, each on its
 	// own; the rest is the CPU's.
-	APREND_DESTRUCT__T(environment, aprend_lit_environment_t);
+	APRI_RETIRE(environment->instance, environment, aprend_lit_environment_t);
 }
 
 uint32_t aprend_lit_environment_get_specular_mip_count(aprend_lit_environment environment) {
@@ -1770,7 +1770,10 @@ uint32_t aprend_lit_scene_directional_slot(aprend_lit_scene scene, uint32_t ligh
 	return scene->lights[light].slot;
 }
 
-static void aprend_lit_scene_free(aprend_lit_scene scene) {
+// What the scene made, for its destroy and a failed create alike. The
+// scene itself is the caller's to free: at once after a failed create, and
+// with APRI_RETIRE after a destroy (../apristale.hpp, card X27).
+static void aprend_lit_scene_free_parts(aprend_lit_scene scene) {
 	aprend_binding_set_destroy(scene->rt_set);
 	aprend_binding_set_destroy(scene->ssr_set);
 	if (scene->material)
@@ -1781,7 +1784,6 @@ static void aprend_lit_scene_free(aprend_lit_scene scene) {
 	aprend_material_destroy(scene->cull_material);
 	aprend_material_destroy(scene->occlusion_material);
 	aprend_buffer_destroy(scene->tiles);
-	APREND_DESTRUCT__T(scene, aprend_lit_scene_t);
 }
 
 // The record of [light]'s shadow in [scene], or NULL if it has none.
@@ -1882,7 +1884,8 @@ APRESULT aprend_lit_scene_create(aprend_instance instance, aprend_lit_scene *out
 	ok = ok && aprend_material_set_storage_buffer(scene->cull_material, "AprendLitTiles", 0, lit.placeholder_tiles, nullptr) == APRESULT_OK;
 	ok = ok && aprend_lit_block_slot(m, "u_lit_scene") && aprend_lit_block_slot(scene->cull_material, "u_lit_scene");
 	if (!ok) {
-		aprend_lit_scene_free(scene);
+		aprend_lit_scene_free_parts(scene);
+		APREND_DESTRUCT__T(scene, aprend_lit_scene_t);
 		return aprend_fail(out_error, APRESULT_APREND_GPU_FAILURE, "the scene's materials can't be made");
 	}
 	// Every pass material free, handed out from the end down so the first
@@ -1903,7 +1906,8 @@ void aprend_lit_scene_destroy(aprend_lit_scene scene) {
 		return;
 	if (APRI_STALE(scene, "aprend_lit_scene_destroy", "scene"))
 		return;
-	aprend_lit_scene_free(scene);
+	aprend_lit_scene_free_parts(scene);
+	APRI_RETIRE(scene->instance, scene, aprend_lit_scene_t);
 }
 
 aprend_material aprend_lit_scene_get_material(aprend_lit_scene scene) {
@@ -2763,7 +2767,7 @@ void aprend_exposure_destroy(aprend_exposure exposure) {
 		return;
 	if (APRI_STALE(exposure, "aprend_exposure_destroy", "exposure"))
 		return;
-	APREND_DESTRUCT__T(exposure, aprend_exposure_t);
+	APRI_RETIRE(exposure->instance, exposure, aprend_exposure_t);
 }
 
 } // extern "C"

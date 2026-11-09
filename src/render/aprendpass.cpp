@@ -269,7 +269,7 @@ void aprend_render_pass_destroy(aprend_render_pass pass) {
 		return;
 	// Nothing of the GPU's: every command that named the pass recorded what
 	// it held, so it can go now.
-	APREND_DESTRUCT__T(pass, aprend_render_pass_t);
+	APRI_RETIRE(pass->instance, pass, aprend_render_pass_t);
 }
 
 APRESULT aprend_render_pass_set_binding_set(
@@ -368,7 +368,7 @@ void aprend_compute_pass_destroy(aprend_compute_pass pass) {
 		return;
 	if (APRI_STALE(pass, "aprend_compute_pass_destroy", "pass"))
 		return;
-	APREND_DESTRUCT__T(pass, aprend_compute_pass_t);
+	APRI_RETIRE(pass->instance, pass, aprend_compute_pass_t);
 }
 
 APRESULT aprend_compute_pass_set_binding_set(

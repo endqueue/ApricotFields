@@ -217,7 +217,7 @@ void aprend_draw_list_destroy(aprend_draw_list list) {
 		return;
 	// The span it wrote is the instance's, taken back with its frame; the
 	// rest is the CPU's.
-	APREND_DESTRUCT__T(list, aprend_draw_list_t);
+	APRI_RETIRE(list->instance, list, aprend_draw_list_t);
 }
 
 void aprend_draw_list_reset(aprend_draw_list list) {

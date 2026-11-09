@@ -129,6 +129,15 @@ block near the top. A new header gets the same block.
   result>;`, which prints one line. Release has no field and no check. A
   new handle type gets the tag and a factory in
   `tests/misuse/misuse_factories.h` (Aprend's in `../apricottests`).
+  Since card X27 (2026-11-08), a Debug destroy of a handle with an owner
+  ends in `APRI_RETIRE(owner, obj, T)` in place of the destructor and
+  `free`: the block is kept in the owner's `APRI_QUARANTINE` until the
+  owner is destroyed, so no new object lands on the dead tag. The owner
+  is the Aprend instance for every Aprend handle, the reader for an
+  ApArchive entry reader; every other handle is a root and is freed at
+  once, as is a block a create frees on failure (`apristale.hpp` has the
+  rule). A deferred destroy still waits for the GPU first: the release
+  function retires. Release frees at once.
 - **Platform gaps come from SpudLib's `SPUD*_EXT_*` macros**, never from a
   platform's name, and surface as `APRESULT_UNSUPPORTED`.
 

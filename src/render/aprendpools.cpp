@@ -401,8 +401,7 @@ void aprend_vertex_pool_destroy(aprend_vertex_pool pool) {
 		return;
 	// The pool itself is nothing the GPU uses. Its blocks are buffers, each
 	// released once the GPU has finished with it.
-	pool->~aprend_vertex_pool_t();
-	free(pool);
+	APRI_RETIRE(pool->core.instance, pool, aprend_vertex_pool_t);
 }
 
 APRESULT aprend_vertex_pool_allocate(aprend_vertex_pool pool, uint32_t vertex_count, const void *data, APREND_VERTEX_RANGE *out_range, APREND_ERROR *out_error) {
@@ -523,8 +522,7 @@ void aprend_index_pool_destroy(aprend_index_pool pool) {
 	if (APRI_STALE(pool, "aprend_index_pool_destroy", "pool"))
 		return;
 	// As aprend_vertex_pool_destroy.
-	pool->~aprend_index_pool_t();
-	free(pool);
+	APRI_RETIRE(pool->core.instance, pool, aprend_index_pool_t);
 }
 
 APRESULT aprend_index_pool_allocate(aprend_index_pool pool, uint32_t index_count, const void *data, APREND_INDEX_RANGE *out_range, APREND_ERROR *out_error) {
