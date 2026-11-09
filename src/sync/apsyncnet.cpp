@@ -219,21 +219,21 @@ static APSYNC_REASON reason_from_wire(uint8_t value)
 
 // ---- SpudNet's error detail ---------------------------------------------------
 
-static const char *error_source_name(SPUDNET_ERROR_SOURCE source)
+static const char *error_source_name(SPUD_PLATFORM_ERROR_SOURCE source)
 {
     switch (source)
     {
-    case SPUDNET_ERROR_SOURCE_WIN32:
+    case SPUD_PLATFORM_ERROR_SOURCE_WIN32:
         return "Win32";
-    case SPUDNET_ERROR_SOURCE_ERRNO:
+    case SPUD_PLATFORM_ERROR_SOURCE_ERRNO:
         return "errno";
-    case SPUDNET_ERROR_SOURCE_RESOLVER:
+    case SPUD_PLATFORM_ERROR_SOURCE_RESOLVER:
         return "resolver";
-    case SPUDNET_ERROR_SOURCE_CURL:
+    case SPUD_PLATFORM_ERROR_SOURCE_CURL:
         return "libcurl";
-    case SPUDNET_ERROR_SOURCE_NSURL:
+    case SPUD_PLATFORM_ERROR_SOURCE_NSURL:
         return "NSURLError";
-    case SPUDNET_ERROR_SOURCE_OSSTATUS:
+    case SPUD_PLATFORM_ERROR_SOURCE_OSSTATUS:
         return "OSStatus";
     default:
         return "platform";
@@ -246,7 +246,7 @@ static const char *error_source_name(SPUDNET_ERROR_SOURCE source)
 static std::string describe(const char *what, SPUDRESULT result, const spudnet_error &detail)
 {
     char text[APSYNC_ERROR_MESSAGE_SIZE];
-    if (detail.source != SPUDNET_ERROR_SOURCE_NONE && detail.result == result)
+    if (detail.source != SPUD_PLATFORM_ERROR_SOURCE_NONE && detail.result == result)
         snprintf(text, sizeof(text), "%s: SpudNet result %d, %s code %lld%s%s", what, (int)result,
                  error_source_name(detail.source), (long long)detail.code, detail.text[0] ? " - " : "", detail.text);
     else
