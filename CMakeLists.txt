@@ -843,6 +843,12 @@ if (APRICOTFIELDS_BUILD_TESTS)
     # recorded on the first machine to run it (tests/data/apmathbvh).
     add_executable(apmathbvh_bits_tests tests/apmathbvh_bits_tests.c)
     target_link_libraries(apmathbvh_bits_tests PRIVATE ApricotFields)
+    # Its inputs are worked out in the test, so with no contraction either:
+    # clang fuses a multiply and an add on arm64 by default, which made the
+    # inputs, not the BVH, differ from MSVC's (found on macOS 2026-11-09).
+    if (NOT MSVC)
+        target_compile_options(apmathbvh_bits_tests PRIVATE -ffp-contract=off)
+    endif ()
     add_test(NAME apmathbvh_bits_tests COMMAND apmathbvh_bits_tests)
     # The range list under Aprend's pools: an internal header with no GPU in
     # it, which is why this one test sees src/render.

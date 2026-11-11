@@ -88,7 +88,10 @@ and refitted, rebuilt, created fresh: the same bits; the in-place calls'
 refusals in parameter order, each changing nothing; the box BVH against
 brute force; the cast's early stop), `apmathbvh_bits_tests` (new: casts,
 overlaps, sweeps, a refit, a rebuild's cost and the box BVH hashed,
-recorded here, Debug and Release alike, `tests/data/apmathbvh/bits.inc`),
+recorded here, Debug and Release alike, `tests/data/apmathbvh/bits.inc`;
+the same on macOS, Apple M5 Pro, 2026-11-09, once the test itself was
+built with no floating-point contraction: clang had fused its inputs'
+multiply-adds on arm64, so the inputs, not the BVH, differed),
 `aprinoalloc_tests` (an instance BVH of 10,000 moving, set, refit or
 rebuilt, 8 shapes overlapped and swept a frame; a box BVH of 100,000, every
 call: none of ours), `aprioverlap_tests` (queries, overlaps and sweeps
