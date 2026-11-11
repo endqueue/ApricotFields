@@ -83,7 +83,7 @@
  *   message: Rend's refusal names the feature).
  * - A top level rebuilt each frame from the caller's instances within a
  *   distance: BUILD_TLAS as it is (rbtrendraytracing.h; measured with no
- *   allocation of Rend's a frame, apricottests' test_frame_allocations).
+ *   allocation of Rend's a frame, rabbittustests' test_frame_allocations).
  * - Not here: hits of cut-out materials are opaque, and hits read no maps
  *   and no vertex color (rbtrendraytracing.h, RBTREND_BLAS_DESC; cards A15's
  *   maps and A43's c); a traced reflection shades a hit with the hit's
@@ -255,7 +255,7 @@
  * Rabbittus (no device): the misuse harness regenerated; the refusals
  * that need no device are none (each command's checks read views).
  *
- * apricottests (Metal under validation with warnings fatal here; D3D12
+ * rabbittustests (Metal under validation with warnings fatal here; D3D12
  * and Vulkan in the handoff):
  * - A6's: a mirror floor (roughness 0, metal) under a known quad standing
  *   on it: the reflection's texels against its place worked out in C, on

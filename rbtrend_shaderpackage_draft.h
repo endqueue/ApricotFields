@@ -68,7 +68,7 @@
  *
  *  - rbtrend_contract_tests and rbt_misuse_tests: each refusal below, in
  *    parameter order; the misuse harness regenerated.
- *  - apricottests, every existing read-back test on D3D12 and Vulkan (and
+ *  - rabbittustests, every existing read-back test on D3D12 and Vulkan (and
  *    Metal on the Mac): each Slang shader's image against its GLSL
  *    predecessor's, within the tests' tolerances.
  *  - A package without the device's format: RBT_RESULT_UNSUPPORTED, the

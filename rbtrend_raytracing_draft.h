@@ -298,7 +298,7 @@
  * ABI (abi.txt): additions only.
  * ---------------------------------------------------------------------------
  *
- * Tests (apricottests, every adapter; refused on the Iris Xe):
+ * Tests (rabbittustests, every adapter; refused on the Iris Xe):
  *  - The mask against cascades where both are exact (a box on a plane,
  *    directional light 0 with an angular radius of 0), read back; a mask
  *    bit leaving the box out; set_light_shadow and set_sun_shadow each

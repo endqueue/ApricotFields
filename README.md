@@ -74,7 +74,7 @@ reference from the headers.
 `tests/` holds headless tests that run without a GPU: math, archives, audio,
 sync, and Rend's shader reflection and range tracking. Tests that need a real
 device draw offscreen and check the pixels they read back. Those are in
-`apricottests`, beside this repository in the workspace.
+`rabbittustests`, beside this repository in the workspace.
 
 ## Contributing
 

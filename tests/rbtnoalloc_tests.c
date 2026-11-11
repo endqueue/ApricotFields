@@ -10,7 +10,7 @@
 // with sounds playing and the limiter on; Rabbittus Math's ray casts against a
 // mesh's BVH; Rabbittus Jobs' reference pool running a task; Rabbittus Text laying the
 // same label out again with a layout it keeps. Rend's frame needs a GPU:
-// ../apricottests measures it.
+// ../rabbittustests measures it.
 //
 // Written in C, as the other tests of C headers are. Takes Rabbittus Text's data
 // folder as its argument, and Rabbittus Audio's as its second.

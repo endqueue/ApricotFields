@@ -7,7 +7,7 @@
 // with a destroyed handle (DECISIONS.md, card X16): each refuses.
 //
 // Handle types with no factory, not called with a destroyed handle:
-// - A Rend handle needs a GPU device, which these tests never make; apricottests/tests/rbtrend_gpu_tests.c, test_destroyed_handles, calls these.
+// - A Rend handle needs a GPU device, which these tests never make; rabbittustests/tests/rbtrend_gpu_tests.c, test_destroyed_handles, calls these.
 //   Not covered: rbtrend_batch, rbtrend_binding_layout, rbtrend_binding_set, rbtrend_blas, rbtrend_buffer, rbtrend_command_list, rbtrend_compute_pass, rbtrend_compute_pipeline, rbtrend_draw_list, rbtrend_exposure, rbtrend_framebuffer, rbtrend_gpu_timer, rbtrend_graphics_pipeline, rbtrend_index_pool, rbtrend_instance, rbtrend_lit_environment, rbtrend_lit_scene, rbtrend_material, rbtrend_render_pass, rbtrend_sampler, rbtrend_shader, rbtrend_swap_chain, rbtrend_texture2d, rbtrend_texture3d, rbtrend_texture_view, rbtrend_tlas, rbtrend_vertex_pool.
 
 #include "rbtrend.h"

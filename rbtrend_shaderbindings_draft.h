@@ -96,7 +96,7 @@ RBT_RESULT rbtrend_binding_layout_create_from_shaders(
  * members is refused instead.
  *
  * ---------------------------------------------------------------------------
- * Tests (apricottests)
+ * Tests (rabbittustests)
  * ---------------------------------------------------------------------------
  *
  * - test_lit_sky, test_auto_exposure and test_batch_rbttext_glyph pass on

@@ -217,7 +217,7 @@ static void test_pipelines_null(void)
     const uint32_t words[4] = {0};
 
     // rbtrend_shader_create's first refusal, the only one before a device:
-    // the rest, in the header's order, are ../apricottests'
+    // the rest, in the header's order, are ../rabbittustests'
     // test_shader_create_refusals.
     RBTREND_SHADER_PACKAGE package;
     memset(&package, 0, sizeof(package));
@@ -802,7 +802,7 @@ static void light_refused(const RBTREND_LIT_SCENE_LIGHT *light, int spot, const 
 // which need no scene: a radius on a point light, a disc on a spot, a
 // directional light where a spot is wanted. A scene's own refusals (a fifth
 // directional light, a 129th point or spot light, the shadows') need a
-// device, and are apricottests' (test_lit_light_refusals).
+// device, and are rabbittustests' (test_lit_light_refusals).
 static void test_lit_light_checks(void)
 {
     current_test = "lit_light_checks";
@@ -854,7 +854,7 @@ static void test_lit_light_checks(void)
 // The reflection commands' parameters fit RBTREND_COMMAND's 120 bytes, at
 // the sizes the approved draft gives on a 64-bit build, and the command
 // stays 128 bytes; RBTREND_LIT_SHADER_SURFACE_REFLECT_FRAGMENT is 8. Every
-// refusal of the three reads a view, so needs a device: apricottests'
+// refusal of the three reads a view, so needs a device: rabbittustests'
 // test_lit_reflection_refusals.
 static void test_reflection_commands(void)
 {

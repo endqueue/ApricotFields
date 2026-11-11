@@ -223,7 +223,7 @@ RBTREND_VERTEX_LAYOUT rbtrend_get_lit_vertex_color_layout(void);
  *   for RBTREND_LIT_SHADER_DEPTH_CUTOUT_FRAGMENT writes 0 to 4 (0 to 2
  *   before). One that doesn't is refused at pipeline creation on Metal,
  *   and is outside the rule on D3D12 and Vulkan. In the workspace that is
- *   one test shader (apricottests' lit_test_vert.slang), changed with it.
+ *   one test shader (rabbittustests' lit_test_vert.slang), changed with it.
  * - Behaviour: none for a caller on Rend's vertex shaders. Every lit
  *   surface interpolates one more vec4 (16 bytes of varyings, from 64 to
  *   80 counting the position), whether it has colors or not.
@@ -237,7 +237,7 @@ RBTREND_VERTEX_LAYOUT rbtrend_get_lit_vertex_color_layout(void);
  *   a stride of 16; rbtrend_vertex_layout_get_element_index() finds it.
  * - The misuse harness: the new call regenerated in.
  *
- * apricottests (a device; Metal here, under API and shader validation with
+ * rabbittustests (a device; Metal here, under API and shader validation with
  * warnings fatal; D3D12 and Vulkan in the handoff):
  * - test_lit_vertex_color: a quad of RBTREND_LIT_VERTEX drawn with
  *   RBTREND_LIT_SHADER_SURFACE_VERTEX_COLOR through a draw list (instance at

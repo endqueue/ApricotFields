@@ -63,7 +63,7 @@ FACTORIES = {
 # in neither table fails the generator.
 NO_FACTORY = {
     'rbtrend_': 'an Rbtrend handle needs a GPU device, which these tests never make; '
-               'apricottests/tests/rbtrend_gpu_tests.c, test_destroyed_handles, calls these',
+               'rabbittustests/tests/rbtrend_gpu_tests.c, test_destroyed_handles, calls these',
 }
 
 

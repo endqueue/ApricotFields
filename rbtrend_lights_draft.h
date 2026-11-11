@@ -477,7 +477,7 @@ RBT_RESULT rbtrend_lit_spot_shadow_view_projection(const RBTREND_LIT_SCENE_LIGHT
  *   into one atlas: the sun's 2D array, the spots' and the points' become
  *   rectangles of one 2D depth texture.
  * - Callers in the workspace that change with it: Rend's own tests,
- *   apricottests' lit tests (rbtrend_gpu_tests.c), its destroyed-handle
+ *   rabbittustests' lit tests (rbtrend_gpu_tests.c), its destroyed-handle
  *   list, the misuse harness (regenerated); no other library calls these
  *   yet.
  *
@@ -493,7 +493,7 @@ RBT_RESULT rbtrend_lit_spot_shadow_view_projection(const RBTREND_LIT_SCENE_LIGHT
  * one taken away when the lights are resent; fit_cascades' framing the
  * same bits as fit_sun_cascades' today for the same inputs.
  *
- * apricottests (a device; Metal here under validation with warnings
+ * rabbittustests (a device; Metal here under validation with warnings
  * fatal, D3D12 and Vulkan in the handoff):
  * - test_lit_mesh_shadow and every lit shadow test moved to the atlas,
  *   reading what they read today: a directional light's four cascades,

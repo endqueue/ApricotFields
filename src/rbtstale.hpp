@@ -70,7 +70,7 @@
 // owner's destructor, when nothing else may push. rbtarchive_tests counts,
 // through the CRT's debug heap on Windows, that a reader holds its entry
 // readers' blocks until it goes and that none is left after;
-// apricottests' test_destroyed_quarantine does the same for a Rend
+// rabbittustests' test_destroyed_quarantine does the same for a Rend
 // instance. AddressSanitizer's leak check (Linux, macOS) covers the rest.
 
 #include <stdint.h>

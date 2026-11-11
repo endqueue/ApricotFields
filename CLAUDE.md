@@ -128,7 +128,7 @@ block near the top. A new header gets the same block.
   does: `if (RBT_STALE(x, "call", "x")) return <the null check's
   result>;`, which prints one line. Release has no field and no check. A
   new handle type gets the tag and a factory in
-  `tests/misuse/misuse_factories.h` (Rend's in `../apricottests`).
+  `tests/misuse/misuse_factories.h` (Rend's in `../rabbittustests`).
   Since card X27 (2026-11-08), a Debug destroy of a handle with an owner
   ends in `RBT_RETIRE(owner, obj, T)` in place of the destructor and
   `free`: the block is kept in the owner's `RBT_QUARANTINE` until the
@@ -398,7 +398,7 @@ registered with `add_test` behind `RABBITTUS_BUILD_TESTS`.
   allocation down to the code that asked, the runtime's and drivers' apart;
   the libraries keep identical copies, `check.sh alloc-trace-copies`); a
   new per-frame path gets a scenario there, and Rend's frame is
-  `../apricottests`' `test_frame_allocations`. Brute-force comparison against a slow obvious implementation is the
+  `../rabbittustests`' `test_frame_allocations`. Brute-force comparison against a slow obvious implementation is the
   preferred check for anything algorithmic (`test_mesh_against_brute_force`).
 
 When asked to verify, on macOS: configure with the `rabbittus-macos-metal`

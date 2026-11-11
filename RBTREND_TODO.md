@@ -112,7 +112,7 @@ the same change:
     nobody promised still prints if it finds no memory. New:
     `tests/rbtrend_contract_tests.c`, every refusal of these calls with its
     code and message, headless. Built and tested on macOS: Rabbittus'
-    27 tests, plain and under ASan; `../apricottests`' GPU tests on Metal
+    27 tests, plain and under ASan; `../rabbittustests`' GPU tests on Metal
     under validation with warnings fatal; a caller's 35 and another's 45
     tests over it. Windows and Linux not built.
   - Left in this header: `rbtrend_instance_next_frame` (A10, step 1d).
@@ -321,7 +321,7 @@ the same change:
     configuration and under both `-asan` presets; the GPU tests on D3D12
     (Iris Xe, RTX A2000, WARP; debug layer, and GPU-based validation
     once) and Vulkan (both GPUs; validation, synchronization and
-    GPU-assisted validation), every check passing (`../apricottests/README.md`);
+    GPU-assisted validation), every check passing (`../rabbittustests/README.md`);
     both callers' suites on both backends; Carrottus GPU's lost-device code
     compiled for the first time on D3D12 and Vulkan. The first MSVC build
     warned C4297 on a throwing helper inside an `extern "C"` block: MSVC
@@ -331,7 +331,7 @@ the same change:
     device lost is not made to happen by any test.
   - **No allocation per frame (2026-10-30, Windows):** a settled frame
     made 147 allocations in Debug and 129 in Release
-    (`../apricottests`' `test_frame_allocations`), each put down to its
+    (`../rabbittustests`' `test_frame_allocations`), each put down to its
     asker. Now none, on D3D12 and Vulkan: a command list keeps its
     compile's and submit's working arrays (pass images, stores, argument
     buffers, barriers, upload barriers and copies, the lit scenes' copy of
@@ -348,7 +348,7 @@ the same change:
     holds a Debug-only tag (`src/rbtstale.hpp`); a destroy writes it dead
     at the call (the release queue frees it later), and every call refuses
     a destroyed handle as it refuses null, printing one line.
-    `../apricottests`' `test_destroyed_handles` calls each function
+    `../rabbittustests`' `test_destroyed_handles` calls each function
     taking a Rend handle first with a destroyed one: 167 calls, all
     refused, D3D12 and Vulkan, both GPUs. Three lit structs
     (`rbtrend_lit_environment_t`, `rbtrend_lit_scene_t`,
@@ -383,7 +383,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     staged, no compute, no indirect draw, no view of part of a texture, no
     layered pass. Nothing checked the release queue for an early release
     beyond the picture being right. That list is as of 2026-10-12. Since,
-    `../apricottests` has run compute and storage ordering, the staged path
+    `../rabbittustests` has run compute and storage ordering, the staged path
     (on the RTX A2000) and indirect draws (see "Suggested order", step 1);
     and on 2026-10-22 on Metal, and on 2026-10-23 on D3D12 and Vulkan, a
     layered pass and mesh shading.
@@ -401,7 +401,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   is the first build of this code outside macOS and the first of a Carrottus GPU
   backend other than Metal. The backend was D3D12 (a caller's host);
   Vulkan has not been built on Windows (it was on 2026-10-16, by
-  `../apricottests`). As on macOS, it exercises what
+  `../rabbittustests`). As on macOS, it exercises what
   that application uses and no more (the list above); whether the device
   had memory of its own, which is what would have run the staged path, is
   not recorded either.
@@ -794,7 +794,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     the batch's first instance as `_start_instance_location`.
   - **Run on all three backends** (2026-10-17). First on Metal (Apple M5
     Pro, unified memory):
-    `../apricottests`' `test_material`, `test_render_pass` and
+    `../rabbittustests`' `test_material`, `test_render_pass` and
     `test_draw_list` passed on their first build, Debug under the Metal
     validation settings and Release, with no validation message and no
     leak. Nothing in Rend needed fixing. What they covered: a layout made
@@ -866,7 +866,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     the Metal changes (reported); that caller uses no lit surface, comparison
     sampler or depth-only pass, so that shows only that they break nothing
     there.
-  - **What has run.** `../apricottests`, on an Apple M5 Pro (2026-10-17),
+  - **What has run.** `../rabbittustests`, on an Apple M5 Pro (2026-10-17),
     Debug under the Metal validation settings with warnings fatal and
     Release, no leak: `test_lit_surface`, `test_lit_mesh_shadow`,
     `test_tone_map` (nine curves and encodings, AgX's against the same
@@ -919,7 +919,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     external included, so a name means the same member in every material
     of the layout. Before, it was looked for in the blocks the material
     at hand owned.
-  - `../apricottests`' `test_material` finds `color` and `strength` and
+  - `../rabbittustests`' `test_material` finds `color` and `strength` and
     checks their type and offset, finds `layers[1].add` by its binding's
     name and its block's and gets the same handle, sets by handle between
     two submissions, reads values back, and is refused a zeroed handle,
@@ -954,9 +954,9 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     had a staging copy each that was never written.
   - Callers changed in the same change: two callers in the workspace, whose
     four vertex or mesh buffers each are `ONCE`; none is ever updated.
-    `../apricottests` passes `MANY` for the one buffer it updates and
+    `../rabbittustests` passes `MANY` for the one buffer it updates and
     `ONCE` for the rest.
-  - `../apricottests`' `test_buffer_writes`: a `MANY` buffer written in two
+  - `../rabbittustests`' `test_buffer_writes`: a `MANY` buffer written in two
     ranges with a gap and then the gap; a `ONCE` buffer drawn in two frames
     and refused an update; a create with `writes` 0 refused; two pool
     ranges of one block drawn from where the pool put them, and the block
@@ -998,7 +998,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - Carrottus GPU, found by the new test: Metal set the compute pipeline state on
     the encoder at every bind, and its validation refuses setting the same
     state twice. It sets it only when it differs now (carrottus).
-  - `../apricottests`: `test_storage_ordering` (add, copy, copy, add, copy
+  - `../rabbittustests`: `test_storage_ordering` (add, copy, copy, add, copy
     over r32f storage images: a write, two reads with none between, a write
     after reads, a read; the values checked) and `test_stale_lists` (a
     target resized, a target destroyed, a vertex buffer destroyed, each
@@ -1050,7 +1050,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     sampler outlives every material that holds it. Nothing renamed or
     removed: the calls were consistent with each other and with the rest
     of Rend.
-  - `../apricottests`' `test_material_copy`: a complete base copied, the
+  - `../rabbittustests`' `test_material_copy`: a complete base copied, the
     copy's values read back, both drawn, each changed alone and drawn,
     the base destroyed and the copy drawn, a copy of NULL refused, and a
     copy of a lit material with its values. Passed on Metal (Apple M5
@@ -1083,7 +1083,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - Every data argument of `rbtrendbuffers.h` is `const void *` now (the
     create and update calls of every buffer and buffer set); each was
     only read. The same symbol and the same ABI, and source-compatible.
-  - `../apricottests`' `test_uniform_buffer_index`: a uniform buffer and a
+  - `../rabbittustests`' `test_uniform_buffer_index`: a uniform buffer and a
     buffer set made from the material shader's uniform layout, written by
     index, bound through two materials' external blocks, drawn green and
     blue, then swapped (the buffer by name, the set by index); unknown
@@ -1124,7 +1124,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     a write lands where the GPU reads, so not while a submission that reads
     the buffer is unfinished; a block rewritten every frame belongs in a
     buffer set.
-  - `../apricottests`' `test_uniform_buffer_index` checks the getters (the
+  - `../rabbittustests`' `test_uniform_buffer_index` checks the getters (the
     buffer's own layout finds the same indices), the three refused
     creates, and a block of no uniforms made with a size and written as
     bytes. Every test passed on Metal (Apple M5 Pro), Debug under Metal
@@ -1156,7 +1156,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - `RBTREND_UNIFORM::size` is `array_count`: it was an element count named
     a size. Source-compatible for a caller that fills the struct by
     position (a caller in the workspace does); one that names the field changes the name.
-  - `../apricottests`' `test_uniform_buffer_index`: the alignments Carrottus GPU
+  - `../rabbittustests`' `test_uniform_buffer_index`: the alignments Carrottus GPU
     reports are powers of two up to 256, an entry at the device's own
     alignment is taken and one at 4 refused (both, on Metal's 256). Every
     test passed on Metal (Apple M5 Pro), Debug under Metal API and shader
@@ -1211,8 +1211,8 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     `sizeof(RBTREND_LIT_INSTANCE)`).
   - Callers in the same change: the callers in the workspace (vertex
     layouts, vertex buffers sized in bytes, a solid pool's stride) and
-    `../apricottests`.
-  - `../apricottests`' `test_vertex_layouts`: six refused pipelines (stride
+    `../rabbittustests`.
+  - `../rabbittustests`' `test_vertex_layouts`: six refused pipelines (stride
     0, stride 10, an offset of 2, an element past the stride, an unknown
     type, a `uint` input fed by an `INT` element); the pipeline's copy of a
     layout whose caller overwrote its array and names; a padded,
@@ -1364,7 +1364,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   `tests/rbtrendreflect_tests.cpp` (reflection; passed in a scratch build
   on Linux) and `tests/rbtrendfeatures_tests.c` (the optional feature set,
   item 39). The tests that need a device are
-  `../apricottests` (`rbtrend_gpu_tests`), run on Metal (macOS) and on D3D12
+  `../rabbittustests` (`rbtrend_gpu_tests`), run on Metal (macOS) and on D3D12
   and Vulkan (Windows).
 - **Reviewed by reading on 2026-10-13; nothing compiled or run for it.**
   Every file of `src/render` except `rbtrendpools.cpp`, `rbtrendreflect.cpp`
@@ -1378,7 +1378,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - The host's run used one color target, no bias, no labels and no
     timer, so it shows the arrays and the new pipeline checks build and
     pass for what that host draws, and no more.
-  - **Run on Windows on 2026-10-16 by `../apricottests`, all passed:** D3D12
+  - **Run on Windows on 2026-10-16 by `../rabbittustests`, all passed:** D3D12
     on an NVIDIA RTX A2000 Laptop (memory of its own) and an Intel Iris Xe
     (unified), debug layer clean; Vulkan on both, validation clean.
     `test_two_targets`, `test_pipeline_must_match_pass`,
@@ -1387,7 +1387,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     descriptor's image layout and a binding's shader stages reached Vulkan
     untranslated, which turned every sampled texture black; fixed in
     Carrottus GPU.
-  - **Run on macOS on 2026-10-16 by `../apricottests`, all passed:** Apple
+  - **Run on macOS on 2026-10-16 by `../rabbittustests`, all passed:** Apple
     M5 Pro, Debug under Metal API and shader validation with warnings made
     fatal, and Release; no leak at exit. The timer read 0.08-0.11 ms for
     its pass (above 0 and below a second; not compared with a known cost).
@@ -1433,8 +1433,8 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   - `rbtrend_gpu_timer` (`rbtrendtimer.h`): slots a pass is timed into,
     through `BEGIN_RENDERING`'s `_timer` and `_timer_slot` or a render
     pass's, kept once for each frame in flight and read a frame late.
-  - Every caller in the workspace follows: spudgpusamples,
-    `../apricottests` and the rest set the formats as arrays.
+  - Every caller in the workspace follows: crgpusamples,
+    `../rabbittustests` and the rest set the formats as arrays.
   - What to check first: a pipeline with two targets on each backend; a
     shadow pass's bias; labels in RenderDoc, PIX and Xcode; a timer's
     reading against a known cost, on Metal above all.
@@ -1483,7 +1483,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     now says that one list of an allocator is open at a time. Run on Vulkan
     on Windows the same day (both devices, validation clean), and on Metal
     by `rbtrend_gpu_tests` (validation clean).
-  - **The batch and the per-frame memory, run on Windows on 2026-10-16 by `../apricottests`, all passed:** D3D12
+  - **The batch and the per-frame memory, run on Windows on 2026-10-16 by `../rabbittustests`, all passed:** D3D12
     on an NVIDIA RTX A2000 Laptop (memory of its own) and an Intel Iris Xe
     (unified), debug layer clean; Vulkan on both, validation clean.
     `test_updates_batched` passed there: two updates in order ahead of a
@@ -1492,7 +1492,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     `rbtrend_instance_next_frame`. What the tests don't show is the leak of
     item 37 gone: they turn the frame twice. That needs a host running for
     minutes on D3D12 with memory watched.
-  - **Run on macOS on 2026-10-16 by `../apricottests`, all passed**, with
+  - **Run on macOS on 2026-10-16 by `../rabbittustests`, all passed**, with
     `test_updates_batched`, under Metal validation (see the entry above).
   - **Memory flat on D3D12, reported 2026-10-16:** a caller's host on
     Windows over D3D12 ran idle for 20 minutes with no growth in memory,
@@ -1522,7 +1522,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   shared `rbtrend_record_fullscreen_pass` (mip generation records through
   it too), each view keeping the set that reads it, and a command list
   keeping what its compile took from the pool until it is submitted.
-  `../apricottests`' `test_bloom` **passed on Metal on 2026-10-16** (Apple
+  `../rabbittustests`' `test_bloom` **passed on Metal on 2026-10-16** (Apple
   M5 Pro) on its first build: Debug under Metal API and shader validation
   with warnings fatal, and Release; no leak at exit. The white square read
   255 at its centre, 34 ten texels out on both sides (white, alpha the
@@ -1536,7 +1536,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   of `rbtrend_texture2d_generate_mips`, are now kept by the texture
   (`rbtrend_mip_chain` in `rbtrendimages_internal.hpp`) instead of made and
   retired each call; both forms record through one
-  `rbtrend_record_mip_pass`. `../apricottests`' `test_generate_mips_command`
+  `rbtrend_record_mip_pass`. `../rabbittustests`' `test_generate_mips_command`
   renders mip 0, generates, and samples mip 3 in one list, twice, and
   checks three compile failures. **Passed on Metal on 2026-10-16** (Apple
   M5 Pro) on its first build: Debug under Metal API and shader validation
@@ -1548,7 +1548,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   2026-10-16; run on Metal the same day** (items 22, 31, 7):
   - GLSL in `shaders/` is compiled to SPIR-V by glslc at build time and
     embedded in the library as C arrays (`-mfmt=c`), on every platform, as
-    callers in the workspace and `../apricottests` already do: nothing to deploy or load
+    callers in the workspace and `../rabbittustests` already do: nothing to deploy or load
     at run time. glslc is now needed on Apple too. The block that compiled
     `apricot_default.vert`/`.frag` to `.spv` files on Windows and Linux
     only, and linked Vulkan for it, is gone with those shaders (item 7);
@@ -1571,7 +1571,7 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     texture without render target and shader resource usage, a format
     outside the eleven every backend renders to and filters, a base level
     some layer has never had written.
-  - `../apricottests`' `test_generate_mips` checks a two-layer 8x8 chain
+  - `../rabbittustests`' `test_generate_mips` checks a two-layer 8x8 chain
     level by level and the refusals. **Passed on Metal on 2026-10-16** (Apple
     M5 Pro, unified memory), on its first run: Debug under Metal API and
     shader validation with warnings fatal, and Release; no leak at exit.
@@ -1588,20 +1588,20 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
   `RBTREND_COMMAND`'s `_params` is padded to 120 bytes (the command to 128).
   `rbtrend_graphics_pipeline_create()` and `rbtrend_compute_pipeline_create()`
   take their desc by pointer, as every other create does. **Run on Metal on
-  2026-10-20** (M5 Pro): `../apricottests` passes, Debug under Metal API and
+  2026-10-20** (M5 Pro): `../rabbittustests` passes, Debug under Metal API and
   shader validation with warnings fatal, with a new `test_struct_bases`
   (a zeroed base, another struct's type and a chained struct refused; the
   getter's base). Run on Windows, D3D12 and Vulkan, on 2026-10-22 (item
   39's run).
 - **Section A of the autonomous work plan, written 2026-10-22; run on
   Metal, then on Windows over D3D12 and Vulkan on 2026-10-23** (Apple M5
-  Pro: `../apricottests` Debug under Metal API and shader validation with
+  Pro: `../rabbittustests` Debug under Metal API and shader validation with
   warnings fatal, both devices, every test passing; Release under `leaks`,
   none; Rabbittus' headless tests, carrottus's, and two callers' tests
   (17 and 33) over it, all passing, with no Rend message in any of them).
   Not built on Linux. The Windows run, against Rabbittus `8c79f76` and
   carrottus `1810c98` with the fixes below: Windows 11, Debug,
-  `../apricottests` on the Intel Iris Xe (`--device 0`, adapter 0x1dff,
+  `../rabbittustests` on the Intel Iris Xe (`--device 0`, adapter 0x1dff,
   first device 0x7f) and the NVIDIA RTX A2000 (`--device 1`, 0x1fbf, first
   device 0x23f), each on its two devices; D3D12 with its debug layer
   printing (no debugger), Vulkan with `VK_LAYER_KHRONOS_validation`, plain
@@ -1733,13 +1733,13 @@ The workspace's error policy is in the root `CLAUDE.md`, "Errors".
     fails (its range list holds a `std::vector`), in the workspace's
     `check.baseline`.
   - Run on Metal (Apple M5 Pro, Debug): Rabbittus' 17 tests, plain and
-    under `-asan`; `../apricottests` under Metal API and shader validation
+    under `-asan`; `../rabbittustests` under Metal API and shader validation
     with warnings fatal; two callers' tests over it. **Not built on Windows
     or Linux**: the command list's recording path is every backend's, so it
     wants a D3D12 and a Vulkan run.
 - **Section B of the autonomous work plan, from 2026-10-24; run on Metal,
   and on Windows over D3D12 and Vulkan on 2026-10-29** (items 24, 36 and 40
-  say how) (Apple M5 Pro: `../apricottests` Debug under Metal API and shader
+  say how) (Apple M5 Pro: `../rabbittustests` Debug under Metal API and shader
   validation with warnings fatal, both devices, and Release under `leaks`;
   Rabbittus' headless tests; two callers' tests over it; the
   workspace's `./check.sh`). Item 40 is recorded in its item. Each point is
@@ -1883,7 +1883,7 @@ today:
 
 ### 37. The instance's command allocator is never reset
 
-Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Each frame index
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../rabbittustests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Each frame index
 has its own allocator, reset by `rbtrend_instance_next_frame` after its wait,
 and a recording takes a list of the current frame's; a list compiled in
 one frame is refused at submit in a later one. Carrottus GPU needed no new call
@@ -2066,7 +2066,7 @@ buffer with one the GPU is reading. Left over:
     call that meets in instance state enters, and one that finds another
     thread inside prints, as Vulkan's validation layer does for an object
     used by two threads. Not tested by forcing an overlap. It never fired
-    on Windows on 2026-10-23 either: `../apricottests`, a caller's tests
+    on Windows on 2026-10-23 either: `../rabbittustests`, a caller's tests
     and a caller's host that renders off its UI thread, over D3D12 and
     Vulkan.
   - Command memory for each thread, so different lists can be compiled
@@ -2185,7 +2185,7 @@ the code"). Left over:
   and not submitted released every object first and ended the batch's
   list after, which Vulkan's validation reports
   (`VUID-vkEndCommandBuffer-commandBuffer-00059`: the list was invalidated
-  by the objects destroyed under it). `../apricottests`' `--only
+  by the objects destroyed under it). `../rabbittustests`' `--only
   test_resize_with_views` showed it (its mips are generated and never
   submitted); a whole run submits the batch in the next test. Older than
   the Slang change. The batch's list is ended first now, and still dropped
@@ -2326,7 +2326,7 @@ shader. Left over:
   (2026-10-22): each run of mips of a layer that share a layout is one
   barrier. Runs across layers aren't merged. On Metal the barriers do
   nothing; Vulkan's synchronization validation found no hazard on
-  2026-10-23 (`../apricottests`, Iris Xe and RTX A2000, both devices of
+  2026-10-23 (`../rabbittustests`, Iris Xe and RTX A2000, both devices of
   each), with D3D12's debug layer silent too.
 - **A resize to a different mip count replaces the layout storage**, so a
   list compiled before the resize holds pointers into what was freed. With
@@ -2375,7 +2375,7 @@ the sets its draws read (see "State of the code").
   exposure and moved it nowhere, so on Vulkan the descriptor named
   `SHADER_READ_ONLY` while the image was still `UNDEFINED`
   (`VUID-vkCmdDraw-None-09600`). A whole run hid it: an earlier test's lit
-  draw had moved the placeholder; `../apricottests`' `--only test_tone_map`
+  draw had moved the placeholder; `../rabbittustests`' `--only test_tone_map`
   showed it, on both Vulkan devices. Older than the Slang change (the
   shader always declared the binding). Now moved to `SHADER_READ_ONLY` like
   any other read; run alone and in the whole suite, validation silent.
@@ -2427,11 +2427,11 @@ for the GLSL (SPIR-V whose generator word is Slang's, tool 40):
   samplers wrapped only round `texelFetch` in GLSL (item 22), whose sets
   no longer write them. A caller that writes every binding of a layout
   made from shaders writes only what some shader of it uses
-  (`../apricottests`' `make_sampled_pipeline` checks its layout for the
+  (`../rabbittustests`' `make_sampled_pipeline` checks its layout for the
   sampler).
 
 Tested by `rbtrendreflect_tests`' `test_slang_shaders` on the built-in
-shaders' SPIR-V, and by every `../apricottests` read-back on D3D12 and
+shaders' SPIR-V, and by every `../rabbittustests` read-back on D3D12 and
 Vulkan (2026-10-31). Hazel:
 `Platform/Vulkan/ShaderCompiler/VulkanShaderCompiler.h` (`Reflect`),
 `Shader.h` (`ShaderBuffer`, `ShaderUniform`), `DescriptorSetManager::Validate`.
@@ -2590,7 +2590,7 @@ renders to an `rbtrend_framebuffer` and checks it against the pipeline (see
     the list is the key: it is the caller's order, it groups exactly as
     before (each material bound once, each mesh one batch), and reading it
     is one table lookup a handle.
-  - `../apricottests`' `test_draw_list_order`: one list built twice, from
+  - `../rabbittustests`' `test_draw_list_order`: one list built twice, from
     materials made A then B and then B then A (four alive at once), the
     draws added in one order (B whole, A left, B right): red left and cyan
     right both times. Against the address order it fails, the first
@@ -2609,7 +2609,7 @@ Half settled on 2026-10-16. Rend ships shaders of its own: GLSL in
 embedded in it (see "State of the code"), and the objects made of them kept
 by the instance (`rbtrendbuiltin_internal.hpp`). A caller's shaders are
 still SPIR-V it hands over: item 18 has Rend reflect them, so SPIR-V is
-all it needs. Written 2026-10-16 and run on all three backends by `../apricottests` (mip generation and bloom draw with them; D3D12 and Vulkan by 2026-10-17). Left:
+all it needs. Written 2026-10-16 and run on all three backends by `../rabbittustests` (mip generation and bloom draw with them; D3D12 and Vulkan by 2026-10-17). Left:
 
 - **No runtime compilation, macros, cache or reload**, for the
   caller's shaders or Rend's. Rend's shaders share `.glslh` includes
@@ -2680,7 +2680,7 @@ Slang**, for Rend's shaders and its callers'.
 4. **One conversion, before 1.0**, with A9's native formats: Rend's 45
    shaders and every caller's, in the same change, each
    checked against its SPIR-V output by the existing tests and
-   `../apricottests` on all three backends. glslang and glslc leave the
+   `../rabbittustests` on all three backends. glslang and glslc leave the
    build; SPIRV-Cross stays only as the Metal fallback and for
    reflection where the native format has none.
 
@@ -2705,7 +2705,7 @@ NVIDIA's Falcor and RTX Remix Slang.
   run on a Mac). Each binary is a `uint32_t` array
   with a `_size` macro, and `<stem>.package.inc` defines `static const
   RBTREND_SHADER_PACKAGE <stem>_package`. A caller's build may include the
-  file: `../apricottests` does. `RABBITTUS_SHADERS` lists the 36 stage
+  file: `../rabbittustests` does. `RABBITTUS_SHADERS` lists the 36 stage
   files by stem, `RABBITTUS_SHADER_MODULES` the 9 modules they import.
   The GLSL is gone from `shaders/`; glslc and glslang left the build;
   SPIRV-Cross stays, for reflection (and Carrottus's `crgpu_msl`).
@@ -2744,7 +2744,7 @@ NVIDIA's Falcor and RTX Remix Slang.
   `readonly` keeps the `u` register on D3D12.
 - **Run**: `rbtrend_contract_tests` and `rbtrendreflect_tests` with every
   ctest, `rabbittus-windows-d3d12` and `-vulkan`, Debug; and
-  `../apricottests`' `rbtrend_gpu_tests` on D3D12 (Intel Iris Xe, NVIDIA RTX
+  `../rabbittustests`' `rbtrend_gpu_tests` on D3D12 (Intel Iris Xe, NVIDIA RTX
   A2000, WARP; debug layer silent) and Vulkan (Iris Xe, RTX A2000;
   validation silent but for card S22's message below), every read-back
   within its old tolerance, 2026-10-31.
@@ -2775,7 +2775,7 @@ only the bindings an entry point reads, and Metal lays out a shader's
 argument buffer from what it declares, so the sky (`rbtrend_lit_sky_frag`),
 histogram exposure (`rbtrend_exposure_histogram_comp`, `_adapt_histogram_frag`)
 and glyph (`rbtrend_batch_glyph_frag`) shaders read the wrong members on
-Metal: `apricottests`' `test_lit_sky`, `test_auto_exposure` and
+Metal: `rabbittustests`' `test_lit_sky`, `test_auto_exposure` and
 `test_batch_rbttext_glyph` fail there (11 checks a device), and wait on it.
 **Decided 2026-11-01 with you (card S27, a):** a module declares every
 binding of each set it reads, with its layout's type and count, and no
@@ -2826,18 +2826,18 @@ macOS 27.0.1, Xcode 27.2, Slang 2026.18.3-2; Windows and Linux not built):
   sources declared what their layouts don't hold, or less, and were
   changed: `rbtrend_lit_vert` imports `rbtrend_lit_bindings` (it declared
   only `u_lit_scene` of the lit scene's 14 bindings, 19 refusals in
-  apricottests); the histogram pair (`rbtrend_exposure_histogram_comp`,
+  rabbittustests); the histogram pair (`rbtrend_exposure_histogram_comp`,
   `_adapt_histogram_frag`) and `rbtrend_lit_cull_bounded_comp` no longer
-  declare a sampler no shader of their layout reads; apricottests'
+  declare a sampler no shader of their layout reads; rabbittustests'
   `stencil_frag` the same.
-- apricottests' `test_set_declared_whole`: a layout made from two shaders
+- rabbittustests' `test_set_declared_whole`: a layout made from two shaders
   sharing set 0, one declaring only the texture it loads: refused on Metal
   with `RBT_RESULT_REND_GPU_FAILURE` and Carrottus GPU's
   `CR_RESULT_GPU_SHADER_LAYOUT_MISMATCH` in the message; the whole one
   made.
 - Ran: 36 ctests on `rabbittus-macos-metal` in Debug and Release,
   `-asan` and `-tsan`; `rbt_misuse_tests` ten times (368 calls with
-  zeroes, 119 with a destroyed handle, no failure); apricottests whole on
+  zeroes, 119 with a destroyed handle, no failure); rabbittustests whole on
   Metal, Debug and Release, under API and shader validation with warnings
   fatal, both of its devices: every check passed, `test_lit_sky`,
   `test_auto_exposure` and `test_batch_rbttext_glyph` included, and Rend's
@@ -2902,7 +2902,7 @@ at build time.
   the build's tables for five of Rend's shaders equal the writer's byte
   for byte; the reader's refusals, and the lit fragment shader's table cut
   at every length (33,224 of 33,224 refused, none read past its end,
-  `-asan` included). apricottests' `test_shader_create_refusals`: the
+  `-asan` included). rabbittustests' `test_shader_create_refusals`: the
   SPIR-V, DXIL, .metallib and reflection pairs, a table's wrong magic,
   another version, a cut one, another stage's and another entry point's,
   and a package without SPIR-V made on Metal. `rbtrend_reflection_fuzz`,
@@ -2950,7 +2950,7 @@ at build time.
   - Ran (Windows 11): `rabbittus-windows-d3d12` Debug and Release and
     `-vulkan` Debug, no warning, 36 of 37 ctests each (A49), both `-asan`
     presets the same, no report; `rbt_misuse_tests` ten times (119 calls
-    with a destroyed handle, 0 failures). apricottests: every check passing
+    with a destroyed handle, 0 failures). rabbittustests: every check passing
     on D3D12 (Iris Xe, RTX A2000, WARP; the debug layer's one message a
     device is card S38's) and on Vulkan (Iris Xe, RTX A2000) under
     validation, synchronization validation and performance warnings: no
@@ -3019,7 +3019,7 @@ fragment stage only for glyphs (Metal's validation refuses bytes a stage
 doesn't read); `RBTREND_VERTEX_LAYOUT::elements` made `const`, which took
 two `check.baseline` entries with it.
 
-`../apricottests`' `test_batch`: a quad; a ring's hole, body and an edge
+`../rabbittustests`' `test_batch`: a quad; a ring's hole, body and an edge
 through a texel against its distance measured as `fwidth` does; an arc's
 kept and dropped halves; a line's middle, an edge through texel centres
 (half), past it and past a butt end; a square cap; dashes and a dash's end;
@@ -3031,12 +3031,12 @@ calls' record counts; a call past `max_shapes` adding nothing; fourteen
 refusals. `test_batch_rbttext_glyph`: Rabbittus Text's 'a' generated as an MTSDF and
 drawn at twice its size, its 100 texels well inside filled and 60 well
 outside empty. Both devices, Metal's validation, and `leaks`: clean.
-D3D12 and Vulkan ran them on Windows the same day (`../apricottests/README.md`,
+D3D12 and Vulkan ran them on Windows the same day (`../rabbittustests/README.md`,
 2026-10-30: the Iris Xe, the RTX A2000 and WARP; this file said "Needs
 D3D12 and Vulkan runs" until 2026-11-05) and again on 2026-11-05 (the same
 adapters, D3D12's debug layer, Vulkan's validation and synchronization
 validation, both devices each): `test_batch` and `test_batch_rbttext_glyph`
-passing, silent. Linux: on the Iris Xe 2026-11-04 (apricottests' whole
+passing, silent. Linux: on the Iris Xe 2026-11-04 (rabbittustests' whole
 run). Not built: a depth-tested frame is
 untested on the GPU (only its refusals); bitmap atlases (the design's
 "later"); a 2D batch of filled polygons is Rabbittus Math's triangulation and the
@@ -3159,7 +3159,7 @@ shows it isn't enough.
 Written 2026-10-17 and run on Metal (see "State of the code"). **Every
 box but screen-space reflections, transmission and variants done
 2026-10-24, run on Metal** (below); those three wait on bigger designs
-or measurements, as the plan has them. Run on Windows 2026-10-29 (`../apricottests`' `rbtrend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of the seven pieces (`test_lit_cascades`' blending, `test_lit_sky`'s disc and Hosek-Wilkie sky, `test_auto_exposure`'s histogram, `test_lit_surface`'s per-map uv transforms, `test_lit_ambient_occlusion`'s GTAO, `test_lit_point_shadows`, `test_lit_tile_depth_bounds`) passed, with no validation message from them; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. GTAO's half resolution is still unmeasured. Against the
+or measurements, as the plan has them. Run on Windows 2026-10-29 (`../rabbittustests`' `rbtrend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of the seven pieces (`test_lit_cascades`' blending, `test_lit_sky`'s disc and Hosek-Wilkie sky, `test_auto_exposure`'s histogram, `test_lit_surface`'s per-map uv transforms, `test_lit_ambient_occlusion`'s GTAO, `test_lit_point_shadows`, `test_lit_tile_depth_bounds`) passed, with no validation message from them; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. GTAO's half resolution is still unmeasured. Against the
 chain Hazel's `SceneRenderer::FlushDrawList` runs - directional and spot
 shadow maps, pre-depth, tiled light culling, skybox, PBR geometry, GTAO,
 SSR, bloom, composite - Rend has every stage but screen-space
@@ -3190,7 +3190,7 @@ them, so a caller that frames its own keeps doing so.
 
 Left:
 
-- [x] **Run on D3D12 and Vulkan.** `../apricottests` passed on both, on
+- [x] **Run on D3D12 and Vulkan.** `../rabbittustests` passed on both, on
       an Intel Iris Xe and an NVIDIA RTX A2000, on 2026-10-17: its shadow
       tests the first use there of Carrottus GPU's comparison samplers and of
       D3D12's depth-only passes. One fix came of it, the clear value of an
@@ -3230,7 +3230,7 @@ Left:
       and Vulkan written, not compiled then. Compiled and run since: Vulkan
       on Linux 2026-11-04 (the Iris Xe), D3D12 (Iris Xe, RTX A2000, WARP)
       and Vulkan (Iris Xe, RTX A2000) on Windows 2026-11-05, every
-      reflection test passing (`../apricottests/README.md`); D3D12's debug
+      reflection test passing (`../rabbittustests/README.md`); D3D12's debug
       layer reports one `[ 1422 ]` a device in `test_lit_ssr`, the test's
       reflection texture copied back when a compute pass was the first to
       write it (card S38):
@@ -3273,7 +3273,7 @@ Left:
       `-tsan` (37 before: the new test is a function in
       `rbtrend_contract_tests`); `rbt_misuse_tests` ten times (119 calls
       with a destroyed handle, 0 failures; no new function, the harness
-      regenerated unchanged); `../apricottests` whole on Metal, Debug and
+      regenerated unchanged); `../rabbittustests` whole on Metal, Debug and
       Release, under API and shader validation with warnings fatal, both
       devices: `test_lit_ssr` (the floor: 288 texels reflecting the
       square, 846 reflecting nothing, 546 plain and 1,134 sky against C,
@@ -3366,7 +3366,7 @@ Left:
         `RBT_RESULT_UNSUPPORTED` without ray queries); the four commands are
         refused at the send (`UNSUPPORTED` or `NOT_IMPLEMENTED`), which the
         compile reports. The three changed calls behave as before.
-      - Tests (`../apricottests`, each pending until built):
+      - Tests (`../rabbittustests`, each pending until built):
         `test_rt_shadow_mask` (the mask against cascades on the same scene;
         the cull mask; set_light_shadow and set_sun_shadow each replacing
         light 0's shadow; half strength; NULL; the penumbra wider for a disc
@@ -3396,7 +3396,7 @@ Left:
         Rabbittus `rabbittus-windows-d3d12` and `-vulkan`, Debug and
         Release, 36 ctests each, passing; `rbt_misuse_tests` ten times in
         Debug, passing; `rbtoverlap_tests`' nine new cases reported.
-        apricottests, Debug, every test passing: D3D12 on the Iris Xe, the
+        rabbittustests, Debug, every test passing: D3D12 on the Iris Xe, the
         RTX A2000 and WARP under the debug layer, silent, and once each under
         GPU-based validation (the A2000 and WARP silent; the Iris Xe's 26
         `[942]`, as on 2026-10-30, the validator's); Vulkan on the Iris Xe
@@ -3537,13 +3537,13 @@ Left:
         set)", the card's own sentence, so no draft of its own;
         `RBT_RESULT_INVALID_ARGUMENT`, the message naming the command by its
         place as every compile refusal does, and losing its "(card A44)".
-        A test in apricottests: a list holding a BUILD_TLAS, submitted,
+        A test in rabbittustests: a list holding a BUILD_TLAS, submitted,
         compiled again, refused; sent again, compiled and submitted.
         **Built 2026-11-01 on the Mac:** the line in
         `rbtrend_command_list_compile()`'s refusals; the message "command N:
         BUILD_TLAS's list was submitted since it was sent: its set is built
         and free; send BUILD_TLAS again, which seals the next set";
-        apricottests' `test_rt_resubmit`, passing on Metal under validation
+        rabbittustests' `test_rt_resubmit`, passing on Metal under validation
         with warnings fatal (the device with ray queries; skipped on the one
         without). **Run on Windows 2026-11-05** (ThinkPad P1 Gen 5, Debug):
         passing on D3D12 on the NVIDIA RTX A2000 and WARP under the debug
@@ -3583,7 +3583,7 @@ Left:
       on the final code: Rabbittus `rabbittus-windows-d3d12` and
       `-vulkan`, Debug and Release, and both `-asan` presets, 36 ctests each,
       passing; `rbt_misuse_tests` ten times on each preset, passing.
-      apricottests, Debug, every test passing: D3D12 on the Iris Xe (every
+      rabbittustests, Debug, every test passing: D3D12 on the Iris Xe (every
       ray tracing call and command refused as designed), the RTX A2000 and
       WARP under the debug layer, silent, and once each under GPU-based
       validation (the A2000 and WARP silent; the Iris Xe's 26 `[942]`, the
@@ -3603,7 +3603,7 @@ Left:
       `doxygen`). Metal written, not compiled; Linux not built;
       ThreadSanitizer hasn't seen it.
       Measured (Release, RTX A2000, D3D12 / Vulkan; `test_rt_measure` with
-      `APRICOTTESTS_MEASURE`, times on the CPU's clock until the device is
+      `RABBITTUSTESTS_MEASURE`, times on the CPU's clock until the device is
       idle): 100,000 instances writing 1% a frame: the write 20 / 14 us, the
       compile and submit 118 / 72 us, the frame 2.28 / 2.16 ms; 10%: 216 /
       108 us, 203 / 76 us, 2.54 / 2.25 ms; 100%: 1,873 / 1,653 us, 237 /
@@ -3670,7 +3670,7 @@ Left:
       ten times (regenerated), `rbtrend_contract_tests`' new cases
       (`rbtrend_lit_fit_cascades()` the same bits as
       `rbtrend_lit_fit_sun_cascades()` in three framings, captured from the
-      old code's Debug and Release builds, which agreed); apricottests whole
+      old code's Debug and Release builds, which agreed); rabbittustests whole
       on Metal, Debug and Release, under API and shader validation with
       warnings fatal: every lit and shadow test moved to the atlas and
       passing its old checks, and new ones: two directional lights' cascades
@@ -3704,7 +3704,7 @@ Left:
       contraction off for this). Bit-equal everywhere needs both: the
       fit's file built with contraction off, and the two functions made
       portable (or the test's bits replaced by a tolerance, with the
-      reason, as `CONVENTIONS.md`'s "Floating point" allows). apricottests
+      reason, as `CONVENTIONS.md`'s "Floating point" allows). rabbittustests
       not run here.
       **Waiting on Metal's bindless (card A15, decided, not built),
       recorded 2026-10-31 with the user** (`rbtrend_raytracing_draft.h`, T3
@@ -3789,7 +3789,7 @@ Left:
       in C, on every backend.
       **Done 2026-10-30, run on Metal** (both devices, under the
       debug layer and shader validation); `test_lit_transmission` ran on
-      D3D12 and Vulkan on Windows the same day (`../apricottests/README.md`,
+      D3D12 and Vulkan on Windows the same day (`../rabbittustests/README.md`,
       2026-10-30) and again 2026-11-05 (Iris Xe, RTX A2000 and WARP on
       D3D12 under the debug layer; Iris Xe and RTX A2000 on Vulkan under
       validation and synchronization validation; passing, silent), and on
@@ -3808,7 +3808,7 @@ Left:
       choice), decoded and unexposed as the surface wrote it, tinted by
       Beer's law, times (1 - the split-sum's specular). Known limits, as
       the card had them: glass behind glass and what is off screen.
-      `../apricottests`' `test_lit_transmission`: a red ramp copied and
+      `../rabbittustests`' `test_lit_transmission`: a red ramp copied and
       read back (mip 0 exact, mip 1 the average), then four texels across
       a full-target face at thickness 4 read within a step of the place
       worked out in C (12 to 48 red away from where the unbent ray would
@@ -3949,7 +3949,7 @@ Left:
 **Bloom written 2026-10-16, run on Metal the same day** (see "State of
 the code"). **Its lens dirt and mask, the pool's report and trim, a
 separable blur and an outline written 2026-10-24, run on Metal**
-(below). Run on Windows 2026-10-29 (`../apricottests`' `rbtrend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of them (`test_bloom_mask_and_dirt`, `test_render_target_pool` with the caller-set retirement, `test_blur`, `test_outline`) passed, with no validation message from them; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. What was decided:
+(below). Run on Windows 2026-10-29 (`../rabbittustests`' `rbtrend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of them (`test_bloom_mask_and_dirt`, `test_render_target_pool` with the caller-set retirement, `test_blur`, `test_outline`) passed, with no validation message from them; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. What was decided:
 
 - **No module of its own.** In Hazel bloom is a step of `SceneRenderer`
   (`BloomSettings` beside `DOFSettings`, its textures members of the scene
@@ -4006,7 +4006,7 @@ separable blur and an outline written 2026-10-24, run on Metal**
 
 Left:
 
-- [x] **Run on D3D12 and Vulkan.** `../apricottests`' `test_bloom` passed
+- [x] **Run on D3D12 and Vulkan.** `../rabbittustests`' `test_bloom` passed
       on both, on an Intel Iris Xe and an NVIDIA RTX A2000, on
       2026-10-17, after Metal the day before.
 - [x] **Exposure and a tone curve** belong with an HDR pipeline (item 24),
@@ -4065,7 +4065,7 @@ Left:
       holds more than `keep_bytes`, what has gone `idle_frames` untaken
       goes. Unset, the pool destroys nothing by itself; the workspace's
       callers set 120 frames and no floor, as before. Written 2026-10-27, run on
-      Metal only (apricottests' `test_render_target_pool`). Busy
+      Metal only (rabbittustests' `test_render_target_pool`). Busy
       means taken in a frame the GPU may still run, or by a compile of this
       frame, whose list holds the take. Compared: Hazel has no pool (each
       pass owns its framebuffers). Unreal's `FRenderTargetPool` keeps what
@@ -4152,7 +4152,7 @@ draws one by outlining the mask's inverse).
 
 Numbered out of order, as item 31. **Decided 2026-10-23. Rend's half
 written 2026-10-24 and run on Metal; Carrottus GPU's half done (2026-10-23,
-run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).** Run on Windows 2026-10-29 (`../apricottests`' `rbtrend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of `test_draw_texture` (its rectangles included) passed, with no validation message from it; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. `test_present_scaling` is Metal's alone (it skips off Apple).
+run on Metal, D3D12 and Vulkan; see "Swap chain scaling" below).** Run on Windows 2026-10-29 (`../rabbittustests`' `rbtrend_gpu_tests`, Debug: D3D12 on the Intel Iris Xe, the NVIDIA RTX A2000 and WARP with the debug layer printing, and once each under GPU-based validation; Vulkan on the Iris Xe and the RTX A2000 under the validation layer, synchronization validation and GPU-assisted validation; and all five under AddressSanitizer): every check of `test_draw_texture` (its rectangles included) passed, with no validation message from it; GPU-based validation on the Iris Xe reports `[942]` twice in `test_material`, which `claude_made_decisions.md` (2026-10-29) takes as the validator's. `test_present_scaling` is Metal's alone (it skips off Apple).
 
 **Decided 2026-10-27 with you (card X1b, line 7): rectangles.**
 `DRAW_TEXTURE` takes `_source_rect` and `_target_rect`
@@ -4162,7 +4162,7 @@ source rectangle fitted into the target rectangle by `_scaling`, the
 target outside it kept (the pass loads and scissors only then). A linear
 filter at a source rectangle's edge mixes in the texel beyond it, as any
 sampled edge does. `PRESENT_TEXTURE` is unchanged (both whole). Written
-2026-10-27, run on Metal only (apricottests' `test_draw_texture`: three
+2026-10-27, run on Metal only (rabbittustests' `test_draw_texture`: three
 drawings and three refusals); D3D12 and Vulkan not run.
 
 **What was written, 2026-10-24** (the design below, with two changes, both
@@ -4188,7 +4188,7 @@ in `claude_made_decisions.md`):
   drawn whole, and moved to PRESENT_SRC; the swap chain needed nothing new.
 - The scaling, filter and border are checked when the command is sent
   (one check for both commands), the rest at the compile.
-- `../apricottests`: `test_draw_texture` (STRETCH of a 2x2 source by
+- `../rabbittustests`: `test_draw_texture` (STRETCH of a 2x2 source by
   quadrant, nearest, the right way up; linear at the middle; ASPECT_FIT of
   32x16 into 64x64 with bars; NONE from the top left; a half-float source
   onto RGBA8; eight refusals; STRETCH taking a NaN border it doesn't read)
@@ -4198,7 +4198,7 @@ in `claude_made_decisions.md`):
   presented; the copy's format refusal). The swap chain test can't read the
   back buffer: the pixels are `test_draw_texture`'s. The test devices now
   ask for `CRGPU_FEATURE_PRESENT` where the adapter has it.
-- Run on Metal (Apple M5 Pro): `../apricottests` Debug under Metal API and
+- Run on Metal (Apple M5 Pro): `../rabbittustests` Debug under Metal API and
   shader validation with warnings fatal, both devices (the bare one skips
   the swap chain), and Release under `leaks` (none); Rabbittus' 17
   headless tests; two callers' tests (18 and 34) over the header, whose
@@ -4305,7 +4305,7 @@ redrew during it or only once the drag ended (reported). No debug
   it) is a later option, not added: it would be a field on
   `RBTREND_SWAP_CHAIN_DESC`.
 
-**Tests** (`../apricottests`, no window): the present shader drawn into an
+**Tests** (`../rabbittustests`, no window): the present shader drawn into an
 offscreen target standing in for a back buffer (the draw is the same
 function with a view and a size): STRETCH of a 2x2 four-color source onto
 64x64 (each quadrant its color); ASPECT_FIT of a 32x16 source onto 64x64
@@ -4375,7 +4375,7 @@ there, not by this list. These are what Rend can't do until it does.
 
 **Phase 7 on Metal, 2026-11-01** (Apple M5 Pro, macOS 27.0.1, Xcode 27.2;
 `../prompts/ray_tracing_mac.md`): built and run as 7b left it, with no change
-to Rend's ray tracing code. `apricottests`, Debug and Release, Metal API and
+to Rend's ray tracing code. `rabbittustests`, Debug and Release, Metal API and
 shader validation with warnings fatal: every ray tracing test passes, reading
 as on the RTX A2000 and WARP: the mask 0 and 128 against the cascades' 0 and
 128, the penumbra 0 texels with no disc and 6 with 0.2, the furnace 1.0000
@@ -4410,7 +4410,7 @@ Rabbittus suite clean (`-tsan`), which runs no GPU work of Rend's.
 
 ### 25. Multiple render targets per pipeline
 
-Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Carrottus GPU's
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../rabbittustests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Carrottus GPU's
 pipeline desc has a format and a blend state for each color attachment
 (`color_attachment_formats`, `blend_attachments`, `color_attachment_count`)
 and Rend's mirrors it (`color_attachment_formats`, `_blends`). A render
@@ -4420,7 +4420,7 @@ writes past them (item 18).
 
 ### 26. Depth bias
 
-Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16). `_depth_bias_constant`,
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../rabbittustests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16). `_depth_bias_constant`,
 `_depth_bias_slope` and `_depth_bias_clamp` on the pipeline desc, through
 Carrottus GPU on all three backends; a clamp needs a device created with
 `CRGPU_FEATURE_DEPTH_BIAS_CLAMP` (item 39).
@@ -4507,7 +4507,7 @@ the device reports (no D24S8 on Apple GPUs).
 
 (Card A15, 2026-10-28: what remains here is deferred; see "Deferred items and the 1.0 room check".)
 
-Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../apricottests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Debug labels are
+Closed 2026-10-15; run in a caller's macOS host on Metal, and by `../rabbittustests` on Metal, and on D3D12 and Vulkan on Windows (2026-10-16) (see "State of the code"). Debug labels are
 `RBTREND_COMMAND_BEGIN_LABEL` and `END_LABEL`; GPU time is an
 `rbtrend_gpu_timer` (`rbtrendtimer.h`) whose slots a pass is timed into, read
 `frames_in_flight` frames later. Left:
@@ -4939,7 +4939,7 @@ Numbered out of order, as item 31: written as item 37 on 2026-10-21, a
 number already taken by the command allocator. Closed 2026-10-21, on
 Carrottus GPU's adapter and device split (`../carrottus/CRGPU_DEVICE_TODO.md`).
 Builds on macOS over Metal with no warnings and the repo's headless tests
-pass. Run on Metal (Apple M5 Pro) on 2026-10-21 by `../apricottests`,
+pass. Run on Metal (Apple M5 Pro) on 2026-10-21 by `../rabbittustests`,
 converted the same day, which runs every test twice: on a device with
 these optional features and the tests' (0x7f of the adapter's 0xeff), and
 on one with none, the first run of the staged storage buffers and of an
@@ -5005,7 +5005,7 @@ What was done:
   direct queue; `rbtrendcontext.h` says so, and Carrottus GPU refuses the
   allocators otherwise.
 
-`../apricottests` on D3D12 and Vulkan, the first run of each fallback off
+`../rabbittustests` on D3D12 and Vulkan, the first run of each fallback off
 Metal (and on D3D12 of a device without device-mappable memory), is done
 (2026-10-22, above). Mesh shading and the swap chain's refusals are covered
 since 2026-10-22 (`test_feature_checks`, and a mesh pipeline drawn in
@@ -5069,7 +5069,7 @@ as written** (Apple M5 Pro, Metal): RBTREND_LIT_SHADER_SURFACE_VERTEX_COLOR
 `rbtrend_get_lit_vertex_color_layout()`; every lit vertex shader writes location
 4 (white where there is no color), the surface and the cut-out depth
 shader read it; rays read none. Ran: `rbtrend_contract_tests`' layout case;
-apricottests on Metal, Debug and Release, under validation:
+rabbittustests on Metal, Debug and Release, under validation:
 `test_lit_vertex_color` (the square's corners red, green, blue and white
 under a white sky: each texel within 3 of (white - black) x color + black,
 0 off measured, since the color multiplies the base color and not a
@@ -5093,11 +5093,11 @@ and 5 are closed and their numbers are not reused.
      2026-10-11 and on Vulkan (Linux) by 2026-10-12, covering only what it
      uses (see "State of the code"). No push constant set, staging,
      compute, indirect draw, partial view or layered pass has run on any
-     of the three (as of 2026-10-12; since, `../apricottests` has run
+     of the three (as of 2026-10-12; since, `../rabbittustests` has run
      compute and storage ordering, the staged path on the RTX A2000 and
      indirect draws, below and in step 3; a layered pass and mesh
      shading on Metal on 2026-10-22, and on no other backend yet).
-     `../apricottests` (`rbtrend_gpu_tests`)
+     `../rabbittustests` (`rbtrend_gpu_tests`)
      is written for this: push constants, a buffer update (staged on a
      device with its own memory), sampled views of one mip, rendering to
      one mip and sampling it in a later pass, each checked by reading the
@@ -5110,14 +5110,14 @@ and 5 are closed and their numbers are not reused.
      once and the header says so. On 2026-10-16 it ran on Windows, D3D12
      and Vulkan, on an RTX A2000 (memory of its own, so the staged path
      ran for the first time) and an Iris Xe, and passed after fixes in
-     Rend and Carrottus GPU (`../apricottests/README.md` lists them). The
+     Rend and Carrottus GPU (`../rabbittustests/README.md` lists them). The
      same day every test, the newer ones too, passed on Metal under its
      validation layers, after five fixes in Carrottus GPU's Metal backend. Not
      run on Linux.
    - Vulkan: builds and runs on Linux as of 2026-10-12 (see "State of the
      code"); the Wayland driver issue no longer holds that machine. Write
      its side of each change alongside Metal and D3D12 and build it there.
-     Built and run on Windows by `../apricottests` (2026-10-16).
+     Built and run on Windows by `../rabbittustests` (2026-10-16).
    - Run it on a device with its own memory as well, for the staged path:
      done on D3D12 and Vulkan (RTX A2000), 2026-10-16.
 2. Freeing staging copies (item 13): written 2026-10-18, with exact
@@ -5176,13 +5176,13 @@ and 5 are closed and their numbers are not reused.
    message.
 4. Item 18, which settles item 1 and unblocks 19. Written, and run on
    all three backends through the materials and passes made from it
-   (`../apricottests`, 2026-10-17). What is left is item 18's own list.
+   (`../rabbittustests`, 2026-10-17). What is left is item 18's own list.
 5. Items 19, 20, 21: material, pass and draw list. Written, compiled, and
-   run on Metal, D3D12 and Vulkan by `../apricottests` (2026-10-17, see
+   run on Metal, D3D12 and Vulkan by `../rabbittustests` (2026-10-17, see
    "State of the code"). What is left of each item is in its item, and
    the first of it is "Next, from the review" below.
 6. Items 25, 26 and 29 are written and have run on D3D12, Vulkan and
-   Metal (`../apricottests`, 2026-10-16). Item 22 (Rend ships shaders)
+   Metal (`../rabbittustests`, 2026-10-16). Item 22 (Rend ships shaders)
    and item 31 (mip generation, both forms) are written and have run on
    all three. Bloom (item 36) is written and `test_bloom` has passed on
    all three (2026-10-17). Then 23 and 24, each a shader Rend
@@ -5191,7 +5191,7 @@ and 5 are closed and their numbers are not reused.
    of the selective glow.
 
 Item 39 (a device has only its features) is written and has run on
-Metal through `../apricottests`, and on D3D12 and Vulkan on 2026-10-22.
+Metal through `../rabbittustests`, and on D3D12 and Vulkan on 2026-10-22.
 Left: Linux. Mesh shading and the swap chain's refusals are tested since
 the same evening, on Metal only.
 

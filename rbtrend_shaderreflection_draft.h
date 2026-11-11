@@ -91,7 +91,7 @@
  *   on a Vulkan one (RBT_RESULT_UNSUPPORTED, as a missing format is today).
  * - The reader is a fuzz target (tests/fuzz/, rbtrend_reflection_fuzz): it
  *   reads bytes a caller vouches for only by having built them.
- * - apricottests' whole suite unchanged, on Metal, D3D12 and Vulkan.
+ * - rabbittustests' whole suite unchanged, on Metal, D3D12 and Vulkan.
  * - nm on a Release build: no spirv_cross symbol in Rabbittus.
  *
  * ---------------------------------------------------------------------------

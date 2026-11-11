@@ -11,7 +11,7 @@
 // first, as an entry reader goes before its reader.
 //
 // Rend's handle types have no factory here: they need a GPU device.
-// apricottests' test_destroyed_handles calls Rend's.
+// rabbittustests' test_destroyed_handles calls Rend's.
 
 #ifndef MISUSE_FACTORIES_H
 #define MISUSE_FACTORIES_H
