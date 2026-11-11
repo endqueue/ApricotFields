@@ -1,0 +1,5470 @@
+#include "audio/rbtaudio.h"
+#include "rbtaudio_internal.hpp"
+#include "rbtaudio_stream.hpp"
+#include "../rbtoverlap.hpp"
+#include "../rbtplaindata.hpp"
+#include "../rbtstale.hpp"
+#include "../rbtstructbase.hpp"
+#include <algorithm>
+#include <atomic>
+#include <bit>
+#include <eqstd.hpp>
+#include <math.h>
+#include <new>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Rabbittus Audio's mixer. Three kinds of thread meet here (rbtaudio.h, Conventions),
+// and none of them ever waits for another:
+//   - Plays are records taken from a lock-free free list and pushed onto a
+//     lock-free queue, which each render empties.
+//   - Stops and changes - to voices, buses and modifiers - are single atomic
+//     words on the thing they change ("tagged words" below), so they need no
+//     queue space and the latest wins.
+//   - What the control thread builds - the bus tree, modifiers, concurrency
+//     groups, and rbtaudio_mixer_update()'s ranking - is posted to the audio
+//     thread as whole copies through a triple buffer; what the audio thread
+//     knows that ranking needs is published back in atomics.
+//   - A streamed voice's ring has one writer, the decoding's item for its
+//     stream, and one reader, the render, each publishing how far it has got
+//     ("Streams" below).
+// The audio thread never allocates or frees: everything is sized at creation.
+//
+// Where this differs from RBTAUDIO_TODO.md's implementation notes:
+//   - A voice's direction is one word like its other settings, but as its
+//     generation plus quantized angles rather than two floats: the generation
+//     is what keeps a stale ID off the record's next voice.
+//   - Ranking is posted through three buffers, not two, so neither thread
+//     waits when the other is slow or stopped.
+//   - There are max_fading_voices more voice records than max_voices +
+//     queue_capacity: a voice ended to make room keeps its record while it
+//     fades.
+//   - Sinc keeps no history: it reads a sound's samples directly, or a
+//     streamed voice's prefetch and ring, which keep its reach behind it.
+
+// ---- Errors -------------------------------------------------------------------
+
+static void clear_error(RBTAUDIO_ERROR *error)
+{
+    if (error)
+        error->message[0] = '\0';
+}
+
+// Records [format] in [error] (if any) and returns [result].
+static RBT_RESULT fail(RBTAUDIO_ERROR *error, RBT_RESULT result, const char *format, ...)
+{
+    if (error)
+    {
+        va_list args;
+        va_start(args, format);
+        vsnprintf(error->message, sizeof(error->message), format, args);
+        va_end(args);
+    }
+    return result;
+}
+
+// ---- WAV ----------------------------------------------------------------------
+
+// RIFF WAVE, little-endian throughout. Lenient where real files are sloppy
+// and nothing is at risk - a RIFF size that disagrees with the file, a data
+// chunk running past its end (a writer that never went back to fill the
+// size in), a trailing partial frame - and strict about the format itself.
+
+static uint16_t read_u16(const uint8_t *p)
+{
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static uint32_t read_u32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+#define WAV_FORMAT_PCM 0x0001
+#define WAV_FORMAT_IEEE_FLOAT 0x0003
+#define WAV_FORMAT_EXTENSIBLE 0xFFFE
+
+// KSDATAFORMAT_SUBTYPE_* after its first two bytes, which are the format tag.
+static const uint8_t wav_subformat_tail[14] = {0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80,
+                                               0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71};
+
+static float wav_sample(const uint8_t *p, uint16_t format, uint32_t bytes)
+{
+    if (format == WAV_FORMAT_IEEE_FLOAT)
+    {
+        if (bytes == 4)
+        {
+            uint32_t bits = read_u32(p);
+            float value;
+            memcpy(&value, &bits, sizeof(value));
+            return value;
+        }
+        uint64_t bits = (uint64_t)read_u32(p) | ((uint64_t)read_u32(p + 4) << 32);
+        double value;
+        memcpy(&value, &bits, sizeof(value));
+        return (float)value;
+    }
+    switch (bytes)
+    {
+    case 1:
+        return ((int)p[0] - 128) / 128.0f; // 8-bit PCM is unsigned
+    case 2:
+        return (int16_t)read_u16(p) / 32768.0f;
+    case 3:
+        // Sign-extend from the top byte.
+        return (int32_t)(((uint32_t)p[0] << 8) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 24)) / 2147483648.0f;
+    default:
+        return (float)((int32_t)read_u32(p) / 2147483648.0);
+    }
+}
+
+static RBT_RESULT wav_decode(const uint8_t *data, uint64_t size, RBTAUDIO_PCM *out_pcm, RBTAUDIO_ERROR *error)
+{
+    if (size >= 4 && memcmp(data, "RF64", 4) == 0)
+        return fail(error, RBT_RESULT_UNSUPPORTED, "RF64 (WAV over 4 GB) isn't supported");
+    if (size < 12 || memcmp(data, "RIFF", 4) != 0 || memcmp(data + 8, "WAVE", 4) != 0)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "not a RIFF WAVE file");
+
+    const uint8_t *fmt = nullptr;
+    uint32_t fmt_size = 0;
+    const uint8_t *samples = nullptr;
+    uint64_t samples_size = 0;
+    uint64_t offset = 12;
+    while (offset + 8 <= size && !(fmt && samples))
+    {
+        const uint8_t *chunk = data + offset;
+        uint64_t chunk_size = read_u32(chunk + 4);
+        uint64_t available = size - offset - 8;
+        if (memcmp(chunk, "fmt ", 4) == 0 && !fmt)
+        {
+            if (chunk_size > available)
+                return fail(error, RBT_RESULT_CORRUPT_DATA, "the fmt chunk runs past the end of the file");
+            fmt = chunk + 8;
+            fmt_size = (uint32_t)chunk_size;
+        }
+        else if (memcmp(chunk, "data", 4) == 0 && !samples)
+        {
+            samples = chunk + 8;
+            samples_size = chunk_size < available ? chunk_size : available;
+        }
+        offset += 8 + chunk_size + (chunk_size & 1); // chunks are padded to an even size
+    }
+    if (!fmt)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "no fmt chunk");
+    if (!samples)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "no data chunk");
+    if (fmt_size < 16)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "the fmt chunk is %u bytes, under 16", fmt_size);
+
+    uint16_t format = read_u16(fmt);
+    uint32_t channel_count = read_u16(fmt + 2);
+    uint32_t sample_rate = read_u32(fmt + 4);
+    uint32_t block_align = read_u16(fmt + 12);
+    uint32_t bits = read_u16(fmt + 14);
+    if (format == WAV_FORMAT_EXTENSIBLE)
+    {
+        if (fmt_size < 40)
+            return fail(error, RBT_RESULT_CORRUPT_DATA, "an extensible fmt chunk is %u bytes, under 40", fmt_size);
+        const uint8_t *subformat = fmt + 24;
+        if (memcmp(subformat + 2, wav_subformat_tail, sizeof(wav_subformat_tail)) != 0)
+            return fail(error, RBT_RESULT_UNSUPPORTED, "an extensible WAV of a non-standard subformat");
+        format = read_u16(subformat);
+    }
+    if (format != WAV_FORMAT_PCM && format != WAV_FORMAT_IEEE_FLOAT)
+        return fail(error, RBT_RESULT_UNSUPPORTED, "WAV format 0x%04X: only PCM and IEEE float are supported", format);
+    bool bits_supported = format == WAV_FORMAT_PCM ? (bits == 8 || bits == 16 || bits == 24 || bits == 32)
+                                                   : (bits == 32 || bits == 64);
+    if (!bits_supported)
+        return fail(error, RBT_RESULT_UNSUPPORTED, "%u-bit %s samples aren't supported", bits,
+                    format == WAV_FORMAT_PCM ? "PCM" : "float");
+    if (channel_count == 0 || sample_rate == 0)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "%u channels at %u Hz", channel_count, sample_rate);
+    uint32_t sample_bytes = bits / 8;
+    if (block_align != channel_count * sample_bytes)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "a block align of %u, not %u", block_align,
+                    channel_count * sample_bytes);
+
+    uint64_t frame_count = samples_size / block_align; // a trailing partial frame is dropped
+    uint64_t sample_count = frame_count * channel_count;
+    if (sample_count > SIZE_MAX / sizeof(float))
+        return fail(error, RBT_RESULT_OUT_OF_MEMORY, "%llu samples don't fit in memory",
+                    (unsigned long long)sample_count);
+    float *decoded = nullptr;
+    if (sample_count)
+    {
+        decoded = (float *)malloc((size_t)sample_count * sizeof(float));
+        if (!decoded)
+            return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for %llu samples",
+                        (unsigned long long)sample_count);
+        for (uint64_t i = 0; i < sample_count; i++)
+            decoded[i] = wav_sample(samples + i * sample_bytes, format, sample_bytes);
+    }
+    out_pcm->samples = decoded;
+    out_pcm->frame_count = frame_count;
+    out_pcm->channel_count = channel_count;
+    out_pcm->sample_rate = sample_rate;
+    return RBT_RESULT_OK;
+}
+
+// ---- Small helpers ------------------------------------------------------------
+
+constexpr float PI_F = 3.14159265358979323846f;
+constexpr float RATE_MIN = 0.125f;
+constexpr float RATE_MAX = 8.0f;
+constexpr uint32_t SOUND_RATE_MIN = 1000;
+constexpr uint32_t SOUND_RATE_MAX = 768000;
+// How much more audible a voice must be to take a real slot from one of its
+// own priority: 3 dB, so near-equal voices don't trade places every update.
+constexpr float TIE_MARGIN = 1.4125375f;
+// A source position: frames in the top 32 bits' worth, 32 bits of fraction.
+constexpr uint64_t FIXED_ONE = 1ull << 32;
+
+// Zeroed, default-constructed [count] of T, or null. Freed with free(): every
+// T here is trivially destructible.
+template <typename T> static T *alloc_array(size_t count)
+{
+    T *array = static_cast<T *>(calloc(count ? count : 1, sizeof(T)));
+    if (!array)
+        return nullptr;
+    for (size_t i = 0; i < count; i++)
+        new (array + i) T();
+    return array;
+}
+
+static uint32_t float_bits(float value)
+{
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static float bits_float(uint32_t bits)
+{
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static bool valid_gain(float gain)
+{
+    return isfinite(gain) && gain >= 0.0f;
+}
+
+static bool valid_rate(float rate)
+{
+    return isfinite(rate) && rate >= RATE_MIN && rate <= RATE_MAX;
+}
+
+static float clamp_float(float value, float low, float high)
+{
+    return value < low ? low : (value > high ? high : value);
+}
+
+// Degrees, into [0, 360).
+static float wrap360(float degrees)
+{
+    degrees = fmodf(degrees, 360.0f);
+    if (degrees < 0.0f)
+        degrees += 360.0f;
+    return degrees >= 360.0f ? 0.0f : degrees;
+}
+
+// Degrees, into (-180, 180].
+static float wrap180(float degrees)
+{
+    degrees = wrap360(degrees);
+    return degrees > 180.0f ? degrees - 360.0f : degrees;
+}
+
+// ---- IDs ----------------------------------------------------------------------
+
+// Every ID - sound, voice, bus, modifier, concurrency group - is a slot's
+// index plus one in the low 32 bits (so it's never 0) and the slot's
+// generation, which starts at 1, in the high 32.
+
+static uint64_t make_id(uint32_t index, uint32_t generation)
+{
+    return ((uint64_t)generation << 32) | (uint64_t)(index + 1);
+}
+
+static bool split_id(uint64_t id, uint32_t slot_count, uint32_t &index, uint32_t &generation)
+{
+    uint32_t low = (uint32_t)id;
+    if (low == 0 || low > slot_count)
+        return false;
+    index = low - 1;
+    generation = (uint32_t)(id >> 32);
+    return generation != 0;
+}
+
+static uint32_t next_generation(uint32_t generation)
+{
+    return generation + 1 == 0 ? 1 : generation + 1;
+}
+
+// ---- Tagged words -------------------------------------------------------------
+
+// A request recorded on a voice, bus or modifier from any thread: one atomic
+// word holding the slot's generation (high 32 bits) and a 32-bit payload. A
+// writer only replaces a word of the generation its ID names, so a stale ID
+// never reaches the slot's next occupant, and the word never needs queue
+// space: the latest value wins.
+
+// A payload no valid float setting has: "nothing new".
+constexpr uint32_t FLOAT_NONE = 0x7FC00001u;
+
+static uint64_t tagged(uint32_t generation, uint32_t payload)
+{
+    return ((uint64_t)generation << 32) | payload;
+}
+
+// Any thread. False if the word isn't [generation]'s any more.
+static bool tagged_store(std::atomic<uint64_t> &word, uint32_t generation, uint32_t payload)
+{
+    uint64_t old = word.load(std::memory_order_relaxed);
+    while ((uint32_t)(old >> 32) == generation)
+    {
+        if (word.compare_exchange_weak(old, tagged(generation, payload), std::memory_order_release,
+                                       std::memory_order_relaxed))
+            return true;
+    }
+    return false;
+}
+
+// Audio thread. Takes [generation]'s payload if it isn't [none], leaving
+// [none]. One attempt: a value written meanwhile is taken by the next render.
+static bool tagged_take(std::atomic<uint64_t> &word, uint32_t generation, uint32_t none, uint32_t &payload)
+{
+    uint64_t old = word.load(std::memory_order_acquire);
+    if ((uint32_t)(old >> 32) != generation || (uint32_t)old == none)
+        return false;
+    if (!word.compare_exchange_strong(old, tagged(generation, none), std::memory_order_acquire,
+                                      std::memory_order_relaxed))
+        return false;
+    payload = (uint32_t)old;
+    return true;
+}
+
+// A stop: bit 31 set, the release in frames below it.
+constexpr uint32_t STOP_REQUESTED = 0x80000000u;
+constexpr uint32_t STOP_FRAMES_MASK = 0x7FFFFFFFu;
+
+// A direction: azimuth as 16 bits of a turn, elevation as 14 bits of
+// [-90, 90] degrees - both far finer than panning can be heard.
+constexpr uint32_t DIRECTION_CHANGED = 0x80000000u;
+constexpr uint32_t DIRECTION_PRESENT = 0x40000000u;
+
+static uint32_t pack_direction(const RBTAUDIO_DIRECTION *direction)
+{
+    if (!direction)
+        return DIRECTION_CHANGED;
+    double turns = direction->azimuth / (2.0 * 3.14159265358979323846);
+    turns -= floor(turns);
+    uint32_t azimuth = (uint32_t)lround(turns * 65536.0) & 0xFFFFu;
+    double up = direction->elevation / 3.14159265358979323846 + 0.5;
+    up = up < 0.0 ? 0.0 : (up > 1.0 ? 1.0 : up);
+    uint32_t elevation = (uint32_t)lround(up * 16383.0);
+    return DIRECTION_CHANGED | DIRECTION_PRESENT | (elevation << 16) | azimuth;
+}
+
+// A bus's mute or pause: bit 31 changed, bit 30 the value, the fade in
+// microseconds below.
+constexpr uint32_t SWITCH_CHANGED = 0x80000000u;
+constexpr uint32_t SWITCH_ON = 0x40000000u;
+constexpr uint32_t SWITCH_FADE_MASK = 0x3FFFFFFFu;
+
+// ---- Speaker layouts ----------------------------------------------------------
+
+// Panning is by layer: speakers at ear height form a ring, and so do the ones
+// above and below it. A direction is panned between the two speakers either
+// side of it in a ring (constant power), and between the two layers either
+// side of its elevation.
+
+enum
+{
+    LAYER_BOTTOM,
+    LAYER_EAR,
+    LAYER_UPPER,
+    LAYER_TOP,
+    LAYER_COUNT
+};
+
+static const float layer_elevation[LAYER_COUNT] = {-45.0f, 0.0f, 45.0f, 90.0f};
+
+struct Ring
+{
+    uint32_t first; // into Layout::ring_channel / ring_offset
+    uint32_t count;
+    float start; // the first speaker's azimuth, degrees
+    float span;  // from the first speaker round to the last
+    // The speakers leave an arc of 180 degrees or more empty (stereo's whole
+    // rear): directions in it are folded back, mirrored, since they can't be
+    // placed there.
+    bool gap;
+};
+
+struct Layout
+{
+    uint32_t channel_count;
+    CRAUDIO_CHANNEL_POSITION positions[CRAUDIO_MAX_CHANNELS];
+    Ring rings[LAYER_COUNT];
+    uint8_t ring_channel[CRAUDIO_MAX_CHANNELS];
+    float ring_offset[CRAUDIO_MAX_CHANNELS]; // degrees clockwise of the ring's start, ascending
+    int front_left, front_right, front_centre, mono; // channels, or -1
+};
+
+// Where a speaker is: its layer and azimuth. False for a channel that takes
+// no panned sound (LFE, NA, AUX).
+static bool speaker_place(CRAUDIO_CHANNEL_POSITION position, int &layer, float &azimuth)
+{
+    struct Place
+    {
+        CRAUDIO_CHANNEL_POSITION position;
+        int layer;
+        float azimuth;
+    };
+    static const Place places[] = {
+        {CRAUDIO_CHANNEL_POSITION_MONO, LAYER_EAR, 0.0f},      {CRAUDIO_CHANNEL_POSITION_FL, LAYER_EAR, -30.0f},
+        {CRAUDIO_CHANNEL_POSITION_FR, LAYER_EAR, 30.0f},       {CRAUDIO_CHANNEL_POSITION_FC, LAYER_EAR, 0.0f},
+        {CRAUDIO_CHANNEL_POSITION_RL, LAYER_EAR, -135.0f},     {CRAUDIO_CHANNEL_POSITION_RR, LAYER_EAR, 135.0f},
+        {CRAUDIO_CHANNEL_POSITION_FLC, LAYER_EAR, -15.0f},     {CRAUDIO_CHANNEL_POSITION_FRC, LAYER_EAR, 15.0f},
+        {CRAUDIO_CHANNEL_POSITION_RC, LAYER_EAR, 180.0f},      {CRAUDIO_CHANNEL_POSITION_SL, LAYER_EAR, -90.0f},
+        {CRAUDIO_CHANNEL_POSITION_SR, LAYER_EAR, 90.0f},       {CRAUDIO_CHANNEL_POSITION_TC, LAYER_TOP, 0.0f},
+        {CRAUDIO_CHANNEL_POSITION_TFL, LAYER_UPPER, -45.0f},   {CRAUDIO_CHANNEL_POSITION_TFC, LAYER_UPPER, 0.0f},
+        {CRAUDIO_CHANNEL_POSITION_TFR, LAYER_UPPER, 45.0f},    {CRAUDIO_CHANNEL_POSITION_TRL, LAYER_UPPER, -135.0f},
+        {CRAUDIO_CHANNEL_POSITION_TRC, LAYER_UPPER, 180.0f},   {CRAUDIO_CHANNEL_POSITION_TRR, LAYER_UPPER, 135.0f},
+        {CRAUDIO_CHANNEL_POSITION_RLC, LAYER_EAR, -160.0f},    {CRAUDIO_CHANNEL_POSITION_RRC, LAYER_EAR, 160.0f},
+        {CRAUDIO_CHANNEL_POSITION_FLW, LAYER_EAR, -60.0f},     {CRAUDIO_CHANNEL_POSITION_FRW, LAYER_EAR, 60.0f},
+        {CRAUDIO_CHANNEL_POSITION_FLH, LAYER_UPPER, -30.0f},   {CRAUDIO_CHANNEL_POSITION_FCH, LAYER_UPPER, 5.0f},
+        {CRAUDIO_CHANNEL_POSITION_FRH, LAYER_UPPER, 30.0f},    {CRAUDIO_CHANNEL_POSITION_TFLC, LAYER_UPPER, -20.0f},
+        {CRAUDIO_CHANNEL_POSITION_TFRC, LAYER_UPPER, 20.0f},   {CRAUDIO_CHANNEL_POSITION_TSL, LAYER_UPPER, -90.0f},
+        {CRAUDIO_CHANNEL_POSITION_TSR, LAYER_UPPER, 90.0f},    {CRAUDIO_CHANNEL_POSITION_BC, LAYER_BOTTOM, 0.0f},
+        {CRAUDIO_CHANNEL_POSITION_BLC, LAYER_BOTTOM, -30.0f},  {CRAUDIO_CHANNEL_POSITION_BRC, LAYER_BOTTOM, 30.0f},
+    };
+    for (const Place &place : places)
+    {
+        if (place.position == position)
+        {
+            layer = place.layer;
+            azimuth = place.azimuth;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool known_position(CRAUDIO_CHANNEL_POSITION position)
+{
+    return (position >= CRAUDIO_CHANNEL_POSITION_MONO && position <= CRAUDIO_CHANNEL_POSITION_BRC) ||
+           (position >= CRAUDIO_CHANNEL_POSITION_NA && position <= CRAUDIO_CHANNEL_POSITION_AUX_LAST);
+}
+
+// Checks [format] and works out its layout's rings.
+static RBT_RESULT layout_build(const RBTAUDIO_FORMAT &format, uint32_t max_frames, Layout &layout, RBTAUDIO_ERROR *error)
+{
+    if (format.sample_format < CRAUDIO_SAMPLE_FORMAT_S16 || format.sample_format > CRAUDIO_SAMPLE_FORMAT_F32)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "sample format %u isn't one the mixer writes", format.sample_format);
+    if (format.sample_rate < SOUND_RATE_MIN || format.sample_rate > SOUND_RATE_MAX)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "a sample rate of %u Hz, outside %u to %u", format.sample_rate,
+                    SOUND_RATE_MIN, SOUND_RATE_MAX);
+    if (format.channel_count == 0 || format.channel_count > CRAUDIO_MAX_CHANNELS)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "%u channels, outside 1 to %d", format.channel_count,
+                    CRAUDIO_MAX_CHANNELS);
+    if (!format.positions)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "format.positions is null: the mixer needs a full channel layout");
+    if (max_frames == 0)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_frames is 0");
+
+    memset(&layout, 0, sizeof(layout));
+    layout.channel_count = format.channel_count;
+    layout.front_left = layout.front_right = layout.front_centre = layout.mono = -1;
+    for (uint32_t c = 0; c < format.channel_count; c++)
+    {
+        CRAUDIO_CHANNEL_POSITION position = format.positions[c];
+        if (!known_position(position))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "channel %u has no position (%u): the mixer needs a full layout",
+                        c, position);
+        if (position == CRAUDIO_CHANNEL_POSITION_MONO && format.channel_count != 1)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "channel %u is MONO in a %u-channel layout", c,
+                        format.channel_count);
+        for (uint32_t other = 0; other < c; other++)
+        {
+            if (position != CRAUDIO_CHANNEL_POSITION_NA && format.positions[other] == position)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "channels %u and %u have the same position (%u)", other, c,
+                            position);
+        }
+        layout.positions[c] = position;
+        if (position == CRAUDIO_CHANNEL_POSITION_FL)
+            layout.front_left = (int)c;
+        else if (position == CRAUDIO_CHANNEL_POSITION_FR)
+            layout.front_right = (int)c;
+        else if (position == CRAUDIO_CHANNEL_POSITION_FC)
+            layout.front_centre = (int)c;
+        else if (position == CRAUDIO_CHANNEL_POSITION_MONO)
+            layout.mono = (int)c;
+    }
+
+    uint32_t used = 0;
+    for (int layer = 0; layer < LAYER_COUNT; layer++)
+    {
+        // This layer's speakers, sorted by azimuth.
+        float azimuths[CRAUDIO_MAX_CHANNELS];
+        uint8_t channels[CRAUDIO_MAX_CHANNELS];
+        uint32_t count = 0;
+        for (uint32_t c = 0; c < format.channel_count; c++)
+        {
+            int speaker_layer;
+            float azimuth;
+            if (!speaker_place(layout.positions[c], speaker_layer, azimuth) || speaker_layer != layer)
+                continue;
+            azimuth = wrap360(azimuth);
+            uint32_t at = count++;
+            while (at > 0 && azimuths[at - 1] > azimuth)
+            {
+                azimuths[at] = azimuths[at - 1];
+                channels[at] = channels[at - 1];
+                at--;
+            }
+            azimuths[at] = azimuth;
+            channels[at] = (uint8_t)c;
+        }
+
+        Ring &ring = layout.rings[layer];
+        ring.first = used;
+        ring.count = count;
+        if (count == 0)
+            continue;
+        // The widest empty arc decides where the ring starts.
+        uint32_t start = 0;
+        float widest = 360.0f;
+        if (count > 1)
+        {
+            widest = 0.0f;
+            for (uint32_t i = 0; i < count; i++)
+            {
+                float arc = i + 1 < count ? azimuths[i + 1] - azimuths[i] : azimuths[0] + 360.0f - azimuths[i];
+                if (arc > widest)
+                {
+                    widest = arc;
+                    start = (i + 1) % count;
+                }
+            }
+        }
+        ring.gap = widest >= 179.99f;
+        if (!ring.gap)
+            start = 0;
+        ring.start = azimuths[start];
+        ring.span = ring.gap ? 360.0f - widest : 360.0f;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t from = (start + i) % count;
+            layout.ring_channel[used] = channels[from];
+            layout.ring_offset[used] = wrap360(azimuths[from] - ring.start);
+            used++;
+        }
+    }
+    return RBT_RESULT_OK;
+}
+
+// Adds [weight] of a sound at [azimuth] to the ring's speakers.
+static void ring_pan(const Layout &layout, const Ring &ring, float azimuth, float weight, float *gains)
+{
+    const uint8_t *channels = layout.ring_channel + ring.first;
+    const float *offsets = layout.ring_offset + ring.first;
+    if (ring.count == 1)
+    {
+        gains[channels[0]] += weight;
+        return;
+    }
+    float at; // degrees clockwise of the ring's start
+    if (ring.gap)
+    {
+        // Mirror what's behind the speakers to the front of them, then spread
+        // the half-circle that leaves across the speakers' span - on stereo,
+        // ordinary panning, hard left and right at 90 degrees.
+        float half = ring.span * 0.5f;
+        float off_centre = wrap180(azimuth - (ring.start + half));
+        if (off_centre > 90.0f)
+            off_centre = 180.0f - off_centre;
+        else if (off_centre < -90.0f)
+            off_centre = -180.0f - off_centre;
+        at = clamp_float(half + off_centre * (half / 90.0f), 0.0f, ring.span);
+    }
+    else
+    {
+        at = wrap360(azimuth - ring.start);
+    }
+    uint32_t i = 0;
+    while (i + 1 < ring.count && at >= offsets[i + 1])
+        i++;
+    uint32_t j;
+    float next;
+    if (i + 1 < ring.count)
+    {
+        j = i + 1;
+        next = offsets[j];
+    }
+    else if (ring.gap)
+    {
+        gains[channels[i]] += weight;
+        return;
+    }
+    else
+    {
+        j = 0;
+        next = 360.0f;
+    }
+    float arc = next - offsets[i];
+    float t = arc > 1e-4f ? clamp_float((at - offsets[i]) / arc, 0.0f, 1.0f) : 0.5f;
+    gains[channels[i]] += weight * cosf(t * PI_F * 0.5f);
+    gains[channels[j]] += weight * sinf(t * PI_F * 0.5f);
+}
+
+// Adds a sound from [azimuth], [elevation] (degrees) to [gains], one per
+// channel.
+static void direction_pan(const Layout &layout, float azimuth, float elevation, float *gains)
+{
+    int below = -1, above = -1;
+    for (int layer = 0; layer < LAYER_COUNT; layer++)
+    {
+        if (layout.rings[layer].count == 0)
+            continue;
+        if (layer_elevation[layer] <= elevation)
+            below = layer;
+        if (layer_elevation[layer] >= elevation && above < 0)
+            above = layer;
+    }
+    if (below < 0)
+        below = above;
+    if (above < 0)
+        above = below;
+    if (below < 0)
+        return; // nothing but LFE, NA and AUX
+    if (below == above)
+    {
+        ring_pan(layout, layout.rings[below], azimuth, 1.0f, gains);
+        return;
+    }
+    float t = (elevation - layer_elevation[below]) / (layer_elevation[above] - layer_elevation[below]);
+    ring_pan(layout, layout.rings[below], azimuth, cosf(t * PI_F * 0.5f), gains);
+    ring_pan(layout, layout.rings[above], azimuth, sinf(t * PI_F * 0.5f), gains);
+}
+
+// Whether a sound from [azimuth], [elevation] (degrees) is folded from
+// behind to the front: some ring it pans on leaves the rear empty (a gap),
+// and the direction is in that half of it (ring_pan's mirror).
+static bool direction_folded(const Layout &layout, float azimuth, float elevation)
+{
+    int below = -1, above = -1;
+    for (int layer = 0; layer < LAYER_COUNT; layer++)
+    {
+        if (layout.rings[layer].count == 0)
+            continue;
+        if (layer_elevation[layer] <= elevation)
+            below = layer;
+        if (layer_elevation[layer] >= elevation && above < 0)
+            above = layer;
+    }
+    if (below < 0)
+        below = above;
+    if (above < 0)
+        above = below;
+    if (below < 0)
+        return false;
+    for (int layer : {below, above})
+    {
+        const Ring &ring = layout.rings[layer];
+        if (!ring.gap || ring.count < 2)
+            continue;
+        float off_centre = wrap180(azimuth - (ring.start + ring.span * 0.5f));
+        if (off_centre > 90.0f || off_centre < -90.0f)
+            return true;
+    }
+    return false;
+}
+
+// ---- Objects --------------------------------------------------------------------
+
+// A value moving to a target at a fixed speed: a bus's gain, rate, mute and
+// pause. Audio thread.
+struct Fader
+{
+    float value{1.0f};
+    float target{1.0f};
+    float step{0.0f}; // per frame; 0 jumps
+
+    void reset(float to)
+    {
+        value = target = to;
+        step = 0.0f;
+    }
+    void set(float to, uint64_t frames)
+    {
+        target = to;
+        step = frames ? fabsf(to - value) / (float)frames : 0.0f;
+    }
+    void advance(uint32_t frames)
+    {
+        if (value == target)
+            return;
+        float move = step * (float)frames;
+        if (step <= 0.0f || fabsf(target - value) <= move)
+            value = target;
+        else
+            value += target > value ? move : -move;
+    }
+};
+
+enum : uint8_t
+{
+    SOUND_FREE,
+    SOUND_LIVE,
+    SOUND_RETIRED, // destroyed, waiting for the audio thread to be done with it
+};
+
+struct Sound
+{
+    // The ID that plays this slot's sound; 0 when it has none. What every
+    // thread checks an RBTAUDIO_SOUND against.
+    std::atomic<uint64_t> live_id{0};
+
+    // Control thread.
+    uint8_t state{SOUND_FREE};
+    uint32_t generation{0};
+    uint64_t retire_sequence{0}; // the render sequence that frees it
+
+    // Written before live_id, and unchanged until the slot is collected.
+    float *samples{nullptr}; // a streamed sound's: its prefetch, then its last STREAM_REACH frames
+    uint64_t frame_count{0}; // a streamed sound's: the length its file states
+    uint32_t channel_count{0};
+    uint32_t sample_rate{0};
+    float loudness{0.0f}; // RMS; 1 for a streamed sound
+    RBTAUDIO_VIRTUAL_BEHAVIOR virtual_behavior{0};
+    RBTAUDIO_CONCURRENCY concurrency{0};
+    RBTAUDIO_BUS bus{0};
+    bool streamed{false};       // its voices stream (one its prefetch holds whole doesn't)
+    uint64_t prefetch_frames{0}; // streamed: the frames of its start in samples
+
+    // The render's count of a streamed sound's frames of silence for want of
+    // a ring's (rbtaudio_sound_get_underrun_frames()).
+    mutable std::atomic<uint64_t> underrun_frames{0};
+};
+
+enum : uint8_t
+{
+    VOICE_FREE,
+    VOICE_WAITING, // for its start time
+    VOICE_REAL,    // mixing, in a slot
+    VOICE_VIRTUAL,
+};
+
+// What the audio thread tells rbtaudio_mixer_update() about a voice.
+enum : uint32_t
+{
+    PUBLISHED_REAL = 1,      // holds a real slot
+    PUBLISHED_ENDING = 2,    // releasing, or fading out to end
+    PUBLISHED_HELD = 4,      // on a muted or paused bus
+    PUBLISHED_WAITING = 8,   // not started
+    PUBLISHED_SETTLED = 16,  // real for min_real_us
+    PUBLISHED_STREAMED = 32, // its sound is streamed: real only with a stream
+    PUBLISHED_AT_START = 64, // streamed, holding no stream, and would play from its prefetch
+    PUBLISHED_LOOP = 128,
+};
+
+struct Voice
+{
+    // Shared.
+    std::atomic<uint32_t> next{0}; // the free list's or the play queue's link: index + 1
+    std::atomic<uint64_t> stop_word{0};
+    std::atomic<uint64_t> gain_word{0};
+    std::atomic<uint64_t> rate_word{0};
+    std::atomic<uint64_t> direction_word{0};
+    // For ranking: the voice's ID (0 when it has none), and its score,
+    // priority and PUBLISHED_ flags.
+    std::atomic<uint64_t> published_id{0};
+    std::atomic<uint64_t> published_info{0};
+    // Its sound's ID, for an update giving a streamed voice a stream.
+    std::atomic<uint64_t> published_sound{0};
+    // The voice's ID from rbtaudio_play() until the audio thread frees its
+    // record; 0 otherwise. rbtaudio_voice_is_live()'s.
+    std::atomic<uint64_t> live_id{0};
+    // The voice's ID while the last render panned it folded from behind; 0
+    // otherwise. rbtaudio_voice_is_folded()'s.
+    std::atomic<uint64_t> folded_id{0};
+    // Its RBTAUDIO_PLACEMENT, written by rbtaudio_play() before live_id: what
+    // the update and the any-role calls check a voice's placement by.
+    std::atomic<uint8_t> placement{0};
+
+    // rbtaudio_play()'s, written before the voice is queued; then the audio
+    // thread's, which keeps them up to date with the voice's changes.
+    uint32_t generation{0};
+    uint64_t id{0};
+    uint64_t sound_id{0};
+    float gain{1.0f};
+    float rate{1.0f};
+    uint8_t priority{0};      // a world-placed voice's: offset by its distance, as last posted
+    uint8_t base_priority{0}; // the play's
+    RBTAUDIO_VIRTUAL_BEHAVIOR behavior{0};
+    RBTAUDIO_CONCURRENCY concurrency{0};
+    RBTAUDIO_BUS bus{0};
+    bool has_direction{false};
+    float azimuth{0.0f}; // degrees
+    float elevation{0.0f};
+    uint64_t start_time_ns{0};
+    bool loop{false};
+
+    // Audio thread.
+    uint8_t state{VOICE_FREE};
+    bool dead{false};           // ended; swept off the active list next
+    bool logical{false};        // counts towards max_voices
+    bool stop_seen{false};
+    bool releasing{false};      // stopped, fading out to end
+    bool fading_out{false};     // lost its real slot: fading in a fading slot
+    bool end_after_fade{false}; // ...to end, not to go virtual
+    bool frozen{false};         // virtual and keeping its place whatever its behavior
+    bool cut{false};            // its sound was destroyed: fades across this render, then ends
+    bool snap{true};            // nothing mixed yet to ramp from
+    bool pan_changed{false};
+    bool ended{false}; // played to its sound's end
+    bool world{false};  // placed in the world (rbtaudio.h, "Spatial audio")
+    bool placed{false}; // ...and given its first place by an update
+    const Sound *sound{nullptr};
+    uint32_t bus_index{0};
+    uint32_t bus_generation{0};
+    uint32_t group_index{0};
+    uint32_t group_generation{0}; // 0: no group
+    int32_t slot{-1};
+    uint32_t start_offset{0}; // into the render it starts in
+    uint64_t position{0};     // source frames
+    uint32_t fraction{0};     // of a source frame, 32 bits
+    uint64_t step{FIXED_ONE}; // source frames per output frame, as last mixed
+    float applied_gain{0.0f}; // gain x group x buses, as last mixed
+    float group_gain{1.0f};
+    float envelope{1.0f}; // fades and releases
+    float envelope_step{0.0f};
+    float score{0.0f};          // audibility
+    float unplaced_score{0.0f}; // audibility before the gain from distance and cone, for the update
+    // A world-placed voice's, as the last update posted them: its gain from
+    // distance and cone, its doppler rate and its distance to its listener.
+    float spatial_gain{1.0f};
+    float doppler{1.0f};
+    float distance{0.0f};
+    uint64_t serial{0}; // start order
+    uint64_t real_frames{0};
+    uint64_t fade_serial{0};
+    // A streamed voice's stream (NO_STREAM: none), and whether, virtual, it
+    // waits for the stream to fill; and whether its stream failed.
+    uint32_t stream{UINT32_MAX};
+    bool stream_wait{false};
+    bool stream_failed{false};
+};
+// Read for every active voice each render: 272 bytes before streams, 288
+// with them, about 312 with spatial audio's place and results - five cache
+// lines each time.
+RBT_HOT_RECORD(Voice, 5 * RBT_CACHE_LINE);
+
+struct Bus
+{
+    // Shared: any thread's requests, and what the audio thread reports.
+    std::atomic<uint64_t> gain_word{0};
+    std::atomic<uint64_t> gain_fade_word{0};
+    std::atomic<uint64_t> rate_word{0};
+    std::atomic<uint64_t> rate_fade_word{0};
+    std::atomic<uint64_t> mute_word{0};
+    std::atomic<uint64_t> pause_word{0};
+    std::atomic<uint8_t> audible{0}; // real voices above the threshold, here or below
+
+    // Audio thread.
+    uint32_t generation{0};
+    Fader gain, rate, mute, pause; // mute and pause: 1 open, 0 shut
+    float modifier_gain{1.0f};
+    float modifier_rate{1.0f};
+    float effective_gain{1.0f}; // with every bus above it, at the render's end
+    float effective_rate{1.0f};
+    bool held{false}; // shut, or under a bus that is
+    bool has_audible{false};
+};
+
+struct Modifier
+{
+    std::atomic<uint64_t> active_word{0}; // any thread: generation, and bit 0 active
+    std::atomic<uint8_t> triggered{0};    // rbtaudio_mixer_update()'s
+
+    // Audio thread.
+    uint32_t generation{0};
+    float amount{0.0f}; // 0 no effect .. 1 all of it
+};
+
+struct GroupState // audio thread
+{
+    uint32_t generation{0};
+    bool started{false};
+    uint64_t last_start{0}; // on the mixer's frame clock
+};
+
+// What the control thread decides and the audio thread reads: the bus tree,
+// modifiers and concurrency groups. The control thread edits its own copy and
+// posts whole copies; the audio thread takes the latest at each render.
+
+struct BusConfig
+{
+    uint32_t generation;
+    bool live;
+    // A live bus's parent. A destroyed one's: where its voices go.
+    uint32_t parent;
+    float gain, rate; // its desc's
+};
+
+struct ModifierTarget
+{
+    uint32_t bus;
+    float gain, rate;
+};
+
+struct ModifierConfig
+{
+    uint32_t generation;
+    bool live; // false: destroyed, fading out
+    bool has_trigger;
+    uint32_t trigger;
+    uint32_t fade_in_us, fade_out_us;
+    uint32_t target_count;
+};
+
+struct GroupConfig
+{
+    uint32_t generation;
+    bool live;
+    uint32_t max_instances;
+    RBTAUDIO_RESOLUTION resolution;
+    uint32_t retrigger_us;
+    float older_instance_gain;
+};
+
+struct Config
+{
+    BusConfig *buses{nullptr};
+    uint32_t *order{nullptr}; // live buses, parents first
+    uint32_t order_count{0};
+    ModifierConfig *modifiers{nullptr};
+    ModifierTarget *targets{nullptr}; // bus_count per modifier
+    GroupConfig *groups{nullptr};
+};
+RBT_PLAIN_DATA(Config);
+
+// One writer posting whole values to one reader, neither ever waiting: three
+// buffers - the writer's, the reader's, and the latest one posted.
+struct TripleBuffer
+{
+    static constexpr uint32_t FRESH = 4;
+    std::atomic<uint32_t> posted{1};
+    uint32_t write{0};
+    uint32_t read{2};
+
+    void post()
+    {
+        write = posted.exchange(write | FRESH, std::memory_order_acq_rel) & 3;
+    }
+    bool take()
+    {
+        if (!(posted.load(std::memory_order_relaxed) & FRESH))
+            return false;
+        read = posted.exchange(read, std::memory_order_acq_rel) & 3;
+        return true;
+    }
+};
+
+struct RankEntry // rbtaudio_mixer_update()'s
+{
+    uint32_t index;
+    uint32_t generation;
+    uint8_t priority;
+    bool real;
+    bool streamed;
+    bool at_start;
+    bool loop;
+    float score;
+    float key;
+    uint64_t sound;
+};
+RBT_PLAIN_DATA(RankEntry);
+
+// ---- Spatial records ------------------------------------------------------------
+//
+// rbtaudio.h, "Spatial audio". Each rbtaudio_mixer_update() works out every
+// world-placed voice, in one pass over the voice records, from these, and
+// posts a SpatialResult per voice beside its decision, through the same
+// triple buffer: the render reads values, and does none of the maths.
+
+// A listener as rbtaudio_mixer_set_listeners() stored it, its frame made
+// orthonormal there, once. The control role's.
+struct ListenerFrame
+{
+    double position[3];
+    float velocity[3];
+    float forward[3];
+    float up[3];
+    float right[3];
+};
+RBT_PLAIN_DATA(ListenerFrame);
+
+// An attenuation's settings: the control role's, but for live_id, which
+// rbtaudio_play() checks from any thread.
+struct Attenuation
+{
+    std::atomic<uint64_t> live_id{0};
+    uint32_t generation{0};
+    bool live{false};
+    RBTAUDIO_ROLLOFF rolloff{0};
+    float min_distance{0.0f};
+    float max_distance{0.0f};
+    float factor{0.0f};
+    RBTAUDIO_ATTENUATION_POINT *points{nullptr}; // TABLE's, allocated at create
+    uint32_t point_count{0};
+    float inner_half{0.0f}; // half the cone's angles, radians
+    float outer_half{0.0f};
+    float outer_gain{1.0f};
+    float doppler{0.0f};
+    int32_t priority_offset{0};
+};
+
+// A world-placed voice's latest emitter from rbtaudio_mixer_set_emitters(),
+// for the voice record's generation. The control role's.
+struct Place
+{
+    uint32_t generation; // 0: none
+    double position[3];
+    float velocity[3];
+    float forward[3];
+};
+RBT_PLAIN_DATA(Place);
+
+// rbtaudio_play()'s first place, attenuation and priority, from any thread,
+// as words: the update reads a record a play may be reusing without a race,
+// and tells by the voice's live_id, read again, that it did.
+enum : uint32_t
+{
+    PLAY_PLACE_POSITION = 0,     // three doubles' bits
+    PLAY_PLACE_VELOCITY_XY = 3,  // two floats' bits
+    PLAY_PLACE_VELOCITY_Z_FORWARD_X = 4,
+    PLAY_PLACE_FORWARD_YZ = 5,
+    PLAY_PLACE_ATTENUATION = 6,
+    PLAY_PLACE_PRIORITY = 7,
+    PLAY_PLACE_WORDS = 8,
+};
+
+struct PlayPlace
+{
+    std::atomic<uint64_t> words[PLAY_PLACE_WORDS];
+};
+
+// What an update posts for a world-placed voice, beside its decision.
+struct SpatialResult
+{
+    uint32_t generation; // the voice record's; 0: none
+    uint32_t direction;  // as pack_direction() packs it; 0 keeps the one it has
+    float gain;          // from distance and cone
+    float rate;          // doppler
+    float distance;      // to its listener
+    uint8_t priority;    // offset by distance
+};
+RBT_PLAIN_DATA(SpatialResult);
+
+// Windowed sinc: SINC_ZEROS zero crossings each side, SINC_RESOLUTION table
+// entries per crossing. Playing faster than the mixer's rate stretches it (a
+// lower cutoff), up to SINC_MAX_STRETCH.
+// The table's numbers are rbtaudio_internal.hpp's, which rbtaudio_encode.cpp's
+// offline resampler shares.
+constexpr int SINC_ZEROS = RBTAUDIO_SINC_ZEROS;
+constexpr int SINC_RESOLUTION = RBTAUDIO_SINC_RESOLUTION;
+constexpr float SINC_MAX_STRETCH = 16.0f;
+
+// ---- Streams: records ---------------------------------------------------------
+//
+// A streamed sound's voice decodes into a ring of its own while it is real or
+// fading (rbtaudio.h, "Streamed sounds"). Each update hands every stream that
+// needs frames to one task on the caller's scheduler; the render reads the
+// sound's prefetch and the rings, and nothing else. A voice's place, while
+// it holds a stream, counts frames in the order it plays them - play order -
+// not wrapping at a loop, since the ring holds them in that order; frames
+// below the sound's length in play order are its own frames, so the prefetch
+// and the tail serve them. Without a stream, it is the sound's frame again.
+
+// How far either side of a voice's place the resampler reads: windowed
+// sinc's half width at its widest stretch; linear interpolation reads one
+// frame ahead. A ring keeps this much behind what its voice reads, a voice
+// needs it ahead of a frame to play the frame, and a looping sound keeps its
+// last this many frames for the taps before its first.
+constexpr uint32_t STREAM_REACH = (uint32_t)(SINC_ZEROS * SINC_MAX_STRETCH);
+// The longest ring a sound may ask for (rbtaudio.h, `stream_ring_us`).
+constexpr uint32_t STREAM_RING_MAX_US = 10000000;
+constexpr uint32_t NO_STREAM = UINT32_MAX;
+constexpr uint64_t STREAM_END_UNKNOWN = UINT64_MAX;
+// A decision's payload names its voice's stream, plus one, above its two
+// low bits.
+constexpr uint32_t MAX_STREAMS = 0x3FFFFFFFu;
+
+enum : uint32_t
+{
+    STREAM_FREE,      // no voice, no block: the control thread's
+    STREAM_ASSIGNED,  // an update gave it to a voice; where it starts isn't known yet
+    STREAM_REQUESTED, // its start set: the decoding opens it and keeps its ring full
+    STREAM_RELEASED,  // let go by the render (or, never taken, by an update): a collect frees it
+};
+
+// What a streamed sound's streams need, beside its slot: the update copies
+// it into a stream it gives a voice, so the decoding never reads a sound's
+// slot (which a create may reuse while it runs), and the render never reads
+// it at all.
+struct SoundStream
+{
+    StreamInfo info;
+    RBTAUDIO_SOURCE source;
+    uint64_t prefetch_frames;
+    uint64_t block_bytes; // the decoder's room, then the ring
+    uint32_t ring_frames;
+};
+RBT_PLAIN_DATA(SoundStream);
+
+// A voice's stream: its decoder and ring (one block, from the system heap
+// when the decoding opens it), and the counters by which the decoding and
+// the render keep each other in step without waiting. Array of structs,
+// max_streams of them made with the mixer: the decoding's item for a stream
+// and the render each touch one record's few fields together. Line 0 is the
+// decoding's to write and the render's to read; line 1 the render's to write
+// and the decoding's and the update's to read; the rest, cold, the update's
+// and the decoding's own. So the decoding and the render never write one
+// line, and no two streams' writers share one. Plain data: what two threads
+// share is read and written through std::atomic_ref.
+struct alignas(RBT_CACHE_LINE) Stream
+{
+    // The decoding's, published by `written` (release; the render acquires).
+    uint64_t written; // play order: the ring holds frames up to here
+    uint64_t end;     // play order: where the data ends; STREAM_END_UNKNOWN until it does
+    float *ring;      // ring_frames frames of channels, interleaved, in the block
+    uint64_t origin;  // play order: the ring's first frame
+    uint32_t ring_frames;
+    uint32_t channels;
+    uint32_t failed; // its failure's RBT_RESULT, set after `failure`; 0 while none
+
+    // The render's.
+    alignas(RBT_CACHE_LINE) uint64_t read; // play order: the lowest frame the render may still read
+    uint64_t request_origin;                // the sound frame the stream starts at
+    uint64_t release_sequence;              // a collect frees it once the render sequence reaches this
+    uint32_t state;                         // STREAM_*
+
+    // The update's and the decoding's.
+    alignas(RBT_CACHE_LINE) uint32_t voice_index;
+    uint32_t voice_generation;
+    uint64_t sound_id;
+    SoundStream sound;
+    void *block;
+    StreamDecoder *decoder; // at the block's start
+    uint64_t pass_frames;   // frames decoded since the data last began (a loop's)
+    StreamFailure failure;
+    bool loop;
+    bool opened;
+    bool reported; // its failure told by an update
+};
+RBT_PLAIN_DATA(Stream);
+RBT_HOT_RECORD(Stream, 5 * RBT_CACHE_LINE);
+
+struct rbtaudio_mixer_t
+{
+    const char *debug_name{nullptr};
+    RBT_STALE_TAG
+    // Fixed at creation.
+    uint32_t max_voices{0};
+    uint32_t max_real_voices{0};
+    uint32_t max_fading_voices{0};
+    uint32_t max_sounds{0};
+    uint32_t max_groups{0};
+    uint32_t bus_count{0}; // max_buses and the master, slot 0
+    uint32_t max_modifiers{0};
+    uint32_t queue_capacity{0};
+    uint32_t record_count{0}; // voices: max_voices + queue_capacity + max_fading_voices
+    uint32_t slot_count{0};   // mixing slots: max_real_voices + max_fading_voices
+    float virtual_threshold{0.0f};
+    uint32_t transition_fade_us{0};
+    uint32_t min_real_us{0};
+    RBTAUDIO_RESAMPLER resampler{0};
+    float *sinc{nullptr};
+
+    // The format: the control thread's, changed only while nothing renders.
+    CRAUDIO_SAMPLE_FORMAT sample_format{0};
+    uint32_t sample_rate{0};
+    uint32_t channel_count{0};
+    bool interleaved{true};
+    uint32_t max_frames{0};
+    Layout layout{};
+    float *mix{nullptr};         // [channel_count][max_frames]
+    float *source{nullptr};      // [2][max_frames]: one voice, resampled
+    float *pan{nullptr};         // [slot_count][2][channel_count]: each slot's speaker gains
+    float *pan_scratch{nullptr}; // [2][channel_count]
+    // The limiter (RBTAUDIO_LIMITER_ON): its settings, fixed at creation, and
+    // its buffers, sized with the format: limiter_frames of lookahead.
+    bool limiter_on{false};
+    uint32_t limiter_lookahead_us{0};
+    uint32_t limiter_release_us{0};
+    float limiter_ceiling{1.0f};
+    uint32_t limiter_frames{0};
+    float *limiter_delay{nullptr};     // [channel_count][limiter_frames]: the mix, delayed
+    float *limiter_box{nullptr};       // [limiter_frames]: the window minimums the gain averages
+    float *limiter_queue_gain{nullptr}; // [limiter_frames + 1]: the sliding minimum's queue
+    uint64_t *limiter_queue_at{nullptr};
+
+    Voice *voices{nullptr};
+    Sound *sounds{nullptr};
+    Bus *buses{nullptr};
+    Modifier *modifiers{nullptr};
+    GroupState *groups{nullptr};
+
+    // Shared.
+    std::atomic<uint64_t> free_head{0};    // free voice records: a count against ABA, and index + 1
+    std::atomic<uint32_t> pending_head{0}; // plays queued for the next render: index + 1
+    std::atomic<uint32_t> queued{0};
+    // Odd while rendering. A destroyed sound is freed once a render that
+    // began after its ID went stale has finished.
+    std::atomic<uint64_t> render_sequence{0};
+    Config configs[3];
+    TripleBuffer config_buffer;
+    uint64_t *decisions[3]{nullptr, nullptr, nullptr}; // per voice record: generation, and DECISION_
+    TripleBuffer decision_buffer;
+
+    // Control thread.
+    Config shadow;
+    uint32_t sound_cursor{0}, bus_cursor{0}, modifier_cursor{0}, group_cursor{0};
+    RankEntry *rank{nullptr};
+
+    // Audio thread.
+    const Config *config{nullptr};
+    uint32_t *active{nullptr}; // voice records in use
+    uint32_t active_count{0};
+    uint32_t logical_count{0};
+    uint32_t real_count{0};
+    uint32_t fading_count{0};
+    uint32_t *free_slots{nullptr};
+    uint32_t free_slot_count{0};
+    uint64_t clock{0}; // frames rendered
+    uint64_t next_serial{1};
+    // TPDF dither's random numbers (16-bit output).
+    uint64_t dither_state{0x9E3779B97F4A7C15ull};
+    // The limiter's state: frames it has taken in, its queue, the sum of
+    // its box, and the gain it applied last.
+    uint64_t limiter_in{0};
+    uint32_t limiter_queue_head{0};
+    uint32_t limiter_queue_count{0};
+    double limiter_box_sum{0.0};
+    float limiter_gain{1.0f};
+    // Streams (rbtaudio.h, "Streamed sounds"), made with the mixer: the
+    // records, each sound slot's stream needs (the update's), each voice
+    // record's stream + 1 or 0 (the update's), and the streams the decoding
+    // in flight serves (the update's to write, the decoding's to read).
+    uint32_t max_streams{0};
+    bool has_scheduler{false};
+    RBTJOBS_SCHEDULER scheduler{};
+    eq::array<Stream> streams;
+    eq::array<SoundStream> sound_streams;
+    eq::array<uint32_t> voice_streams;
+    eq::array<uint32_t> stream_tasks;
+    // The decoding an update started on the scheduler: waited for before
+    // anything it touches changes.
+    void *decoding{nullptr};
+    // Spatial audio (rbtaudio.h, "Spatial audio"), made with the mixer when
+    // an RBTAUDIO_SPATIAL_DESC is chained on: the control role's listeners,
+    // attenuations and each voice record's latest place; the plays' first
+    // places (any thread's, as words); and the results each update posts with
+    // its decisions, which the render takes with them.
+    bool spatial{false};
+    bool right_handed{true};
+    uint32_t max_listeners{0};
+    uint32_t max_attenuations{0};
+    float speed_of_sound{0.0f};
+    uint32_t listener_count{0};
+    uint32_t attenuation_cursor{0};
+    ListenerFrame *listeners{nullptr};
+    Attenuation *attenuations{nullptr};
+    Place *places{nullptr};
+    PlayPlace *play_places{nullptr};
+    SpatialResult *spatial_results[3]{nullptr, nullptr, nullptr};
+    const SpatialResult *results{nullptr}; // the render's: the last ones it took
+
+    // Debug builds' check of rbtcore.h's "Threads" rule (../rbtoverlap.hpp).
+    rbt_overlap overlap{};
+    // The same for the render, one at a time of its own (rbtaudio.h's roles).
+    rbt_overlap render_overlap{};
+};
+
+rbt_overlap &rbtaudio_mixer_control_guard(rbtaudio_mixer mixer)
+{
+    return mixer->overlap;
+}
+
+typedef rbtaudio_mixer_t Mixer;
+
+constexpr uint64_t DECISION_REAL = 1;
+constexpr uint64_t DECISION_VIRTUAL = 2;
+
+static uint64_t frames_from_us(const Mixer *m, uint64_t us)
+{
+    return (us * m->sample_rate + 500000) / 1000000;
+}
+
+// ---- Voice records ------------------------------------------------------------
+
+// Any thread.
+static void free_push(Mixer *m, uint32_t index)
+{
+    uint64_t old = m->free_head.load(std::memory_order_relaxed);
+    for (;;)
+    {
+        m->voices[index].next.store((uint32_t)old, std::memory_order_relaxed);
+        uint64_t head = (((old >> 32) + 1) << 32) | (uint64_t)(index + 1);
+        if (m->free_head.compare_exchange_weak(old, head, std::memory_order_release, std::memory_order_relaxed))
+            return;
+    }
+}
+
+// Any thread.
+static bool free_pop(Mixer *m, uint32_t &index)
+{
+    uint64_t old = m->free_head.load(std::memory_order_acquire);
+    for (;;)
+    {
+        uint32_t first = (uint32_t)old;
+        if (first == 0)
+            return false;
+        uint32_t next = m->voices[first - 1].next.load(std::memory_order_relaxed);
+        uint64_t head = (((old >> 32) + 1) << 32) | next;
+        if (m->free_head.compare_exchange_weak(old, head, std::memory_order_acquire, std::memory_order_acquire))
+        {
+            index = first - 1;
+            return true;
+        }
+    }
+}
+
+// ---- Config (control thread) -------------------------------------------------
+
+static bool config_alloc(const Mixer *m, Config &config)
+{
+    config.buses = alloc_array<BusConfig>(m->bus_count);
+    config.order = alloc_array<uint32_t>(m->bus_count);
+    config.modifiers = alloc_array<ModifierConfig>(m->max_modifiers);
+    config.targets = alloc_array<ModifierTarget>((size_t)m->max_modifiers * m->bus_count);
+    config.groups = alloc_array<GroupConfig>(m->max_groups);
+    return config.buses && config.order && config.modifiers && config.targets && config.groups;
+}
+
+static void config_free(Config &config)
+{
+    free(config.buses);
+    free(config.order);
+    free(config.modifiers);
+    free(config.targets);
+    free(config.groups);
+    config = Config{};
+}
+
+// Posts the control thread's config to the audio thread.
+static void config_post(Mixer *m)
+{
+    Config &from = m->shadow;
+    // Live buses, each after its parent.
+    from.order[0] = 0;
+    from.order_count = 1;
+    for (uint32_t at = 0; at < from.order_count; at++)
+    {
+        for (uint32_t b = 1; b < m->bus_count; b++)
+        {
+            if (from.buses[b].live && from.buses[b].parent == from.order[at])
+                from.order[from.order_count++] = b;
+        }
+    }
+    Config &to = m->configs[m->config_buffer.write];
+    memcpy(to.buses, from.buses, m->bus_count * sizeof(BusConfig));
+    memcpy(to.order, from.order, m->bus_count * sizeof(uint32_t));
+    to.order_count = from.order_count;
+    memcpy(to.modifiers, from.modifiers, m->max_modifiers * sizeof(ModifierConfig));
+    memcpy(to.targets, from.targets, (size_t)m->max_modifiers * m->bus_count * sizeof(ModifierTarget));
+    memcpy(to.groups, from.groups, m->max_groups * sizeof(GroupConfig));
+    m->config_buffer.post();
+}
+
+// The live bus [bus] names, or 0 for the master. False if it's stale.
+static bool find_bus(const Mixer *m, RBTAUDIO_BUS bus, uint32_t &index)
+{
+    if (bus == 0)
+    {
+        index = 0;
+        return true;
+    }
+    uint32_t generation;
+    return split_id(bus, m->bus_count, index, generation) && m->shadow.buses[index].live &&
+           m->shadow.buses[index].generation == generation;
+}
+
+// ---- Sounds (control thread) ---------------------------------------------------
+
+// Frees destroyed sounds the audio thread is done with.
+static void collect_sounds(Mixer *m)
+{
+    uint64_t sequence = m->render_sequence.load();
+    for (uint32_t i = 0; i < m->max_sounds; i++)
+    {
+        Sound &sound = m->sounds[i];
+        if (sound.state != SOUND_RETIRED || sequence < sound.retire_sequence)
+            continue;
+        free(sound.samples);
+        sound.samples = nullptr;
+        sound.state = SOUND_FREE;
+    }
+}
+
+// ---- Format buffers -------------------------------------------------------------
+
+struct FormatBuffers
+{
+    float *mix{nullptr};
+    float *source{nullptr};
+    float *pan{nullptr};
+    float *pan_scratch{nullptr};
+    uint32_t limiter_frames{0};
+    float *limiter_delay{nullptr};
+    float *limiter_box{nullptr};
+    float *limiter_queue_gain{nullptr};
+    uint64_t *limiter_queue_at{nullptr};
+};
+
+static void format_buffers_free(FormatBuffers &buffers)
+{
+    free(buffers.mix);
+    free(buffers.source);
+    free(buffers.pan);
+    free(buffers.pan_scratch);
+    free(buffers.limiter_delay);
+    free(buffers.limiter_box);
+    free(buffers.limiter_queue_gain);
+    free(buffers.limiter_queue_at);
+    buffers = FormatBuffers{};
+}
+
+// The limiter's lookahead in frames at [sample_rate]: at least 1.
+static uint32_t limiter_frames_at(uint32_t lookahead_us, uint32_t sample_rate)
+{
+    uint64_t frames = ((uint64_t)lookahead_us * sample_rate + 999999) / 1000000;
+    return frames > 0 ? (uint32_t)frames : 1;
+}
+
+static bool format_buffers_alloc(const Mixer *m, uint32_t channel_count, uint32_t sample_rate, uint32_t max_frames,
+                                 FormatBuffers &buffers)
+{
+    buffers.mix = alloc_array<float>((size_t)channel_count * max_frames);
+    buffers.source = alloc_array<float>((size_t)2 * max_frames);
+    buffers.pan = alloc_array<float>((size_t)m->slot_count * 2 * channel_count);
+    buffers.pan_scratch = alloc_array<float>((size_t)2 * channel_count);
+    bool limiter = true;
+    if (m->limiter_on)
+    {
+        uint32_t frames = limiter_frames_at(m->limiter_lookahead_us, sample_rate);
+        buffers.limiter_frames = frames;
+        buffers.limiter_delay = alloc_array<float>((size_t)channel_count * frames);
+        buffers.limiter_box = alloc_array<float>(frames);
+        buffers.limiter_queue_gain = alloc_array<float>((size_t)frames + 1);
+        buffers.limiter_queue_at = alloc_array<uint64_t>((size_t)frames + 1);
+        limiter = buffers.limiter_delay && buffers.limiter_box && buffers.limiter_queue_gain && buffers.limiter_queue_at;
+    }
+    if (buffers.mix && buffers.source && buffers.pan && buffers.pan_scratch && limiter)
+        return true;
+    format_buffers_free(buffers);
+    return false;
+}
+
+// The limiter as if nothing had passed through it: silence delayed, full
+// gain everywhere.
+static void limiter_reset(Mixer *m)
+{
+    if (!m->limiter_on)
+        return;
+    memset(m->limiter_delay, 0, sizeof(float) * (size_t)m->channel_count * m->limiter_frames);
+    for (uint32_t i = 0; i < m->limiter_frames; i++)
+        m->limiter_box[i] = 1.0f;
+    m->limiter_in = 0;
+    m->limiter_queue_head = 0;
+    m->limiter_queue_count = 0;
+    m->limiter_box_sum = (double)m->limiter_frames;
+    m->limiter_gain = 1.0f;
+}
+
+static void format_apply(Mixer *m, const RBTAUDIO_FORMAT &format, uint32_t max_frames, const Layout &layout,
+                         FormatBuffers &buffers)
+{
+    free(m->mix);
+    free(m->source);
+    free(m->pan);
+    free(m->pan_scratch);
+    free(m->limiter_delay);
+    free(m->limiter_box);
+    free(m->limiter_queue_gain);
+    free(m->limiter_queue_at);
+    m->mix = buffers.mix;
+    m->source = buffers.source;
+    m->pan = buffers.pan;
+    m->pan_scratch = buffers.pan_scratch;
+    m->limiter_frames = buffers.limiter_frames;
+    m->limiter_delay = buffers.limiter_delay;
+    m->limiter_box = buffers.limiter_box;
+    m->limiter_queue_gain = buffers.limiter_queue_gain;
+    m->limiter_queue_at = buffers.limiter_queue_at;
+    buffers = FormatBuffers{};
+    m->sample_format = format.sample_format;
+    m->sample_rate = format.sample_rate;
+    m->channel_count = format.channel_count;
+    m->interleaved = format.interleaved;
+    m->max_frames = max_frames;
+    m->layout = layout;
+    limiter_reset(m);
+}
+
+float *rbtaudio_sinc_table_build()
+{
+    int size = SINC_ZEROS * SINC_RESOLUTION;
+    float *table = alloc_array<float>((size_t)size + 2);
+    if (!table)
+        return nullptr;
+    // Kaiser window, beta 9: about -90 dB of stopband.
+    auto bessel = [](double x) {
+        double sum = 1.0, term = 1.0;
+        for (int k = 1; k < 32; k++)
+        {
+            term *= (x / (2.0 * k)) * (x / (2.0 * k));
+            sum += term;
+        }
+        return sum;
+    };
+    const double beta = 9.0;
+    const double pi = 3.14159265358979323846;
+    for (int i = 0; i < size; i++)
+    {
+        double x = (double)i / SINC_RESOLUTION;
+        double sinc = i == 0 ? 1.0 : sin(pi * x) / (pi * x);
+        double edge = x / SINC_ZEROS;
+        table[i] = (float)(sinc * bessel(beta * sqrt(1.0 - edge * edge)) / bessel(beta));
+    }
+    return table; // the two entries past the end stay 0
+}
+
+// ---- Rendering (audio thread) ---------------------------------------------------
+
+static uint64_t transition_frames(const Mixer *m)
+{
+    return frames_from_us(m, m->transition_fade_us);
+}
+
+static void release_slot(Mixer *m, Voice &v)
+{
+    if (v.slot < 0)
+        return;
+    m->free_slots[m->free_slot_count++] = (uint32_t)v.slot;
+    v.slot = -1;
+    if (v.fading_out)
+        m->fading_count--;
+    else
+        m->real_count--;
+    v.fading_out = false;
+}
+
+// ---- Streams: the render's side (audio thread) -----------------------------------
+
+// The render stops reading a voice's stream: a collect frees it once the
+// render after this one has finished. Without its stream the voice's place
+// is its sound's frame again.
+static void stream_release(Mixer *m, Voice &v)
+{
+    if (v.stream == NO_STREAM)
+        return;
+    Stream &s = m->streams[v.stream];
+    s.release_sequence = m->render_sequence.load(std::memory_order_relaxed) + 3;
+    std::atomic_ref<uint32_t>(s.state).store(STREAM_RELEASED, std::memory_order_release);
+    v.stream = NO_STREAM;
+    v.stream_wait = false;
+    if (v.loop && v.sound->frame_count > 0)
+        v.position %= v.sound->frame_count;
+}
+
+// A stream an update gave a voice that won't take it (it ended, stopped or
+// was ranked virtual meanwhile): let go untouched.
+static void stream_refuse(Mixer *m, uint32_t index)
+{
+    Stream &s = m->streams[index];
+    s.release_sequence = m->render_sequence.load(std::memory_order_relaxed) + 3;
+    std::atomic_ref<uint32_t>(s.state).store(STREAM_RELEASED, std::memory_order_release);
+}
+
+// Ends a voice. Its record is swept off the active list, and freed, later in
+// the render.
+static void end_voice(Mixer *m, Voice &v)
+{
+    if (v.dead)
+        return;
+    release_slot(m, v);
+    stream_release(m, v);
+    if (v.logical)
+        m->logical_count--;
+    v.logical = false;
+    v.dead = true;
+}
+
+static void make_virtual(Mixer *m, Voice &v, bool frozen)
+{
+    release_slot(m, v);
+    stream_release(m, v);
+    v.state = VOICE_VIRTUAL;
+    v.end_after_fade = false;
+    v.envelope = 0.0f;
+    v.envelope_step = 0.0f;
+    v.frozen = frozen;
+}
+
+// A fade that has run its course, or is being cut short.
+static void finish_fade(Mixer *m, Voice &v)
+{
+    if (v.releasing || v.end_after_fade || !v.fading_out)
+        end_voice(m, v);
+    else
+        make_virtual(m, v, false);
+}
+
+// Takes a real voice's slot from it. It fades out in a fading slot - to
+// virtual, or to its end if [kill], it's stopping, or its behavior is KILL -
+// so whatever takes its place starts at once.
+static void demote(Mixer *m, Voice &v, bool kill)
+{
+    bool ends = kill || v.releasing || v.behavior == RBTAUDIO_VIRTUAL_KILL;
+    uint64_t fade = transition_frames(m);
+    if (m->max_fading_voices == 0 || fade == 0 || v.envelope <= 0.0f)
+    {
+        if (ends)
+            end_voice(m, v);
+        else
+            make_virtual(m, v, false);
+        return;
+    }
+    if (m->fading_count == m->max_fading_voices)
+    {
+        // Every fading slot is in use: the oldest fade is cut short.
+        Voice *oldest = nullptr;
+        for (uint32_t i = 0; i < m->active_count; i++)
+        {
+            Voice &other = m->voices[m->active[i]];
+            if (!other.dead && other.fading_out && (!oldest || other.fade_serial < oldest->fade_serial))
+                oldest = &other;
+        }
+        if (oldest)
+            finish_fade(m, *oldest);
+    }
+    m->real_count--;
+    m->fading_count++;
+    v.fading_out = true;
+    v.end_after_fade = ends;
+    v.fade_serial = m->next_serial++;
+    if (ends && v.logical)
+    {
+        v.logical = false;
+        m->logical_count--;
+    }
+    float step = -1.0f / (float)fade;
+    if (!(v.envelope_step < step))
+        v.envelope_step = step;
+}
+
+// Ends a voice to make room: at once if it isn't sounding, with a fade if it
+// is.
+static void kill_voice(Mixer *m, Voice &v)
+{
+    if (v.state != VOICE_REAL)
+        end_voice(m, v);
+    else if (!v.fading_out)
+        demote(m, v, true);
+    else
+    {
+        v.end_after_fade = true;
+        if (v.logical)
+        {
+            v.logical = false;
+            m->logical_count--;
+        }
+    }
+}
+
+// Stops a voice, fading out over [release] frames.
+static void stop_voice(Mixer *m, Voice &v, uint64_t release)
+{
+    if (v.state != VOICE_REAL || release == 0 || v.envelope <= 0.0f)
+    {
+        end_voice(m, v);
+        return;
+    }
+    v.releasing = true;
+    float step = -v.envelope / (float)release;
+    if (!(v.envelope_step < step))
+        v.envelope_step = step;
+}
+
+static void take_slot(Mixer *m, Voice &v)
+{
+    v.slot = (int32_t)m->free_slots[--m->free_slot_count];
+    m->real_count++;
+    v.state = VOICE_REAL;
+    v.snap = true;
+    v.real_frames = 0;
+    v.frozen = false;
+}
+
+// Source frames per output frame, 32.32.
+static uint64_t voice_step(const Mixer *m, const Voice &v)
+{
+    float rate = clamp_float(v.rate * m->buses[v.bus_index].effective_rate * v.doppler, RATE_MIN, RATE_MAX);
+    return (uint64_t)((double)v.sound->sample_rate * (double)rate / (double)m->sample_rate * 4294967296.0 + 0.5);
+}
+
+// Gives a virtual voice a real slot, fading in.
+static void promote(Mixer *m, Voice &v)
+{
+    uint64_t fade = transition_frames(m);
+    if (v.behavior == RBTAUDIO_VIRTUAL_RESTART)
+    {
+        v.position = 0;
+        v.fraction = 0;
+    }
+    else if (v.behavior == RBTAUDIO_VIRTUAL_CONTINUE && !v.loop)
+    {
+        // Not worth coming back for less than a fade.
+        double left = (double)(v.sound->frame_count - v.position) * 4294967296.0 / (double)voice_step(m, v);
+        if (left < (double)fade)
+        {
+            end_voice(m, v);
+            return;
+        }
+    }
+    take_slot(m, v);
+    v.envelope = fade ? 0.0f : 1.0f;
+    v.envelope_step = fade ? 1.0f / (float)fade : 0.0f;
+}
+
+// Follows a voice's bus to a live one: a destroyed bus's voices move to its
+// parent, and a bus that can't be traced any more is the master.
+static void resolve_bus(const Mixer *m, Voice &v)
+{
+    const BusConfig *buses = m->config->buses;
+    for (uint32_t hop = 0; hop < m->bus_count; hop++)
+    {
+        const BusConfig &bus = buses[v.bus_index];
+        if (bus.generation == v.bus_generation && bus.live)
+            return;
+        if (bus.generation != v.bus_generation)
+            break;
+        v.bus_index = bus.parent;
+        v.bus_generation = buses[bus.parent].generation;
+    }
+    v.bus_index = 0;
+    v.bus_generation = buses[0].generation;
+}
+
+static void score_voice(const Mixer *m, Voice &v)
+{
+    v.unplaced_score = v.gain * v.group_gain * m->buses[v.bus_index].effective_gain * v.sound->loudness;
+    v.score = v.unplaced_score * v.spatial_gain;
+}
+
+static bool audible_enough(const Mixer *m, float score)
+{
+    return m->virtual_threshold <= 0.0f || score >= m->virtual_threshold;
+}
+
+// A direction packed by pack_direction().
+static void unpack_direction(Voice &v, uint32_t payload)
+{
+    v.has_direction = (payload & DIRECTION_PRESENT) != 0;
+    v.azimuth = (float)(payload & 0xFFFFu) * (360.0f / 65536.0f);
+    v.elevation = ((float)((payload >> 16) & 0x3FFFu) / 16383.0f - 0.5f) * 180.0f;
+    v.pan_changed = true;
+}
+
+// Applies the latest rbtaudio_voice_set_*() values.
+static void take_changes(Voice &v)
+{
+    uint32_t payload;
+    if (tagged_take(v.gain_word, v.generation, FLOAT_NONE, payload))
+        v.gain = bits_float(payload);
+    if (tagged_take(v.rate_word, v.generation, FLOAT_NONE, payload))
+        v.rate = bits_float(payload);
+    if (tagged_take(v.direction_word, v.generation, 0, payload))
+        unpack_direction(v, payload);
+}
+
+// Takes what the last update posted for a world-placed voice, if it posted
+// anything for this one.
+static void take_spatial(const Mixer *m, Voice &v, uint32_t index)
+{
+    const SpatialResult &r = m->results[index];
+    if (r.generation != v.generation)
+        return;
+    v.spatial_gain = r.gain;
+    v.doppler = r.rate;
+    v.distance = r.distance;
+    v.priority = r.priority;
+    if (r.direction)
+    {
+        float azimuth = v.azimuth, elevation = v.elevation;
+        bool had = v.has_direction;
+        unpack_direction(v, r.direction);
+        v.pan_changed = !had || v.azimuth != azimuth || v.elevation != elevation;
+    }
+    v.placed = true;
+}
+
+static bool stop_requested(const Voice &v, uint64_t &release)
+{
+    uint64_t word = v.stop_word.load(std::memory_order_acquire);
+    if ((uint32_t)(word >> 32) != v.generation || !(word & STOP_REQUESTED))
+        return false;
+    release = word & STOP_FRAMES_MASK;
+    return true;
+}
+
+// The frame of this render a voice starts on. False if it starts later.
+static bool start_offset(const Mixer *m, const Voice &v, uint32_t frames, bool host_valid, uint64_t host_ns,
+                         uint32_t &offset)
+{
+    offset = 0;
+    if (v.start_time_ns == 0 || !host_valid || v.start_time_ns <= host_ns)
+        return true;
+    // The nearest frame.
+    double ahead = (double)(v.start_time_ns - host_ns) * (double)m->sample_rate / 1e9 + 0.5;
+    if (ahead >= (double)frames)
+        return false;
+    offset = (uint32_t)ahead;
+    return true;
+}
+
+static bool in_group(const Voice &v, uint32_t index, uint32_t generation)
+{
+    return !v.dead && v.group_generation == generation && v.group_index == index && v.state != VOICE_WAITING &&
+           !v.releasing && !(v.fading_out && v.end_after_fade);
+}
+
+// Applies the voice's concurrency group's rules as it starts. False if they
+// drop it.
+static bool group_admit(Mixer *m, Voice &v, uint64_t now)
+{
+    v.group_generation = 0;
+    RBTAUDIO_CONCURRENCY id = v.concurrency ? v.concurrency : v.sound->concurrency;
+    uint32_t index, generation;
+    if (!split_id(id, m->max_groups, index, generation))
+        return true;
+    const GroupConfig &group = m->config->groups[index];
+    if (!group.live || group.generation != generation)
+        return true; // destroyed: plays with no group
+    GroupState &state = m->groups[index];
+    if (state.generation != generation)
+    {
+        state.generation = generation;
+        state.started = false;
+    }
+    if (group.retrigger_us && state.started && now - state.last_start < frames_from_us(m, group.retrigger_us))
+        return false;
+
+    uint32_t count = 0;
+    Voice *oldest = nullptr, *quietest = nullptr, *lowest = nullptr, *farthest = nullptr;
+    for (uint32_t i = 0; i < m->active_count; i++)
+    {
+        Voice &other = m->voices[m->active[i]];
+        if (&other == &v || !in_group(other, index, generation))
+            continue;
+        count++;
+        if (!oldest || other.serial < oldest->serial)
+            oldest = &other;
+        if (!quietest || other.score < quietest->score)
+            quietest = &other;
+        if (!lowest || other.priority < lowest->priority ||
+            (other.priority == lowest->priority && other.serial < lowest->serial))
+            lowest = &other;
+        if (!farthest || other.distance > farthest->distance ||
+            (other.distance == farthest->distance && other.serial < farthest->serial))
+            farthest = &other;
+    }
+    if (count >= group.max_instances)
+    {
+        Voice *victim = nullptr;
+        switch (group.resolution)
+        {
+        case RBTAUDIO_RESOLUTION_STOP_OLDEST:
+            victim = oldest;
+            break;
+        case RBTAUDIO_RESOLUTION_STOP_QUIETEST:
+            victim = quietest;
+            break;
+        case RBTAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY:
+            victim = lowest && lowest->priority <= v.priority ? lowest : nullptr;
+            break;
+        case RBTAUDIO_RESOLUTION_STOP_FARTHEST:
+            victim = farthest && farthest->distance >= v.distance ? farthest : nullptr;
+            break;
+        default:
+            break;
+        }
+        if (!victim)
+            return false;
+        stop_voice(m, *victim, transition_frames(m));
+    }
+    if (group.older_instance_gain < 1.0f)
+    {
+        for (uint32_t i = 0; i < m->active_count; i++)
+        {
+            Voice &other = m->voices[m->active[i]];
+            if (&other != &v && in_group(other, index, generation))
+                other.group_gain *= group.older_instance_gain;
+        }
+    }
+    state.started = true;
+    state.last_start = now;
+    v.group_index = index;
+    v.group_generation = generation;
+    return true;
+}
+
+// Makes room for one more logical voice. False if every voice there is
+// outranks the new one.
+static bool ensure_capacity(Mixer *m, const Voice &v)
+{
+    if (m->logical_count < m->max_voices)
+        return true;
+    Voice *weakest = nullptr;
+    bool weakest_real = false;
+    for (uint32_t i = 0; i < m->active_count; i++)
+    {
+        Voice &other = m->voices[m->active[i]];
+        if (other.dead || !other.logical)
+            continue;
+        bool real = other.state == VOICE_REAL && !other.fading_out;
+        bool weaker = !weakest || (real != weakest_real ? !real
+                                   : other.priority != weakest->priority ? other.priority < weakest->priority
+                                                                         : other.score < weakest->score);
+        if (weaker)
+        {
+            weakest = &other;
+            weakest_real = real;
+        }
+    }
+    if (!weakest || v.priority < weakest->priority)
+        return false;
+    kill_voice(m, *weakest);
+    return true;
+}
+
+// Starts a voice on frame [offset] of this render: real if it earns a slot,
+// else virtual - which ends it if its behavior is KILL.
+static void begin_voice(Mixer *m, Voice &v, uint32_t offset)
+{
+    v.serial = m->next_serial++;
+    RBTAUDIO_BUS bus_id = v.bus ? v.bus : v.sound->bus;
+    if (!split_id(bus_id, m->bus_count, v.bus_index, v.bus_generation))
+    {
+        v.bus_index = 0;
+        v.bus_generation = m->config->buses[0].generation;
+    }
+    resolve_bus(m, v);
+    score_voice(m, v);
+    bool held = m->buses[v.bus_index].held;
+    if (!held && audible_enough(m, v.score))
+    {
+        if (m->real_count >= m->max_real_voices)
+        {
+            // The lowest-ranked real voice gives way if this one outranks it.
+            Voice *lowest = nullptr;
+            for (uint32_t i = 0; i < m->active_count; i++)
+            {
+                Voice &other = m->voices[m->active[i]];
+                if (other.dead || &other == &v || other.state != VOICE_REAL || other.fading_out || other.releasing)
+                    continue;
+                if (!lowest || other.priority < lowest->priority ||
+                    (other.priority == lowest->priority && other.score < lowest->score))
+                    lowest = &other;
+            }
+            bool settled = lowest && lowest->real_frames >= frames_from_us(m, m->min_real_us);
+            if (lowest && (v.priority > lowest->priority ||
+                           (v.priority == lowest->priority && settled && v.score > lowest->score * TIE_MARGIN)))
+                demote(m, *lowest, false);
+        }
+        if (m->real_count < m->max_real_voices)
+        {
+            take_slot(m, v);
+            v.envelope = 1.0f;
+            v.envelope_step = 0.0f;
+            v.start_offset = offset;
+            return;
+        }
+    }
+    if (v.behavior == RBTAUDIO_VIRTUAL_KILL)
+    {
+        end_voice(m, v);
+        return;
+    }
+    v.state = VOICE_VIRTUAL;
+    v.frozen = held;
+}
+
+// Takes a queued play. False if it's dropped before it exists.
+static bool admit_voice(Mixer *m, uint32_t index, uint32_t frames, bool host_valid, uint64_t host_ns)
+{
+    Voice &v = m->voices[index];
+    v.state = VOICE_WAITING;
+    v.dead = v.logical = v.stop_seen = v.releasing = v.fading_out = v.end_after_fade = false;
+    v.frozen = v.cut = v.pan_changed = v.ended = false;
+    v.snap = true;
+    v.group_generation = 0;
+    v.slot = -1;
+    v.start_offset = 0;
+    v.position = 0;
+    v.fraction = 0;
+    v.applied_gain = 0.0f;
+    v.group_gain = 1.0f;
+    v.envelope = 1.0f;
+    v.envelope_step = 0.0f;
+    v.score = 0.0f;
+    v.real_frames = 0;
+    v.stream = NO_STREAM;
+    v.stream_wait = v.stream_failed = false;
+    v.world = v.placement.load(std::memory_order_relaxed) == RBTAUDIO_PLACEMENT_WORLD;
+    v.placed = false;
+    v.spatial_gain = 1.0f;
+    v.doppler = 1.0f;
+    v.distance = 0.0f;
+    v.unplaced_score = 0.0f;
+
+    // The sound may have been destroyed since rbtaudio_play() checked.
+    uint32_t sound_index, sound_generation;
+    if (!split_id(v.sound_id, m->max_sounds, sound_index, sound_generation))
+        return false;
+    Sound &sound = m->sounds[sound_index];
+    if (sound.live_id.load() != v.sound_id || sound.frame_count == 0)
+        return false; // an empty sound has ended before it starts
+    v.sound = &sound;
+    uint64_t release;
+    if (stop_requested(v, release))
+        return false; // stopped before it started
+    take_changes(v);
+    if (v.behavior == RBTAUDIO_VIRTUAL_UNSPECIFIED)
+        v.behavior = sound.virtual_behavior;
+    // A world-placed voice starts once an update has placed it.
+    if (v.world && m->results)
+        take_spatial(m, v, index);
+
+    uint32_t offset = 0;
+    bool starts = (!v.world || v.placed) && start_offset(m, v, frames, host_valid, host_ns, offset);
+    if (starts && !group_admit(m, v, m->clock + offset))
+        return false;
+    if (!ensure_capacity(m, v))
+        return false;
+    m->active[m->active_count++] = index;
+    v.logical = true;
+    m->logical_count++;
+    if (starts)
+        begin_voice(m, v, offset);
+    return true;
+}
+
+static void start_pending(Mixer *m, uint32_t frames, bool host_valid, uint64_t host_ns)
+{
+    // The queue is a stack: reverse it into the order the plays were made.
+    uint32_t stack = m->pending_head.exchange(0, std::memory_order_acquire);
+    uint32_t head = 0;
+    while (stack)
+    {
+        Voice &v = m->voices[stack - 1];
+        uint32_t next = v.next.load(std::memory_order_relaxed);
+        v.next.store(head, std::memory_order_relaxed);
+        head = stack;
+        stack = next;
+    }
+    while (head)
+    {
+        uint32_t index = head - 1;
+        head = m->voices[index].next.load(std::memory_order_relaxed);
+        if (!admit_voice(m, index, frames, host_valid, host_ns))
+        {
+            m->voices[index].live_id.store(0, std::memory_order_release);
+            free_push(m, index);
+        }
+        m->queued.fetch_sub(1, std::memory_order_release);
+    }
+}
+
+// Frees the records of voices that have ended.
+static void sweep(Mixer *m)
+{
+    for (uint32_t i = 0; i < m->active_count;)
+    {
+        uint32_t index = m->active[i];
+        Voice &v = m->voices[index];
+        if (!v.dead)
+        {
+            i++;
+            continue;
+        }
+        m->active[i] = m->active[--m->active_count];
+        v.published_id.store(0, std::memory_order_release);
+        v.live_id.store(0, std::memory_order_release);
+        v.folded_id.store(0, std::memory_order_release);
+        v.state = VOICE_FREE;
+        free_push(m, index);
+    }
+}
+
+// Takes the buses' and modifiers' latest requests and moves every fade on by
+// [frames], leaving each bus's effective gain and rate as of the render's end.
+static void update_buses(Mixer *m, uint32_t frames)
+{
+    const Config &config = *m->config;
+    for (uint32_t i = 0; i < config.order_count; i++)
+    {
+        uint32_t index = config.order[i];
+        const BusConfig &desc = config.buses[index];
+        Bus &bus = m->buses[index];
+        if (bus.generation != desc.generation)
+        {
+            bus.generation = desc.generation;
+            bus.gain.reset(desc.gain);
+            bus.rate.reset(desc.rate);
+            bus.mute.reset(1.0f);
+            bus.pause.reset(1.0f);
+        }
+        uint32_t payload, fade;
+        if (tagged_take(bus.gain_word, bus.generation, FLOAT_NONE, payload))
+        {
+            fade = (uint32_t)bus.gain_fade_word.load(std::memory_order_relaxed);
+            bus.gain.set(bits_float(payload), frames_from_us(m, fade));
+        }
+        if (tagged_take(bus.rate_word, bus.generation, FLOAT_NONE, payload))
+        {
+            fade = (uint32_t)bus.rate_fade_word.load(std::memory_order_relaxed);
+            bus.rate.set(bits_float(payload), frames_from_us(m, fade));
+        }
+        if (tagged_take(bus.mute_word, bus.generation, 0, payload))
+            bus.mute.set(payload & SWITCH_ON ? 0.0f : 1.0f, frames_from_us(m, payload & SWITCH_FADE_MASK));
+        if (tagged_take(bus.pause_word, bus.generation, 0, payload))
+            bus.pause.set(payload & SWITCH_ON ? 0.0f : 1.0f, frames_from_us(m, payload & SWITCH_FADE_MASK));
+        bus.modifier_gain = 1.0f;
+        bus.modifier_rate = 1.0f;
+    }
+
+    for (uint32_t i = 0; i < m->max_modifiers; i++)
+    {
+        const ModifierConfig &desc = config.modifiers[i];
+        if (desc.generation == 0)
+            continue;
+        Modifier &modifier = m->modifiers[i];
+        if (modifier.generation != desc.generation)
+        {
+            modifier.generation = desc.generation;
+            modifier.amount = 0.0f;
+        }
+        bool active = false;
+        if (desc.live)
+        {
+            uint64_t word = modifier.active_word.load(std::memory_order_relaxed);
+            active = ((uint32_t)(word >> 32) == desc.generation && (word & 1)) ||
+                     (desc.has_trigger && modifier.triggered.load(std::memory_order_relaxed));
+        }
+        uint64_t fade = frames_from_us(m, active ? desc.fade_in_us : desc.fade_out_us);
+        float move = fade ? (float)frames / (float)fade : 1.0f;
+        modifier.amount = active ? fminf(1.0f, modifier.amount + move) : fmaxf(0.0f, modifier.amount - move);
+        if (modifier.amount <= 0.0f)
+            continue;
+        const ModifierTarget *targets = config.targets + (size_t)i * m->bus_count;
+        for (uint32_t t = 0; t < desc.target_count; t++)
+        {
+            Bus &bus = m->buses[targets[t].bus];
+            bus.modifier_gain *= 1.0f + (targets[t].gain - 1.0f) * modifier.amount;
+            bus.modifier_rate *= 1.0f + (targets[t].rate - 1.0f) * modifier.amount;
+        }
+    }
+
+    for (uint32_t i = 0; i < config.order_count; i++)
+    {
+        uint32_t index = config.order[i];
+        Bus &bus = m->buses[index];
+        // Shut for the whole of this render: its last fade has finished.
+        bus.held = (bus.mute.target == 0.0f && bus.mute.value == 0.0f) ||
+                   (bus.pause.target == 0.0f && bus.pause.value == 0.0f);
+        bus.gain.advance(frames);
+        bus.rate.advance(frames);
+        bus.mute.advance(frames);
+        bus.pause.advance(frames);
+        bus.effective_gain = bus.gain.value * bus.mute.value * bus.pause.value * bus.modifier_gain;
+        bus.effective_rate = bus.rate.value * bus.modifier_rate;
+        bus.has_audible = false;
+        if (index != 0)
+        {
+            const Bus &parent = m->buses[config.buses[index].parent];
+            bus.effective_gain *= parent.effective_gain;
+            bus.effective_rate *= parent.effective_rate;
+            bus.held = bus.held || parent.held;
+        }
+    }
+}
+
+// A voice already playing: what changed since the last render.
+static void prepare_voice(Mixer *m, Voice &v, const uint64_t *decisions, uint32_t index)
+{
+    if (v.sound->live_id.load() != v.sound_id)
+    {
+        // Its sound was destroyed. One that's sounding fades across this
+        // render rather than clicking; the sound's memory outlives it.
+        if (v.state != VOICE_REAL)
+        {
+            end_voice(m, v);
+            return;
+        }
+        v.cut = true;
+    }
+    uint64_t release;
+    if (!v.stop_seen && stop_requested(v, release))
+    {
+        v.stop_seen = true;
+        stop_voice(m, v, release);
+        if (v.dead)
+            return;
+    }
+    // Its stream failed: it ends with a short fade (or at once, if silent),
+    // and the update after the decoding that met it says so.
+    if (v.stream != NO_STREAM && !v.stream_failed &&
+        std::atomic_ref<uint32_t>(m->streams[v.stream].failed).load(std::memory_order_acquire))
+    {
+        v.stream_failed = true;
+        if (v.state == VOICE_REAL)
+            stop_voice(m, v, transition_frames(m));
+        else
+            end_voice(m, v);
+        if (v.dead)
+            return;
+    }
+    if (!v.releasing)
+        take_changes(v);
+    if (v.state == VOICE_WAITING)
+        return;
+
+    resolve_bus(m, v);
+    score_voice(m, v);
+    if (m->buses[v.bus_index].held)
+    {
+        // Muted or paused: it keeps its place, whatever its behavior, until
+        // the bus opens again.
+        if (v.state == VOICE_REAL)
+        {
+            if (v.releasing || v.end_after_fade)
+                end_voice(m, v);
+            else
+                make_virtual(m, v, true);
+        }
+        else
+        {
+            v.frozen = true;
+        }
+        return;
+    }
+    if (!decisions || v.releasing || (uint32_t)(decisions[index] >> 32) != v.generation)
+        return;
+    if ((decisions[index] & 3) != DECISION_VIRTUAL)
+        return;
+    if (v.state == VOICE_REAL)
+    {
+        if (!v.fading_out)
+            demote(m, v, false);
+    }
+    else if (v.behavior == RBTAUDIO_VIRTUAL_KILL)
+    {
+        end_voice(m, v);
+    }
+    else
+    {
+        v.frozen = false;
+    }
+}
+
+// The voices the last update ranked real, now that the ones it ranked virtual
+// have given up their slots.
+static void promote_voice(Mixer *m, Voice &v, uint64_t decision)
+{
+    if (v.dead || v.releasing || (uint32_t)(decision >> 32) != v.generation || (decision & 3) != DECISION_REAL)
+        return;
+    if (m->buses[v.bus_index].held || m->real_count >= m->max_real_voices)
+        return;
+    if (v.state == VOICE_VIRTUAL)
+    {
+        // A streamed voice comes back with its stream: at once from its
+        // prefetch, or once the stream has filled (stream_wait_check()).
+        if (v.sound->streamed && (v.stream == NO_STREAM || v.stream_wait))
+            return;
+        promote(m, v);
+    }
+    else if (v.state == VOICE_REAL && v.fading_out && !v.end_after_fade)
+    {
+        // Still fading out from last time: turn it round.
+        uint64_t fade = transition_frames(m);
+        m->fading_count--;
+        m->real_count++;
+        v.fading_out = false;
+        v.envelope_step = fade ? 1.0f / (float)fade : 1.0f;
+    }
+}
+
+// A voice's speaker gains: [channel_count] per source channel.
+static void voice_pan(const Mixer *m, const Voice &v, float *gains)
+{
+    const Layout &layout = m->layout;
+    uint32_t channels = m->channel_count;
+    uint32_t source_channels = v.sound->channel_count;
+    memset(gains, 0, (size_t)source_channels * channels * sizeof(float));
+    if (source_channels == 1)
+    {
+        // Audio thread: what rbtaudio_voice_is_folded() reads.
+        bool folded = v.has_direction && direction_folded(layout, v.azimuth, v.elevation);
+        const_cast<Voice &>(v).folded_id.store(folded ? v.id : 0, std::memory_order_release);
+        if (v.has_direction)
+            direction_pan(layout, v.azimuth, v.elevation, gains);
+        else if (layout.front_centre >= 0)
+            gains[layout.front_centre] = 1.0f;
+        else if (layout.front_left >= 0 && layout.front_right >= 0)
+            gains[layout.front_left] = gains[layout.front_right] = 0.70710678f;
+        else
+            direction_pan(layout, 0.0f, 0.0f, gains);
+        return;
+    }
+    float *left = gains, *right = gains + channels;
+    if (layout.mono >= 0)
+    {
+        left[layout.mono] = right[layout.mono] = 0.5f;
+        return;
+    }
+    if (layout.front_left >= 0)
+        left[layout.front_left] = 1.0f;
+    else
+        direction_pan(layout, -30.0f, 0.0f, left);
+    if (layout.front_right >= 0)
+        right[layout.front_right] = 1.0f;
+    else
+        direction_pan(layout, 30.0f, 0.0f, right);
+}
+
+// One frame of [sound] at [position] + [fraction], band-limited.
+static inline void sinc_frame(const float *table, const Sound &sound, bool loop, uint64_t position, uint32_t fraction,
+                              float stretch, float *out)
+{
+    float t = (float)fraction * (1.0f / 4294967296.0f);
+    int half = (int)ceilf((float)SINC_ZEROS * stretch);
+    float to_table = (float)SINC_RESOLUTION / stretch;
+    const float limit = (float)(SINC_ZEROS * SINC_RESOLUTION);
+    int64_t count = (int64_t)sound.frame_count;
+    uint32_t channels = sound.channel_count;
+    const float *samples = sound.samples;
+    float sum[2] = {0.0f, 0.0f};
+    for (int k = -half + 1; k <= half; k++)
+    {
+        float at = fabsf((float)k - t) * to_table;
+        if (at >= limit)
+            continue;
+        int entry = (int)at;
+        float weight = table[entry] + (table[entry + 1] - table[entry]) * (at - (float)entry);
+        int64_t frame = (int64_t)position + k;
+        if (frame < 0 || frame >= count)
+        {
+            if (!loop)
+                continue;
+            frame %= count;
+            if (frame < 0)
+                frame += count;
+        }
+        sum[0] += weight * samples[frame * channels];
+        if (channels == 2)
+            sum[1] += weight * samples[frame * channels + 1];
+    }
+    out[0] = sum[0] / stretch;
+    out[1] = sum[1] / stretch;
+}
+
+// Resamples the voice's next [count] frames into m->source, its rate gliding
+// from the last render's to [step_end], and moves its place on. Returns how
+// many frames it had before its sound ended.
+static uint32_t render_source(Mixer *m, Voice &v, uint32_t count, uint64_t step_end)
+{
+    const Sound &sound = *v.sound;
+    const float *samples = sound.samples;
+    uint64_t length = sound.frame_count;
+    uint32_t channels = sound.channel_count;
+    float *out0 = m->source;
+    float *out1 = m->source + m->max_frames;
+    uint64_t position = v.position;
+    uint32_t fraction = v.fraction;
+    uint64_t step = v.step;
+    int64_t glide = ((int64_t)step_end - (int64_t)step) / (int64_t)count;
+
+    // A voice at its sound's own rate is copied, not resampled.
+    bool copy = step == FIXED_ONE && step_end == FIXED_ONE && fraction == 0;
+    bool sinc = !copy && m->resampler == RBTAUDIO_RESAMPLER_SINC;
+    float stretch = 1.0f;
+    uint64_t end = length;
+    if (sinc)
+    {
+        uint64_t fastest = step > step_end ? step : step_end;
+        stretch = clamp_float((float)((double)fastest / 4294967296.0), 1.0f, SINC_MAX_STRETCH);
+        if (!v.loop)
+            end += (uint64_t)ceilf((float)SINC_ZEROS * stretch); // the filter's tail
+    }
+
+    uint32_t produced = count;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (v.loop)
+        {
+            if (position >= length)
+                position %= length;
+        }
+        else if (position >= end)
+        {
+            produced = i;
+            break;
+        }
+        if (copy)
+        {
+            out0[i] = samples[position * channels];
+            if (channels == 2)
+                out1[i] = samples[position * channels + 1];
+        }
+        else if (sinc)
+        {
+            float frame[2];
+            sinc_frame(m->sinc, sound, v.loop, position, fraction, stretch, frame);
+            out0[i] = frame[0];
+            out1[i] = frame[1];
+        }
+        else
+        {
+            uint64_t after = position + 1 < length ? position + 1 : 0;
+            bool silent_after = position + 1 >= length && !v.loop;
+            float t = (float)fraction * (1.0f / 4294967296.0f);
+            float a = samples[position * channels];
+            float b = silent_after ? 0.0f : samples[after * channels];
+            out0[i] = a + (b - a) * t;
+            if (channels == 2)
+            {
+                a = samples[position * channels + 1];
+                b = silent_after ? 0.0f : samples[after * channels + 1];
+                out1[i] = a + (b - a) * t;
+            }
+        }
+        step = (uint64_t)((int64_t)step + glide);
+        uint64_t moved = (uint64_t)fraction + (step & 0xFFFFFFFFull);
+        position += (step >> 32) + (moved >> 32);
+        fraction = (uint32_t)moved;
+    }
+    for (uint32_t i = produced; i < count; i++)
+    {
+        out0[i] = 0.0f;
+        out1[i] = 0.0f;
+    }
+    v.position = position;
+    v.fraction = fraction;
+    v.step = step_end;
+    v.ended = !v.loop && (produced < count || position >= end);
+    return produced;
+}
+
+// A voice takes the stream an update gave it. It starts at the prefetch's
+// end for a voice that will play from its start, or is still within the
+// prefetch, which plays at once; else at the voice's place, which a virtual
+// voice then waits for, silent, until the decoding has filled it.
+static void stream_take(Mixer *m, Voice &v, uint32_t index)
+{
+    Stream &s = m->streams[index];
+    std::atomic_ref<uint32_t> state(s.state);
+    uint64_t prefetch = v.sound->prefetch_frames;
+    bool virtual_voice = v.state == VOICE_VIRTUAL;
+    uint64_t place = virtual_voice && v.behavior == RBTAUDIO_VIRTUAL_RESTART ? 0 : v.position;
+    if (state.load(std::memory_order_acquire) == STREAM_ASSIGNED)
+    {
+        uint64_t origin = place < prefetch ? prefetch : place;
+        s.request_origin = origin;
+        std::atomic_ref<uint64_t>(s.read).store(origin, std::memory_order_relaxed);
+        state.store(STREAM_REQUESTED, std::memory_order_release);
+    }
+    v.stream = index;
+    v.stream_wait = virtual_voice && place >= prefetch;
+}
+
+// Tells the decoding how far back the voice may still read: as far as the
+// resampler reaches behind its place.
+static void stream_publish_read(Mixer *m, const Voice &v)
+{
+    if (v.stream == NO_STREAM)
+        return;
+    uint64_t read = v.position > STREAM_REACH ? v.position - STREAM_REACH : 0;
+    std::atomic_ref<uint64_t>(m->streams[v.stream].read).store(read, std::memory_order_release);
+}
+
+// What a streamed voice's render reads: its sound's prefetch and tail, and
+// its stream's ring as far as the decoding had written when the render
+// began.
+struct StreamView
+{
+    const float *prefetch;
+    uint64_t prefetch_frames;
+    const float *tail; // the sound's last STREAM_REACH frames, for a loop's first taps
+    const float *ring;
+    uint64_t origin;
+    uint64_t written;
+    uint64_t end;
+    uint32_t ring_frames;
+    uint32_t channels;
+};
+
+static void stream_view(Mixer *m, const Voice &v, StreamView &view)
+{
+    const Sound &sound = *v.sound;
+    view.prefetch = sound.samples;
+    view.prefetch_frames = sound.prefetch_frames;
+    view.tail = sound.samples + (size_t)sound.prefetch_frames * sound.channel_count;
+    view.ring = nullptr;
+    view.origin = 0;
+    view.written = 0;
+    view.end = STREAM_END_UNKNOWN;
+    view.ring_frames = 0;
+    view.channels = sound.channel_count;
+    if (v.stream == NO_STREAM)
+        return;
+    Stream &s = m->streams[v.stream];
+    // The end first: the decoding publishes it after the frames before it.
+    uint64_t end = std::atomic_ref<uint64_t>(s.end).load(std::memory_order_acquire);
+    uint64_t written = std::atomic_ref<uint64_t>(s.written).load(std::memory_order_acquire);
+    if (written == 0)
+        return; // not opened yet
+    view.ring = s.ring;
+    view.origin = s.origin;
+    view.written = written;
+    view.end = end;
+    view.ring_frames = s.ring_frames;
+}
+
+// Frame [frame], in play order: its samples, or null for silence (before
+// the voice's first frame, between the prefetch and a ring starting later,
+// past the data's end).
+static inline const float *stream_frame(const StreamView &s, bool loop, int64_t frame)
+{
+    if (frame < 0)
+    {
+        if (!loop || frame < -(int64_t)STREAM_REACH)
+            return nullptr;
+        return s.tail + (size_t)((int64_t)STREAM_REACH + frame) * s.channels;
+    }
+    uint64_t at = (uint64_t)frame;
+    if (s.end != STREAM_END_UNKNOWN && at >= s.end)
+        return nullptr;
+    if (s.ring && at >= s.origin)
+        return s.ring + (size_t)(at % s.ring_frames) * s.channels;
+    if (at < s.prefetch_frames)
+        return s.prefetch + (size_t)at * s.channels;
+    return nullptr;
+}
+
+// Whether frame [frame], in play order, is there to read, or known silence.
+static inline bool stream_has(const StreamView &s, uint64_t frame)
+{
+    if (s.end != STREAM_END_UNKNOWN && frame >= s.end)
+        return true;
+    if (s.ring && frame >= s.origin)
+        return frame < s.written;
+    return frame < s.prefetch_frames;
+}
+
+// sinc_frame() over a stream's frames: the same taps, weights and sums, so
+// the same bits as from the whole sound in memory.
+static inline void stream_sinc_frame(const float *table, const StreamView &s, bool loop, uint64_t position,
+                                     uint32_t fraction, float stretch, float *out)
+{
+    float t = (float)fraction * (1.0f / 4294967296.0f);
+    int half = (int)ceilf((float)SINC_ZEROS * stretch);
+    float to_table = (float)SINC_RESOLUTION / stretch;
+    const float limit = (float)(SINC_ZEROS * SINC_RESOLUTION);
+    bool end_known = s.end != STREAM_END_UNKNOWN;
+    float sum[2] = {0.0f, 0.0f};
+    for (int k = -half + 1; k <= half; k++)
+    {
+        float at = fabsf((float)k - t) * to_table;
+        if (at >= limit)
+            continue;
+        int entry = (int)at;
+        float weight = table[entry] + (table[entry + 1] - table[entry]) * (at - (float)entry);
+        int64_t frame = (int64_t)position + k;
+        if (!loop && (frame < 0 || (end_known && (uint64_t)frame >= s.end)))
+            continue;
+        const float *samples = stream_frame(s, loop, frame);
+        if (!samples)
+            continue;
+        sum[0] += weight * samples[0];
+        if (s.channels == 2)
+            sum[1] += weight * samples[1];
+    }
+    out[0] = sum[0] / stretch;
+    out[1] = sum[1] / stretch;
+}
+
+// render_source() for a voice of a streamed sound: the same resampling, in
+// the same arithmetic, reading its frames in play order through [s]. Where a
+// frame it needs isn't there yet, the rest of the render is silence - how
+// many frames, in [missing] - and its place moves on through it, so a late
+// decoding doesn't leave it behind the clock.
+static uint32_t render_stream_source(Mixer *m, Voice &v, const StreamView &s, uint32_t count, uint64_t step_end,
+                                     uint32_t &missing)
+{
+    float *out0 = m->source;
+    float *out1 = m->source + m->max_frames;
+    uint64_t position = v.position;
+    uint32_t fraction = v.fraction;
+    uint64_t step = v.step;
+    int64_t glide = ((int64_t)step_end - (int64_t)step) / (int64_t)count;
+
+    bool copy = step == FIXED_ONE && step_end == FIXED_ONE && fraction == 0;
+    bool sinc = !copy && m->resampler == RBTAUDIO_RESAMPLER_SINC;
+    float stretch = 1.0f;
+    uint64_t ahead = copy ? 0 : 1;
+    bool end_known = s.end != STREAM_END_UNKNOWN;
+    uint64_t end = s.end;
+    if (sinc)
+    {
+        uint64_t fastest = step > step_end ? step : step_end;
+        stretch = clamp_float((float)((double)fastest / 4294967296.0), 1.0f, SINC_MAX_STRETCH);
+        ahead = (uint64_t)ceilf((float)SINC_ZEROS * stretch);
+        if (!v.loop && end_known)
+            end += ahead; // the filter's tail
+    }
+
+    uint32_t produced = count;
+    missing = 0;
+    uint32_t i = 0;
+    for (; i < count; i++)
+    {
+        if (!v.loop && end_known && position >= end)
+        {
+            produced = i;
+            break;
+        }
+        if (!stream_has(s, position + ahead))
+        {
+            produced = i;
+            missing = count - i;
+            break;
+        }
+        if (copy)
+        {
+            const float *frame = stream_frame(s, v.loop, (int64_t)position);
+            out0[i] = frame ? frame[0] : 0.0f;
+            if (s.channels == 2)
+                out1[i] = frame ? frame[1] : 0.0f;
+        }
+        else if (sinc)
+        {
+            float frame[2];
+            stream_sinc_frame(m->sinc, s, v.loop, position, fraction, stretch, frame);
+            out0[i] = frame[0];
+            out1[i] = frame[1];
+        }
+        else
+        {
+            bool silent_after = !v.loop && end_known && position + 1 >= s.end;
+            const float *here = stream_frame(s, v.loop, (int64_t)position);
+            const float *after = silent_after ? nullptr : stream_frame(s, v.loop, (int64_t)position + 1);
+            float t = (float)fraction * (1.0f / 4294967296.0f);
+            float a = here ? here[0] : 0.0f;
+            float b = after ? after[0] : 0.0f;
+            out0[i] = a + (b - a) * t;
+            if (s.channels == 2)
+            {
+                a = here ? here[1] : 0.0f;
+                b = after ? after[1] : 0.0f;
+                out1[i] = a + (b - a) * t;
+            }
+        }
+        step = (uint64_t)((int64_t)step + glide);
+        uint64_t moved = (uint64_t)fraction + (step & 0xFFFFFFFFull);
+        position += (step >> 32) + (moved >> 32);
+        fraction = (uint32_t)moved;
+    }
+    // Run dry: the place moves on as if it had played.
+    for (; i < count; i++)
+    {
+        step = (uint64_t)((int64_t)step + glide);
+        uint64_t moved = (uint64_t)fraction + (step & 0xFFFFFFFFull);
+        position += (step >> 32) + (moved >> 32);
+        fraction = (uint32_t)moved;
+    }
+    for (uint32_t k = produced; k < count; k++)
+    {
+        out0[k] = 0.0f;
+        out1[k] = 0.0f;
+    }
+    v.position = position;
+    v.fraction = fraction;
+    v.step = step_end;
+    v.ended = !v.loop && end_known && (position >= end || (produced < count && missing == 0));
+    return produced;
+}
+
+// A virtual voice waiting for its stream (one coming back elsewhere than its
+// start): real again, fading in, once the decoding has filled the ring past
+// its place; ended if its stream failed.
+static void stream_wait_check(Mixer *m, Voice &v)
+{
+    Stream &s = m->streams[v.stream];
+    if (std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_acquire))
+    {
+        end_voice(m, v);
+        return;
+    }
+    uint64_t end = std::atomic_ref<uint64_t>(s.end).load(std::memory_order_acquire);
+    uint64_t written = std::atomic_ref<uint64_t>(s.written).load(std::memory_order_acquire);
+    bool ready = written > v.position + STREAM_REACH || (end != STREAM_END_UNKNOWN && written >= end && written != 0);
+    if (!ready || m->real_count >= m->max_real_voices || m->buses[v.bus_index].held)
+        return;
+    uint64_t fade = transition_frames(m);
+    take_slot(m, v);
+    v.envelope = fade ? 0.0f : 1.0f;
+    v.envelope_step = fade ? 1.0f / (float)fade : 0.0f;
+    v.stream_wait = false;
+}
+
+// Mixes a real voice's part of this render.
+static void mix_voice(Mixer *m, Voice &v, uint32_t frames)
+{
+    uint32_t channels = m->channel_count;
+    uint32_t source_channels = v.sound->channel_count;
+    uint32_t offset = v.start_offset;
+    uint32_t count = frames - offset;
+    v.start_offset = 0;
+
+    float gain = v.cut ? 0.0f : v.gain * v.group_gain * m->buses[v.bus_index].effective_gain * v.spatial_gain;
+    uint64_t step = voice_step(m, v);
+    float *pan = m->pan + (size_t)v.slot * 2 * channels;
+    float *pan_end = pan;
+    if (v.snap)
+    {
+        // Nothing mixed yet to ramp from.
+        v.applied_gain = gain;
+        v.step = step;
+        voice_pan(m, v, pan);
+    }
+    else if (v.pan_changed)
+    {
+        pan_end = m->pan_scratch;
+        voice_pan(m, v, pan_end);
+    }
+    v.snap = false;
+    v.pan_changed = false;
+
+    uint32_t produced;
+    if (v.sound->streamed)
+    {
+        StreamView view;
+        stream_view(m, v, view);
+        uint32_t missing;
+        produced = render_stream_source(m, v, view, count, step, missing);
+        // Silence for want of a ring's frames, counted on the sound: not a
+        // voice ending as its stream failed, or as its sound went.
+        if (missing && !v.stream_failed && !v.cut)
+            v.sound->underrun_frames.fetch_add(missing, std::memory_order_relaxed);
+        stream_publish_read(m, v);
+    }
+    else
+    {
+        produced = render_source(m, v, count, step);
+    }
+
+    // Gain and envelope, ramped across the render.
+    float gain_step = (gain - v.applied_gain) / (float)count;
+    for (uint32_t c = 0; c < source_channels; c++)
+    {
+        float *source = m->source + (size_t)c * m->max_frames;
+        for (uint32_t i = 0; i < produced; i++)
+        {
+            float envelope = clamp_float(v.envelope + v.envelope_step * (float)(i + 1), 0.0f, 1.0f);
+            source[i] *= (v.applied_gain + gain_step * (float)(i + 1)) * envelope;
+        }
+    }
+    v.applied_gain = gain;
+    v.envelope = clamp_float(v.envelope + v.envelope_step * (float)count, 0.0f, 1.0f);
+
+    for (uint32_t c = 0; c < source_channels; c++)
+    {
+        const float *source = m->source + (size_t)c * m->max_frames;
+        for (uint32_t o = 0; o < channels; o++)
+        {
+            float from = pan[c * channels + o];
+            float to = pan_end[c * channels + o];
+            if (from == 0.0f && to == 0.0f)
+                continue;
+            float *out = m->mix + (size_t)o * m->max_frames + offset;
+            if (from == to)
+            {
+                for (uint32_t i = 0; i < produced; i++)
+                    out[i] += source[i] * from;
+            }
+            else
+            {
+                float pan_step = (to - from) / (float)count;
+                for (uint32_t i = 0; i < produced; i++)
+                    out[i] += source[i] * (from + pan_step * (float)(i + 1));
+            }
+        }
+    }
+    if (pan_end != pan)
+        memcpy(pan, pan_end, (size_t)source_channels * channels * sizeof(float));
+    v.real_frames += count;
+
+    if (v.ended || v.cut)
+        end_voice(m, v);
+    else if (v.envelope_step < 0.0f && v.envelope <= 0.0f)
+        finish_fade(m, v);
+    else if (v.envelope_step > 0.0f && v.envelope >= 1.0f)
+        v.envelope_step = 0.0f;
+}
+
+// A virtual voice's place moves on only if it's CONTINUE, and isn't held.
+// One waiting for its stream counts in play order, as the stream does, and
+// tells the decoding where it has got.
+static void advance_virtual(Mixer *m, Voice &v, uint32_t frames)
+{
+    if (v.frozen || v.behavior != RBTAUDIO_VIRTUAL_CONTINUE)
+    {
+        stream_publish_read(m, v);
+        return;
+    }
+    uint64_t length = v.sound->frame_count;
+    uint64_t step = voice_step(m, v);
+    uint64_t moved = (uint64_t)v.fraction + (step & 0xFFFFFFFFull) * frames;
+    v.position += (step >> 32) * frames + (moved >> 32);
+    v.fraction = (uint32_t)moved;
+    v.step = step;
+    if (v.stream != NO_STREAM)
+    {
+        uint64_t end = std::atomic_ref<uint64_t>(m->streams[v.stream].end).load(std::memory_order_acquire);
+        if (!v.loop && end != STREAM_END_UNKNOWN && v.position >= end)
+            end_voice(m, v);
+        else
+            stream_publish_read(m, v);
+        return;
+    }
+    if (v.loop)
+        v.position %= length;
+    else if (v.position >= length)
+        end_voice(m, v);
+}
+
+// Tells rbtaudio_mixer_update() where every voice and bus stands.
+static void publish(Mixer *m)
+{
+    uint64_t settle = frames_from_us(m, m->min_real_us);
+    for (uint32_t i = 0; i < m->active_count; i++)
+    {
+        Voice &v = m->voices[m->active[i]];
+        uint32_t flags = 0;
+        bool real = v.state == VOICE_REAL && !v.fading_out;
+        if (real)
+            flags |= PUBLISHED_REAL;
+        if (v.releasing || (v.fading_out && v.end_after_fade))
+            flags |= PUBLISHED_ENDING;
+        if (v.state == VOICE_WAITING)
+            flags |= PUBLISHED_WAITING;
+        else if (m->buses[v.bus_index].held)
+            flags |= PUBLISHED_HELD;
+        if (v.real_frames >= settle)
+            flags |= PUBLISHED_SETTLED;
+        if (real && !v.releasing && v.score > m->virtual_threshold)
+            m->buses[v.bus_index].has_audible = true;
+        if (v.sound->streamed)
+        {
+            flags |= PUBLISHED_STREAMED;
+            bool restarts = v.state == VOICE_VIRTUAL && v.behavior == RBTAUDIO_VIRTUAL_RESTART;
+            if (v.stream == NO_STREAM && (restarts || v.position < v.sound->prefetch_frames))
+                flags |= PUBLISHED_AT_START;
+        }
+        if (v.loop)
+            flags |= PUBLISHED_LOOP;
+        // The update multiplies a world-placed voice's by its own, newer,
+        // gain from distance and cone, and offsets the play's priority.
+        v.published_info.store((uint64_t)float_bits(v.unplaced_score) | ((uint64_t)v.base_priority << 32) |
+                                   ((uint64_t)flags << 40),
+                               std::memory_order_relaxed);
+        v.published_sound.store(v.sound_id, std::memory_order_relaxed);
+        v.published_id.store(v.id, std::memory_order_release);
+    }
+    const Config &config = *m->config;
+    for (uint32_t i = config.order_count; i-- > 0;)
+    {
+        uint32_t index = config.order[i];
+        Bus &bus = m->buses[index];
+        if (bus.has_audible && index != 0)
+            m->buses[config.buses[index].parent].has_audible = true;
+        bus.audible.store(bus.has_audible ? 1 : 0, std::memory_order_relaxed);
+    }
+}
+
+// Mixes [frames] frames (at most max_frames) into m->mix.
+static void render_block(Mixer *m, uint32_t frames, bool host_valid, uint64_t host_ns)
+{
+    if (m->config_buffer.take())
+        m->config = &m->configs[m->config_buffer.read];
+    update_buses(m, frames);
+    const uint64_t *decisions = m->decision_buffer.take() ? m->decisions[m->decision_buffer.read] : nullptr;
+    if (decisions && m->spatial)
+    {
+        // World-placed voices' places, with the decisions they were ranked by.
+        m->results = m->spatial_results[m->decision_buffer.read];
+        for (uint32_t i = 0; i < m->active_count; i++)
+        {
+            Voice &v = m->voices[m->active[i]];
+            if (!v.dead && v.world)
+                take_spatial(m, v, m->active[i]);
+        }
+    }
+
+    if (decisions && m->max_streams)
+    {
+        // The streams the update gave: each taken by its voice, or let go.
+        for (uint32_t i = 0; i < m->active_count; i++)
+        {
+            Voice &v = m->voices[m->active[i]];
+            uint64_t decision = decisions[m->active[i]];
+            uint32_t given = (uint32_t)decision >> 2;
+            if (v.dead || given == 0 || (uint32_t)(decision >> 32) != v.generation)
+                continue;
+            if (v.stream == given - 1)
+            {
+                // Ranked virtual while still waiting for it: nothing read it.
+                if ((decision & 3) == DECISION_VIRTUAL && v.state == VOICE_VIRTUAL)
+                    stream_release(m, v);
+                continue;
+            }
+            bool takes = (decision & 3) == DECISION_REAL && v.stream == NO_STREAM && v.sound->streamed && !v.releasing &&
+                         !v.cut && v.state != VOICE_WAITING;
+            if (takes)
+                stream_take(m, v, given - 1);
+            else
+                stream_refuse(m, given - 1);
+        }
+    }
+    for (uint32_t i = 0; i < m->active_count; i++)
+    {
+        Voice &v = m->voices[m->active[i]];
+        if (!v.dead)
+            prepare_voice(m, v, decisions, m->active[i]);
+    }
+    if (decisions)
+    {
+        for (uint32_t i = 0; i < m->active_count; i++)
+            promote_voice(m, m->voices[m->active[i]], decisions[m->active[i]]);
+    }
+    for (uint32_t i = 0; i < m->active_count && m->max_streams; i++)
+    {
+        Voice &v = m->voices[m->active[i]];
+        if (!v.dead && v.state == VOICE_VIRTUAL && v.stream_wait)
+            stream_wait_check(m, v);
+    }
+    for (uint32_t i = 0; i < m->active_count; i++)
+    {
+        Voice &v = m->voices[m->active[i]];
+        uint32_t offset;
+        if (v.dead || v.state != VOICE_WAITING)
+            continue;
+        if (v.world && !v.placed)
+            continue; // not placed yet
+        if (!start_offset(m, v, frames, host_valid, host_ns, offset))
+            continue;
+        if (group_admit(m, v, m->clock + offset))
+            begin_voice(m, v, offset);
+        else
+            end_voice(m, v);
+    }
+    start_pending(m, frames, host_valid, host_ns);
+    sweep(m);
+
+    for (uint32_t c = 0; c < m->channel_count; c++)
+        memset(m->mix + (size_t)c * m->max_frames, 0, frames * sizeof(float));
+    for (uint32_t i = 0; i < m->active_count; i++)
+    {
+        Voice &v = m->voices[m->active[i]];
+        if (v.dead)
+            continue;
+        if (v.state == VOICE_REAL)
+            mix_voice(m, v, frames);
+        else if (v.state == VOICE_VIRTUAL)
+            advance_virtual(m, v, frames);
+    }
+    sweep(m);
+    publish(m);
+    m->clock += frames;
+}
+
+// [value] as a signed integer of [bits] bits, clamped.
+static int32_t quantize(float value, int bits)
+{
+    if (!(value == value))
+        return 0;
+    double scale = (double)(1ull << (bits - 1));
+    double scaled = (double)value * scale;
+    if (scaled >= scale - 1.0)
+        return (int32_t)(scale - 1.0);
+    if (scaled <= -scale)
+        return (int32_t)(-scale);
+    return (int32_t)lrint(scaled);
+}
+
+// A uniform random number in [-0.5, 0.5) from [state] (xorshift64*). Audio
+// thread: TPDF dither's.
+static double dither_uniform(uint64_t &state)
+{
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    uint64_t bits = state * 0x2545F4914F6CDD1Dull;
+    return (double)(bits >> 11) * (1.0 / 9007199254740992.0) - 0.5;
+}
+
+// [value] as a 16-bit sample with TPDF dither: the sum of two uniform
+// numbers, triangular across one least significant bit either side, added
+// before rounding.
+static int16_t quantize_dithered_16(float value, uint64_t &state)
+{
+    if (!(value == value))
+        return 0;
+    double scaled = (double)value * 32768.0 + dither_uniform(state) + dither_uniform(state);
+    if (scaled >= 32767.0)
+        return 32767;
+    if (scaled <= -32768.0)
+        return -32768;
+    return (int16_t)lrint(scaled);
+}
+
+// Runs [frames] frames of m->mix through the lookahead limiter, in place.
+// Each frame's gain needs, to keep its loudest channel at the ceiling, go
+// into a sliding minimum over the lookahead; the gain applied is the
+// average of that minimum over the lookahead again, so it falls smoothly
+// and is at or below every need it passes, and rises no faster than the
+// release allows. The mix comes out delayed by the lookahead. Audio thread:
+// no allocation, no lock.
+static void limiter_run(Mixer *m, uint32_t frames)
+{
+    const uint32_t lookahead = m->limiter_frames;
+    const uint32_t channels = m->channel_count;
+    const float ceiling = m->limiter_ceiling;
+    const float release_step =
+        1.0f / (float)limiter_frames_at(m->limiter_release_us, m->sample_rate);
+    for (uint32_t i = 0; i < frames; i++)
+    {
+        float peak = 0.0f;
+        for (uint32_t c = 0; c < channels; c++)
+        {
+            float sample = fabsf(m->mix[(size_t)c * m->max_frames + i]);
+            peak = sample > peak || sample != sample ? sample : peak;
+        }
+        float need = peak > ceiling ? ceiling / peak : 1.0f;
+        if (need != need)
+            need = 0.0f;
+        uint64_t at = m->limiter_in++;
+
+        // The sliding minimum of the needs of frames [at - lookahead, at]:
+        // a queue of rising needs, newest at the back.
+        uint32_t capacity = lookahead + 1;
+        while (m->limiter_queue_count > 0)
+        {
+            uint32_t back = (m->limiter_queue_head + m->limiter_queue_count - 1) % capacity;
+            if (m->limiter_queue_gain[back] < need)
+                break;
+            m->limiter_queue_count--;
+        }
+        uint32_t slot = (m->limiter_queue_head + m->limiter_queue_count) % capacity;
+        m->limiter_queue_gain[slot] = need;
+        m->limiter_queue_at[slot] = at;
+        m->limiter_queue_count++;
+        while (at >= lookahead && m->limiter_queue_at[m->limiter_queue_head] < at - lookahead)
+        {
+            m->limiter_queue_head = (m->limiter_queue_head + 1) % capacity;
+            m->limiter_queue_count--;
+        }
+        float minimum = m->limiter_queue_gain[m->limiter_queue_head];
+
+        // Its average over the last lookahead frames.
+        uint32_t ring = (uint32_t)(at % lookahead);
+        m->limiter_box_sum += (double)minimum - (double)m->limiter_box[ring];
+        m->limiter_box[ring] = minimum;
+        float average = (float)(m->limiter_box_sum / (double)lookahead);
+        float gain = m->limiter_gain + release_step;
+        gain = gain < average ? gain : average;
+        gain = gain < 1.0f ? gain : 1.0f;
+        m->limiter_gain = gain;
+
+        // The frame from a lookahead ago goes out at this gain; this one
+        // waits in its place.
+        for (uint32_t c = 0; c < channels; c++)
+        {
+            float &delayed = m->limiter_delay[(size_t)c * lookahead + ring];
+            float &sample = m->mix[(size_t)c * m->max_frames + i];
+            float out = delayed * gain;
+            delayed = sample;
+            // Rounding can leave a hair over: the ceiling is a promise.
+            sample = out > ceiling ? ceiling : (out < -ceiling ? -ceiling : out);
+        }
+    }
+}
+
+// Writes [frames] frames of m->mix into the caller's buffer(s), from frame
+// [offset] of them, in the mixer's format.
+static void write_output(Mixer *m, void *frames_out, uint32_t offset, uint32_t frames)
+{
+    uint32_t channels = m->channel_count;
+    size_t bytes = m->sample_format == CRAUDIO_SAMPLE_FORMAT_S16          ? 2
+                   : m->sample_format == CRAUDIO_SAMPLE_FORMAT_S24_PACKED ? 3
+                                                                            : 4;
+    for (uint32_t c = 0; c < channels; c++)
+    {
+        const float *mix = m->mix + (size_t)c * m->max_frames;
+        uint8_t *out;
+        size_t stride;
+        if (m->interleaved)
+        {
+            out = (uint8_t *)frames_out + ((size_t)offset * channels + c) * bytes;
+            stride = channels * bytes;
+        }
+        else
+        {
+            out = (uint8_t *)((void **)frames_out)[c] + (size_t)offset * bytes;
+            stride = bytes;
+        }
+        for (uint32_t i = 0; i < frames; i++, out += stride)
+        {
+            switch (m->sample_format)
+            {
+            case CRAUDIO_SAMPLE_FORMAT_S16: {
+                int16_t sample = quantize_dithered_16(mix[i], m->dither_state);
+                memcpy(out, &sample, 2);
+                break;
+            }
+            case CRAUDIO_SAMPLE_FORMAT_S24_PACKED: {
+                uint32_t sample = (uint32_t)quantize(mix[i], 24);
+                if (std::endian::native == std::endian::little)
+                {
+                    out[0] = (uint8_t)sample;
+                    out[1] = (uint8_t)(sample >> 8);
+                    out[2] = (uint8_t)(sample >> 16);
+                }
+                else
+                {
+                    out[0] = (uint8_t)(sample >> 16);
+                    out[1] = (uint8_t)(sample >> 8);
+                    out[2] = (uint8_t)sample;
+                }
+                break;
+            }
+            case CRAUDIO_SAMPLE_FORMAT_S24_32_MSB: {
+                int32_t sample = (int32_t)((uint32_t)quantize(mix[i], 24) << 8);
+                memcpy(out, &sample, 4);
+                break;
+            }
+            case CRAUDIO_SAMPLE_FORMAT_S24_32_LSB: {
+                int32_t sample = quantize(mix[i], 24);
+                memcpy(out, &sample, 4);
+                break;
+            }
+            case CRAUDIO_SAMPLE_FORMAT_S32: {
+                int32_t sample = quantize(mix[i], 32);
+                memcpy(out, &sample, 4);
+                break;
+            }
+            default:
+                memcpy(out, &mix[i], 4);
+                break;
+            }
+        }
+    }
+}
+
+// ---- Streams: the decoding (the scheduler's workers) ---------------------------
+
+// A stream's failure, for the update after the decoding to tell: the data
+// ends where the ring does, so the render plays nothing past it.
+static void stream_fail(Stream &s, uint64_t at)
+{
+    std::atomic_ref<uint64_t>(s.end).store(at, std::memory_order_release);
+    std::atomic_ref<uint32_t>(s.failed).store((uint32_t)s.failure.result, std::memory_order_release);
+}
+
+// Opens a stream newly requested: its block, its decoder in it, and the
+// decoder at the stream's first frame.
+static bool stream_open(Stream &s)
+{
+    void *block = malloc((size_t)s.sound.block_bytes);
+    if (!block)
+    {
+        s.failure = StreamFailure{RBT_RESULT_OUT_OF_MEMORY, STREAM_PART_MEMORY, 0, 0, s.sound.block_bytes, 0};
+        stream_fail(s, 0);
+        return false;
+    }
+    s.block = block;
+    s.decoder = new (block) StreamDecoder();
+    if (!rbtaudio_stream_open(*s.decoder, s.sound.info.codec, s.sound.source, block, &s.sound.info, s.failure))
+    {
+        stream_fail(s, 0);
+        return false;
+    }
+    s.opened = true;
+    s.ring = (float *)((unsigned char *)block + rbtaudio_stream_decoder_bytes(s.sound.info));
+    s.origin = s.request_origin;
+    s.pass_frames = 0;
+    if (s.origin == s.sound.prefetch_frames)
+    {
+        // The join with the prefetch: decoded from the start, into the ring
+        // before anything is in it, and dropped, so what follows is the
+        // frames a decode in order gives - the whole file's, whatever its
+        // stated positions say (a seek goes by those, and an Opus seek
+        // isn't the bits even when they're right: card A34).
+        uint64_t left = s.origin;
+        while (left > 0)
+        {
+            uint32_t run = left < s.ring_frames ? (uint32_t)left : s.ring_frames;
+            uint32_t got = rbtaudio_stream_read(*s.decoder, s.ring, run, s.failure);
+            if (got == 0)
+                break;
+            left -= got;
+            s.pass_frames += got;
+        }
+        if (s.failure.result != RBT_RESULT_OK)
+        {
+            stream_fail(s, s.origin);
+            return false;
+        }
+    }
+    else if (!rbtaudio_stream_seek(*s.decoder, s.origin, s.failure))
+    {
+        stream_fail(s, s.origin);
+        return false;
+    }
+    std::atomic_ref<uint64_t>(s.written).store(s.origin, std::memory_order_release);
+    return true;
+}
+
+// Moves a stream's decoder on to play-order frame [to], past [at]: the render
+// has played on past what was written (an update came late). False if it
+// failed, or the data ended first.
+static bool stream_skip(Stream &s, uint64_t at, uint64_t to)
+{
+    uint64_t frame = s.decoder->position + (to - at);
+    uint64_t length = s.sound.info.stated_frames;
+    if (s.loop && length > 0)
+        frame %= length;
+    else if (frame >= length)
+    {
+        // Past the data's end: the stream ends where it would have.
+        std::atomic_ref<uint64_t>(s.written).store(at, std::memory_order_release);
+        std::atomic_ref<uint64_t>(s.end).store(at + (length > s.decoder->position ? length - s.decoder->position : 0),
+                                               std::memory_order_release);
+        return false;
+    }
+    if (!rbtaudio_stream_seek(*s.decoder, frame, s.failure))
+    {
+        stream_fail(s, at);
+        return false;
+    }
+    std::atomic_ref<uint64_t>(s.written).store(to, std::memory_order_release);
+    return true;
+}
+
+// Tops a stream's ring up: from what was written to a ring's length past
+// the oldest frame the render may still read, a run at a time (two at the
+// wrap), seeking back to the start at the end of a looping voice's data.
+static void stream_decode(Stream &s)
+{
+    if (std::atomic_ref<uint32_t>(s.state).load(std::memory_order_acquire) != STREAM_REQUESTED)
+        return; // let go since the update
+    if (!s.opened && !stream_open(s))
+        return;
+    std::atomic_ref<uint64_t> written(s.written);
+    uint64_t at = written.load(std::memory_order_relaxed);
+    if (std::atomic_ref<uint64_t>(s.end).load(std::memory_order_relaxed) != STREAM_END_UNKNOWN)
+        return; // ended or failed: the decoding's own store, read back
+    uint64_t read = std::atomic_ref<uint64_t>(s.read).load(std::memory_order_acquire);
+    uint64_t floor = read > s.origin ? read : s.origin;
+    if (floor > at)
+    {
+        if (!stream_skip(s, at, floor))
+            return;
+        at = floor;
+    }
+    uint64_t limit = floor + s.ring_frames;
+    uint32_t channels = s.channels;
+    while (at < limit)
+    {
+        uint32_t slot = (uint32_t)(at % s.ring_frames);
+        uint64_t room = limit - at;
+        uint32_t run = room < (uint64_t)(s.ring_frames - slot) ? (uint32_t)room : s.ring_frames - slot;
+        uint32_t got = rbtaudio_stream_read(*s.decoder, s.ring + (size_t)slot * channels, run, s.failure);
+        if (got > 0)
+        {
+            at += got;
+            s.pass_frames += got;
+            written.store(at, std::memory_order_release);
+            continue;
+        }
+        if (s.failure.result != RBT_RESULT_OK)
+        {
+            stream_fail(s, at);
+            return;
+        }
+        // The data's end, before the length its header states: the bytes
+        // past the prefetch are broken (a whole-file decode of them ends
+        // there too).
+        if (s.decoder->position < s.sound.info.stated_frames)
+        {
+            s.failure = StreamFailure{RBT_RESULT_CORRUPT_DATA, STREAM_PART_SHORT, 0, 0, s.sound.info.stated_frames,
+                                      s.decoder->position};
+            stream_fail(s, at);
+            return;
+        }
+        if (!s.loop || s.pass_frames == 0)
+        {
+            // Published after the last frames: a render that sees the end
+            // sees them too.
+            std::atomic_ref<uint64_t>(s.end).store(at, std::memory_order_release);
+            return;
+        }
+        s.pass_frames = 0;
+        if (!rbtaudio_stream_seek(*s.decoder, 0, s.failure))
+        {
+            stream_fail(s, at);
+            return;
+        }
+    }
+}
+
+// The decoding task: one item per stream it serves.
+static void stream_decode_range(uint32_t first_item, uint32_t end_item, uint32_t worker_index, void *task_data)
+{
+    (void)worker_index;
+    Mixer *m = static_cast<Mixer *>(task_data);
+    for (uint32_t i = first_item; i < end_item; i++)
+        stream_decode(m->streams[m->stream_tasks[i]]);
+}
+
+// ---- Streams: the control thread's side ---------------------------------------
+
+// Waits for the decoding the last update started, if it is in flight.
+static void streams_wait(Mixer *m)
+{
+    if (!m->decoding)
+        return;
+    m->scheduler.wait(m->decoding, m->scheduler.user);
+    m->decoding = nullptr;
+}
+
+// Frees the streams the render has let go of, once the render after the one
+// that did has finished (and a failure, once an update has told it).
+static void collect_streams(Mixer *m)
+{
+    uint64_t sequence = m->render_sequence.load();
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        std::atomic_ref<uint32_t> state(s.state);
+        if (state.load(std::memory_order_acquire) != STREAM_RELEASED || sequence < s.release_sequence)
+            continue;
+        if (std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_relaxed) && !s.reported)
+            continue;
+        if (s.decoder)
+            rbtaudio_stream_close(*s.decoder);
+        free(s.block);
+        s.block = nullptr;
+        s.decoder = nullptr;
+        s.opened = false;
+        if (m->voice_streams[s.voice_index] == i + 1)
+            m->voice_streams[s.voice_index] = 0;
+        state.store(STREAM_FREE, std::memory_order_relaxed);
+    }
+}
+
+// Keeps the update's record of which voice holds which stream: a stream let
+// go is no voice's, and one given to a voice that has ended without taking
+// it is let go here (nothing reads it: an ended voice's record takes no
+// decision).
+static void streams_refresh(Mixer *m)
+{
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        std::atomic_ref<uint32_t> state(s.state);
+        uint32_t now = state.load(std::memory_order_acquire);
+        if (now == STREAM_FREE)
+            continue;
+        bool held = m->voice_streams[s.voice_index] == i + 1;
+        if (now == STREAM_RELEASED)
+        {
+            if (held)
+                m->voice_streams[s.voice_index] = 0;
+            continue;
+        }
+        if (m->voices[s.voice_index].published_id.load(std::memory_order_acquire) ==
+            make_id(s.voice_index, s.voice_generation))
+            continue;
+        // The render lets go of a stream it took before the voice's record
+        // is swept, so this one was never taken.
+        if (state.compare_exchange_strong(now, STREAM_RELEASED, std::memory_order_acq_rel))
+            s.release_sequence = 0;
+        if (held)
+            m->voice_streams[s.voice_index] = 0;
+    }
+}
+
+// Gives a voice the update ranked real a free stream: index + 1, or 0 if
+// there's none (or its sound has gone).
+static uint32_t stream_assign(Mixer *m, const RankEntry &entry)
+{
+    uint32_t sound_index, sound_generation;
+    if (!split_id(entry.sound, m->max_sounds, sound_index, sound_generation) ||
+        m->sounds[sound_index].live_id.load(std::memory_order_acquire) != entry.sound)
+        return 0;
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        std::atomic_ref<uint32_t> state(s.state);
+        if (state.load(std::memory_order_relaxed) != STREAM_FREE)
+            continue;
+        // Free: nothing else touches it until the decision that names it is
+        // posted (release), or the decoding it is handed to starts.
+        const SoundStream &sound = m->sound_streams[sound_index];
+        s.written = 0;
+        s.end = STREAM_END_UNKNOWN;
+        s.ring = nullptr;
+        s.origin = 0;
+        s.ring_frames = sound.ring_frames;
+        s.channels = sound.info.channels;
+        s.failed = 0;
+        s.voice_index = entry.index;
+        s.voice_generation = entry.generation;
+        s.sound_id = entry.sound;
+        s.sound = sound;
+        s.block = nullptr;
+        s.decoder = nullptr;
+        s.pass_frames = 0;
+        s.failure = StreamFailure{};
+        s.loop = entry.loop;
+        s.opened = false;
+        s.reported = false;
+        // A voice at its start, or within its prefetch, carries on from the
+        // prefetch's end: the decoding opens it now, so its ring is full by
+        // the time the voice gets there.
+        s.request_origin = entry.at_start ? sound.prefetch_frames : 0;
+        s.read = s.request_origin;
+        state.store(entry.at_start ? STREAM_REQUESTED : STREAM_ASSIGNED, std::memory_order_release);
+        m->voice_streams[entry.index] = i + 1;
+        return i + 1;
+    }
+    return 0;
+}
+
+// Starts the decoding of every stream requested whose sound is still there:
+// one task, an item a stream, in record order; inside this call with no
+// scheduler.
+static void streams_start_decoding(Mixer *m)
+{
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        if (std::atomic_ref<uint32_t>(s.state).load(std::memory_order_acquire) != STREAM_REQUESTED)
+            continue;
+        if (std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_relaxed))
+            continue;
+        uint32_t sound_index, sound_generation;
+        if (!split_id(s.sound_id, m->max_sounds, sound_index, sound_generation) ||
+            m->sounds[sound_index].live_id.load(std::memory_order_acquire) != s.sound_id)
+            continue; // destroyed: its source may be gone after the next collect
+        m->stream_tasks[count++] = i;
+    }
+    if (count == 0)
+        return;
+    if (m->has_scheduler)
+        m->decoding = m->scheduler.enqueue(stream_decode_range, count, 1, m, m->scheduler.user);
+    else
+        rbtjobs_run(nullptr, stream_decode_range, count, 1, m);
+}
+
+// The first failure among the streams no update has told yet, and how many
+// more there are.
+struct StreamReport
+{
+    uint32_t first{NO_STREAM};
+    uint32_t more{0};
+};
+
+static void streams_find_failures(Mixer *m, StreamReport &report)
+{
+    for (uint32_t i = 0; i < m->max_streams; i++)
+    {
+        Stream &s = m->streams[i];
+        if (s.reported || !std::atomic_ref<uint32_t>(s.failed).load(std::memory_order_acquire))
+            continue;
+        s.reported = true;
+        if (report.first == NO_STREAM)
+            report.first = i;
+        else
+            report.more++;
+    }
+}
+
+// What a failure was, in a clause.
+static void describe_failure(const StreamFailure &f, char *out, size_t size)
+{
+    switch (f.part)
+    {
+    case STREAM_PART_READ:
+        snprintf(out, size, "a read of %llu bytes at offset %llu failed", (unsigned long long)f.count,
+                 (unsigned long long)f.offset);
+        break;
+    case STREAM_PART_PACKET:
+        snprintf(out, size, "a packet past the prefetch, at frame %llu, couldn't be decoded (its decoder's error %d)",
+                 (unsigned long long)f.frame, f.codec_error);
+        break;
+    case STREAM_PART_SHORT:
+        snprintf(out, size, "the data ends at frame %llu, before the %llu its header states", (unsigned long long)f.frame,
+                 (unsigned long long)f.count);
+        break;
+    case STREAM_PART_SEEK:
+        snprintf(out, size, "seeking to frame %llu failed (its decoder's error %d)", (unsigned long long)f.frame,
+                 f.codec_error);
+        break;
+    case STREAM_PART_MEMORY:
+        snprintf(out, size, "no memory for its decoder and ring (%llu bytes)", (unsigned long long)f.count);
+        break;
+    default:
+        snprintf(out, size, "its decoder couldn't be opened on the source (its error %d)", f.codec_error);
+        break;
+    }
+}
+
+static RBT_RESULT streams_report(Mixer *m, const StreamReport &report, RBTAUDIO_ERROR *error)
+{
+    if (report.first == NO_STREAM)
+        return RBT_RESULT_OK;
+    const Stream &s = m->streams[report.first];
+    char part[192];
+    describe_failure(s.failure, part, sizeof(part));
+    unsigned long long voice = (unsigned long long)make_id(s.voice_index, s.voice_generation);
+    const char *codec = rbtaudio_stream_codec_name(s.sound.info.codec);
+    if (report.more)
+        return fail(error, s.failure.result, "voice %llu: its %s stream: %s; %u more stream%s failed", voice, codec, part,
+                    report.more, report.more == 1 ? "" : "s");
+    return fail(error, s.failure.result, "voice %llu: its %s stream: %s", voice, codec, part);
+}
+
+// ---- Spatial audio: the update's maths (control thread) ---------------------------
+
+static bool finite_d3(const RbtDVec3 &v)
+{
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
+}
+
+static bool finite_f3(const RbtVec3 &v)
+{
+    return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
+}
+
+static double dot3(const double *a, const float *b)
+{
+    return a[0] * (double)b[0] + a[1] * (double)b[1] + a[2] * (double)b[2];
+}
+
+static double dot3f(const float *a, const float *b)
+{
+    return (double)a[0] * (double)b[0] + (double)a[1] * (double)b[1] + (double)a[2] * (double)b[2];
+}
+
+static uint64_t double_word(double value)
+{
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static double word_double(uint64_t bits)
+{
+    double value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static uint64_t float_pair(float low, float high)
+{
+    return (uint64_t)float_bits(low) | ((uint64_t)float_bits(high) << 32);
+}
+
+// The gain from distance [d], 1 at min_distance and nearer, held past
+// max_distance.
+static float distance_gain(const Attenuation &a, double d)
+{
+    double lo = a.min_distance, hi = a.max_distance;
+    double at = d < lo ? lo : (d > hi ? hi : d);
+    switch (a.rolloff)
+    {
+    case RBTAUDIO_ROLLOFF_INVERSE:
+        return (float)(lo / (lo + a.factor * (at - lo)));
+    case RBTAUDIO_ROLLOFF_LINEAR:
+    {
+        double g = 1.0 - a.factor * (at - lo) / (hi - lo);
+        return (float)(g < 0.0 ? 0.0 : g);
+    }
+    case RBTAUDIO_ROLLOFF_EXPONENT:
+        return (float)pow(at / lo, -(double)a.factor);
+    case RBTAUDIO_ROLLOFF_TABLE:
+    {
+        double place = (at - lo) / (hi - lo);
+        const RBTAUDIO_ATTENUATION_POINT *pts = a.points;
+        uint32_t i = 1;
+        while (i + 1 < a.point_count && place > pts[i].place)
+            i++;
+        double span = pts[i].place - pts[i - 1].place;
+        double t = span > 0.0 ? (place - pts[i - 1].place) / span : 1.0;
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        return (float)(pts[i - 1].gain + (pts[i].gain - pts[i - 1].gain) * t);
+    }
+    default:
+        return 1.0f;
+    }
+}
+
+// One world-placed voice, worked out from the listener nearest it.
+static SpatialResult place_voice(const Mixer *m, uint32_t generation, const double *position, const float *velocity,
+                                 const float *forward, RBTAUDIO_ATTENUATION attenuation, uint8_t base_priority)
+{
+    SpatialResult r{};
+    r.generation = generation;
+    r.direction = 0;
+    r.rate = 1.0f;
+    r.priority = base_priority;
+    if (m->listener_count == 0)
+    {
+        // Nobody hears it.
+        r.gain = 0.0f;
+        r.distance = INFINITY;
+        return r;
+    }
+    const ListenerFrame *listener = &m->listeners[0];
+    double best = INFINITY;
+    for (uint32_t l = 0; l < m->listener_count; l++)
+    {
+        const ListenerFrame &f = m->listeners[l];
+        double dx = position[0] - f.position[0], dy = position[1] - f.position[1], dz = position[2] - f.position[2];
+        double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best)
+        {
+            best = d2;
+            listener = &f;
+        }
+    }
+    double rel[3] = {position[0] - listener->position[0], position[1] - listener->position[1],
+                     position[2] - listener->position[2]};
+    double d = sqrt(best);
+    r.distance = (float)d;
+    if (d > 0.0)
+    {
+        double x = dot3(rel, listener->right), y = dot3(rel, listener->up), z = dot3(rel, listener->forward);
+        RBTAUDIO_DIRECTION direction;
+        direction.azimuth = atan2(x, z);
+        direction.elevation = atan2(y, sqrt(x * x + z * z));
+        r.direction = pack_direction(&direction);
+    }
+
+    // Its attenuation, if it still has one: none, it is heard as it is.
+    uint32_t index, attenuation_generation;
+    r.gain = 1.0f;
+    if (!split_id(attenuation, m->max_attenuations, index, attenuation_generation))
+        return r;
+    const Attenuation &a = m->attenuations[index];
+    if (!a.live || a.generation != attenuation_generation)
+        return r;
+    float gain = distance_gain(a, d);
+
+    // The cone, around the emitter's forward, by the angle to the listener.
+    double length = sqrt(dot3f(forward, forward));
+    if (length > 0.0 && d > 0.0)
+    {
+        double cosine = -dot3(rel, forward) / (d * length);
+        cosine = cosine < -1.0 ? -1.0 : (cosine > 1.0 ? 1.0 : cosine);
+        double angle = acos(cosine);
+        float cone = 1.0f;
+        if (angle >= a.outer_half)
+            cone = a.outer_gain;
+        else if (angle > a.inner_half)
+            cone = (float)(1.0 + (a.outer_gain - 1.0) * (angle - a.inner_half) / (a.outer_half - a.inner_half));
+        gain *= cone;
+    }
+    r.gain = gain;
+
+    // Doppler, OpenAL 1.1's: each velocity's part along the line from the
+    // source to the listener, held below the speed of sound over the factor.
+    if (a.doppler > 0.0f && d > 0.0)
+    {
+        double toward[3] = {-rel[0] / d, -rel[1] / d, -rel[2] / d};
+        double limit = (double)m->speed_of_sound / a.doppler;
+        double vls = dot3(toward, listener->velocity);
+        double vss = dot3(toward, velocity);
+        vls = vls > limit ? limit : vls;
+        vss = vss > limit ? limit : vss;
+        double above = (double)m->speed_of_sound - a.doppler * vls;
+        double below = (double)m->speed_of_sound - a.doppler * vss;
+        double ratio = below > 0.0 ? above / below : (double)RATE_MAX;
+        r.rate = clamp_float((float)ratio, RATE_MIN, RATE_MAX);
+    }
+
+    // The priority offset, scaled over the range.
+    if (a.priority_offset != 0)
+    {
+        double t = (d - a.min_distance) / ((double)a.max_distance - a.min_distance);
+        t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        double offset = a.priority_offset * t;
+        int32_t priority = (int32_t)base_priority + (int32_t)(offset < 0.0 ? offset - 0.5 : offset + 0.5);
+        r.priority = (uint8_t)(priority < 0 ? 0 : (priority > 255 ? 255 : priority));
+    }
+    return r;
+}
+
+// Every world-placed voice, live or queued, in one pass over the records:
+// its place from the control role's latest, or its play's.
+static void spatial_pass(Mixer *m, SpatialResult *results)
+{
+    for (uint32_t i = 0; i < m->record_count; i++)
+    {
+        Voice &v = m->voices[i];
+        uint64_t id = v.live_id.load(std::memory_order_acquire);
+        if (id == 0)
+            continue;
+        if (v.placement.load(std::memory_order_relaxed) != RBTAUDIO_PLACEMENT_WORLD)
+            continue;
+        uint64_t words[PLAY_PLACE_WORDS];
+        for (uint32_t w = 0; w < PLAY_PLACE_WORDS; w++)
+            words[w] = m->play_places[i].words[w].load(std::memory_order_relaxed);
+        // Read again: a play reusing the record meanwhile would have changed it.
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (v.live_id.load(std::memory_order_relaxed) != id)
+            continue;
+        uint32_t generation = (uint32_t)(id >> 32);
+        double position[3];
+        float velocity[3], forward[3];
+        const Place &own = m->places[i];
+        if (own.generation == generation)
+        {
+            memcpy(position, own.position, sizeof(position));
+            memcpy(velocity, own.velocity, sizeof(velocity));
+            memcpy(forward, own.forward, sizeof(forward));
+        }
+        else
+        {
+            for (int c = 0; c < 3; c++)
+                position[c] = word_double(words[PLAY_PLACE_POSITION + c]);
+            velocity[0] = bits_float((uint32_t)words[PLAY_PLACE_VELOCITY_XY]);
+            velocity[1] = bits_float((uint32_t)(words[PLAY_PLACE_VELOCITY_XY] >> 32));
+            velocity[2] = bits_float((uint32_t)words[PLAY_PLACE_VELOCITY_Z_FORWARD_X]);
+            forward[0] = bits_float((uint32_t)(words[PLAY_PLACE_VELOCITY_Z_FORWARD_X] >> 32));
+            forward[1] = bits_float((uint32_t)words[PLAY_PLACE_FORWARD_YZ]);
+            forward[2] = bits_float((uint32_t)(words[PLAY_PLACE_FORWARD_YZ] >> 32));
+        }
+        results[i] = place_voice(m, generation, position, velocity, forward, words[PLAY_PLACE_ATTENUATION],
+                                 (uint8_t)words[PLAY_PLACE_PRIORITY]);
+    }
+}
+
+// ---- Control-thread helpers ----------------------------------------------------
+
+// A free slot of [count], looking from [cursor] on so the slot freed longest
+// ago is reused first. [count] if there's none.
+template <typename Free> static uint32_t find_slot(uint32_t first, uint32_t count, uint32_t &cursor, Free is_free)
+{
+    for (uint32_t i = 0; i < count - first; i++)
+    {
+        uint32_t index = first + (cursor + i) % (count - first);
+        if (is_free(index))
+        {
+            cursor = (index - first + 1) % (count - first);
+            return index;
+        }
+    }
+    return count;
+}
+
+static void mixer_free(Mixer *m)
+{
+    if (!m)
+        return;
+    if (m->sounds)
+    {
+        for (uint32_t i = 0; i < m->max_sounds; i++)
+            free(m->sounds[i].samples);
+    }
+    free(m->sinc);
+    free(m->mix);
+    free(m->source);
+    free(m->pan);
+    free(m->pan_scratch);
+    free(m->limiter_delay);
+    free(m->limiter_box);
+    free(m->limiter_queue_gain);
+    free(m->limiter_queue_at);
+    free(m->voices);
+    free(m->sounds);
+    free(m->buses);
+    free(m->modifiers);
+    free(m->groups);
+    for (Config &config : m->configs)
+        config_free(config);
+    config_free(m->shadow);
+    for (uint64_t *decisions : m->decisions)
+        free(decisions);
+    free(m->rank);
+    free(m->active);
+    free(m->free_slots);
+    if (m->attenuations)
+    {
+        for (uint32_t i = 0; i < m->max_attenuations; i++)
+            free(m->attenuations[i].points);
+    }
+    free(m->attenuations);
+    free(m->listeners);
+    free(m->places);
+    free(m->play_places);
+    for (SpatialResult *results : m->spatial_results)
+        free(results);
+    // Every stream, after the decoding the last update started.
+    streams_wait(m);
+    for (Stream &stream : m->streams)
+    {
+        if (stream.decoder)
+            rbtaudio_stream_close(*stream.decoder);
+        free(stream.block);
+    }
+    m->~Mixer();
+    free(m);
+}
+
+// Records a bus's gain or rate request: the fade first, so the value never
+// arrives without one.
+static RBT_RESULT bus_set_value(Mixer *m, RBTAUDIO_BUS bus, std::atomic<uint64_t> Bus::*value_word,
+                              std::atomic<uint64_t> Bus::*fade_word, float value, uint32_t fade_us)
+{
+    uint32_t index, generation;
+    if (!split_id(bus, m->bus_count, index, generation))
+        return RBT_RESULT_NOT_FOUND;
+    Bus &slot = m->buses[index];
+    if (!tagged_store(slot.*fade_word, generation, fade_us) ||
+        !tagged_store(slot.*value_word, generation, float_bits(value)))
+        return RBT_RESULT_NOT_FOUND;
+    return RBT_RESULT_OK;
+}
+
+static RBT_RESULT bus_set_switch(Mixer *m, RBTAUDIO_BUS bus, std::atomic<uint64_t> Bus::*word, bool on, uint32_t fade_us)
+{
+    uint32_t index, generation;
+    if (!split_id(bus, m->bus_count, index, generation))
+        return RBT_RESULT_NOT_FOUND;
+    uint32_t fade = fade_us > SWITCH_FADE_MASK ? SWITCH_FADE_MASK : fade_us;
+    if (!tagged_store(m->buses[index].*word, generation, SWITCH_CHANGED | (on ? SWITCH_ON : 0) | fade))
+        return RBT_RESULT_NOT_FOUND;
+    return RBT_RESULT_OK;
+}
+
+static void bus_words_reset(Bus &bus, uint32_t generation)
+{
+    bus.gain_word.store(tagged(generation, FLOAT_NONE), std::memory_order_release);
+    bus.gain_fade_word.store(tagged(generation, 0), std::memory_order_release);
+    bus.rate_word.store(tagged(generation, FLOAT_NONE), std::memory_order_release);
+    bus.rate_fade_word.store(tagged(generation, 0), std::memory_order_release);
+    bus.mute_word.store(tagged(generation, 0), std::memory_order_release);
+    bus.pause_word.store(tagged(generation, 0), std::memory_order_release);
+}
+
+// ---- Streamed sounds (control thread) -------------------------------------------
+
+// A streamed sound's create that failed reading its source: its code and
+// message, naming the codec and the part.
+static RBT_RESULT stream_create_fail(RBTAUDIO_ERROR *error, RBTAUDIO_STREAM_CODEC codec, const StreamFailure &f)
+{
+    const char *name = rbtaudio_stream_codec_name(codec);
+    switch (f.part)
+    {
+    case STREAM_PART_READ:
+        return fail(error, f.result, "the %s source: a read of %llu bytes at offset %llu failed", name,
+                    (unsigned long long)f.count, (unsigned long long)f.offset);
+    case STREAM_PART_PACKET:
+        return fail(error, f.result, "the %s file: a packet of the prefetch, at frame %llu, couldn't be decoded (its "
+                    "decoder's error %d)", name, (unsigned long long)f.frame, f.codec_error);
+    case STREAM_PART_SEEK:
+        return fail(error, f.result, "the %s file: seeking to its last frames, from frame %llu, failed (its decoder's "
+                    "error %d)", name, (unsigned long long)f.frame, f.codec_error);
+    case STREAM_PART_MEMORY:
+        return fail(error, f.result, "no memory for the %s decoder (%llu bytes)", name, (unsigned long long)f.count);
+    case STREAM_PART_FORMAT:
+        return fail(error, f.result, "the %s file's links have different channel counts", name);
+    case STREAM_PART_LIMIT:
+        if (f.count)
+            return fail(error, f.result, "the %s source is %llu bytes, at or past the 2 GiB its decoder reads", name,
+                        (unsigned long long)f.count);
+        return fail(error, f.result, "the %s file's setup needs more than its decoder's 2 MiB", name);
+    default:
+        return fail(error, f.result, "the %s file's header can't be read as %s (its decoder's error %d)", name, name,
+                    f.codec_error);
+    }
+}
+
+// rbtaudio_sound_create() for a streamed sound (rbtaudio.h, "Streamed sounds"):
+// the checks, then the header read and the prefetch decoded through a
+// decoder on the system heap, which is closed again; a voice opens its own.
+// The sound's samples are its prefetch and, after it, its last STREAM_REACH
+// frames, which a looping voice's resampler reads before its first. A file
+// the prefetch holds whole is an in-memory sound. Changes nothing on failure.
+static RBT_RESULT stream_sound_create(Mixer *m, const RBTAUDIO_SOUND_DESC &d, RBTAUDIO_SOUND *out_sound,
+                                    RBTAUDIO_ERROR *error)
+{
+    if (m->max_streams == 0)
+        return fail(error, RBT_RESULT_UNSUPPORTED, "a streamed sound needs a mixer made with max_streams above 0");
+    if (d.stream_codec > RBTAUDIO_STREAM_CODEC_OPUS)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "stream_codec %u isn't one of RBTAUDIO_STREAM_CODEC",
+                    d.stream_codec);
+    if (d.samples)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "samples isn't null: a streamed sound's come from its source");
+    if (d.frame_count != 0)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "frame_count is %llu: a streamed sound's file states its length",
+                    (unsigned long long)d.frame_count);
+    if (d.channel_count != 0)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "channel_count is %u: a streamed sound's file states its channels",
+                    d.channel_count);
+    if (d.sample_rate != 0)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "sample_rate is %u: a streamed sound's file states its rate",
+                    d.sample_rate);
+    if (d.virtual_behavior < RBTAUDIO_VIRTUAL_KILL || d.virtual_behavior > RBTAUDIO_VIRTUAL_PAUSE)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "virtual_behavior %u isn't one a sound can have",
+                    d.virtual_behavior);
+    if (!d.stream_source.read)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "stream_source.read is null");
+    if (d.stream_ring_us == 0)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "stream_ring_us is 0");
+    if (d.stream_ring_us > STREAM_RING_MAX_US)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "stream_ring_us is %u, past %u (10 s)", d.stream_ring_us,
+                    STREAM_RING_MAX_US);
+    // At least what one render takes at the fastest rate: 8 x max_frames
+    // output frames, which is the same time at any rate of the sound's.
+    uint64_t least_us = ((uint64_t)RATE_MAX * m->max_frames * 1000000 + m->sample_rate - 1) / m->sample_rate;
+    if ((uint64_t)d.stream_ring_us * m->sample_rate < (uint64_t)RATE_MAX * m->max_frames * 1000000)
+        return fail(error, RBT_RESULT_INVALID_ARGUMENT, "stream_ring_us is %u: at least %llu, what one render of %u "
+                    "frames at %u Hz takes at 8x", d.stream_ring_us, (unsigned long long)least_us, m->max_frames,
+                    m->sample_rate);
+    const char *name = rbtaudio_stream_codec_name(d.stream_codec);
+    if (d.stream_source.size == 0)
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "the %s source is empty", name);
+
+    uint32_t index = find_slot(0, m->max_sounds, m->sound_cursor,
+                               [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+    if (index == m->max_sounds)
+    {
+        collect_sounds(m);
+        index = find_slot(0, m->max_sounds, m->sound_cursor,
+                          [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+    }
+    if (index == m->max_sounds)
+        return fail(error, RBT_RESULT_LIMIT, "all %u sounds are in use, or destroyed and waiting for a render to "
+                    "let go of them", m->max_sounds);
+
+    // The header, through a decoder on the heap.
+    StreamDecoder probe{};
+    StreamFailure failure{};
+    if (!rbtaudio_stream_open(probe, d.stream_codec, d.stream_source, nullptr, nullptr, failure))
+        return stream_create_fail(error, d.stream_codec, failure);
+    StreamInfo info = probe.info;
+    if (info.channels != 1 && info.channels != 2)
+    {
+        rbtaudio_stream_close(probe);
+        return fail(error, RBT_RESULT_UNSUPPORTED, "the %s file has %u channels: only mono and stereo play", name,
+                    info.channels);
+    }
+    if (info.rate < SOUND_RATE_MIN || info.rate > SOUND_RATE_MAX)
+    {
+        rbtaudio_stream_close(probe);
+        return fail(error, RBT_RESULT_UNSUPPORTED, "the %s file is at %u Hz, outside %u to %u", name, info.rate,
+                    SOUND_RATE_MIN, SOUND_RATE_MAX);
+    }
+    if (info.stated_frames == 0)
+    {
+        rbtaudio_stream_close(probe);
+        if (d.stream_codec == RBTAUDIO_STREAM_CODEC_FLAC)
+            return fail(error, RBT_RESULT_UNSUPPORTED, "the FLAC file doesn't state its length (its STREAMINFO's total "
+                        "is 0)");
+        return fail(error, RBT_RESULT_CORRUPT_DATA, "the %s file states no length (no last page's position)", name);
+    }
+
+    // The prefetch: stream_ring_us of the sound at its own rate, and room
+    // after it for the sound's last frames.
+    uint64_t prefetch_frames = ((uint64_t)d.stream_ring_us * info.rate + 999999) / 1000000;
+    uint64_t ring_frames = prefetch_frames + 2 * (uint64_t)STREAM_REACH + 1;
+    uint64_t sample_count = (prefetch_frames + STREAM_REACH) * info.channels;
+    float *samples = static_cast<float *>(calloc((size_t)sample_count, sizeof(float)));
+    if (!samples)
+    {
+        rbtaudio_stream_close(probe);
+        return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for the %s prefetch (%llu samples)", name,
+                    (unsigned long long)sample_count);
+    }
+    uint64_t decoded = 0;
+    while (decoded < prefetch_frames)
+    {
+        uint64_t want = prefetch_frames - decoded;
+        uint32_t got = rbtaudio_stream_read(probe, samples + decoded * info.channels,
+                                           want > UINT32_MAX ? UINT32_MAX : (uint32_t)want, failure);
+        if (got == 0)
+            break;
+        decoded += got;
+    }
+    bool whole = decoded < prefetch_frames;
+    if (failure.result == RBT_RESULT_OK && !whole)
+    {
+        // A looping voice's taps before its first frame read the sound's
+        // last ones, as an in-memory loop's do. Best effort: a file whose
+        // end can't be read (broken past the prefetch, or its source
+        // failing there) leaves them silent, and its streams meet the
+        // failure when they get there.
+        uint64_t tail_from = info.stated_frames > STREAM_REACH ? info.stated_frames - STREAM_REACH : 0;
+        float *tail = samples + prefetch_frames * info.channels;
+        uint64_t tail_frames = info.stated_frames - tail_from;
+        float *into = tail + (STREAM_REACH - tail_frames) * info.channels;
+        StreamFailure tail_failure{};
+        uint64_t taken = 0;
+        if (rbtaudio_stream_seek(probe, tail_from, tail_failure))
+        {
+            while (taken < tail_frames)
+            {
+                uint32_t got = rbtaudio_stream_read(probe, into + taken * info.channels,
+                                                   (uint32_t)(tail_frames - taken), tail_failure);
+                if (got == 0)
+                    break;
+                taken += got;
+            }
+        }
+        if (tail_failure.result != RBT_RESULT_OK || taken < tail_frames)
+            memset(tail, 0, (size_t)STREAM_REACH * info.channels * sizeof(float));
+    }
+    rbtaudio_stream_close(probe);
+    if (failure.result != RBT_RESULT_OK)
+    {
+        free(samples);
+        return stream_create_fail(error, d.stream_codec, failure);
+    }
+
+    Sound &sound = m->sounds[index];
+    sound.samples = samples;
+    sound.frame_count = whole ? decoded : info.stated_frames;
+    sound.channel_count = info.channels;
+    sound.sample_rate = info.rate;
+    sound.loudness = 1.0f; // ranked by gain alone (rbtaudio.h, RBTAUDIO_SOUND_DESC `stream_codec`)
+    sound.virtual_behavior = d.virtual_behavior;
+    sound.concurrency = d.concurrency;
+    sound.bus = d.bus;
+    sound.streamed = !whole;
+    sound.prefetch_frames = whole ? 0 : prefetch_frames;
+    sound.underrun_frames.store(0, std::memory_order_relaxed);
+    SoundStream &stream = m->sound_streams[index];
+    stream.info = info;
+    stream.source = d.stream_source;
+    stream.prefetch_frames = prefetch_frames;
+    stream.ring_frames = (uint32_t)ring_frames;
+    stream.block_bytes = rbtaudio_stream_decoder_bytes(info) + ring_frames * info.channels * sizeof(float);
+    sound.generation = next_generation(sound.generation);
+    sound.state = SOUND_LIVE;
+    uint64_t id = make_id(index, sound.generation);
+    sound.live_id.store(id);
+    *out_sound = id;
+    return RBT_RESULT_OK;
+}
+
+extern "C"
+{
+    // ---- Mixer --------------------------------------------------------------
+
+    RBT_RESULT rbtaudio_mixer_create(const RBTAUDIO_MIXER_DESC *desc, rbtaudio_mixer *out_mixer, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_mixer)
+            *out_mixer = nullptr;
+        if (!desc || !out_mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "desc or out_mixer is null");
+        if (desc->base.type != RBT_STRUCT_TYPE_AUDIO_MIXER_DESC)
+            return fail(error, RBT_RESULT_STRUCT_WRONG_TYPE, "desc %s",
+                        rbt_struct_check_message(RBT_RESULT_STRUCT_WRONG_TYPE));
+        // Its chain: RBTAUDIO_SPATIAL_DESC, once, and nothing else.
+        const RBTAUDIO_SPATIAL_DESC *spatial = nullptr;
+        for (const RBT_STRUCT_BASE *link = desc->base.next; link; link = link->next)
+        {
+            if (link->type != RBT_STRUCT_TYPE_AUDIO_SPATIAL_DESC)
+                return fail(error, RBT_RESULT_STRUCT_UNKNOWN_IN_CHAIN,
+                            "desc has a struct chained on other than RBTAUDIO_SPATIAL_DESC, the one it takes");
+            if (spatial)
+                return fail(error, RBT_RESULT_STRUCT_DUPLICATE_IN_CHAIN, "desc has RBTAUDIO_SPATIAL_DESC chained on twice");
+            spatial = (const RBTAUDIO_SPATIAL_DESC *)link;
+        }
+        const RBTAUDIO_MIXER_DESC &d = *desc;
+        Layout layout;
+        if (RBT_RESULT result = layout_build(d.format, d.max_frames, layout, error))
+            return result;
+        if (d.max_voices == 0 || d.max_real_voices == 0 || d.max_real_voices > d.max_voices)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_voices is %u and max_real_voices %u: both at least 1, and "
+                        "max_real_voices at most max_voices", d.max_voices, d.max_real_voices);
+        if (d.max_sounds == 0 || d.queue_capacity == 0)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_sounds or queue_capacity is 0");
+        if (!valid_gain(d.virtual_threshold) || !valid_gain(d.gain))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "virtual_threshold or gain isn't finite and >= 0");
+        if (d.resampler != RBTAUDIO_RESAMPLER_LINEAR && d.resampler != RBTAUDIO_RESAMPLER_SINC)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "resampler %u isn't LINEAR or SINC", d.resampler);
+        if (d.limiter != RBTAUDIO_LIMITER_OFF && d.limiter != RBTAUDIO_LIMITER_ON)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "limiter %u isn't OFF or ON", d.limiter);
+        if (d.limiter == RBTAUDIO_LIMITER_ON && (d.limiter_lookahead_us == 0 || d.limiter_lookahead_us > 100000))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "limiter_lookahead_us is %u: 1 to 100000 with the limiter on",
+                        d.limiter_lookahead_us);
+        if (d.limiter == RBTAUDIO_LIMITER_ON && d.limiter_release_us == 0)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "limiter_release_us is 0 with the limiter on");
+        if (d.limiter == RBTAUDIO_LIMITER_ON && !(d.limiter_ceiling > 0.0f && d.limiter_ceiling <= 1.0f))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "limiter_ceiling isn't in (0, 1] with the limiter on");
+        uint64_t records = (uint64_t)d.max_voices + d.queue_capacity + d.max_fading_voices;
+        uint64_t slots = (uint64_t)d.max_real_voices + d.max_fading_voices;
+        if (records >= 0x7FFFFFFFull || d.max_sounds == UINT32_MAX || d.max_buses == UINT32_MAX)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "more voices, sounds or buses than the mixer can index");
+        if (d.max_streams > d.max_real_voices)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_streams is %u, above max_real_voices (%u)", d.max_streams,
+                        d.max_real_voices);
+        // A decision names its voice's stream in 30 bits.
+        if (d.max_streams >= MAX_STREAMS)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_streams is %u: more streams than the mixer can index",
+                        d.max_streams);
+        if (d.max_streams > 0 && d.scheduler)
+        {
+            RBTJOBS_ERROR scheduler_error;
+            if (RBT_RESULT result = rbtjobs_scheduler_check(d.scheduler, &scheduler_error))
+                return fail(error, result, "scheduler: %s", scheduler_error.message);
+        }
+        if (spatial)
+        {
+            if (spatial->handedness != RBTAUDIO_HANDEDNESS_RIGHT && spatial->handedness != RBTAUDIO_HANDEDNESS_LEFT)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "spatial desc's handedness %u isn't RIGHT or LEFT",
+                            spatial->handedness);
+            if (spatial->max_listeners == 0)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "spatial desc's max_listeners is 0");
+            if (spatial->max_attenuations == 0)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "spatial desc's max_attenuations is 0");
+            if (spatial->max_attenuations == UINT32_MAX)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT,
+                            "spatial desc's max_attenuations is more than the mixer can index");
+            if (!(isfinite(spatial->speed_of_sound) && spatial->speed_of_sound > 0.0f))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "spatial desc's speed_of_sound isn't finite and > 0");
+        }
+
+        void *memory = malloc(sizeof(Mixer));
+        if (!memory)
+            return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for the mixer");
+        Mixer *m = new (memory) Mixer();
+        m->max_voices = d.max_voices;
+        m->max_real_voices = d.max_real_voices;
+        m->max_fading_voices = d.max_fading_voices;
+        m->max_sounds = d.max_sounds;
+        m->max_groups = d.max_concurrency_groups;
+        m->bus_count = d.max_buses + 1;
+        m->max_modifiers = d.max_modifiers;
+        m->queue_capacity = d.queue_capacity;
+        m->record_count = (uint32_t)records;
+        m->slot_count = (uint32_t)slots;
+        m->virtual_threshold = d.virtual_threshold;
+        m->transition_fade_us = d.transition_fade_us;
+        m->min_real_us = d.min_real_us;
+        m->resampler = d.resampler;
+        m->limiter_on = d.limiter == RBTAUDIO_LIMITER_ON;
+        m->limiter_lookahead_us = d.limiter_lookahead_us;
+        m->limiter_release_us = d.limiter_release_us;
+        m->limiter_ceiling = d.limiter_ceiling;
+
+        FormatBuffers buffers;
+        bool allocated = format_buffers_alloc(m, d.format.channel_count, d.format.sample_rate, d.max_frames, buffers);
+        if (allocated)
+            format_apply(m, d.format, d.max_frames, layout, buffers);
+        m->voices = alloc_array<Voice>(m->record_count);
+        m->sounds = alloc_array<Sound>(m->max_sounds);
+        m->buses = alloc_array<Bus>(m->bus_count);
+        m->modifiers = alloc_array<Modifier>(m->max_modifiers);
+        m->groups = alloc_array<GroupState>(m->max_groups);
+        m->rank = alloc_array<RankEntry>(m->record_count);
+        m->active = alloc_array<uint32_t>(m->record_count);
+        m->free_slots = alloc_array<uint32_t>(m->slot_count);
+        allocated = allocated && m->voices && m->sounds && m->buses && m->modifiers && m->groups && m->rank &&
+                    m->active && m->free_slots && config_alloc(m, m->shadow);
+        for (int i = 0; i < 3 && allocated; i++)
+        {
+            m->decisions[i] = alloc_array<uint64_t>(m->record_count);
+            allocated = m->decisions[i] && config_alloc(m, m->configs[i]);
+        }
+        if (allocated && m->resampler == RBTAUDIO_RESAMPLER_SINC)
+            allocated = (m->sinc = rbtaudio_sinc_table_build()) != nullptr;
+        // Streams: every record now, zeroed (STREAM_FREE); a stream's block
+        // only when the decoding opens it.
+        m->max_streams = d.max_streams;
+        if (allocated && d.max_streams > 0)
+        {
+            allocated = m->streams.resize(d.max_streams) == EQ_SUCCESS &&
+                        m->stream_tasks.resize(d.max_streams) == EQ_SUCCESS &&
+                        m->sound_streams.resize(m->max_sounds) == EQ_SUCCESS &&
+                        m->voice_streams.resize(m->record_count) == EQ_SUCCESS;
+            m->has_scheduler = d.scheduler != nullptr;
+            if (d.scheduler)
+            {
+                m->scheduler = *d.scheduler;
+                // The mixer runs no groups, so it keeps no pointer into the
+                // caller's chain (rbtjobs.h: the struct needn't outlive this
+                // call).
+                m->scheduler.base.next = nullptr;
+            }
+        }
+        if (allocated && spatial)
+        {
+            m->spatial = true;
+            m->right_handed = spatial->handedness == RBTAUDIO_HANDEDNESS_RIGHT;
+            m->max_listeners = spatial->max_listeners;
+            m->max_attenuations = spatial->max_attenuations;
+            m->speed_of_sound = spatial->speed_of_sound;
+            m->listeners = alloc_array<ListenerFrame>(m->max_listeners);
+            m->attenuations = alloc_array<Attenuation>(m->max_attenuations);
+            m->places = alloc_array<Place>(m->record_count);
+            m->play_places = alloc_array<PlayPlace>(m->record_count);
+            allocated = m->listeners && m->attenuations && m->places && m->play_places;
+            for (int i = 0; i < 3 && allocated; i++)
+                allocated = (m->spatial_results[i] = alloc_array<SpatialResult>(m->record_count)) != nullptr;
+        }
+        if (!allocated)
+        {
+            mixer_free(m);
+            return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for the mixer's voices, sounds and buffers");
+        }
+
+        for (uint32_t i = m->record_count; i-- > 0;)
+            free_push(m, i);
+        for (uint32_t i = 0; i < m->slot_count; i++)
+            m->free_slots[m->free_slot_count++] = m->slot_count - 1 - i;
+
+        // The master bus: slot 0, never destroyed.
+        m->shadow.buses[0] = BusConfig{1, true, 0, d.gain, 1.0f};
+        bus_words_reset(m->buses[0], 1);
+        for (int i = 0; i < 3; i++)
+            config_post(m);
+        m->config_buffer.take();
+        m->config = &m->configs[m->config_buffer.read];
+
+        *out_mixer = m;
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_mixer_destroy(rbtaudio_mixer mixer)
+    {
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_mixer_destroy", "mixer"))
+            return;
+        mixer_free(mixer);
+    }
+
+    RBT_RESULT rbtaudio_mixer_set_format(rbtaudio_mixer mixer, const RBTAUDIO_FORMAT *format, uint32_t max_frames,
+                                      RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_mixer_set_format", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!format)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "format is null");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_mixer_set_format", "mixer's control calls");
+        // The decoding reads the voices' streams, which a format change keeps
+        // (their rings hold the sounds' own frames, at their own rates): it
+        // is waited for all the same, as rbtaudio.h says.
+        streams_wait(mixer);
+        Layout layout;
+        if (RBT_RESULT result = layout_build(*format, max_frames, layout, error))
+            return result;
+        FormatBuffers buffers;
+        if (!format_buffers_alloc(mixer, format->channel_count, format->sample_rate, max_frames, buffers))
+            return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for the mixer's buffers");
+
+        // Nothing is rendering, so the audio thread's state is this thread's
+        // to touch: fades in progress keep their length at the new rate, and
+        // playing voices carry on, panned afresh for the new layout.
+        float rescale = (float)mixer->sample_rate / (float)format->sample_rate;
+        format_apply(mixer, *format, max_frames, layout, buffers);
+        for (uint32_t i = 0; i < mixer->active_count; i++)
+        {
+            Voice &v = mixer->voices[mixer->active[i]];
+            v.envelope_step *= rescale;
+            v.snap = true; // re-pan, and take the new rate's step
+        }
+        for (uint32_t i = 0; i < mixer->bus_count; i++)
+        {
+            Bus &bus = mixer->buses[i];
+            bus.gain.step *= rescale;
+            bus.rate.step *= rescale;
+            bus.mute.step *= rescale;
+            bus.pause.step *= rescale;
+        }
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_mixer_collect(rbtaudio_mixer mixer)
+    {
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_mixer_collect", "mixer"))
+            return;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_mixer_collect", "mixer's control calls");
+        // After the decoding: once this returns, nothing reads a destroyed
+        // sound's source (rbtaudio.h, RBTAUDIO_SOURCE).
+        streams_wait(mixer);
+        collect_streams(mixer);
+        collect_sounds(mixer);
+    }
+
+    RBT_RESULT rbtaudio_mixer_update(rbtaudio_mixer mixer, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_mixer_update", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_mixer_update", "mixer's control calls");
+        Mixer *m = mixer;
+
+        // The decoding the last update started, and the failures it met.
+        StreamReport report;
+        if (m->max_streams)
+        {
+            streams_wait(m);
+            streams_find_failures(m, report);
+            streams_refresh(m);
+        }
+
+        // Triggered modifiers: active while their bus has audible voices.
+        for (uint32_t i = 0; i < m->max_modifiers; i++)
+        {
+            const ModifierConfig &modifier = m->shadow.modifiers[i];
+            if (modifier.live && modifier.has_trigger)
+                m->modifiers[i].triggered.store(m->buses[modifier.trigger].audible.load(std::memory_order_relaxed),
+                                                std::memory_order_relaxed);
+        }
+
+        // Rank the voices: priority, then audibility. A voice holding a real
+        // slot keeps it against a near-equal one, and against any of its own
+        // priority until it has had it for min_real_us.
+        uint64_t *decisions = m->decisions[m->decision_buffer.write];
+        memset(decisions, 0, m->record_count * sizeof(uint64_t));
+        // World-placed voices first: ranking counts their gain from distance
+        // and cone, and their priority offset, as of now.
+        SpatialResult *results = m->spatial ? m->spatial_results[m->decision_buffer.write] : nullptr;
+        if (results)
+            spatial_pass(m, results);
+        uint32_t count = 0;
+        uint32_t capacity = m->max_real_voices;
+        for (uint32_t i = 0; i < m->record_count; i++)
+        {
+            Voice &v = m->voices[i];
+            uint64_t id = v.published_id.load(std::memory_order_acquire);
+            if (id == 0)
+                continue;
+            uint64_t info = v.published_info.load(std::memory_order_relaxed);
+            uint64_t sound = v.published_sound.load(std::memory_order_relaxed);
+            if (v.published_id.load(std::memory_order_acquire) != id)
+                continue; // ended, or replaced, as it was read
+            uint32_t flags = (uint32_t)(info >> 40);
+            if (flags & (PUBLISHED_WAITING | PUBLISHED_HELD))
+                continue;
+            bool real = (flags & PUBLISHED_REAL) != 0;
+            if (flags & PUBLISHED_ENDING)
+            {
+                // On its way out, keeping its slot until it's gone.
+                if (real && capacity > 0)
+                    capacity--;
+                continue;
+            }
+            RankEntry &entry = m->rank[count++];
+            entry.index = i;
+            entry.generation = (uint32_t)(id >> 32);
+            entry.priority = (uint8_t)(info >> 32);
+            entry.real = real;
+            entry.streamed = (flags & PUBLISHED_STREAMED) != 0;
+            entry.at_start = (flags & PUBLISHED_AT_START) != 0;
+            entry.loop = (flags & PUBLISHED_LOOP) != 0;
+            entry.score = bits_float((uint32_t)info);
+            if (results && results[i].generation == entry.generation)
+            {
+                entry.score *= results[i].gain;
+                entry.priority = results[i].priority;
+            }
+            entry.key = !real ? entry.score : (flags & PUBLISHED_SETTLED) ? entry.score * TIE_MARGIN : INFINITY;
+            entry.sound = sound;
+        }
+        std::sort(m->rank, m->rank + count, [](const RankEntry &a, const RankEntry &b) {
+            if (a.priority != b.priority)
+                return a.priority > b.priority;
+            if (a.key != b.key)
+                return a.key > b.key;
+            if (a.real != b.real)
+                return a.real;
+            return a.index < b.index;
+        });
+        uint32_t taken = 0;
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const RankEntry &entry = m->rank[i];
+            float score = entry.real ? entry.score * TIE_MARGIN : entry.score;
+            bool real = taken < capacity && audible_enough(m, score);
+            // A streamed voice is real only with a stream: the one it holds,
+            // or a free one; with every stream taken it is virtual, and its
+            // real slot goes to the next.
+            uint32_t held = entry.streamed ? m->voice_streams[entry.index] : 0;
+            if (real && entry.streamed && held == 0)
+            {
+                held = stream_assign(m, entry);
+                real = held != 0;
+            }
+            if (real)
+                taken++;
+            decisions[entry.index] =
+                tagged(entry.generation, (uint32_t)(real ? DECISION_REAL : DECISION_VIRTUAL) | (held << 2));
+        }
+        // A voice holding a stream it wasn't ranked for (ending, held by its
+        // bus, not started) is told which, so the render lets go of one it
+        // never took.
+        for (uint32_t i = 0; i < m->max_streams; i++)
+        {
+            Stream &s = m->streams[i];
+            uint32_t state = std::atomic_ref<uint32_t>(s.state).load(std::memory_order_acquire);
+            if (state != STREAM_ASSIGNED && state != STREAM_REQUESTED)
+                continue;
+            uint64_t &decision = decisions[s.voice_index];
+            if ((uint32_t)(decision >> 32) != s.voice_generation)
+                decision = tagged(s.voice_generation, (i + 1) << 2);
+        }
+        m->decision_buffer.post();
+
+        // The next frames of every stream, beside the caller's frame (or now,
+        // with no scheduler, and told now).
+        if (m->max_streams)
+        {
+            streams_start_decoding(m);
+            if (!m->has_scheduler)
+                streams_find_failures(m, report);
+        }
+        return streams_report(m, report, error);
+    }
+
+    // ---- Rendering ----------------------------------------------------------
+
+    void rbtaudio_mixer_render(rbtaudio_mixer mixer, void *frames, uint32_t frame_count,
+                              const CRAUDIO_CALLBACK_INFO *info)
+    {
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_mixer_render", "mixer"))
+            return;
+        if (!frames || frame_count == 0)
+            return;
+        RBT_ENTER(mixer->render_overlap, "rbtaudio", "rbtaudio_mixer_render", "mixer's render");
+        Mixer *m = mixer;
+        m->render_sequence.fetch_add(1);
+        bool host_valid = info && (info->flags & CRAUDIO_CALLBACK_FLAG_HOST_TIME_VALID);
+        // More than max_frames is a caller error, but one that costs nothing
+        // to render correctly: in parts.
+        for (uint32_t offset = 0; offset < frame_count;)
+        {
+            uint32_t part = frame_count - offset < m->max_frames ? frame_count - offset : m->max_frames;
+            uint64_t host_ns = host_valid ? info->host_time_ns + (uint64_t)offset * 1000000000ull / m->sample_rate : 0;
+            render_block(m, part, host_valid, host_ns);
+            if (m->limiter_on)
+                limiter_run(m, part);
+            write_output(m, frames, offset, part);
+            offset += part;
+        }
+        m->render_sequence.fetch_add(1);
+    }
+
+    void rbtaudio_mixer_stream_callback(craudio_stream stream, void *frames, uint32_t frame_count,
+                                       const CRAUDIO_CALLBACK_INFO *info, void *user_data)
+    {
+        (void)stream;
+        rbtaudio_mixer_render((rbtaudio_mixer)user_data, frames, frame_count, info);
+    }
+
+    // ---- Buses --------------------------------------------------------------
+
+    RBTAUDIO_BUS rbtaudio_mixer_get_master_bus(rbtaudio_mixer mixer)
+    {
+        if (!mixer)
+            return 0;
+        if (RBT_STALE(mixer, "rbtaudio_mixer_get_master_bus", "mixer"))
+            return 0;
+        return make_id(0, 1);
+    }
+
+    RBT_RESULT rbtaudio_bus_create(rbtaudio_mixer mixer, const RBTAUDIO_BUS_DESC *desc, RBTAUDIO_BUS *out_bus,
+                                RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_bus)
+            *out_bus = 0;
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_bus_create", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_bus)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "desc or out_bus is null");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_bus_create", "mixer's control calls");
+        Mixer *m = mixer;
+        if (RBT_RESULT result = rbt_struct_check(&desc->base, RBT_STRUCT_TYPE_AUDIO_BUS_DESC))
+            return fail(error, result, "desc %s", rbt_struct_check_message(result));
+        const RBTAUDIO_BUS_DESC &d = *desc;
+        if (!valid_gain(d.gain) || !valid_rate(d.rate))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "a gain of %g (finite, >= 0) or a rate of %g (%g to %g)",
+                        (double)d.gain, (double)d.rate, (double)RATE_MIN, (double)RATE_MAX);
+        uint32_t parent;
+        if (!find_bus(m, d.parent, parent))
+            return fail(error, RBT_RESULT_NOT_FOUND, "the parent bus was destroyed");
+        Config &config = m->shadow;
+        uint32_t index = m->bus_count > 1 ? find_slot(1, m->bus_count, m->bus_cursor,
+                                                      [&](uint32_t i) { return !config.buses[i].live; })
+                                          : m->bus_count;
+        if (index == m->bus_count)
+            return fail(error, RBT_RESULT_LIMIT, "all %u buses are in use", m->bus_count - 1);
+        uint32_t generation = next_generation(config.buses[index].generation);
+        config.buses[index] = BusConfig{generation, true, parent, d.gain, d.rate};
+        m->buses[index].audible.store(0, std::memory_order_relaxed);
+        bus_words_reset(m->buses[index], generation);
+        config_post(m);
+        *out_bus = make_id(index, generation);
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_bus_destroy(rbtaudio_mixer mixer, RBTAUDIO_BUS bus)
+    {
+        uint32_t index;
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_bus_destroy", "mixer"))
+            return;
+        if (bus == 0 || !find_bus(mixer, bus, index) || index == 0)
+            return;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_bus_destroy", "mixer's control calls");
+        Mixer *m = mixer;
+        Config &config = m->shadow;
+        uint32_t parent = config.buses[index].parent;
+        config.buses[index].live = false;
+        bus_words_reset(m->buses[index], 0); // no ID names generation 0: every setter is turned away
+        // Its children - and the voices of buses destroyed earlier that were
+        // sent to it - move to its parent.
+        for (uint32_t b = 1; b < m->bus_count; b++)
+        {
+            if (b != index && config.buses[b].parent == index)
+                config.buses[b].parent = parent;
+        }
+        for (uint32_t i = 0; i < m->max_modifiers; i++)
+        {
+            ModifierConfig &modifier = config.modifiers[i];
+            ModifierTarget *targets = config.targets + (size_t)i * m->bus_count;
+            for (uint32_t t = 0; t < modifier.target_count;)
+            {
+                if (targets[t].bus == index)
+                    targets[t] = targets[--modifier.target_count];
+                else
+                    t++;
+            }
+            if (modifier.has_trigger && modifier.trigger == index)
+            {
+                modifier.has_trigger = false;
+                m->modifiers[i].triggered.store(0, std::memory_order_relaxed);
+            }
+        }
+        config_post(m);
+    }
+
+    RBT_RESULT rbtaudio_bus_set_parent(rbtaudio_mixer mixer, RBTAUDIO_BUS bus, RBTAUDIO_BUS parent)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_bus_set_parent", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_bus_set_parent", "mixer's control calls");
+        Mixer *m = mixer;
+        uint32_t index, parent_index;
+        if (bus == 0 || !find_bus(m, bus, index) || !find_bus(m, parent, parent_index))
+            return RBT_RESULT_NOT_FOUND;
+        if (index == 0)
+            return RBT_RESULT_INVALID_ARGUMENT; // the master stays the root
+        for (uint32_t at = parent_index;; at = m->shadow.buses[at].parent)
+        {
+            if (at == index)
+                return RBT_RESULT_INVALID_ARGUMENT; // [parent] is [bus], or under it
+            if (at == 0)
+                break;
+        }
+        m->shadow.buses[index].parent = parent_index;
+        config_post(m);
+        return RBT_RESULT_OK;
+    }
+
+    RBT_RESULT rbtaudio_bus_set_gain(rbtaudio_mixer mixer, RBTAUDIO_BUS bus, float gain, uint32_t fade_us)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_bus_set_gain", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (!valid_gain(gain))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        return bus_set_value(mixer, bus, &Bus::gain_word, &Bus::gain_fade_word, gain, fade_us);
+    }
+
+    RBT_RESULT rbtaudio_bus_set_rate(rbtaudio_mixer mixer, RBTAUDIO_BUS bus, float rate, uint32_t fade_us)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_bus_set_rate", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (!valid_rate(rate))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        return bus_set_value(mixer, bus, &Bus::rate_word, &Bus::rate_fade_word, rate, fade_us);
+    }
+
+    RBT_RESULT rbtaudio_bus_set_muted(rbtaudio_mixer mixer, RBTAUDIO_BUS bus, bool muted, uint32_t fade_us)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_bus_set_muted", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        return bus_set_switch(mixer, bus, &Bus::mute_word, muted, fade_us);
+    }
+
+    RBT_RESULT rbtaudio_bus_set_paused(rbtaudio_mixer mixer, RBTAUDIO_BUS bus, bool paused, uint32_t fade_us)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_bus_set_paused", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        return bus_set_switch(mixer, bus, &Bus::pause_word, paused, fade_us);
+    }
+
+    // ---- Modifiers ----------------------------------------------------------
+
+    RBT_RESULT rbtaudio_modifier_create(rbtaudio_mixer mixer, const RBTAUDIO_MODIFIER_DESC *desc,
+                                     RBTAUDIO_MODIFIER *out_modifier, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_modifier)
+            *out_modifier = 0;
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_modifier_create", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_modifier)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "desc or out_modifier is null");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_modifier_create", "mixer's control calls");
+        Mixer *m = mixer;
+        if (RBT_RESULT result = rbt_struct_check(&desc->base, RBT_STRUCT_TYPE_AUDIO_MODIFIER_DESC))
+            return fail(error, result, "desc %s", rbt_struct_check_message(result));
+        const RBTAUDIO_MODIFIER_DESC &d = *desc;
+        if (d.target_count > 0 && !d.targets)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "targets is null with a target_count of %u", d.target_count);
+        if (d.target_count > m->bus_count)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "%u targets for %u buses: at most one per bus", d.target_count,
+                        m->bus_count);
+        Config &config = m->shadow;
+        uint32_t index = m->max_modifiers ? find_slot(0, m->max_modifiers, m->modifier_cursor,
+                                                      [&](uint32_t i) { return !config.modifiers[i].live; })
+                                          : 0;
+        if (index == m->max_modifiers)
+            return fail(error, RBT_RESULT_LIMIT, "all %u modifiers are in use", m->max_modifiers);
+        // Checked, and built, in the free slot: nothing reads it until it's live.
+        ModifierTarget *targets = config.targets + (size_t)index * m->bus_count;
+        for (uint32_t t = 0; t < d.target_count; t++)
+        {
+            const RBTAUDIO_MODIFIER_TARGET &target = d.targets[t];
+            uint32_t bus;
+            if (target.bus == 0 || !find_bus(m, target.bus, bus))
+                return fail(error, RBT_RESULT_NOT_FOUND, "target %u's bus is 0 or was destroyed", t);
+            if (!valid_gain(target.gain) || !valid_rate(target.rate))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "target %u has a gain of %g (finite, >= 0) or a rate of %g "
+                            "(%g to %g)", t, (double)target.gain, (double)target.rate, (double)RATE_MIN,
+                            (double)RATE_MAX);
+            for (uint32_t other = 0; other < t; other++)
+            {
+                if (targets[other].bus == bus)
+                    return fail(error, RBT_RESULT_INVALID_ARGUMENT, "targets %u and %u name the same bus", other, t);
+            }
+            targets[t] = ModifierTarget{bus, target.gain, target.rate};
+        }
+        uint32_t trigger = 0;
+        if (d.trigger != 0 && !find_bus(m, d.trigger, trigger))
+            return fail(error, RBT_RESULT_NOT_FOUND, "the trigger bus was destroyed");
+        uint32_t generation = next_generation(config.modifiers[index].generation);
+        config.modifiers[index] =
+            ModifierConfig{generation, true, d.trigger != 0, trigger, d.fade_in_us, d.fade_out_us, d.target_count};
+        m->modifiers[index].triggered.store(0, std::memory_order_relaxed);
+        m->modifiers[index].active_word.store(tagged(generation, 0), std::memory_order_release);
+        config_post(m);
+        *out_modifier = make_id(index, generation);
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_modifier_destroy(rbtaudio_mixer mixer, RBTAUDIO_MODIFIER modifier)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_modifier_destroy", "mixer"))
+            return;
+        if (!split_id(modifier, mixer->max_modifiers, index, generation))
+            return;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_modifier_destroy", "mixer's control calls");
+        ModifierConfig &config = mixer->shadow.modifiers[index];
+        if (!config.live || config.generation != generation)
+            return;
+        // Kept, not live, so the audio thread fades its effect out; the slot
+        // is the last to be reused.
+        config.live = false;
+        mixer->modifiers[index].active_word.store(0, std::memory_order_release);
+        mixer->modifiers[index].triggered.store(0, std::memory_order_relaxed);
+        config_post(mixer);
+    }
+
+    RBT_RESULT rbtaudio_modifier_set_active(rbtaudio_mixer mixer, RBTAUDIO_MODIFIER modifier, bool active)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_modifier_set_active", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        uint32_t index, generation;
+        if (!split_id(modifier, mixer->max_modifiers, index, generation) ||
+            !tagged_store(mixer->modifiers[index].active_word, generation, active ? 1 : 0))
+            return RBT_RESULT_NOT_FOUND;
+        return RBT_RESULT_OK;
+    }
+
+    // ---- Concurrency groups -------------------------------------------------
+
+    RBT_RESULT rbtaudio_concurrency_create(rbtaudio_mixer mixer, const RBTAUDIO_CONCURRENCY_DESC *desc,
+                                        RBTAUDIO_CONCURRENCY *out_group, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_group)
+            *out_group = 0;
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_concurrency_create", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_group)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "desc or out_group is null");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_concurrency_create", "mixer's control calls");
+        Mixer *m = mixer;
+        if (RBT_RESULT result = rbt_struct_check(&desc->base, RBT_STRUCT_TYPE_AUDIO_CONCURRENCY_DESC))
+            return fail(error, result, "desc %s", rbt_struct_check_message(result));
+        const RBTAUDIO_CONCURRENCY_DESC &d = *desc;
+        if (d.max_instances == 0)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_instances is 0");
+        if (d.resolution < RBTAUDIO_RESOLUTION_REJECT_NEW || d.resolution > RBTAUDIO_RESOLUTION_STOP_FARTHEST)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "resolution %u isn't one of RBTAUDIO_RESOLUTION", d.resolution);
+        if (!(d.older_instance_gain > 0.0f && d.older_instance_gain <= 1.0f))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "an older_instance_gain of %g, outside (0, 1]",
+                        (double)d.older_instance_gain);
+        Config &config = m->shadow;
+        uint32_t index = m->max_groups ? find_slot(0, m->max_groups, m->group_cursor,
+                                                   [&](uint32_t i) { return !config.groups[i].live; })
+                                       : 0;
+        if (index == m->max_groups)
+            return fail(error, RBT_RESULT_LIMIT, "all %u concurrency groups are in use", m->max_groups);
+        uint32_t generation = next_generation(config.groups[index].generation);
+        config.groups[index] =
+            GroupConfig{generation, true, d.max_instances, d.resolution, d.retrigger_us, d.older_instance_gain};
+        config_post(m);
+        *out_group = make_id(index, generation);
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_concurrency_destroy(rbtaudio_mixer mixer, RBTAUDIO_CONCURRENCY group)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_concurrency_destroy", "mixer"))
+            return;
+        if (!split_id(group, mixer->max_groups, index, generation))
+            return;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_concurrency_destroy", "mixer's control calls");
+        GroupConfig &config = mixer->shadow.groups[index];
+        if (!config.live || config.generation != generation)
+            return;
+        config.live = false;
+        config_post(mixer);
+    }
+
+    // ---- Sounds -------------------------------------------------------------
+
+    RBT_RESULT rbtaudio_sound_create(rbtaudio_mixer mixer, const RBTAUDIO_SOUND_DESC *desc, RBTAUDIO_SOUND *out_sound,
+                                  RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_sound)
+            *out_sound = 0;
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_sound_create", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc || !out_sound)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "desc or out_sound is null");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_sound_create", "mixer's control calls");
+        Mixer *m = mixer;
+        if (RBT_RESULT result = rbt_struct_check(&desc->base, RBT_STRUCT_TYPE_AUDIO_SOUND_DESC))
+            return fail(error, result, "desc %s", rbt_struct_check_message(result));
+        const RBTAUDIO_SOUND_DESC &d = *desc;
+        if (d.stream_codec != RBTAUDIO_STREAM_CODEC_NONE)
+            return stream_sound_create(m, d, out_sound, error);
+        if (d.channel_count != 1 && d.channel_count != 2)
+            return fail(error, RBT_RESULT_UNSUPPORTED, "a sound of %u channels: only mono and stereo play",
+                        d.channel_count);
+        if (d.frame_count > 0 && !d.samples)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "samples is null with a frame_count of %llu",
+                        (unsigned long long)d.frame_count);
+        if (d.sample_rate < SOUND_RATE_MIN || d.sample_rate > SOUND_RATE_MAX)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "a sample rate of %u Hz, outside %u to %u", d.sample_rate,
+                        SOUND_RATE_MIN, SOUND_RATE_MAX);
+        if (d.virtual_behavior < RBTAUDIO_VIRTUAL_KILL || d.virtual_behavior > RBTAUDIO_VIRTUAL_PAUSE)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "virtual_behavior %u isn't one a sound can have",
+                        d.virtual_behavior);
+        if (d.frame_count > (uint64_t)INT64_MAX / 8 || d.frame_count * d.channel_count > SIZE_MAX / sizeof(float))
+            return fail(error, RBT_RESULT_OUT_OF_MEMORY, "%llu frames don't fit in memory",
+                        (unsigned long long)d.frame_count);
+
+        uint32_t index = find_slot(0, m->max_sounds, m->sound_cursor,
+                                   [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+        if (index == m->max_sounds)
+        {
+            // Every slot taken: those of destroyed sounds the audio thread
+            // has let go of are free for the asking (rbtaudio.h).
+            collect_sounds(m);
+            index = find_slot(0, m->max_sounds, m->sound_cursor,
+                              [&](uint32_t i) { return m->sounds[i].state == SOUND_FREE; });
+        }
+        if (index == m->max_sounds)
+            return fail(error, RBT_RESULT_LIMIT, "all %u sounds are in use, or destroyed and waiting for a render to "
+                        "let go of them", m->max_sounds);
+        Sound &sound = m->sounds[index];
+        size_t sample_count = (size_t)(d.frame_count * d.channel_count);
+        float *samples = nullptr;
+        double squares = 0.0;
+        if (sample_count)
+        {
+            samples = static_cast<float *>(malloc(sample_count * sizeof(float)));
+            if (!samples)
+                return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for %llu samples",
+                            (unsigned long long)sample_count);
+            memcpy(samples, d.samples, sample_count * sizeof(float));
+            for (size_t i = 0; i < sample_count; i++)
+                squares += (double)samples[i] * (double)samples[i];
+        }
+        sound.samples = samples;
+        sound.frame_count = d.frame_count;
+        sound.channel_count = d.channel_count;
+        sound.sample_rate = d.sample_rate;
+        sound.loudness = sample_count ? (float)sqrt(squares / (double)sample_count) : 0.0f;
+        sound.virtual_behavior = d.virtual_behavior;
+        sound.concurrency = d.concurrency;
+        sound.bus = d.bus;
+        sound.streamed = false;
+        sound.prefetch_frames = 0;
+        sound.underrun_frames.store(0, std::memory_order_relaxed);
+        sound.generation = next_generation(sound.generation);
+        sound.state = SOUND_LIVE;
+        uint64_t id = make_id(index, sound.generation);
+        sound.live_id.store(id);
+        *out_sound = id;
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_sound_destroy(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_sound_destroy", "mixer"))
+            return;
+        if (!split_id(sound, mixer->max_sounds, index, generation))
+            return;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_sound_destroy", "mixer's control calls");
+        Sound &slot = mixer->sounds[index];
+        if (slot.state != SOUND_LIVE || slot.generation != generation)
+            return;
+        // Stale from here. A render that began before this may still be
+        // using the sound, so its memory waits for one that began after to
+        // finish.
+        slot.live_id.store(0);
+        uint64_t sequence = mixer->render_sequence.load();
+        slot.retire_sequence = sequence + 2 + (sequence & 1);
+        slot.state = SOUND_RETIRED;
+    }
+
+    uint64_t rbtaudio_sound_get_underrun_frames(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return 0;
+        if (RBT_STALE(mixer, "rbtaudio_sound_get_underrun_frames", "mixer"))
+            return 0;
+        if (!split_id(sound, mixer->max_sounds, index, generation))
+            return 0;
+        const Sound &slot = mixer->sounds[index];
+        if (slot.live_id.load(std::memory_order_acquire) != sound)
+            return 0;
+        return slot.underrun_frames.load(std::memory_order_relaxed);
+    }
+
+    // ---- Voices -------------------------------------------------------------
+
+    RBT_RESULT rbtaudio_play(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound, const RBTAUDIO_PLAY_DESC *desc,
+                          RBTAUDIO_VOICE *out_voice)
+    {
+        if (out_voice)
+            *out_voice = 0;
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_play", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (!desc)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        Mixer *m = mixer;
+        if (RBT_RESULT result = rbt_struct_check(&desc->base, RBT_STRUCT_TYPE_AUDIO_PLAY_DESC))
+            return result;
+        const RBTAUDIO_PLAY_DESC &d = *desc;
+        if (!valid_gain(d.gain) || !valid_rate(d.rate) || d.virtual_behavior > RBTAUDIO_VIRTUAL_PAUSE)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (d.direction && (!isfinite(d.direction->azimuth) || !isfinite(d.direction->elevation)))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (d.placement != RBTAUDIO_PLACEMENT_ANGLES && d.placement != RBTAUDIO_PLACEMENT_WORLD)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        bool world = d.placement == RBTAUDIO_PLACEMENT_WORLD;
+        if (world)
+        {
+            if (d.direction)
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (!d.emitter)
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (d.attenuation == 0)
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (!finite_d3(d.emitter->position))
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (!finite_f3(d.emitter->velocity))
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (!finite_f3(d.emitter->forward))
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (!m->spatial)
+                return RBT_RESULT_UNSUPPORTED;
+        }
+        else
+        {
+            if (d.emitter)
+                return RBT_RESULT_INVALID_ARGUMENT;
+            if (d.attenuation != 0)
+                return RBT_RESULT_INVALID_ARGUMENT;
+        }
+        uint32_t sound_index, sound_generation;
+        if (!split_id(sound, m->max_sounds, sound_index, sound_generation) ||
+            m->sounds[sound_index].live_id.load() != sound)
+            return RBT_RESULT_NOT_FOUND;
+        uint32_t attenuation_index = 0, attenuation_generation = 0;
+        if (world && !split_id(d.attenuation, m->max_attenuations, attenuation_index, attenuation_generation))
+            return RBT_RESULT_NOT_FOUND;
+        if (world && m->attenuations[attenuation_index].live_id.load(std::memory_order_acquire) != d.attenuation)
+            return RBT_RESULT_NOT_FOUND;
+
+        // A place in the queue, then a record: with queue_capacity plays
+        // waiting at most, there's always one.
+        if (m->queued.fetch_add(1, std::memory_order_acquire) >= m->queue_capacity)
+        {
+            m->queued.fetch_sub(1, std::memory_order_release);
+            return RBT_RESULT_LIMIT;
+        }
+        uint32_t index;
+        if (!free_pop(m, index))
+        {
+            m->queued.fetch_sub(1, std::memory_order_release);
+            return RBT_RESULT_LIMIT;
+        }
+        Voice &v = m->voices[index];
+        v.generation = next_generation(v.generation);
+        v.id = make_id(index, v.generation);
+        v.sound_id = sound;
+        v.gain = d.gain;
+        v.rate = d.rate;
+        v.priority = d.priority;
+        v.base_priority = d.priority;
+        v.behavior = d.virtual_behavior;
+        v.concurrency = d.concurrency;
+        v.bus = d.bus;
+        v.has_direction = d.direction != nullptr;
+        if (d.direction)
+        {
+            v.azimuth = wrap360((float)(fmod(d.direction->azimuth, 2.0 * 3.14159265358979323846) * (180.0 / 3.14159265358979323846)));
+            v.elevation = clamp_float((float)(d.direction->elevation * (180.0 / 3.14159265358979323846)), -90.0f, 90.0f);
+        }
+        v.start_time_ns = d.start_time_ns;
+        v.loop = d.loop;
+        v.stop_word.store(tagged(v.generation, 0), std::memory_order_relaxed);
+        v.gain_word.store(tagged(v.generation, FLOAT_NONE), std::memory_order_relaxed);
+        v.rate_word.store(tagged(v.generation, FLOAT_NONE), std::memory_order_relaxed);
+        v.direction_word.store(tagged(v.generation, 0), std::memory_order_relaxed);
+        v.placement.store((uint8_t)d.placement, std::memory_order_relaxed);
+        if (world)
+        {
+            // Its first place, for the update, which reads it as words.
+            std::atomic<uint64_t> *words = m->play_places[index].words;
+            const RBTAUDIO_EMITTER &e = *d.emitter;
+            words[PLAY_PLACE_POSITION + 0].store(double_word(e.position.x), std::memory_order_relaxed);
+            words[PLAY_PLACE_POSITION + 1].store(double_word(e.position.y), std::memory_order_relaxed);
+            words[PLAY_PLACE_POSITION + 2].store(double_word(e.position.z), std::memory_order_relaxed);
+            words[PLAY_PLACE_VELOCITY_XY].store(float_pair(e.velocity.x, e.velocity.y), std::memory_order_relaxed);
+            words[PLAY_PLACE_VELOCITY_Z_FORWARD_X].store(float_pair(e.velocity.z, e.forward.x),
+                                                         std::memory_order_relaxed);
+            words[PLAY_PLACE_FORWARD_YZ].store(float_pair(e.forward.y, e.forward.z), std::memory_order_relaxed);
+            words[PLAY_PLACE_ATTENUATION].store(d.attenuation, std::memory_order_relaxed);
+            words[PLAY_PLACE_PRIORITY].store(d.priority, std::memory_order_relaxed);
+        }
+        v.live_id.store(v.id, std::memory_order_release);
+        if (out_voice)
+            *out_voice = v.id;
+
+        uint32_t head = m->pending_head.load(std::memory_order_relaxed);
+        do
+        {
+            v.next.store(head, std::memory_order_relaxed);
+        } while (!m->pending_head.compare_exchange_weak(head, index + 1, std::memory_order_release,
+                                                         std::memory_order_relaxed));
+        return RBT_RESULT_OK;
+    }
+
+    RBT_RESULT rbtaudio_voice_stop(rbtaudio_mixer mixer, RBTAUDIO_VOICE voice, uint32_t release_frames)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_voice_stop", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        uint32_t index, generation;
+        if (!split_id(voice, mixer->record_count, index, generation))
+            return RBT_RESULT_OK;
+        // The first stop stands: one already asked for isn't replaced.
+        std::atomic<uint64_t> &word = mixer->voices[index].stop_word;
+        uint32_t release = release_frames > STOP_FRAMES_MASK ? STOP_FRAMES_MASK : release_frames;
+        uint64_t old = word.load(std::memory_order_relaxed);
+        while ((uint32_t)(old >> 32) == generation && !(old & STOP_REQUESTED))
+        {
+            if (word.compare_exchange_weak(old, tagged(generation, STOP_REQUESTED | release),
+                                           std::memory_order_release, std::memory_order_relaxed))
+                break;
+        }
+        return RBT_RESULT_OK;
+    }
+
+    bool rbtaudio_voice_is_folded(rbtaudio_mixer mixer, RBTAUDIO_VOICE voice)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return false;
+        if (RBT_STALE(mixer, "rbtaudio_voice_is_folded", "mixer"))
+            return false;
+        if (!split_id(voice, mixer->record_count, index, generation))
+            return false;
+        return mixer->voices[index].folded_id.load(std::memory_order_acquire) == voice;
+    }
+
+    bool rbtaudio_voice_is_live(rbtaudio_mixer mixer, RBTAUDIO_VOICE voice)
+    {
+        uint32_t index, generation;
+        if (!mixer)
+            return false;
+        if (RBT_STALE(mixer, "rbtaudio_voice_is_live", "mixer"))
+            return false;
+        if (!split_id(voice, mixer->record_count, index, generation))
+            return false;
+        return mixer->voices[index].live_id.load(std::memory_order_acquire) == voice;
+    }
+
+    RBT_RESULT rbtaudio_voice_set_gain(rbtaudio_mixer mixer, RBTAUDIO_VOICE voice, float gain)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_voice_set_gain", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (!valid_gain(gain))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        uint32_t index, generation;
+        if (split_id(voice, mixer->record_count, index, generation))
+            tagged_store(mixer->voices[index].gain_word, generation, float_bits(gain));
+        return RBT_RESULT_OK;
+    }
+
+    RBT_RESULT rbtaudio_voice_set_direction(rbtaudio_mixer mixer, RBTAUDIO_VOICE voice, const RBTAUDIO_DIRECTION *direction)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_voice_set_direction", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (direction && (!isfinite(direction->azimuth) || !isfinite(direction->elevation)))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        uint32_t index, generation;
+        if (!split_id(voice, mixer->record_count, index, generation))
+            return RBT_RESULT_OK;
+        Voice &v = mixer->voices[index];
+        // A world-placed voice's direction is the update's.
+        if (v.live_id.load(std::memory_order_acquire) == voice)
+        {
+            if (v.placement.load(std::memory_order_relaxed) == RBTAUDIO_PLACEMENT_WORLD)
+                return RBT_RESULT_INVALID_ARGUMENT;
+        }
+        tagged_store(v.direction_word, generation, pack_direction(direction));
+        return RBT_RESULT_OK;
+    }
+
+    RBT_RESULT rbtaudio_voice_set_rate(rbtaudio_mixer mixer, RBTAUDIO_VOICE voice, float rate)
+    {
+        if (!mixer)
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (RBT_STALE(mixer, "rbtaudio_voice_set_rate", "mixer"))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        if (!valid_rate(rate))
+            return RBT_RESULT_INVALID_ARGUMENT;
+        uint32_t index, generation;
+        if (split_id(voice, mixer->record_count, index, generation))
+            tagged_store(mixer->voices[index].rate_word, generation, float_bits(rate));
+        return RBT_RESULT_OK;
+    }
+
+    // ---- Spatial audio ------------------------------------------------------
+
+    RBT_RESULT rbtaudio_mixer_set_listeners(rbtaudio_mixer mixer, const RBTAUDIO_LISTENER *listeners, uint32_t count,
+                                         RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_mixer_set_listeners", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_mixer_set_listeners", "mixer's control calls");
+        Mixer *m = mixer;
+        if (!m->spatial)
+            return fail(error, RBT_RESULT_UNSUPPORTED, "the mixer was made with no RBTAUDIO_SPATIAL_DESC");
+        if (!listeners && count > 0)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners is null with a count of %u", count);
+        if (count > m->max_listeners)
+            return fail(error, RBT_RESULT_LIMIT, "%u listeners, more than the spatial desc's max_listeners (%u)", count,
+                        m->max_listeners);
+        // Every one checked before any is stored.
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const RBTAUDIO_LISTENER &l = listeners[i];
+            if (!finite_d3(l.position))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s position isn't finite", i);
+            if (!finite_f3(l.velocity))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s velocity isn't finite", i);
+            if (!finite_f3(l.forward))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s forward isn't finite", i);
+            float f[3] = {l.forward.x, l.forward.y, l.forward.z};
+            double f_length = sqrt(dot3f(f, f));
+            if (f_length == 0.0)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s forward is zero", i);
+            if (!finite_f3(l.up))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s up isn't finite", i);
+            float u[3] = {l.up.x, l.up.y, l.up.z};
+            double u_length = sqrt(dot3f(u, u));
+            if (u_length == 0.0)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s up is zero", i);
+            double along = dot3f(f, u) / (f_length * u_length);
+            if (fabs(along) > 0.9999)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "listeners[%u]'s up is parallel to its forward", i);
+        }
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const RBTAUDIO_LISTENER &l = listeners[i];
+            ListenerFrame &frame = m->listeners[i];
+            frame.position[0] = l.position.x;
+            frame.position[1] = l.position.y;
+            frame.position[2] = l.position.z;
+            frame.velocity[0] = l.velocity.x;
+            frame.velocity[1] = l.velocity.y;
+            frame.velocity[2] = l.velocity.z;
+            // Forward normalized; up made perpendicular to it; right from the
+            // two by the world's handedness.
+            double f[3] = {l.forward.x, l.forward.y, l.forward.z};
+            double f_length = sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+            for (int c = 0; c < 3; c++)
+                f[c] /= f_length;
+            double u[3] = {l.up.x, l.up.y, l.up.z};
+            double along = u[0] * f[0] + u[1] * f[1] + u[2] * f[2];
+            for (int c = 0; c < 3; c++)
+                u[c] -= along * f[c];
+            double u_length = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+            for (int c = 0; c < 3; c++)
+                u[c] /= u_length;
+            double r[3];
+            if (m->right_handed)
+            {
+                r[0] = f[1] * u[2] - f[2] * u[1];
+                r[1] = f[2] * u[0] - f[0] * u[2];
+                r[2] = f[0] * u[1] - f[1] * u[0];
+            }
+            else
+            {
+                r[0] = u[1] * f[2] - u[2] * f[1];
+                r[1] = u[2] * f[0] - u[0] * f[2];
+                r[2] = u[0] * f[1] - u[1] * f[0];
+            }
+            for (int c = 0; c < 3; c++)
+            {
+                frame.forward[c] = (float)f[c];
+                frame.up[c] = (float)u[c];
+                frame.right[c] = (float)r[c];
+            }
+        }
+        m->listener_count = count;
+        return RBT_RESULT_OK;
+    }
+
+    RBT_RESULT rbtaudio_mixer_set_emitters(rbtaudio_mixer mixer, const RBTAUDIO_VOICE *voices,
+                                        const RBTAUDIO_EMITTER *emitters, uint32_t count, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_mixer_set_emitters", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_mixer_set_emitters", "mixer's control calls");
+        Mixer *m = mixer;
+        if (!m->spatial)
+            return fail(error, RBT_RESULT_UNSUPPORTED, "the mixer was made with no RBTAUDIO_SPATIAL_DESC");
+        if (!voices && count > 0)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "voices is null with a count of %u", count);
+        if (!emitters && count > 0)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "emitters is null with a count of %u", count);
+        // Every one checked before any is stored.
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const RBTAUDIO_EMITTER &e = emitters[i];
+            if (!finite_d3(e.position))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "emitters[%u]'s position isn't finite", i);
+            if (!finite_f3(e.velocity))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "emitters[%u]'s velocity isn't finite", i);
+            if (!finite_f3(e.forward))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "emitters[%u]'s forward isn't finite", i);
+            uint32_t index, generation;
+            if (!split_id(voices[i], m->record_count, index, generation))
+                continue; // unknown: skipped
+            const Voice &v = m->voices[index];
+            if (v.live_id.load(std::memory_order_acquire) != voices[i])
+                continue; // finished: skipped
+            if (v.placement.load(std::memory_order_relaxed) != RBTAUDIO_PLACEMENT_WORLD)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "voices[%u] is placed by angles, not in the world", i);
+        }
+        for (uint32_t i = 0; i < count; i++)
+        {
+            uint32_t index, generation;
+            if (!split_id(voices[i], m->record_count, index, generation))
+                continue;
+            if (m->voices[index].live_id.load(std::memory_order_acquire) != voices[i])
+                continue;
+            const RBTAUDIO_EMITTER &e = emitters[i];
+            Place &place = m->places[index];
+            place.generation = generation;
+            place.position[0] = e.position.x;
+            place.position[1] = e.position.y;
+            place.position[2] = e.position.z;
+            place.velocity[0] = e.velocity.x;
+            place.velocity[1] = e.velocity.y;
+            place.velocity[2] = e.velocity.z;
+            place.forward[0] = e.forward.x;
+            place.forward[1] = e.forward.y;
+            place.forward[2] = e.forward.z;
+        }
+        return RBT_RESULT_OK;
+    }
+
+    RBT_RESULT rbtaudio_attenuation_create(rbtaudio_mixer mixer, const RBTAUDIO_ATTENUATION_DESC *desc,
+                                        RBTAUDIO_ATTENUATION *out_attenuation, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_attenuation)
+            *out_attenuation = 0;
+        if (!mixer)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is null");
+        if (RBT_STALE(mixer, "rbtaudio_attenuation_create", "mixer"))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "mixer is destroyed");
+        if (!desc)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "desc is null");
+        if (!out_attenuation)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "out_attenuation is null");
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_attenuation_create", "mixer's control calls");
+        Mixer *m = mixer;
+        if (RBT_RESULT result = rbt_struct_check(&desc->base, RBT_STRUCT_TYPE_AUDIO_ATTENUATION_DESC))
+            return fail(error, result, "desc %s", rbt_struct_check_message(result));
+        if (!m->spatial)
+            return fail(error, RBT_RESULT_UNSUPPORTED, "the mixer was made with no RBTAUDIO_SPATIAL_DESC");
+        const RBTAUDIO_ATTENUATION_DESC &d = *desc;
+        if (d.rolloff < RBTAUDIO_ROLLOFF_NONE || d.rolloff > RBTAUDIO_ROLLOFF_TABLE)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "rolloff %u isn't NONE, INVERSE, LINEAR, EXPONENT or TABLE",
+                        d.rolloff);
+        if (!(isfinite(d.min_distance) && d.min_distance > 0.0f))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "min_distance isn't finite and > 0");
+        if (!(isfinite(d.max_distance) && d.max_distance > d.min_distance))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "max_distance isn't finite and > min_distance");
+        bool curve = d.rolloff == RBTAUDIO_ROLLOFF_INVERSE || d.rolloff == RBTAUDIO_ROLLOFF_LINEAR ||
+                     d.rolloff == RBTAUDIO_ROLLOFF_EXPONENT;
+        if (curve && !(isfinite(d.rolloff_factor) && d.rolloff_factor > 0.0f))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "rolloff_factor isn't finite and > 0");
+        bool table = d.rolloff == RBTAUDIO_ROLLOFF_TABLE;
+        if (table && !d.points)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "points is null for a TABLE");
+        if (table && d.point_count < 2)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "point_count is %u: a TABLE needs at least 2", d.point_count);
+        for (uint32_t i = 0; table && i < d.point_count; i++)
+        {
+            const RBTAUDIO_ATTENUATION_POINT &point = d.points[i];
+            if (!(isfinite(point.place) && point.place >= 0.0f && point.place <= 1.0f))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "points[%u]'s place isn't in [0, 1]", i);
+            if (i == 0 && point.place != 0.0f)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "points[0]'s place isn't 0");
+            if (i > 0 && !(point.place > d.points[i - 1].place))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "points[%u]'s place doesn't rise from the one before", i);
+            if (i + 1 == d.point_count && point.place != 1.0f)
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "points[%u]'s place, the last, isn't 1", i);
+            if (!(isfinite(point.gain) && point.gain >= 0.0f && point.gain <= 1.0f))
+                return fail(error, RBT_RESULT_INVALID_ARGUMENT, "points[%u]'s gain isn't in [0, 1]", i);
+        }
+        const float full_turn = 2.0f * PI_F * (1.0f + 1e-6f);
+        if (!(isfinite(d.cone_inner_angle) && d.cone_inner_angle > 0.0f && d.cone_inner_angle <= full_turn))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "cone_inner_angle isn't in (0, 2 pi]");
+        if (!(isfinite(d.cone_outer_angle) && d.cone_outer_angle >= d.cone_inner_angle &&
+              d.cone_outer_angle <= full_turn))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "cone_outer_angle isn't in [cone_inner_angle, 2 pi]");
+        if (!(isfinite(d.cone_outer_gain) && d.cone_outer_gain >= 0.0f && d.cone_outer_gain <= 1.0f))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "cone_outer_gain isn't in [0, 1]");
+        if (!(isfinite(d.doppler_factor) && d.doppler_factor >= 0.0f))
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "doppler_factor isn't finite and >= 0");
+        if (d.priority_offset < -255 || d.priority_offset > 255)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "priority_offset is %d, outside [-255, 255]",
+                        (int)d.priority_offset);
+
+        // A free slot, from where the last one was found.
+        uint32_t index = UINT32_MAX;
+        for (uint32_t n = 0; n < m->max_attenuations; n++)
+        {
+            uint32_t at = (m->attenuation_cursor + n) % m->max_attenuations;
+            if (!m->attenuations[at].live)
+            {
+                index = at;
+                break;
+            }
+        }
+        if (index == UINT32_MAX)
+            return fail(error, RBT_RESULT_LIMIT, "every one of the %u attenuation slots is in use", m->max_attenuations);
+        RBTAUDIO_ATTENUATION_POINT *points = nullptr;
+        if (table)
+        {
+            points = (RBTAUDIO_ATTENUATION_POINT *)malloc((size_t)d.point_count * sizeof(RBTAUDIO_ATTENUATION_POINT));
+            if (!points)
+                return fail(error, RBT_RESULT_OUT_OF_MEMORY, "no memory for the attenuation's %u points", d.point_count);
+            memcpy(points, d.points, (size_t)d.point_count * sizeof(RBTAUDIO_ATTENUATION_POINT));
+        }
+        Attenuation &a = m->attenuations[index];
+        a.generation = next_generation(a.generation);
+        a.live = true;
+        a.rolloff = d.rolloff;
+        a.min_distance = d.min_distance;
+        a.max_distance = d.max_distance;
+        a.factor = curve ? d.rolloff_factor : 0.0f;
+        a.points = points;
+        a.point_count = table ? d.point_count : 0;
+        a.inner_half = d.cone_inner_angle * 0.5f;
+        a.outer_half = d.cone_outer_angle * 0.5f;
+        a.outer_gain = d.cone_outer_gain;
+        a.doppler = d.doppler_factor;
+        a.priority_offset = d.priority_offset;
+        m->attenuation_cursor = (index + 1) % m->max_attenuations;
+        RBTAUDIO_ATTENUATION id = make_id(index, a.generation);
+        a.live_id.store(id, std::memory_order_release);
+        *out_attenuation = id;
+        return RBT_RESULT_OK;
+    }
+
+    void rbtaudio_attenuation_destroy(rbtaudio_mixer mixer, RBTAUDIO_ATTENUATION attenuation)
+    {
+        if (!mixer)
+            return;
+        if (RBT_STALE(mixer, "rbtaudio_attenuation_destroy", "mixer"))
+            return;
+        RBT_ENTER(mixer->overlap, "rbtaudio", "rbtaudio_attenuation_destroy", "mixer's control calls");
+        Mixer *m = mixer;
+        uint32_t index, generation;
+        if (!m->spatial)
+            return;
+        if (!split_id(attenuation, m->max_attenuations, index, generation))
+            return;
+        Attenuation &a = m->attenuations[index];
+        if (!a.live || a.generation != generation)
+            return;
+        // Only the update reads it, and the update is this role's: it can go at once.
+        a.live_id.store(0, std::memory_order_release);
+        a.live = false;
+        free(a.points);
+        a.points = nullptr;
+        a.point_count = 0;
+    }
+
+    // ---- WAV ----------------------------------------------------------------
+
+    RBT_RESULT rbtaudio_wav_decode(const void *data, uint64_t size, RBTAUDIO_PCM *out_pcm, RBTAUDIO_ERROR *error)
+    {
+        clear_error(error);
+        if (out_pcm)
+            *out_pcm = RBTAUDIO_PCM{};
+        if ((!data && size != 0) || !out_pcm)
+            return fail(error, RBT_RESULT_INVALID_ARGUMENT, "data or out_pcm is null");
+        return wav_decode(static_cast<const uint8_t *>(data), size, out_pcm, error);
+    }
+
+    // rbtaudio_wav_decode allocates samples with malloc.
+    void rbtaudio_pcm_free(RBTAUDIO_PCM *pcm)
+    {
+        if (!pcm)
+            return;
+        free(pcm->samples);
+        *pcm = RBTAUDIO_PCM{};
+    }
+}

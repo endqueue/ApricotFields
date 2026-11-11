@@ -26,7 +26,7 @@
 // frames of the allocator itself are passed over: the trace's own, the C
 // and C++ runtimes and the system's heap modules, `operator new` and the
 // standard library's containers, the workspace's own allocator layers
-// (SpudLib's allocator helpers, eqstd), and any function the test names with
+// (Carrottus's allocator helpers, eqstd), and any function the test names with
 // alloc_trace_skip() (a caller allocator's own functions). The
 // first frame left is the asker. An allocation whose asker is in this
 // executable (where the libraries under test are linked) is ours, counted
@@ -499,9 +499,9 @@ static bool alloc_trace_internal_allocator_function(const char *name)
                                            "std::__libcpp_allocate", "std::__allocate_at_least", "_malloc", "_calloc",
                                            "_realloc", "_aligned_", "_recalloc", "_expand", "malloc", "calloc",
                                            "realloc", "aligned_alloc", "posix_memalign", "memalign",
-                                           // The workspace's own allocator layers: SpudLib's caller allocator
+                                           // The workspace's own allocator layers: Carrottus's caller allocator
                                            // and its helpers, and eqstd's containers.
-                                           "spud_allocate", "spud_free", "spud_system_", "spud_eq_", "eq_allocate",
+                                           "cr_allocate", "cr_free", "cr_system_", "cr_eq_", "eq_allocate",
                                            "eq_resize", "eq_internal_", "eq::",
                                            // The standard library's containers: the asker is the code that grew one.
                                            "std::"};
@@ -517,7 +517,7 @@ static bool alloc_trace_internal_allocator_function(const char *name)
 // ---- The calls -----------------------------------------------------------------
 
 // Frames in a function whose name starts with [prefix] are the allocator's,
-// not its caller's: a SPUD_ALLOCATOR's allocate function, say.
+// not its caller's: a CR_ALLOCATOR's allocate function, say.
 static void alloc_trace_skip(const char *prefix)
 {
     if (alloc_trace_internal_skip_count < ALLOC_TRACE_SKIPS)

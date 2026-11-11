@@ -2,7 +2,7 @@
 // modules that run without a GPU, a factory that makes one through the
 // public API with the smallest valid desc, then destroys it, and returns
 // the destroyed handle (the workspace's DECISIONS.md, card X16). NULL if it
-// couldn't be made, said on stdout. tests/apri_misuse_tests.c, generated,
+// couldn't be made, said on stdout. tests/rbt_misuse_tests.c, generated,
 // calls every public function whose first parameter is one of these types
 // with a fresh destroyed handle, in a Debug build not under a sanitizer.
 //
@@ -10,40 +10,40 @@
 // after the handle it returns, or before when the handle needs it gone
 // first, as an entry reader goes before its reader.
 //
-// Aprend's handle types have no factory here: they need a GPU device.
-// apricottests' test_destroyed_handles calls Aprend's.
+// Rend's handle types have no factory here: they need a GPU device.
+// apricottests' test_destroyed_handles calls Rend's.
 
 #ifndef MISUSE_FACTORIES_H
 #define MISUSE_FACTORIES_H
 
-#include "archive/aparchive.h"
-#include "audio/apaudio.h"
-#include "audio/apaudiocues.h"
-#include "jobs/apjobs.h"
-#include "math/apmathbvh.h"
-#include "math/apmathpoly.h"
-#include "sync/apsyncnet.h"
-#include "text/aptext.h"
+#include "archive/rbtarchive.h"
+#include "audio/rbtaudio.h"
+#include "audio/rbtaudiocues.h"
+#include "jobs/rbtjobs.h"
+#include "math/rbtmathbvh.h"
+#include "math/rbtmathpoly.h"
+#include "sync/rbtsyncnet.h"
+#include "text/rbttext.h"
 #include <stdio.h>
 #include <string.h>
 
-static void factory_failed(const char *type, const char *step, APRESULT result)
+static void factory_failed(const char *type, const char *step, RBT_RESULT result)
 {
     printf("misuse factory for %s: %s returned %d\n", type, step, (int)result);
 }
 
-// ---- ApArchive ----
+// ---- Rabbittus Archive ----
 
-static aparchive_codecs dead_aparchive_codecs(void)
+static rbtarchive_codecs dead_rbtarchive_codecs(void)
 {
-    aparchive_codecs codecs = NULL;
-    APRESULT result = aparchive_codecs_create(&codecs);
-    if (result != APRESULT_OK)
+    rbtarchive_codecs codecs = NULL;
+    RBT_RESULT result = rbtarchive_codecs_create(&codecs);
+    if (result != RBT_RESULT_OK)
     {
-        factory_failed("aparchive_codecs", "aparchive_codecs_create", result);
+        factory_failed("rbtarchive_codecs", "rbtarchive_codecs_create", result);
         return NULL;
     }
-    aparchive_codecs_destroy(codecs);
+    rbtarchive_codecs_destroy(codecs);
     return codecs;
 }
 
@@ -73,67 +73,67 @@ static bool misuse_archive_read(void *user, uint64_t offset, void *buffer, uint6
     return true;
 }
 
-static aparchive_writer make_misuse_writer(aparchive_codecs codecs, misuse_archive *archive)
+static rbtarchive_writer make_misuse_writer(rbtarchive_codecs codecs, misuse_archive *archive)
 {
-    APARCHIVE_WRITER_DESC desc;
+    RBTARCHIVE_WRITER_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_WRITER_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_ARCHIVE_WRITER_DESC;
     desc.sink.user = archive;
     desc.sink.write = misuse_archive_write;
     desc.codecs = codecs;
-    aparchive_writer writer = NULL;
-    APRESULT result = aparchive_writer_create(&desc, &writer);
-    if (result != APRESULT_OK)
-        factory_failed("aparchive_writer", "aparchive_writer_create", result);
+    rbtarchive_writer writer = NULL;
+    RBT_RESULT result = rbtarchive_writer_create(&desc, &writer);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtarchive_writer", "rbtarchive_writer_create", result);
     return writer;
 }
 
-static aparchive_writer dead_aparchive_writer(void)
+static rbtarchive_writer dead_rbtarchive_writer(void)
 {
     static misuse_archive archive;
     archive.size = 0;
-    aparchive_codecs codecs = NULL;
-    if (aparchive_codecs_create(&codecs) != APRESULT_OK)
+    rbtarchive_codecs codecs = NULL;
+    if (rbtarchive_codecs_create(&codecs) != RBT_RESULT_OK)
         return NULL;
-    aparchive_writer writer = make_misuse_writer(codecs, &archive);
-    aparchive_writer_destroy(writer);
-    aparchive_codecs_destroy(codecs);
+    rbtarchive_writer writer = make_misuse_writer(codecs, &archive);
+    rbtarchive_writer_destroy(writer);
+    rbtarchive_codecs_destroy(codecs);
     return writer;
 }
 
 // A reader over a one-entry archive, and the codec table it reads with.
-static aparchive_reader make_misuse_reader(misuse_archive *archive, aparchive_codecs *out_codecs)
+static rbtarchive_reader make_misuse_reader(misuse_archive *archive, rbtarchive_codecs *out_codecs)
 {
     *out_codecs = NULL;
     archive->size = 0;
-    aparchive_codecs codecs = NULL;
-    if (aparchive_codecs_create(&codecs) != APRESULT_OK)
+    rbtarchive_codecs codecs = NULL;
+    if (rbtarchive_codecs_create(&codecs) != RBT_RESULT_OK)
         return NULL;
-    aparchive_writer writer = make_misuse_writer(codecs, archive);
+    rbtarchive_writer writer = make_misuse_writer(codecs, archive);
     if (!writer)
     {
-        aparchive_codecs_destroy(codecs);
+        rbtarchive_codecs_destroy(codecs);
         return NULL;
     }
-    APARCHIVE_ENTRY_DESC entry;
+    RBTARCHIVE_ENTRY_DESC entry;
     memset(&entry, 0, sizeof(entry));
-    entry.base.type = APRI_STRUCT_TYPE_APARCHIVE_ENTRY_DESC;
+    entry.base.type = RBT_STRUCT_TYPE_ARCHIVE_ENTRY_DESC;
     entry.name = "a";
-    entry.method = APARCHIVE_METHOD_STORED;
+    entry.method = RBTARCHIVE_METHOD_STORED;
     entry.dos_date = 0x0021;
-    APRESULT result = aparchive_writer_add_entry(writer, &entry, "x", 1, NULL);
-    if (result == APRESULT_OK)
-        result = aparchive_writer_finish(writer, NULL);
-    aparchive_writer_destroy(writer);
-    if (result != APRESULT_OK)
+    RBT_RESULT result = rbtarchive_writer_add_entry(writer, &entry, "x", 1, NULL);
+    if (result == RBT_RESULT_OK)
+        result = rbtarchive_writer_finish(writer, NULL);
+    rbtarchive_writer_destroy(writer);
+    if (result != RBT_RESULT_OK)
     {
-        factory_failed("aparchive_reader", "writing its archive", result);
-        aparchive_codecs_destroy(codecs);
+        factory_failed("rbtarchive_reader", "writing its archive", result);
+        rbtarchive_codecs_destroy(codecs);
         return NULL;
     }
-    APARCHIVE_READER_DESC desc;
+    RBTARCHIVE_READER_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APARCHIVE_READER_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_ARCHIVE_READER_DESC;
     desc.source.user = archive;
     desc.source.size = archive->size;
     desc.source.read = misuse_archive_read;
@@ -143,59 +143,59 @@ static aparchive_reader make_misuse_reader(misuse_archive *archive, aparchive_co
     desc.max_entry_uncompressed_size = UINT64_MAX;
     desc.max_total_uncompressed_size = UINT64_MAX;
     desc.max_compression_ratio = UINT32_MAX;
-    aparchive_reader reader = NULL;
-    result = aparchive_reader_open(&desc, &reader, NULL);
-    if (result != APRESULT_OK)
+    rbtarchive_reader reader = NULL;
+    result = rbtarchive_reader_open(&desc, &reader, NULL);
+    if (result != RBT_RESULT_OK)
     {
-        factory_failed("aparchive_reader", "aparchive_reader_open", result);
-        aparchive_codecs_destroy(codecs);
+        factory_failed("rbtarchive_reader", "rbtarchive_reader_open", result);
+        rbtarchive_codecs_destroy(codecs);
         return NULL;
     }
     *out_codecs = codecs;
     return reader;
 }
 
-static aparchive_reader dead_aparchive_reader(void)
+static rbtarchive_reader dead_rbtarchive_reader(void)
 {
     static misuse_archive archive;
-    aparchive_codecs codecs = NULL;
-    aparchive_reader reader = make_misuse_reader(&archive, &codecs);
+    rbtarchive_codecs codecs = NULL;
+    rbtarchive_reader reader = make_misuse_reader(&archive, &codecs);
     if (!reader)
         return NULL;
-    aparchive_reader_destroy(reader);
-    aparchive_codecs_destroy(codecs);
+    rbtarchive_reader_destroy(reader);
+    rbtarchive_codecs_destroy(codecs);
     return reader;
 }
 
-static aparchive_entry_reader dead_aparchive_entry_reader(void)
+static rbtarchive_entry_reader dead_rbtarchive_entry_reader(void)
 {
     static misuse_archive archive;
-    aparchive_codecs codecs = NULL;
-    aparchive_reader reader = make_misuse_reader(&archive, &codecs);
+    rbtarchive_codecs codecs = NULL;
+    rbtarchive_reader reader = make_misuse_reader(&archive, &codecs);
     if (!reader)
         return NULL;
-    aparchive_entry_reader entry = NULL;
-    APRESULT result = aparchive_reader_open_entry(reader, 0, &entry, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("aparchive_entry_reader", "aparchive_reader_open_entry", result);
+    rbtarchive_entry_reader entry = NULL;
+    RBT_RESULT result = rbtarchive_reader_open_entry(reader, 0, &entry, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtarchive_entry_reader", "rbtarchive_reader_open_entry", result);
     // An entry reader goes before its reader.
-    aparchive_entry_reader_destroy(entry);
-    aparchive_reader_destroy(reader);
-    aparchive_codecs_destroy(codecs);
+    rbtarchive_entry_reader_destroy(entry);
+    rbtarchive_reader_destroy(reader);
+    rbtarchive_codecs_destroy(codecs);
     return entry;
 }
 
-// ---- ApAudio ----
+// ---- Rabbittus Audio ----
 
-static const SPUDAUDIO_CHANNEL_POSITION misuse_stereo[2] = {SPUDAUDIO_CHANNEL_POSITION_FL,
-                                                            SPUDAUDIO_CHANNEL_POSITION_FR};
+static const CRAUDIO_CHANNEL_POSITION misuse_stereo[2] = {CRAUDIO_CHANNEL_POSITION_FL,
+                                                            CRAUDIO_CHANNEL_POSITION_FR};
 
-static apaudio_mixer make_misuse_mixer(void)
+static rbtaudio_mixer make_misuse_mixer(void)
 {
-    APAUDIO_MIXER_DESC desc;
+    RBTAUDIO_MIXER_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_MIXER_DESC;
-    desc.format.sample_format = SPUDAUDIO_SAMPLE_FORMAT_F32;
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_MIXER_DESC;
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_F32;
     desc.format.sample_rate = 48000;
     desc.format.channel_count = 2;
     desc.format.interleaved = true;
@@ -210,36 +210,36 @@ static apaudio_mixer make_misuse_mixer(void)
     desc.max_buses = 2;
     desc.max_modifiers = 1;
     desc.queue_capacity = 4;
-    desc.resampler = APAUDIO_RESAMPLER_LINEAR;
-    desc.limiter = APAUDIO_LIMITER_OFF;
+    desc.resampler = RBTAUDIO_RESAMPLER_LINEAR;
+    desc.limiter = RBTAUDIO_LIMITER_OFF;
     desc.gain = 1.0f;
-    apaudio_mixer mixer = NULL;
-    APRESULT result = apaudio_mixer_create(&desc, &mixer, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("apaudio_mixer", "apaudio_mixer_create", result);
+    rbtaudio_mixer mixer = NULL;
+    RBT_RESULT result = rbtaudio_mixer_create(&desc, &mixer, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtaudio_mixer", "rbtaudio_mixer_create", result);
     return mixer;
 }
 
-static apaudio_mixer dead_apaudio_mixer(void)
+static rbtaudio_mixer dead_rbtaudio_mixer(void)
 {
-    apaudio_mixer mixer = make_misuse_mixer();
-    apaudio_mixer_destroy(mixer);
+    rbtaudio_mixer mixer = make_misuse_mixer();
+    rbtaudio_mixer_destroy(mixer);
     return mixer;
 }
 
-static apaudio_cues dead_apaudio_cues(void)
+static rbtaudio_cues dead_rbtaudio_cues(void)
 {
-    apaudio_mixer mixer = make_misuse_mixer();
+    rbtaudio_mixer mixer = make_misuse_mixer();
     if (!mixer)
         return NULL;
-    APAUDIO_CUES_BUS bus;
+    RBTAUDIO_CUES_BUS bus;
     memset(&bus, 0, sizeof(bus));
     bus.name = "master";
-    bus.bus = apaudio_mixer_get_master_bus(mixer);
-    bus.virtual_behavior = APAUDIO_VIRTUAL_KILL;
-    APAUDIO_CUES_DESC desc;
+    bus.bus = rbtaudio_mixer_get_master_bus(mixer);
+    bus.virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+    RBTAUDIO_CUES_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APAUDIO_CUES_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_CUES_DESC;
     desc.mixer = mixer;
     desc.buses = &bus;
     desc.bus_count = 1;
@@ -250,137 +250,137 @@ static apaudio_cues dead_apaudio_cues(void)
     desc.max_bank_size = 1024;
     desc.duck_fade_in_us = 1000;
     desc.duck_fade_out_us = 1000;
-    apaudio_cues cues = NULL;
-    APRESULT result = apaudio_cues_create(&desc, &cues, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("apaudio_cues", "apaudio_cues_create", result);
-    apaudio_cues_destroy(cues);
-    apaudio_mixer_destroy(mixer);
+    rbtaudio_cues cues = NULL;
+    RBT_RESULT result = rbtaudio_cues_create(&desc, &cues, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtaudio_cues", "rbtaudio_cues_create", result);
+    rbtaudio_cues_destroy(cues);
+    rbtaudio_mixer_destroy(mixer);
     return cues;
 }
 
-// ---- ApJobs ----
+// ---- Rabbittus Jobs ----
 
-static apjobs_pool dead_apjobs_pool(void)
+static rbtjobs_pool dead_rbtjobs_pool(void)
 {
-    APJOBS_POOL_DESC desc;
+    RBTJOBS_POOL_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APJOBS_POOL_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_JOBS_POOL_DESC;
     desc.thread_count = 1;
     desc.max_tasks = 1;
-    apjobs_pool pool = NULL;
-    APRESULT result = apjobs_pool_create(&desc, &pool, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("apjobs_pool", "apjobs_pool_create", result);
-    apjobs_pool_destroy(pool);
+    rbtjobs_pool pool = NULL;
+    RBT_RESULT result = rbtjobs_pool_create(&desc, &pool, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtjobs_pool", "rbtjobs_pool_create", result);
+    rbtjobs_pool_destroy(pool);
     return pool;
 }
 
-// ---- ApMath ----
+// ---- Rabbittus Math ----
 
-static const ApriDVec3 misuse_triangle_positions[3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+static const RbtDVec3 misuse_triangle_positions[3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
 static const uint32_t misuse_triangle_indices[3] = {0, 1, 2};
 
-static apmath_mesh_bvh make_misuse_mesh_bvh(void)
+static rbtmath_mesh_bvh make_misuse_mesh_bvh(void)
 {
-    APMATH_MESH_BVH_DESC desc;
+    RBTMATH_MESH_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APMATH_MESH_BVH_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_MATH_MESH_BVH_DESC;
     desc.positions = misuse_triangle_positions;
     desc.position_count = 3;
     desc.indices = misuse_triangle_indices;
     desc.index_count = 3;
-    apmath_mesh_bvh bvh = NULL;
-    APRESULT result = apmath_mesh_bvh_create(&desc, &bvh);
-    if (result != APRESULT_OK)
-        factory_failed("apmath_mesh_bvh", "apmath_mesh_bvh_create", result);
+    rbtmath_mesh_bvh bvh = NULL;
+    RBT_RESULT result = rbtmath_mesh_bvh_create(&desc, &bvh);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtmath_mesh_bvh", "rbtmath_mesh_bvh_create", result);
     return bvh;
 }
 
-static apmath_mesh_bvh dead_apmath_mesh_bvh(void)
+static rbtmath_mesh_bvh dead_rbtmath_mesh_bvh(void)
 {
-    apmath_mesh_bvh bvh = make_misuse_mesh_bvh();
-    apmath_mesh_bvh_destroy(bvh);
+    rbtmath_mesh_bvh bvh = make_misuse_mesh_bvh();
+    rbtmath_mesh_bvh_destroy(bvh);
     return bvh;
 }
 
-static apmath_instance_bvh dead_apmath_instance_bvh(void)
+static rbtmath_instance_bvh dead_rbtmath_instance_bvh(void)
 {
-    apmath_mesh_bvh mesh = make_misuse_mesh_bvh();
+    rbtmath_mesh_bvh mesh = make_misuse_mesh_bvh();
     if (!mesh)
         return NULL;
-    static const ApriDMat4 identity = {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}};
-    APMATH_BVH_INSTANCE instance;
+    static const RbtDMat4 identity = {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}};
+    RBTMATH_BVH_INSTANCE instance;
     memset(&instance, 0, sizeof(instance));
     instance.mesh = mesh;
     instance.transform = &identity;
-    APMATH_INSTANCE_BVH_DESC desc;
+    RBTMATH_INSTANCE_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APMATH_INSTANCE_BVH_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_MATH_INSTANCE_BVH_DESC;
     desc.instances = &instance;
     desc.instance_count = 1;
-    apmath_instance_bvh bvh = NULL;
-    APRESULT result = apmath_instance_bvh_create(&desc, &bvh);
-    if (result != APRESULT_OK)
-        factory_failed("apmath_instance_bvh", "apmath_instance_bvh_create", result);
-    apmath_instance_bvh_destroy(bvh);
-    apmath_mesh_bvh_destroy(mesh);
+    rbtmath_instance_bvh bvh = NULL;
+    RBT_RESULT result = rbtmath_instance_bvh_create(&desc, &bvh);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtmath_instance_bvh", "rbtmath_instance_bvh_create", result);
+    rbtmath_instance_bvh_destroy(bvh);
+    rbtmath_mesh_bvh_destroy(mesh);
     return bvh;
 }
 
-static apmath_box_bvh dead_apmath_box_bvh(void)
+static rbtmath_box_bvh dead_rbtmath_box_bvh(void)
 {
-    APMATH_BVH_BOX box;
+    RBTMATH_BVH_BOX box;
     memset(&box, 0, sizeof(box));
     box.box.hi.x = box.box.hi.y = box.box.hi.z = 1.0;
     box.mask = 1;
-    APMATH_BOX_BVH_DESC desc;
+    RBTMATH_BOX_BVH_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APMATH_BOX_BVH_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_MATH_BOX_BVH_DESC;
     desc.boxes = &box;
     desc.box_count = 1;
-    apmath_box_bvh bvh = NULL;
-    APRESULT result = apmath_box_bvh_create(&desc, &bvh, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("apmath_box_bvh", "apmath_box_bvh_create", result);
-    apmath_box_bvh_destroy(bvh);
+    rbtmath_box_bvh bvh = NULL;
+    RBT_RESULT result = rbtmath_box_bvh_create(&desc, &bvh, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtmath_box_bvh", "rbtmath_box_bvh_create", result);
+    rbtmath_box_bvh_destroy(bvh);
     return bvh;
 }
 
-static apmath_poly dead_apmath_poly(void)
+static rbtmath_poly dead_rbtmath_poly(void)
 {
-    static const APMATH_POLY_POINT square[4] = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
+    static const RBTMATH_POLY_POINT square[4] = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
     static const uint32_t ring_ends[1] = {4};
-    APMATH_POLY_BOOLEAN_DESC desc;
+    RBTMATH_POLY_BOOLEAN_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APMATH_POLY_BOOLEAN_DESC;
-    desc.op = APMATH_POLY_OP_UNION;
-    desc.fill = APMATH_POLY_FILL_NON_ZERO;
+    desc.base.type = RBT_STRUCT_TYPE_MATH_POLY_BOOLEAN_DESC;
+    desc.op = RBTMATH_POLY_OP_UNION;
+    desc.fill = RBTMATH_POLY_FILL_NON_ZERO;
     desc.subject.points = square;
     desc.subject.point_count = 4;
     desc.subject.ring_ends = ring_ends;
     desc.subject.ring_count = 1;
-    apmath_poly poly = NULL;
-    APRESULT result = apmath_poly_boolean(&desc, &poly, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("apmath_poly", "apmath_poly_boolean", result);
-    apmath_poly_destroy(poly);
+    rbtmath_poly poly = NULL;
+    RBT_RESULT result = rbtmath_poly_boolean(&desc, &poly, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtmath_poly", "rbtmath_poly_boolean", result);
+    rbtmath_poly_destroy(poly);
     return poly;
 }
 
-// ---- ApSync ----
+// ---- Rabbittus Sync ----
 
-static SPUD_ALLOCATOR misuse_allocator;
+static CR_ALLOCATOR misuse_allocator;
 
 // A session hosting on the loopback address, at a port the system picks.
-static apsync_session dead_apsync_session(void)
+static rbtsync_session dead_rbtsync_session(void)
 {
-    static const APSYNC_CHANNEL_MODE channels[1] = {APSYNC_CHANNEL_ORDERED};
+    static const RBTSYNC_CHANNEL_MODE channels[1] = {RBTSYNC_CHANNEL_ORDERED};
     static const char *const addresses[1] = {"127.0.0.1"};
-    misuse_allocator = spud_allocator_system();
-    APSYNC_SESSION_DESC desc;
+    misuse_allocator = cr_allocator_system();
+    RBTSYNC_SESSION_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APSYNC_SESSION_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_SYNC_SESSION_DESC;
     desc.allocator = &misuse_allocator;
     desc.application_id = 0x4D4953555345ull;
     desc.application_version = 1;
@@ -393,33 +393,33 @@ static apsync_session dead_apsync_session(void)
     desc.heartbeat_interval_ms = 200;
     desc.peer_timeout_ms = 1000;
     desc.handshake_timeout_ms = 1000;
-    APSYNC_HOST_DESC host;
+    RBTSYNC_HOST_DESC host;
     memset(&host, 0, sizeof(host));
-    host.base.type = APRI_STRUCT_TYPE_APSYNC_HOST_DESC;
+    host.base.type = RBT_STRUCT_TYPE_SYNC_HOST_DESC;
     host.listen_addresses = addresses;
     host.listen_address_count = 1;
     host.port = 0;
     host.listen_backlog = 1;
     host.max_peers = 1;
-    apsync_session session = NULL;
-    APRESULT result = apsync_session_host(&desc, &host, &session, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("apsync_session", "apsync_session_host", result);
-    apsync_session_destroy(session);
+    rbtsync_session session = NULL;
+    RBT_RESULT result = rbtsync_session_host(&desc, &host, &session, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbtsync_session", "rbtsync_session_host", result);
+    rbtsync_session_destroy(session);
     return session;
 }
 
-// ---- ApText ----
+// ---- Rabbittus Text ----
 
-static const ApriVec2 misuse_stroke_points[2] = {{0.0f, 0.0f}, {0.5f, 0.0f}};
-static const APTEXT_STROKE_POLYLINE misuse_stroke_polylines[1] = {{0, 2}};
-static const APTEXT_STROKE_GLYPH misuse_stroke_glyphs[1] = {{0x2D, 0.5f, 0, 1}};
+static const RbtVec2 misuse_stroke_points[2] = {{0.0f, 0.0f}, {0.5f, 0.0f}};
+static const RBTTEXT_STROKE_POLYLINE misuse_stroke_polylines[1] = {{0, 2}};
+static const RBTTEXT_STROKE_GLYPH misuse_stroke_glyphs[1] = {{0x2D, 0.5f, 0, 1}};
 
-static aptext_face make_misuse_face(void)
+static rbttext_face make_misuse_face(void)
 {
-    APTEXT_STROKE_FACE_DESC desc;
+    RBTTEXT_STROKE_FACE_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APTEXT_STROKE_FACE_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_TEXT_STROKE_FACE_DESC;
     desc.glyphs = misuse_stroke_glyphs;
     desc.glyph_count = 1;
     desc.polylines = misuse_stroke_polylines;
@@ -429,64 +429,64 @@ static aptext_face make_misuse_face(void)
     desc.metrics.ascender = 0.75f;
     desc.metrics.descender = -0.25f;
     desc.metrics.line_gap = 0.0f;
-    aptext_face face = NULL;
-    APRESULT result = aptext_face_create_stroke(&desc, &face, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("aptext_face", "aptext_face_create_stroke", result);
+    rbttext_face face = NULL;
+    RBT_RESULT result = rbttext_face_create_stroke(&desc, &face, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbttext_face", "rbttext_face_create_stroke", result);
     return face;
 }
 
-static aptext_face dead_aptext_face(void)
+static rbttext_face dead_rbttext_face(void)
 {
-    aptext_face face = make_misuse_face();
-    aptext_face_destroy(face);
+    rbttext_face face = make_misuse_face();
+    rbttext_face_destroy(face);
     return face;
 }
 
-static aptext_chain dead_aptext_chain(void)
+static rbttext_chain dead_rbttext_chain(void)
 {
-    aptext_face face = make_misuse_face();
+    rbttext_face face = make_misuse_face();
     if (!face)
         return NULL;
-    APTEXT_CHAIN_DESC desc;
+    RBTTEXT_CHAIN_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APTEXT_CHAIN_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_TEXT_CHAIN_DESC;
     desc.faces = &face;
     desc.face_count = 1;
-    aptext_chain chain = NULL;
-    APRESULT result = aptext_chain_create(&desc, &chain, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("aptext_chain", "aptext_chain_create", result);
-    aptext_chain_destroy(chain);
-    aptext_face_destroy(face);
+    rbttext_chain chain = NULL;
+    RBT_RESULT result = rbttext_chain_create(&desc, &chain, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbttext_chain", "rbttext_chain_create", result);
+    rbttext_chain_destroy(chain);
+    rbttext_face_destroy(face);
     return chain;
 }
 
-static aptext_layout dead_aptext_layout(void)
+static rbttext_layout dead_rbttext_layout(void)
 {
-    aptext_layout layout = NULL;
-    APRESULT result = aptext_layout_create(&layout);
-    if (result != APRESULT_OK)
-        factory_failed("aptext_layout", "aptext_layout_create", result);
-    aptext_layout_destroy(layout);
+    rbttext_layout layout = NULL;
+    RBT_RESULT result = rbttext_layout_create(&layout);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbttext_layout", "rbttext_layout_create", result);
+    rbttext_layout_destroy(layout);
     return layout;
 }
 
-static aptext_atlas dead_aptext_atlas(void)
+static rbttext_atlas dead_rbttext_atlas(void)
 {
-    APTEXT_ATLAS_DESC desc;
+    RBTTEXT_ATLAS_DESC desc;
     memset(&desc, 0, sizeof(desc));
-    desc.base.type = APRI_STRUCT_TYPE_APTEXT_ATLAS_DESC;
+    desc.base.type = RBT_STRUCT_TYPE_TEXT_ATLAS_DESC;
     desc.pixels_per_em = 16.0f;
     desc.distance_range = 2.0f;
     desc.page_width = 64;
     desc.page_height = 64;
     desc.max_pages = 1;
-    aptext_atlas atlas = NULL;
-    APRESULT result = aptext_atlas_create(&desc, &atlas, NULL);
-    if (result != APRESULT_OK)
-        factory_failed("aptext_atlas", "aptext_atlas_create", result);
-    aptext_atlas_destroy(atlas);
+    rbttext_atlas atlas = NULL;
+    RBT_RESULT result = rbttext_atlas_create(&desc, &atlas, NULL);
+    if (result != RBT_RESULT_OK)
+        factory_failed("rbttext_atlas", "rbttext_atlas_create", result);
+    rbttext_atlas_destroy(atlas);
     return atlas;
 }
 

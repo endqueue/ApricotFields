@@ -1,0 +1,128 @@
+
+#ifndef RBTREND_TRANSIENT_H
+#define RBTREND_TRANSIENT_H
+
+#include "rbtrendcontext.h"
+
+#if __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+/**
+ * @file rbtrendtransient.h
+ * @brief Transient memory: bytes the caller writes this frame and the GPU
+ * reads this frame, with no buffer to create or destroy.
+ *
+ * It is for geometry that is built again every frame and has no size worth
+ * keeping a buffer for: 2D shapes, lines, text, debug drawing. The caller
+ * takes a span, writes vertices or indices straight into it, and names the
+ * span in a command list (RBTREND_COMMAND_SET_TRANSIENT_VERTEX_BUFFER and
+ * RBTREND_COMMAND_SET_TRANSIENT_INDEX_BUFFER, rbtrendcommands.h). Nothing is
+ * copied: the GPU reads the bytes where they were written.
+ *
+ * A span lasts for the frame it was taken in. The frames are the instance's
+ * (rbtrendcontext.h): rbtrend_instance_next_frame() takes back every span
+ * taken the last time the frame index it moves to was current, once the GPU
+ * has finished what was submitted then. So:
+ *
+ * - A span is written, compiled into a list and submitted before the next
+ *   rbtrend_instance_next_frame(). Its bytes are written before the
+ *   submission that reads them.
+ * - A command list that names a span is compiled and submitted in the frame
+ *   the span was taken in. rbtrend_command_list_compile() refuses a span of
+ *   another frame, and rbtrend_command_list_submit() a list compiled in one.
+ * - After that rbtrend_instance_next_frame(), `data` must not be written:
+ *   the memory may already be another span's.
+ * - A caller that never calls rbtrend_instance_next_frame() never gets any
+ *   of it back.
+ *
+ * The memory is the CPU's to write and never to read: reading `data` back is
+ * outside the contract and slow where it works. It is not zeroed.
+ *
+ * What it is not for: data kept from frame to frame (a buffer or a pool,
+ * rbtrendbuffers.h), and uniform or storage data, which a binding set reads
+ * through a buffer, one of per-frame copies where it changes each frame.
+ *
+ * An instance has transient memory only if it was created with
+ * RBTREND_INSTANCE_DESC::transient_chunk_size above 0.
+ *
+ * Rend takes spans of it as well: a submission copies a material's
+ * changed uniform blocks through it (rbtrendmaterial.h). They count in
+ * rbtrend_transient_get_frame_usage() and against
+ * RBTREND_INSTANCE_DESC::transient_memory_limit.
+ *
+ * @par Threads
+ * The rule is in rbtrendcontext.h ("Threads"). rbtrend_transient_allocate()
+ * takes the instance, so it is one of the calls made by one caller at a
+ * time across the instance. Writing into a span's `data` is not a call into
+ * Rend: different spans may be filled at once, from any threads.
+ */
+
+/**
+ * @brief Some bytes of an instance's transient memory.
+ *
+ * A value: copy it freely, and record it in as many commands as read it.
+ * There is nothing to destroy.
+ */
+/* Frozen: a value, held by value in RBTREND_COMMAND. It never changes; a new need gets a new type. */
+typedef struct RBTREND_TRANSIENT_SPAN {
+	/**
+	 * Where the caller writes its vertices or indices. #size bytes, at an
+	 * address that is a multiple of the alignment asked for. Written, never
+	 * read.
+	 */
+	void *data;
+	/** The number of bytes asked for. */
+	uint64_t size;
+	/** Which memory this is. Rend's: not for the caller to read or change. */
+	void *_chunk;
+	/** Rend's, as #_chunk. */
+	uint64_t _offset;
+	/** Rend's, as #_chunk. */
+	uint64_t _epoch;
+	/** Rend's, as #_chunk. */
+	uint32_t _frame;
+} RBTREND_TRANSIENT_SPAN;
+
+/**
+ * @brief Takes @p size bytes of transient memory for the current frame.
+ *
+ * @param[in]  instance  Instance whose transient memory is taken from.
+ * @param[in]  size      Number of bytes. Not 0.
+ * @param[in]  alignment What the span's offset is a multiple of: a power of
+ *                       two, not 0. For an index span, at least the size of
+ *                       one index. For a vertex span, 4 suits every format.
+ * @param[out] out_span  Receives the span. Zeroed on failure.
+ * @param[out] out_error Why it failed, when it did. May be NULL.
+ *
+ * @return RBT_RESULT_OK; RBT_RESULT_INVALID_ARGUMENT if @p instance or
+ *         @p out_span is NULL, @p size is 0, or @p alignment is 0 or not a
+ *         power of two; RBT_RESULT_LIMIT if the instance was created with no
+ *         transient memory or RBTREND_INSTANCE_DESC::transient_memory_limit
+ *         would be passed; RBT_RESULT_OUT_OF_MEMORY; or the code for
+ *         Carrottus GPU's result if the device refuses more memory.
+ */
+RBT_RESULT rbtrend_transient_allocate(
+    rbtrend_instance instance,
+    uint64_t size,
+    uint64_t alignment,
+    RBTREND_TRANSIENT_SPAN *out_span,
+    RBTREND_ERROR *out_error);
+
+/**
+ * @brief Bytes of transient memory taken in the current frame so far,
+ * padding for alignment included.
+ *
+ * For sizing RBTREND_INSTANCE_DESC::transient_chunk_size.
+ *
+ * @param[in] instance Instance to read.
+ *
+ * @return The bytes taken, or 0 if @p instance is NULL.
+ */
+uint64_t rbtrend_transient_get_frame_usage(rbtrend_instance instance);
+
+#if __cplusplus
+}
+#endif // __cplusplus
+
+#endif // RBTREND_TRANSIENT_H

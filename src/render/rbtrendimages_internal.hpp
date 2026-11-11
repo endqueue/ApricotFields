@@ -1,0 +1,471 @@
+
+#include "render/rbtrendimages.h"
+#include "render/rbtrendframes.h"
+#include "rbtrend_internal.hpp"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <vector>
+
+/* Records `record` into the instance's upload batch for [queue]
+ * (rbtrend_instance_open_upload_batch): it goes ahead of the lists of the
+ * next submission, in that submission, and rbtrend_instance_next_frame or
+ * rbtrend_instance_wait_idle submits it if nothing has by then. So it runs
+ * after everything submitted before it and ahead of everything submitted
+ * after, as a submission of its own would, and a frame's updates and clears
+ * cost one list between them. What the commands read (a staging buffer) is
+ * the caller's to retire after this returns, which holds it until the batch
+ * has run. Fails, with nothing recorded and [error] saying why, if no
+ * batch can be opened.
+ *
+ * Used for texture updates, readbacks and framebuffer clears. Shared by
+ * rbtrendimages.cpp and rbtrendframes.cpp. */
+template <typename Fn> static RBT_RESULT rbtrend_record_immediate(rbtrend_instance instance, crgpu_command_queue queue, RBTREND_ERROR *error, Fn &&record) {
+	crgpu_command_list cmd = nullptr;
+	if (const RBT_RESULT result = rbtrend_instance_open_upload_batch(instance, queue, &cmd, error))
+		return result;
+	record(cmd);
+	return RBT_RESULT_OK;
+}
+
+/* Submits the upload batch now and blocks until it has run: a wait on the
+ * instance's fence for that submission's serial, not on the whole queue. For
+ * work whose result the caller reads back. If it fails, what was recorded
+ * may still run with a later submission. */
+static inline RBT_RESULT rbtrend_wait_immediate(rbtrend_instance instance, RBTREND_ERROR *error) {
+	uint64_t serial = 0;
+	if (const RBT_RESULT flushed = rbtrend_instance_flush_upload_batch(instance, &serial, error))
+		return flushed;
+	const CR_RESULT sr = rbtrend_instance_wait_serial(instance, serial, UINT64_MAX);
+	if (CR_FAILED(sr))
+		return rbtrend_fail_cr(error, sr, "waiting for the batch of updates and clears failed");
+	return RBT_RESULT_OK;
+}
+
+/* One side of mip [level] of a texture whose level 0 is [size] along it. */
+inline uint32_t rbtrend_mip_size(uint32_t size, uint32_t level) {
+	// A shift by the type's width or more is undefined; such a level is 1.
+	const uint32_t mip_size = level < 32 ? size >> level : 0;
+	return mip_size ? mip_size : 1;
+}
+
+/* The image layout Rend tracks for a texture: one for each (mip, layer),
+ * since a view can cover part of a texture and one mip can be rendered to
+ * while another is sampled. It is the layout the GPU will see once
+ * everything submitted so far has run. A 3D texture has one layer.
+ *
+ * Plain storage, zeroed by calloc, and CRGPU_IMAGE_LAYOUT_UNDEFINED is 0:
+ * a new texture's every subresource starts with no layout. */
+struct rbtrend_texture_layouts {
+	CRGPU_IMAGE_LAYOUT *layouts{nullptr};
+	uint32_t mip_levels{0};
+	uint32_t array_layers{0};
+
+	CRGPU_IMAGE_LAYOUT *at(uint32_t mip, uint32_t layer) const { return &layouts[mip + (size_t)layer * mip_levels]; }
+};
+
+/* Gives [tracking] room for [mip_levels] by [array_layers] layouts, all
+ * UNDEFINED. With the counts it already has, the storage is kept and only
+ * cleared, so a pointer a compiled command list holds into it stays valid;
+ * with others it is replaced. False, with [tracking] as it was, if there is
+ * no memory. */
+inline bool rbtrend_texture_layouts_reset(rbtrend_texture_layouts *tracking, uint32_t mip_levels, uint32_t array_layers) {
+	const size_t count = (size_t)mip_levels * array_layers;
+	if (tracking->layouts && tracking->mip_levels == mip_levels && tracking->array_layers == array_layers) {
+		memset(tracking->layouts, 0, count * sizeof(CRGPU_IMAGE_LAYOUT));
+		return true;
+	}
+	CRGPU_IMAGE_LAYOUT *layouts = (CRGPU_IMAGE_LAYOUT *)calloc(count, sizeof(CRGPU_IMAGE_LAYOUT));
+	if (!layouts)
+		return false;
+	free(tracking->layouts);
+	tracking->layouts      = layouts;
+	tracking->mip_levels   = mip_levels;
+	tracking->array_layers = array_layers;
+	return true;
+}
+
+/* rbtrend_texture_range, some mips and layers of one texture, is in
+ * rbtrend_internal.hpp, where a command list keeps arrays of them. */
+
+/* Whether two ranges share a (mip, layer) of the same image. */
+inline bool rbtrend_texture_ranges_overlap(const rbtrend_texture_range &a, const rbtrend_texture_range &b) {
+	if (a.image != b.image)
+		return false;
+	if (a.base_mip >= b.base_mip + b.mip_count || b.base_mip >= a.base_mip + a.mip_count)
+		return false;
+	if (a.base_layer >= b.base_layer + b.layer_count || b.base_layer >= a.base_layer + a.layer_count)
+		return false;
+	return true;
+}
+
+/* The kind of number a shader reads from or writes to a texel of [format]:
+ * FLOAT for float, normalized and sRGB formats and the compressed ones,
+ * UINT and INT for the unsigned and signed integer formats. NONE for
+ * UNKNOWN, a typeless format, and a depth or stencil format, whose aspect
+ * says what is read. */
+inline RBTREND_SHADER_SCALAR_TYPE rbtrend_format_scalar_type(CRGPU_FORMAT format) {
+	switch (format) {
+	case CRGPU_FORMAT_R32G32B32A32_UINT:
+	case CRGPU_FORMAT_R32G32B32_UINT:
+	case CRGPU_FORMAT_R16G16B16A16_UINT:
+	case CRGPU_FORMAT_R32G32_UINT:
+	case CRGPU_FORMAT_R10G10B10A2_UINT:
+	case CRGPU_FORMAT_R8G8B8A8_UINT:
+	case CRGPU_FORMAT_R16G16_UINT:
+	case CRGPU_FORMAT_R32_UINT:
+	case CRGPU_FORMAT_R8G8_UINT:
+	case CRGPU_FORMAT_R16_UINT:
+	case CRGPU_FORMAT_R8_UINT:
+		return RBTREND_SHADER_SCALAR_TYPE_UINT;
+	case CRGPU_FORMAT_R32G32B32A32_SINT:
+	case CRGPU_FORMAT_R32G32B32_SINT:
+	case CRGPU_FORMAT_R16G16B16A16_SINT:
+	case CRGPU_FORMAT_R32G32_SINT:
+	case CRGPU_FORMAT_R8G8B8A8_SINT:
+	case CRGPU_FORMAT_R16G16_SINT:
+	case CRGPU_FORMAT_R32_SINT:
+	case CRGPU_FORMAT_R8G8_SINT:
+	case CRGPU_FORMAT_R16_SINT:
+	case CRGPU_FORMAT_R8_SINT:
+		return RBTREND_SHADER_SCALAR_TYPE_INT;
+	case CRGPU_FORMAT_UNKNOWN:
+	case CRGPU_FORMAT_R32G32B32A32_TYPELESS:
+	case CRGPU_FORMAT_R32G32B32_TYPELESS:
+	case CRGPU_FORMAT_R16G16B16A16_TYPELESS:
+	case CRGPU_FORMAT_R32G32_TYPELESS:
+	case CRGPU_FORMAT_R32G8X24_TYPELESS:
+	case CRGPU_FORMAT_D32_FLOAT_S8X24_UINT:
+	case CRGPU_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+	case CRGPU_FORMAT_X32_TYPELESS_G8X24_UINT:
+	case CRGPU_FORMAT_R10G10B10A2_TYPELESS:
+	case CRGPU_FORMAT_R8G8B8A8_TYPELESS:
+	case CRGPU_FORMAT_R16G16_TYPELESS:
+	case CRGPU_FORMAT_R32_TYPELESS:
+	case CRGPU_FORMAT_D32_FLOAT:
+	case CRGPU_FORMAT_R24G8_TYPELESS:
+	case CRGPU_FORMAT_D24_UNORM_S8_UINT:
+	case CRGPU_FORMAT_R24_UNORM_X8_TYPELESS:
+	case CRGPU_FORMAT_X24_TYPELESS_G8_UINT:
+	case CRGPU_FORMAT_R8G8_TYPELESS:
+	case CRGPU_FORMAT_R16_TYPELESS:
+	case CRGPU_FORMAT_D16_UNORM:
+	case CRGPU_FORMAT_R8_TYPELESS:
+	case CRGPU_FORMAT_BC1_TYPELESS:
+	case CRGPU_FORMAT_BC2_TYPELESS:
+	case CRGPU_FORMAT_BC3_TYPELESS:
+	case CRGPU_FORMAT_BC4_TYPELESS:
+	case CRGPU_FORMAT_BC5_TYPELESS:
+	case CRGPU_FORMAT_B8G8R8A8_TYPELESS:
+	case CRGPU_FORMAT_B8G8R8X8_TYPELESS:
+	case CRGPU_FORMAT_BC6H_TYPELESS:
+	case CRGPU_FORMAT_BC7_TYPELESS:
+		return RBTREND_SHADER_SCALAR_TYPE_NONE;
+	default:
+		// The video formats (AYUV and on) are read through a conversion,
+		// not as the texel is; say nothing of them.
+		if ((uint32_t)format >= (uint32_t)CRGPU_FORMAT_AYUV && format != CRGPU_FORMAT_B4G4R4A4_UNORM)
+			return RBTREND_SHADER_SCALAR_TYPE_NONE;
+		return RBTREND_SHADER_SCALAR_TYPE_FLOAT;
+	}
+}
+
+/* [type]'s name, for a message. */
+inline const char *rbtrend_scalar_type_name(RBTREND_SHADER_SCALAR_TYPE type) {
+	switch (type) {
+	case RBTREND_SHADER_SCALAR_TYPE_FLOAT: return "float";
+	case RBTREND_SHADER_SCALAR_TYPE_INT: return "a signed integer";
+	case RBTREND_SHADER_SCALAR_TYPE_UINT: return "an unsigned integer";
+	case RBTREND_SHADER_SCALAR_TYPE_BOOL: return "a boolean";
+	case RBTREND_SHADER_SCALAR_TYPE_OTHER: return "another kind of number";
+	default: return "nothing";
+	}
+}
+
+/* Whether [format] is a depth format that also has a stencil. */
+inline bool rbtrend_format_has_stencil(CRGPU_FORMAT format) {
+	return format == CRGPU_FORMAT_D24_UNORM_S8_UINT || format == CRGPU_FORMAT_D32_FLOAT_S8X24_UINT;
+}
+
+/* [range] as Carrottus GPU's barrier and view calls take it. The aspect is the
+ * image's own: Carrottus GPU's barriers read it from the image. */
+inline crgpu_image_view_desc_subresource_range rbtrend_texture_range_crgpu(const rbtrend_texture_range &range) {
+	crgpu_image_view_desc_subresource_range out{};
+	out.base_mip_level    = range.base_mip;
+	out.mip_level_count   = range.mip_count;
+	out.base_array_layer  = range.base_layer;
+	out.array_layer_count = range.layer_count;
+	return out;
+}
+
+/* The layout an immediate operation leaves a texture in: the one it found it
+ * in, so the texture's tracked layout doesn't change and command lists already
+ * compiled against it stay submittable. A texture with no layout yet
+ * (UNDEFINED) can't be put back, and ends in [if_undefined]. */
+inline CRGPU_IMAGE_LAYOUT rbtrend_immediate_final_layout(CRGPU_IMAGE_LAYOUT found, CRGPU_IMAGE_LAYOUT if_undefined) {
+	return found == CRGPU_IMAGE_LAYOUT_UNDEFINED ? if_undefined : found;
+}
+
+/* The layout an upload leaves a texture with no layout yet in: one its usage
+ * allows a shader to reach it through. SHADER_READ_ONLY needs a sampled
+ * image, so a storage-only texture rests in GENERAL, the storage layout; a
+ * texture with neither stays in TRANSFER_DST, where the copy left it. */
+inline CRGPU_IMAGE_LAYOUT rbtrend_texture_upload_rest_layout(RBTREND_TEXTURE_USAGE_BITS usage) {
+	if (usage & RBTREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE)
+		return CRGPU_IMAGE_LAYOUT_SHADER_READ_ONLY;
+	if (usage & RBTREND_TEXTURE_USAGE_BIT_STORAGE)
+		return CRGPU_IMAGE_LAYOUT_GENERAL;
+	return CRGPU_IMAGE_LAYOUT_TRANSFER_DST;
+}
+
+/* rbtrend_record_immediate for work on one mip of one layer of a texture
+ * (rbtrend_texture2d_t or rbtrend_texture3d_t): moves that subresource into
+ * [working], runs [record], and moves it to rbtrend_immediate_final_layout.
+ * The rest of the texture is not touched. The tracked layout is written once
+ * the barriers are recorded, since the batch that holds them goes ahead of
+ * every later submission. With [wait], rbtrend_wait_immediate follows. */
+template <typename Texture, typename Fn>
+static RBT_RESULT rbtrend_immediate_on_texture(
+    Texture *texture,
+    crgpu_command_queue queue,
+    bool wait,
+    uint32_t mip,
+    uint32_t layer,
+    CRGPU_IMAGE_LAYOUT working,
+    CRGPU_IMAGE_LAYOUT if_undefined,
+    RBTREND_ERROR *error,
+    Fn &&record) {
+	CRGPU_IMAGE_LAYOUT *tracked           = texture->tracking.at(mip, layer);
+	const CRGPU_IMAGE_LAYOUT found        = *tracked;
+	const CRGPU_IMAGE_LAYOUT final_layout = rbtrend_immediate_final_layout(found, if_undefined);
+
+	crgpu_image_view_desc_subresource_range range{};
+	range.base_mip_level    = mip;
+	range.mip_level_count   = 1;
+	range.base_array_layer  = layer;
+	range.array_layer_count = 1;
+
+	if (const RBT_RESULT result = rbtrend_record_immediate(texture->instance, queue, error, [&](crgpu_command_list cmd) {
+		    crgpu_command_list_image_barrier_subresource(cmd, texture->image, &range, found, working);
+		    record(cmd);
+		    if (final_layout != working)
+			    crgpu_command_list_image_barrier_subresource(cmd, texture->image, &range, working, final_layout);
+	    }))
+		return result;
+	*tracked = final_layout;
+	return wait ? rbtrend_wait_immediate(texture->instance, error) : RBT_RESULT_OK;
+}
+
+/* One level of one layer of a mip generation: a view of the level above to
+ * sample (a 2D array view of its one layer, as rbtrend_downsample_frag.slang
+ * declares it), a view of the level to render (a 2D view), and the set that
+ * binds the first with the chain's sampler. */
+struct rbtrend_mip_step {
+	rbtrend_texture_view source{nullptr};
+	rbtrend_texture_view target{nullptr};
+	rbtrend_binding_set set{nullptr};
+};
+
+/* What renders every level below [base_mip] of every layer of a 2D texture
+ * through [filter]: steps[layer * levels + i], levels being the texture's
+ * mip count - 1 - base_mip, renders level base_mip + 1 + i of that layer.
+ * Kept by the texture (rbtrend_texture2d_t::mip_chains) from the first
+ * generation that asks for it, by either form, so a list compiled every
+ * frame makes nothing new; released with the texture, before its image,
+ * and retired when a resize replaces the image. */
+struct rbtrend_mip_chain {
+	uint32_t base_mip{0};
+	CRGPU_FILTER filter{CRGPU_FILTER_NEAREST};
+	std::vector<rbtrend_mip_step> steps{};
+};
+
+typedef struct rbtrend_texture2d_t
+{
+    char *debug_name{nullptr};
+    RBT_STALE_TAG
+    rbtrend_texture2d_t() = default;
+    ~rbtrend_texture2d_t();
+    rbtrend_instance instance;
+    RBTREND_TEXTURE2D_DESC desc;
+    crgpu_image image{nullptr};
+    // One layout for each (mip, layer); see rbtrend_texture_layouts.
+    rbtrend_texture_layouts tracking{};
+    // desc.mip_levels as the caller gave it (0 = full chain). desc holds the
+    // count actually allocated, so a resize needs this to know which was asked.
+    uint32_t requested_mip_levels{0};
+    // The mip generations made so far; see rbtrend_mip_chain.
+    std::vector<rbtrend_mip_chain> mip_chains{};
+    // A SHADER_RESOURCE 2D view of mip 0 of layer 0, made by the first
+    // PRESENT_TEXTURE that draws the texture (its STRETCH and ASPECT_FIT),
+    // which reads it through it; NULL until then. The texture's own, as its
+    // mip chains' views are: released with it, retired at a resize.
+    rbtrend_texture_view present_view{nullptr};
+#if _DEBUG
+    // Views made of it and not yet destroyed, its mip chains' included, so
+    // a resize can refuse while one is left (rbtrend_texture2d_resize).
+    uint32_t live_views{0};
+#endif
+} rbtrend_texture2d_t;
+
+typedef struct rbtrend_texture3d_t
+{
+    char *debug_name{nullptr};
+    RBT_STALE_TAG
+    rbtrend_texture3d_t() = default;
+    ~rbtrend_texture3d_t();
+    rbtrend_instance instance;
+    RBTREND_TEXTURE3D_DESC desc;
+    crgpu_image image{nullptr};
+    crgpu_image_view image_view{nullptr};
+    // One layout for each mip; a 3D texture has one layer.
+    rbtrend_texture_layouts tracking{};
+    // As rbtrend_texture2d_t::requested_mip_levels.
+    uint32_t requested_mip_levels{0};
+#if _DEBUG
+    // As rbtrend_texture2d_t::live_views.
+    uint32_t live_views{0};
+#endif
+} rbtrend_texture3d_t;
+
+typedef struct rbtrend_texture_view_t
+{
+	char *debug_name{nullptr};
+	RBT_STALE_TAG
+	rbtrend_texture_view_t() = default;
+	~rbtrend_texture_view_t();
+	rbtrend_instance instance{nullptr};
+	/* rbtrend_instance_next_serial's, at creation. */
+	uint64_t serial{0};
+	RBTREND_TEXTURE_VIEW_TYPE view_type{RBTREND_TEXTURE_VIEW_TYPE_NONE};
+	RBTREND_TEXTURE_DIMENSION dimension{RBTREND_TEXTURE_DIMENSION_1D};
+	crgpu_image_view image_view{nullptr};
+	union {
+		rbtrend_texture2d _t2d;
+		rbtrend_texture3d _t3d;
+	} texture;
+	/* The desc the view was created with, its two counts resolved from
+	 * RBTREND_TEXTURE_VIEW_REMAINING to real numbers. */
+	RBTREND_TEXTURE_VIEW_DESC desc{};
+	/* The set of Rend's bloom layout that reads this view
+	 * (rbtrend_texture_view_bloom_set), made the first time a bloom reads
+	 * it; NULL until then. Kept by the view, not by a bloom or a list, so
+	 * it can't outlive the view or be confused with a new view made at the
+	 * same address. Released with the view, before its image view. */
+	rbtrend_binding_set bloom_set{nullptr};
+	/* The same for Rend's environment passes (rbtrendlit.cpp,
+	 * rbtrend_texture_view_environment_set): this view and a mipmapped
+	 * sampler, made the first time one reads it. */
+	rbtrend_binding_set environment_set{nullptr};
+	/* The same for light culling with depth bounds
+	 * (RBTREND_COMMAND_LIT_CULL_LIGHTS; rbtrend_texture_view_cull_depth_set):
+	 * this view and the environment sampler, in a layout a compute shader
+	 * sees. */
+	rbtrend_binding_set cull_depth_set{nullptr};
+	/* The output set of a trace into this view (rbtrendraytracing.h's
+	 * LIT_SHADOW_MASK and LIT_PATH_TRACE; rbtrend_rt_output_set): of
+	 * [rt_set_layout], with the other views it was made with and their
+	 * serials, made again when they change. */
+	rbtrend_binding_set rt_set{nullptr};
+	const void *rt_set_layout{nullptr};
+	const void *rt_set_views[2]{};
+	uint64_t rt_set_serials[2]{};
+	/* The same for Rend's present shader (RBTREND_COMMAND_DRAW_TEXTURE,
+	 * PRESENT_TEXTURE's draw modes; rbtrend_texture_view_present_set): one for
+	 * each filter, [CRGPU_FILTER_NEAREST] and [CRGPU_FILTER_LINEAR]. */
+	rbtrend_binding_set present_sets[2]{};
+} rbtrend_texture_view_t;
+
+/* The mips and layers [view] covers, with the image and where that
+ * texture's layouts are tracked. Views are of a 2D or a 3D texture, nothing
+ * else. */
+/* The format of the texture [view] is of: a view's format is its texture's. */
+inline CRGPU_FORMAT rbtrend_texture_view_format(const rbtrend_texture_view_t *view) {
+	return view->dimension == RBTREND_TEXTURE_DIMENSION_3D ? view->texture._t3d->desc.format : view->texture._t2d->desc.format;
+}
+
+inline rbtrend_texture_range rbtrend_texture_view_range(rbtrend_texture_view_t *view) {
+	rbtrend_texture_range range{};
+	if (view->dimension == RBTREND_TEXTURE_DIMENSION_3D) {
+		range.image    = view->texture._t3d->image;
+		range.tracking = &view->texture._t3d->tracking;
+	} else {
+		range.image    = view->texture._t2d->image;
+		range.tracking = &view->texture._t2d->tracking;
+	}
+	range.base_mip    = view->desc.base_mip;
+	range.mip_count   = view->desc.mip_count;
+	range.base_layer  = view->desc.base_layer;
+	range.layer_count = view->desc.layer_count;
+	return range;
+}
+
+typedef struct rbtrend_sampler_t
+{
+	char *debug_name{nullptr};
+	RBT_STALE_TAG
+	rbtrend_sampler_t() = default;
+	~rbtrend_sampler_t();
+	rbtrend_instance instance{nullptr};
+	/* rbtrend_instance_next_serial's, at creation. */
+	uint64_t serial{0};
+	RBTREND_SAMPLER_DESC desc{};
+	crgpu_sampler sampler{nullptr};
+} rbtrend_sampler_t;
+
+typedef struct rbtrend_framebuffer_t
+{
+    char *debug_name{nullptr};
+    RBT_STALE_TAG
+    rbtrend_framebuffer_t() = default;
+    ~rbtrend_framebuffer_t();
+    rbtrend_instance instance;
+    RBTREND_FRAMEBUFFER_DESC desc;
+    // Owns the attachment specs desc.attachments points at — the caller's
+    // array (which may be a local of the caller's) is
+    // not guaranteed to outlive this framebuffer, but rbtrend_framebuffer_resize
+    // re-reads desc.attachments on every resize, long after creation returns.
+    std::vector<RBTREND_FRAMEBUFFER_TEXTURE_SPEC> attachment_specs;
+    std::vector<rbtrend_texture_view> color_attachments;
+    // Parallel to color_attachments: the underlying texture if we created it
+    // (needs destroying), or nullptr if it was borrowed via
+    // RBTREND_FRAMEBUFFER_TEXTURE_SPEC::existing_texture (caller still owns it).
+    std::vector<rbtrend_texture2d> owned_color_textures;
+    rbtrend_texture_view depth_attachment{nullptr};
+    bool has_depth_attachment{false};
+} rbtrend_framebuffer_t;
+
+/* Whether [texture] can have the levels below [base_mip] generated through
+ * [filter], by either form: the level exists, the filter is a
+ * CRGPU_FILTER, the texture has shader resource and render target usage,
+ * and its format is one rbtrend_builtin_downsample_format takes.
+ * RBT_RESULT_INVALID_ARGUMENT, [error] saying why, if not. Whether the level
+ * has contents is each form's own check. */
+RBT_RESULT rbtrend_generate_mips_valid(rbtrend_texture2d texture, uint32_t base_mip, CRGPU_FILTER filter, RBTREND_ERROR *error);
+
+/* The chain of [texture] for [base_mip] and [filter], made if it has none,
+ * and the downsample pipeline for its format. Fails, [error] saying why,
+ * if either can't be made, with nothing kept. The pointer is valid until
+ * the next call for this texture. Not for the last level, which has no
+ * chain. */
+RBT_RESULT rbtrend_texture2d_mip_chain(
+    rbtrend_texture2d texture,
+    uint32_t base_mip,
+    CRGPU_FILTER filter,
+    const rbtrend_mip_chain **out_chain,
+    rbtrend_graphics_pipeline *out_pipeline,
+    RBTREND_ERROR *error);
+
+/* Records the pass that renders [step]'s target, a level [width] by
+ * [height], from its source with [pipeline], filtered as [filter] (the
+ * chain's): LINEAR an exact box over the source texels each target texel
+ * covers, NEAREST one texel. Both views are already in the layouts the pass
+ * needs: the source in SHADER_READ_ONLY, the target in
+ * COLOR_ATTACHMENT_OPTIMAL. */
+void rbtrend_record_mip_pass(
+    crgpu_command_list cmd,
+    rbtrend_graphics_pipeline pipeline,
+    const rbtrend_mip_step &step,
+    CRGPU_FILTER filter,
+    uint32_t width,
+    uint32_t height);
+

@@ -1,0 +1,4303 @@
+// Headless tests for Rabbittus Audio (include/audio/rbtaudio.h). No device: a mixer
+// renders into plain buffers.
+//
+// Written in C on purpose: rbtaudio.h is a C front end, and this proves it
+// compiles and links as one.
+
+#include "audio/rbtaudio.h"
+#include "audio/rbtaudiocues.h"
+#include "archive/rbtarchive.h"
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int failures = 0;
+static const char *current_test = "";
+
+#define CHECK(condition)                                                                                               \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(condition))                                                                                              \
+        {                                                                                                              \
+            printf("FAIL %s (%s:%d): %s\n", current_test, __FILE__, __LINE__, #condition);                           \
+            failures++;                                                                                                \
+        }                                                                                                              \
+    } while (0)
+
+static const CRAUDIO_CHANNEL_POSITION stereo[2] = {CRAUDIO_CHANNEL_POSITION_FL, CRAUDIO_CHANNEL_POSITION_FR};
+
+static RBTAUDIO_MIXER_DESC valid_mixer_desc(void)
+{
+    RBTAUDIO_MIXER_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_MIXER_DESC;
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_F32;
+    desc.format.sample_rate = 48000;
+    desc.format.channel_count = 2;
+    desc.format.interleaved = true;
+    desc.format.positions = stereo;
+    desc.max_frames = 512;
+    desc.max_voices = 64;
+    desc.max_real_voices = 16;
+    desc.max_fading_voices = 4;
+    desc.transition_fade_us = 10000;
+    desc.max_sounds = 32;
+    desc.max_concurrency_groups = 8;
+    desc.max_buses = 8;
+    desc.max_modifiers = 4;
+    desc.queue_capacity = 64;
+    desc.resampler = RBTAUDIO_RESAMPLER_LINEAR;
+    desc.limiter = RBTAUDIO_LIMITER_OFF;
+    desc.gain = 1.0f;
+    return desc;
+}
+
+static void test_format_from_craudio(void)
+{
+    current_test = "format_from_craudio";
+    CRAUDIO_FORMAT cr;
+    memset(&cr, 0, sizeof(cr));
+    cr.sample_format = CRAUDIO_SAMPLE_FORMAT_S16;
+    cr.sample_rate = 44100;
+    cr.channel_count = 2;
+    cr.positions[0] = CRAUDIO_CHANNEL_POSITION_FL;
+    cr.positions[1] = CRAUDIO_CHANNEL_POSITION_FR;
+    cr.interleaved = true;
+    RBTAUDIO_FORMAT format = rbtaudio_format_from_craudio(&cr);
+    CHECK(format.sample_format == CRAUDIO_SAMPLE_FORMAT_S16);
+    CHECK(format.sample_rate == 44100);
+    CHECK(format.channel_count == 2);
+    CHECK(format.interleaved);
+    // Points into the Carrottus Audio format rather than copying.
+    CHECK(format.positions == cr.positions);
+}
+
+// Every call turns a null mixer or a null required pointer away, and clears
+// its out-parameters first.
+static void test_null_arguments(void)
+{
+    current_test = "null_arguments";
+    RBTAUDIO_ERROR error;
+    RBTAUDIO_MIXER_DESC desc = valid_mixer_desc();
+
+    rbtaudio_mixer mixer = (rbtaudio_mixer)(uintptr_t)1; // garbage, must be cleared
+    CHECK(rbtaudio_mixer_create(NULL, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(mixer == NULL);
+    CHECK(error.message[0] != '\0');
+    CHECK(rbtaudio_mixer_create(&desc, NULL, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_mixer_set_format(NULL, &desc.format, 512, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+
+    RBTAUDIO_BUS_DESC bus_desc;
+    memset(&bus_desc, 0, sizeof(bus_desc));
+    bus_desc.base.type = RBT_STRUCT_TYPE_AUDIO_BUS_DESC;
+    bus_desc.gain = 1.0f;
+    bus_desc.rate = 1.0f;
+    RBTAUDIO_BUS bus = 99;
+    CHECK(rbtaudio_bus_create(NULL, &bus_desc, &bus, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(bus == 0);
+    CHECK(rbtaudio_bus_set_parent(NULL, 1, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_gain(NULL, 1, 1.0f, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_rate(NULL, 1, 1.0f, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_muted(NULL, 1, true, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_paused(NULL, 1, true, 0) == RBT_RESULT_INVALID_ARGUMENT);
+
+    RBTAUDIO_MODIFIER modifier = 99;
+    RBTAUDIO_MODIFIER_DESC modifier_desc;
+    memset(&modifier_desc, 0, sizeof(modifier_desc));
+    modifier_desc.base.type = RBT_STRUCT_TYPE_AUDIO_MODIFIER_DESC;
+    CHECK(rbtaudio_modifier_create(NULL, &modifier_desc, &modifier, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(modifier == 0);
+    CHECK(rbtaudio_modifier_set_active(NULL, 1, true) == RBT_RESULT_INVALID_ARGUMENT);
+
+    RBTAUDIO_CONCURRENCY group = 99;
+    RBTAUDIO_CONCURRENCY_DESC group_desc;
+    memset(&group_desc, 0, sizeof(group_desc));
+    group_desc.base.type = RBT_STRUCT_TYPE_AUDIO_CONCURRENCY_DESC;
+    CHECK(rbtaudio_concurrency_create(NULL, &group_desc, &group, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(group == 0);
+
+    RBTAUDIO_SOUND sound = 99;
+    RBTAUDIO_SOUND_DESC sound_desc;
+    memset(&sound_desc, 0, sizeof(sound_desc));
+    sound_desc.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+    CHECK(rbtaudio_sound_create(NULL, &sound_desc, &sound, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(sound == 0);
+
+    RBTAUDIO_PLAY_DESC play;
+    memset(&play, 0, sizeof(play));
+    play.base.type = RBT_STRUCT_TYPE_AUDIO_PLAY_DESC;
+    play.gain = 1.0f;
+    play.rate = 1.0f;
+    play.placement = RBTAUDIO_PLACEMENT_ANGLES;
+    RBTAUDIO_VOICE voice = 99;
+    CHECK(rbtaudio_play(NULL, 1, &play, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(voice == 0);
+    // A stop only fails for a null mixer.
+    CHECK(rbtaudio_voice_stop(NULL, 1, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(!rbtaudio_voice_is_live(NULL, 1));
+    CHECK(rbtaudio_voice_set_gain(NULL, 1, 1.0f) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_voice_set_direction(NULL, 1, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_voice_set_rate(NULL, 1, 1.0f) == RBT_RESULT_INVALID_ARGUMENT);
+
+    RBTAUDIO_PCM pcm;
+    CHECK(rbtaudio_wav_decode(NULL, 16, &pcm, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_wav_decode("RIFF", 4, NULL, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+
+    // Calls returning nothing accept a null mixer and stale or 0 IDs.
+    rbtaudio_mixer_destroy(NULL);
+    CHECK(rbtaudio_mixer_update(NULL, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    rbtaudio_bus_destroy(NULL, 0);
+    rbtaudio_modifier_destroy(NULL, 0);
+    rbtaudio_concurrency_destroy(NULL, 0);
+    rbtaudio_sound_destroy(NULL, 0);
+    rbtaudio_pcm_free(NULL);
+}
+
+static void test_pcm_free(void)
+{
+    current_test = "pcm_free";
+    RBTAUDIO_PCM pcm;
+    pcm.samples = (float *)malloc(4 * sizeof(float));
+    pcm.frame_count = 2;
+    pcm.channel_count = 2;
+    pcm.sample_rate = 48000;
+    rbtaudio_pcm_free(&pcm);
+    CHECK(pcm.samples == NULL);
+    CHECK(pcm.frame_count == 0);
+    CHECK(pcm.channel_count == 0);
+    CHECK(pcm.sample_rate == 0);
+    rbtaudio_pcm_free(&pcm); // freeing twice is harmless once cleared
+}
+
+/* Builds a WAV in [out]: a fmt chunk of [fmt_size] bytes from [fmt], a
+ * 1-byte junk chunk (odd, so padded) between it and the data, and [data].
+ * Returns its size. */
+static size_t make_wav(unsigned char *out, const unsigned char *fmt, uint32_t fmt_size, const void *data,
+                       uint32_t data_size)
+{
+    size_t n = 0;
+    memcpy(out + n, "RIFF\0\0\0\0WAVE", 12);
+    n += 12;
+    memcpy(out + n, "fmt ", 4);
+    out[n + 4] = (unsigned char)fmt_size;
+    out[n + 5] = out[n + 6] = out[n + 7] = 0;
+    memcpy(out + n + 8, fmt, fmt_size);
+    n += 8 + fmt_size;
+    memcpy(out + n, "junk\1\0\0\0x\0", 10);
+    n += 10;
+    memcpy(out + n, "data", 4);
+    out[n + 4] = (unsigned char)data_size;
+    out[n + 5] = (unsigned char)(data_size >> 8);
+    out[n + 6] = out[n + 7] = 0;
+    memcpy(out + n + 8, data, data_size);
+    n += 8 + data_size;
+    uint32_t riff = (uint32_t)(n - 8);
+    out[4] = (unsigned char)riff;
+    out[5] = (unsigned char)(riff >> 8);
+    return n;
+}
+
+/* A plain fmt chunk. */
+static void make_fmt(unsigned char *fmt, uint16_t format, uint16_t channels, uint32_t rate, uint16_t bits)
+{
+    uint16_t align = (uint16_t)(channels * bits / 8);
+    uint32_t byte_rate = rate * align;
+    unsigned char f[16] = {(unsigned char)format, (unsigned char)(format >> 8), (unsigned char)channels, 0,
+                           (unsigned char)rate, (unsigned char)(rate >> 8), (unsigned char)(rate >> 16), 0,
+                           (unsigned char)byte_rate, (unsigned char)(byte_rate >> 8),
+                           (unsigned char)(byte_rate >> 16), (unsigned char)(byte_rate >> 24),
+                           (unsigned char)align, 0, (unsigned char)bits, 0};
+    memcpy(fmt, f, 16);
+}
+
+static int near(float a, float b)
+{
+    return fabsf(a - b) < 1e-6f;
+}
+
+static void test_wav(void)
+{
+    current_test = "wav";
+    unsigned char wav[256];
+    unsigned char fmt[40];
+    RBTAUDIO_PCM pcm;
+    RBTAUDIO_ERROR error;
+
+    /* 16-bit stereo: two frames, plus a stray byte that isn't a whole frame. */
+    static const unsigned char pcm16[] = {0x00, 0x00, 0x00, 0x40, 0x00, 0x80, 0xFF, 0x7F, 0x12};
+    make_fmt(fmt, 1, 2, 48000, 16);
+    size_t size = make_wav(wav, fmt, 16, pcm16, sizeof(pcm16));
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == 2 && pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    CHECK(pcm.samples && near(pcm.samples[0], 0.0f) && near(pcm.samples[1], 0.5f));
+    CHECK(near(pcm.samples[2], -1.0f) && near(pcm.samples[3], 32767.0f / 32768.0f));
+    rbtaudio_pcm_free(&pcm);
+
+    /* 8-bit is unsigned. */
+    static const unsigned char pcm8[] = {0x80, 0x00, 0xC0};
+    make_fmt(fmt, 1, 1, 22050, 8);
+    size = make_wav(wav, fmt, 16, pcm8, sizeof(pcm8));
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == 3 && near(pcm.samples[0], 0.0f) && near(pcm.samples[1], -1.0f) &&
+          near(pcm.samples[2], 0.5f));
+    rbtaudio_pcm_free(&pcm);
+
+    /* 24-bit, sign-extended. */
+    static const unsigned char pcm24[] = {0x00, 0x00, 0xC0, 0x00, 0x00, 0x40};
+    make_fmt(fmt, 1, 1, 44100, 24);
+    size = make_wav(wav, fmt, 16, pcm24, sizeof(pcm24));
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == 2 && near(pcm.samples[0], -0.5f) && near(pcm.samples[1], 0.5f));
+    rbtaudio_pcm_free(&pcm);
+
+    /* 32-bit float, through WAVE_FORMAT_EXTENSIBLE. */
+    float floats[2] = {0.25f, -0.75f};
+    make_fmt(fmt, 0xFFFE, 1, 96000, 32);
+    static const unsigned char extensible[24] = {22, 0, 32, 0, 4, 0, 0, 0, 0x03, 0x00, 0x00, 0x00,
+                                                 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA,
+                                                 0x00, 0x38, 0x9B, 0x71};
+    memcpy(fmt + 16, extensible, sizeof(extensible));
+    size = make_wav(wav, fmt, 40, floats, sizeof(floats));
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == 2 && pcm.sample_rate == 96000 && near(pcm.samples[0], 0.25f) &&
+          near(pcm.samples[1], -0.75f));
+    rbtaudio_pcm_free(&pcm);
+
+    /* A data chunk claiming more than the file holds is read to the end. */
+    make_fmt(fmt, 1, 1, 48000, 16);
+    size = make_wav(wav, fmt, 16, pcm16, 8);
+    wav[size - 8 - 4] = 0xFF; /* the data chunk's size: 255 bytes, 8 present */
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == 4);
+    rbtaudio_pcm_free(&pcm);
+
+    /* An empty data chunk is an empty sound. */
+    size = make_wav(wav, fmt, 16, pcm16, 0);
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == 0 && pcm.channel_count == 1);
+    rbtaudio_pcm_free(&pcm);
+
+    /* Compressed encodings and odd sizes are unsupported. */
+    make_fmt(fmt, 0x0002, 1, 48000, 4); /* MS ADPCM */
+    size = make_wav(wav, fmt, 16, pcm16, 4);
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_UNSUPPORTED);
+    CHECK(pcm.samples == NULL && strstr(error.message, "0x0002") != NULL);
+    make_fmt(fmt, 3, 1, 48000, 16); /* 16-bit float */
+    size = make_wav(wav, fmt, 16, pcm16, 4);
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_UNSUPPORTED);
+    CHECK(rbtaudio_wav_decode("RF64\0\0\0\0WAVE", 12, &pcm, &error) == RBT_RESULT_UNSUPPORTED);
+
+    /* Broken files. */
+    CHECK(rbtaudio_wav_decode("RIFF\4\0\0\0WAVE", 12, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    CHECK(strstr(error.message, "fmt") != NULL);
+    CHECK(rbtaudio_wav_decode("RIFX\4\0\0\0WAVE", 12, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    CHECK(rbtaudio_wav_decode("", 0, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    make_fmt(fmt, 1, 2, 48000, 16);
+    fmt[12] = 3; /* block align that isn't channels x sample size */
+    size = make_wav(wav, fmt, 16, pcm16, 4);
+    CHECK(rbtaudio_wav_decode(wav, size, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    make_fmt(fmt, 1, 1, 48000, 16);
+    size = make_wav(wav, fmt, 16, pcm16, 4);
+    CHECK(rbtaudio_wav_decode(wav, 30, &pcm, &error) == RBT_RESULT_CORRUPT_DATA); /* cut inside fmt */
+    CHECK(pcm.samples == NULL);
+}
+
+/* ---- The mixer --------------------------------------------------------- */
+
+/* A mono sound with no direction plays equally on FL and FR. */
+#define CENTRE 0.70710678f
+
+static int close_to(float a, float b)
+{
+    return fabsf(a - b) < 1e-4f;
+}
+
+static rbtaudio_mixer make_mixer(const RBTAUDIO_MIXER_DESC *desc)
+{
+    rbtaudio_mixer mixer = NULL;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_mixer_create(desc, &mixer, &error);
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_mixer_create: %s\n", current_test, error.message);
+    CHECK(result == RBT_RESULT_OK && mixer != NULL);
+    return mixer;
+}
+
+/* A mixer whose transitions are instant, so tests see whole values. */
+static RBTAUDIO_MIXER_DESC plain_mixer_desc(void)
+{
+    RBTAUDIO_MIXER_DESC desc = valid_mixer_desc();
+    desc.transition_fade_us = 0;
+    desc.max_fading_voices = 0;
+    return desc;
+}
+
+static RBTAUDIO_SOUND make_sound(rbtaudio_mixer mixer, const float *samples, uint64_t frames, uint32_t channels,
+                                uint32_t rate, RBTAUDIO_VIRTUAL_BEHAVIOR behavior, RBTAUDIO_CONCURRENCY group,
+                                RBTAUDIO_BUS bus)
+{
+    RBTAUDIO_SOUND_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+    desc.samples = samples;
+    desc.frame_count = frames;
+    desc.channel_count = channels;
+    desc.sample_rate = rate;
+    desc.virtual_behavior = behavior;
+    desc.concurrency = group;
+    desc.bus = bus;
+    RBTAUDIO_SOUND sound = 0;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_sound_create(mixer, &desc, &sound, &error);
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_sound_create: %s\n", current_test, error.message);
+    CHECK(result == RBT_RESULT_OK && sound != 0);
+    return sound;
+}
+
+/* [frames] mono frames of 1.0 at the mixer's rate. */
+static float ones[4096];
+
+static RBTAUDIO_SOUND make_ones(rbtaudio_mixer mixer, uint64_t frames, RBTAUDIO_VIRTUAL_BEHAVIOR behavior)
+{
+    for (size_t i = 0; i < sizeof(ones) / sizeof(ones[0]); i++)
+        ones[i] = 1.0f;
+    return make_sound(mixer, ones, frames, 1, 48000, behavior, 0, 0);
+}
+
+static RBTAUDIO_PLAY_DESC play_desc(float gain)
+{
+    RBTAUDIO_PLAY_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_PLAY_DESC;
+    desc.gain = gain;
+    desc.rate = 1.0f;
+    desc.placement = RBTAUDIO_PLACEMENT_ANGLES;
+    return desc;
+}
+
+static RBTAUDIO_VOICE play(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound, float gain, uint8_t priority, bool loop)
+{
+    RBTAUDIO_PLAY_DESC desc = play_desc(gain);
+    desc.priority = priority;
+    desc.loop = loop;
+    RBTAUDIO_VOICE voice = 0;
+    CHECK(rbtaudio_play(mixer, sound, &desc, &voice) == RBT_RESULT_OK);
+    CHECK(voice != 0);
+    return voice;
+}
+
+/* Interleaved stereo float output. */
+static float out[2 * 2048];
+
+static void render(rbtaudio_mixer mixer, uint32_t frames)
+{
+    for (uint32_t i = 0; i < 2 * frames; i++)
+        out[i] = 99.0f; /* garbage the render must replace */
+    rbtaudio_mixer_render(mixer, out, frames, NULL);
+}
+
+/* Every frame from [first] to [last] has [left] and [right]. */
+static int frames_are(uint32_t first, uint32_t last, float left, float right)
+{
+    for (uint32_t i = first; i <= last; i++)
+    {
+        if (!close_to(out[2 * i], left) || !close_to(out[2 * i + 1], right))
+        {
+            printf("     frame %u is %g, %g, not %g, %g\n", i, out[2 * i], out[2 * i + 1], left, right);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void test_mixer_create(void)
+{
+    current_test = "mixer_create";
+    RBTAUDIO_ERROR error;
+    rbtaudio_mixer mixer = NULL;
+    RBTAUDIO_MIXER_DESC desc = valid_mixer_desc();
+
+    static const CRAUDIO_CHANNEL_POSITION none[2] = {0, 0};
+    static const CRAUDIO_CHANNEL_POSITION twice[2] = {CRAUDIO_CHANNEL_POSITION_FL, CRAUDIO_CHANNEL_POSITION_FL};
+    desc.format.positions = none;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT && error.message[0]);
+    desc.format.positions = twice;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    desc.format.positions = NULL;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+
+    desc = valid_mixer_desc();
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_UNKNOWN;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    desc = valid_mixer_desc();
+    desc.max_real_voices = desc.max_voices + 1;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    desc = valid_mixer_desc();
+    desc.resampler = RBTAUDIO_RESAMPLER_UNSPECIFIED; /* a zeroed desc chooses nothing */
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    desc = valid_mixer_desc();
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_BUS_DESC;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_STRUCT_WRONG_TYPE);
+    desc = valid_mixer_desc();
+    RBT_STRUCT_BASE chained = {RBT_STRUCT_TYPE_AUDIO_MIXER_DESC, NULL};
+    desc.base.next = &chained;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_STRUCT_UNKNOWN_IN_CHAIN);
+    CHECK(mixer == NULL);
+
+    desc = valid_mixer_desc();
+    mixer = make_mixer(&desc);
+    CHECK(rbtaudio_mixer_get_master_bus(mixer) != 0);
+    CHECK(rbtaudio_mixer_get_master_bus(NULL) == 0);
+    render(mixer, 64);
+    CHECK(frames_are(0, 63, 0.0f, 0.0f)); /* silence when nothing plays */
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_play(void)
+{
+    current_test = "play";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 100, RBTAUDIO_VIRTUAL_KILL);
+
+    /* A one-shot plays its frames and ends. It's live from the play, before
+     * any render, until the render that ends it. */
+    RBTAUDIO_VOICE shot = play(mixer, sound, 1.0f, 0, false);
+    CHECK(rbtaudio_voice_is_live(mixer, shot));
+    CHECK(!rbtaudio_voice_is_live(mixer, 0) && !rbtaudio_voice_is_live(mixer, shot + 1));
+    render(mixer, 64);
+    CHECK(frames_are(0, 63, CENTRE, CENTRE));
+    CHECK(rbtaudio_voice_is_live(mixer, shot));
+    render(mixer, 64);
+    CHECK(frames_are(0, 35, CENTRE, CENTRE));
+    CHECK(frames_are(36, 63, 0.0f, 0.0f));
+    CHECK(!rbtaudio_voice_is_live(mixer, shot));
+
+    /* Bad plays. */
+    RBTAUDIO_PLAY_DESC bad = play_desc(1.0f);
+    RBTAUDIO_VOICE voice = 99;
+    bad.rate = 0.0f; /* a zeroed desc picks no rate */
+    CHECK(rbtaudio_play(mixer, sound, &bad, &voice) == RBT_RESULT_INVALID_ARGUMENT && voice == 0);
+    bad = play_desc(-1.0f);
+    CHECK(rbtaudio_play(mixer, sound, &bad, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    bad = play_desc(1.0f);
+    CHECK(rbtaudio_play(mixer, 0, &bad, NULL) == RBT_RESULT_NOT_FOUND);
+    CHECK(rbtaudio_play(mixer, sound + 1, &bad, NULL) == RBT_RESULT_NOT_FOUND);
+
+    /* A gain change ramps across the next render. */
+    RBTAUDIO_SOUND longer = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+    voice = play(mixer, longer, 0.5f, 0, false);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.5f * CENTRE, 0.5f * CENTRE));
+    CHECK(rbtaudio_voice_set_gain(mixer, voice, 1.0f) == RBT_RESULT_OK);
+    CHECK(rbtaudio_voice_set_gain(mixer, voice, -1.0f) == RBT_RESULT_INVALID_ARGUMENT);
+    render(mixer, 16);
+    CHECK(out[0] > 0.5f * CENTRE && out[0] < out[14] && close_to(out[30], CENTRE));
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, CENTRE, CENTRE));
+
+    /* A stop fades out over its release, and the voice is gone. */
+    CHECK(rbtaudio_voice_stop(mixer, voice, 8) == RBT_RESULT_OK);
+    CHECK(rbtaudio_voice_stop(mixer, voice, 4000) == RBT_RESULT_OK); /* already stopping: nothing */
+    CHECK(rbtaudio_voice_is_live(mixer, voice)); /* until its fade has rendered */
+    render(mixer, 16);
+    CHECK(!rbtaudio_voice_is_live(mixer, voice));
+    CHECK(close_to(out[0], CENTRE * 7.0f / 8.0f) && close_to(out[2 * 6], CENTRE / 8.0f));
+    CHECK(frames_are(7, 15, 0.0f, 0.0f));
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    CHECK(rbtaudio_voice_stop(mixer, voice, 0) == RBT_RESULT_OK); /* finished: harmless */
+    CHECK(rbtaudio_voice_set_gain(mixer, voice, 1.0f) == RBT_RESULT_OK);
+
+    /* A voice stopped before it starts never sounds; one changed before it
+     * starts starts with the new value. */
+    voice = play(mixer, longer, 1.0f, 0, false);
+    rbtaudio_voice_stop(mixer, voice, 100);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    CHECK(!rbtaudio_voice_is_live(mixer, voice));
+    voice = play(mixer, longer, 1.0f, 0, false);
+    rbtaudio_voice_set_gain(mixer, voice, 0.25f);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.25f * CENTRE, 0.25f * CENTRE));
+    rbtaudio_voice_stop(mixer, voice, 0); /* cut */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+
+    /* A loop plays until stopped. More frames than max_frames render too. */
+    static const float pattern[4] = {0.1f, 0.2f, 0.3f, 0.4f};
+    RBTAUDIO_SOUND looped = make_sound(mixer, pattern, 4, 1, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    voice = play(mixer, looped, 1.0f, 0, true);
+    render(mixer, 1024);
+    int repeats = 1;
+    for (uint32_t i = 0; i < 1024; i++)
+        repeats = repeats && close_to(out[2 * i], pattern[i % 4] * CENTRE);
+    CHECK(repeats);
+    rbtaudio_voice_stop(mixer, voice, 0);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+
+    /* The queue holds queue_capacity plays between renders. */
+    RBTAUDIO_PLAY_DESC one = play_desc(0.01f);
+    for (uint32_t i = 0; i < desc.queue_capacity; i++)
+        CHECK(rbtaudio_play(mixer, sound, &one, NULL) == RBT_RESULT_OK);
+    CHECK(rbtaudio_play(mixer, sound, &one, &voice) == RBT_RESULT_LIMIT && voice == 0);
+    render(mixer, 16);
+    CHECK(rbtaudio_play(mixer, sound, &one, NULL) == RBT_RESULT_OK);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_stereo_and_direction(void)
+{
+    current_test = "stereo_and_direction";
+    const double pi = 3.14159265358979323846;
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&desc);
+
+    /* A stereo sound plays on FL and FR, and ignores direction. */
+    float stereo_samples[2 * 64];
+    for (int i = 0; i < 64; i++)
+    {
+        stereo_samples[2 * i] = 0.25f;
+        stereo_samples[2 * i + 1] = -0.5f;
+    }
+    RBTAUDIO_SOUND wide = make_sound(mixer, stereo_samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    RBTAUDIO_DIRECTION right = {pi / 2, 0.0};
+    RBTAUDIO_PLAY_DESC wide_play = play_desc(1.0f);
+    wide_play.direction = &right;
+    CHECK(rbtaudio_play(mixer, wide, &wide_play, NULL) == RBT_RESULT_OK);
+    render(mixer, 64);
+    CHECK(frames_are(0, 63, 0.25f, -0.5f));
+
+    /* A mono sound is panned: hard right and left at the sides, mirrored to
+     * the front from behind. */
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+    static const struct
+    {
+        double azimuth;
+        float left, right;
+    } cases[] = {{0.0, CENTRE, CENTRE},          {1.5707963267948966, 0.0f, 1.0f},
+                 {-1.5707963267948966, 1.0f, 0.0f}, {3.14159265358979323846, CENTRE, CENTRE},
+                 {2.356194490192345, 0.38268343f, 0.92387953f}, {0.7853981633974483, 0.38268343f, 0.92387953f}};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        RBTAUDIO_DIRECTION direction = {cases[i].azimuth, 0.5}; /* stereo has no height: elevation is ignored */
+        RBTAUDIO_PLAY_DESC panned = play_desc(1.0f);
+        panned.direction = &direction;
+        RBTAUDIO_VOICE voice = 0;
+        CHECK(rbtaudio_play(mixer, sound, &panned, &voice) == RBT_RESULT_OK);
+        render(mixer, 8);
+        CHECK(frames_are(0, 7, cases[i].left, cases[i].right));
+        rbtaudio_voice_stop(mixer, voice, 0);
+    }
+
+    /* A direction change moves the pan smoothly across the next render. */
+    RBTAUDIO_VOICE voice = play(mixer, sound, 1.0f, 0, false);
+    render(mixer, 8);
+    CHECK(frames_are(0, 7, CENTRE, CENTRE));
+    CHECK(rbtaudio_voice_set_direction(mixer, voice, &right) == RBT_RESULT_OK);
+    render(mixer, 8);
+    CHECK(out[0] < CENTRE && out[1] > CENTRE && out[2 * 3] > out[2 * 6]);
+    CHECK(close_to(out[2 * 7], 0.0f) && close_to(out[2 * 7 + 1], 1.0f));
+    CHECK(rbtaudio_voice_set_direction(mixer, voice, NULL) == RBT_RESULT_OK);
+    render(mixer, 8);
+    CHECK(close_to(out[2 * 7], CENTRE) && close_to(out[2 * 7 + 1], CENTRE));
+    RBTAUDIO_DIRECTION bad = {NAN, 0.0};
+    CHECK(rbtaudio_voice_set_direction(mixer, voice, &bad) == RBT_RESULT_INVALID_ARGUMENT);
+    rbtaudio_mixer_destroy(mixer);
+
+    /* 5.1: no direction is the centre speaker alone; behind is the rears;
+     * the LFE gets nothing. */
+    static const CRAUDIO_CHANNEL_POSITION surround[6] = {
+        CRAUDIO_CHANNEL_POSITION_FL, CRAUDIO_CHANNEL_POSITION_FR,  CRAUDIO_CHANNEL_POSITION_FC,
+        CRAUDIO_CHANNEL_POSITION_LFE, CRAUDIO_CHANNEL_POSITION_RL, CRAUDIO_CHANNEL_POSITION_RR};
+    desc.format.channel_count = 6;
+    desc.format.positions = surround;
+    mixer = make_mixer(&desc);
+    sound = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+    float six[6 * 8];
+    voice = play(mixer, sound, 1.0f, 0, false);
+    rbtaudio_mixer_render(mixer, six, 8, NULL);
+    CHECK(close_to(six[2], 1.0f) && close_to(six[0], 0.0f) && close_to(six[1], 0.0f) && close_to(six[3], 0.0f) &&
+          close_to(six[4], 0.0f) && close_to(six[5], 0.0f));
+    rbtaudio_voice_stop(mixer, voice, 0);
+    RBTAUDIO_DIRECTION behind = {pi, 0.0};
+    RBTAUDIO_PLAY_DESC rear = play_desc(1.0f);
+    rear.direction = &behind;
+    CHECK(rbtaudio_play(mixer, sound, &rear, NULL) == RBT_RESULT_OK);
+    rbtaudio_mixer_render(mixer, six, 8, NULL);
+    CHECK(close_to(six[4], CENTRE) && close_to(six[5], CENTRE) && close_to(six[0], 0.0f) && close_to(six[1], 0.0f) &&
+          close_to(six[2], 0.0f) && close_to(six[3], 0.0f));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_resampling(void)
+{
+    current_test = "resampling";
+    const double pi = 3.14159265358979323846;
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    float ramp[1000];
+    for (int i = 0; i < 1000; i++)
+        ramp[i] = (float)i / 1000.0f;
+
+    /* Twice as fast, and half: linear interpolation. */
+    RBTAUDIO_SOUND sound = make_sound(mixer, ramp, 1000, 1, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    RBTAUDIO_PLAY_DESC fast = play_desc(1.0f);
+    fast.rate = 2.0f;
+    RBTAUDIO_VOICE voice = 0;
+    CHECK(rbtaudio_play(mixer, sound, &fast, &voice) == RBT_RESULT_OK);
+    render(mixer, 32);
+    int matches = 1;
+    for (int i = 0; i < 32; i++)
+        matches = matches && close_to(out[2 * i], ramp[2 * i] * CENTRE);
+    CHECK(matches);
+    rbtaudio_voice_stop(mixer, voice, 0);
+    RBTAUDIO_PLAY_DESC slow = play_desc(1.0f);
+    slow.rate = 0.5f;
+    CHECK(rbtaudio_play(mixer, sound, &slow, &voice) == RBT_RESULT_OK);
+    render(mixer, 32);
+    matches = 1;
+    for (int i = 0; i < 32; i++)
+        matches = matches && close_to(out[2 * i], (float)i / 2000.0f * CENTRE);
+    CHECK(matches);
+
+    /* A rate change glides: the voice carries on from where it was. */
+    CHECK(rbtaudio_voice_set_rate(mixer, voice, 1.0f) == RBT_RESULT_OK);
+    CHECK(rbtaudio_voice_set_rate(mixer, voice, 9.0f) == RBT_RESULT_INVALID_ARGUMENT);
+    render(mixer, 32);
+    CHECK(out[0] > 15.0f / 1000.0f * CENTRE && out[0] < 17.0f / 1000.0f * CENTRE);
+    float before = out[2 * 31];
+    render(mixer, 4);
+    CHECK(close_to(out[2] - out[0], CENTRE / 1000.0f) && out[0] > before);
+    rbtaudio_voice_stop(mixer, voice, 0);
+
+    /* A sound keeps its own rate: 24 kHz plays at half speed in a 48 kHz mix. */
+    RBTAUDIO_SOUND half = make_sound(mixer, ramp, 1000, 1, 24000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    voice = play(mixer, half, 1.0f, 0, false);
+    render(mixer, 32);
+    matches = 1;
+    for (int i = 0; i < 32; i++)
+        matches = matches && close_to(out[2 * i], (float)i / 2000.0f * CENTRE);
+    CHECK(matches);
+    RBTAUDIO_SOUND_DESC bad;
+    memset(&bad, 0, sizeof(bad));
+    bad.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+    bad.samples = ramp;
+    bad.frame_count = 10;
+    bad.channel_count = 1;
+    bad.sample_rate = 500;
+    bad.virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+    RBTAUDIO_SOUND none;
+    CHECK(rbtaudio_sound_create(mixer, &bad, &none, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    bad.sample_rate = 48000;
+    bad.channel_count = 3;
+    CHECK(rbtaudio_sound_create(mixer, &bad, &none, NULL) == RBT_RESULT_UNSUPPORTED);
+    bad.channel_count = 1;
+    bad.virtual_behavior = RBTAUDIO_VIRTUAL_UNSPECIFIED;
+    CHECK(rbtaudio_sound_create(mixer, &bad, &none, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    rbtaudio_mixer_destroy(mixer);
+
+    /* Sinc: a 1 kHz tone at 44.1 kHz comes out a 1 kHz tone at 48 kHz, and
+     * one played 4 times too fast for the mix (15 kHz -> 60 kHz, past
+     * Nyquist) is filtered out rather than aliased. */
+    desc.resampler = RBTAUDIO_RESAMPLER_SINC;
+    mixer = make_mixer(&desc);
+    static float tone[8820];
+    for (int i = 0; i < 8820; i++)
+        tone[i] = (float)sin(2.0 * pi * 1000.0 * i / 44100.0);
+    sound = make_sound(mixer, tone, 8820, 1, 44100, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    voice = play(mixer, sound, 1.0f, 0, true);
+    render(mixer, 512);
+    float worst = 0.0f;
+    for (int i = 32; i < 512; i++)
+    {
+        float error = fabsf(out[2 * i] - (float)sin(2.0 * pi * 1000.0 * i / 48000.0) * CENTRE);
+        worst = error > worst ? error : worst;
+    }
+    CHECK(worst < 2e-3f);
+    rbtaudio_voice_stop(mixer, voice, 0);
+    for (int i = 0; i < 8820; i++)
+        tone[i] = (float)sin(2.0 * pi * 15000.0 * i / 44100.0);
+    sound = make_sound(mixer, tone, 8820, 1, 44100, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    RBTAUDIO_PLAY_DESC high = play_desc(1.0f);
+    high.rate = 4.0f;
+    high.loop = true;
+    CHECK(rbtaudio_play(mixer, sound, &high, NULL) == RBT_RESULT_OK);
+    render(mixer, 512);
+    worst = 0.0f;
+    for (int i = 64; i < 512; i++)
+        worst = fabsf(out[2 * i]) > worst ? fabsf(out[2 * i]) : worst;
+    CHECK(worst < 2e-3f);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_formats(void)
+{
+    current_test = "formats";
+    float stereo_samples[2 * 64];
+    for (int i = 0; i < 64; i++)
+    {
+        stereo_samples[2 * i] = 2.0f; /* clips */
+        stereo_samples[2 * i + 1] = -0.5f;
+    }
+
+    /* Integer formats are clamped. 16-bit is dithered: within a bit. */
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_S16;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND sound = make_sound(mixer, stereo_samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, sound, 1.0f, 0, false);
+    int16_t s16[2 * 8];
+    rbtaudio_mixer_render(mixer, s16, 8, NULL);
+    CHECK(s16[0] == 32767 && s16[14] == 32767);
+    CHECK(abs(s16[1] + 16384) <= 1 && abs(s16[15] + 16384) <= 1);
+    rbtaudio_mixer_destroy(mixer);
+
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_S24_PACKED;
+    mixer = make_mixer(&desc);
+    sound = make_sound(mixer, stereo_samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, sound, 1.0f, 0, false);
+    unsigned char s24[2 * 3 * 8];
+    rbtaudio_mixer_render(mixer, s24, 8, NULL);
+    uint32_t left = 0, right = 0;
+    memcpy(&left, s24, 3);
+    memcpy(&right, s24 + 3, 3);
+    const uint16_t endian = 1;
+    if (*(const unsigned char *)&endian == 1)
+        CHECK(left == 0x7FFFFF && right == 0xC00000);
+    rbtaudio_mixer_destroy(mixer);
+
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_S32;
+    mixer = make_mixer(&desc);
+    sound = make_sound(mixer, stereo_samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, sound, 1.0f, 0, false);
+    int32_t s32[2 * 8];
+    rbtaudio_mixer_render(mixer, s32, 8, NULL);
+    CHECK(s32[0] == INT32_MAX && s32[1] == INT32_MIN / 2);
+    rbtaudio_mixer_destroy(mixer);
+
+    /* Planar: one buffer per channel. */
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_F32;
+    desc.format.interleaved = false;
+    mixer = make_mixer(&desc);
+    sound = make_sound(mixer, stereo_samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, sound, 1.0f, 0, false);
+    float plane_left[8], plane_right[8];
+    void *planes[2] = {plane_left, plane_right};
+    rbtaudio_mixer_render(mixer, planes, 8, NULL);
+    CHECK(close_to(plane_left[0], 2.0f) && close_to(plane_left[7], 2.0f) && close_to(plane_right[0], -0.5f) &&
+          close_to(plane_right[7], -0.5f));
+
+    /* A new format: the sound is kept, and its voice carries on - here mixed
+     * down, at another rate. A format the mixer can't render changes nothing. */
+    static const CRAUDIO_CHANNEL_POSITION mono[1] = {CRAUDIO_CHANNEL_POSITION_MONO};
+    RBTAUDIO_FORMAT format = desc.format;
+    RBTAUDIO_ERROR error;
+    format.channel_count = 0;
+    CHECK(rbtaudio_mixer_set_format(mixer, &format, 64, &error) == RBT_RESULT_INVALID_ARGUMENT && error.message[0]);
+    rbtaudio_mixer_render(mixer, planes, 8, NULL);
+    CHECK(close_to(plane_left[7], 2.0f) && close_to(plane_right[7], -0.5f));
+    format.channel_count = 1;
+    format.positions = mono;
+    format.interleaved = true;
+    format.sample_rate = 96000;
+    CHECK(rbtaudio_mixer_set_format(mixer, &format, 64, &error) == RBT_RESULT_OK);
+    float single[64];
+    rbtaudio_mixer_render(mixer, single, 64, NULL);
+    CHECK(close_to(single[0], 0.75f) && close_to(single[63], 0.75f)); /* (2 - 0.5) / 2 */
+    rbtaudio_mixer_render(mixer, single, 64, NULL);
+    /* 16 of the sound's 64 frames went at 48 kHz; the other 48 last 96 here. */
+    CHECK(close_to(single[30], 0.75f) && close_to(single[40], 0.0f));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_sounds(void)
+{
+    current_test = "sounds";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_sounds = 1;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+    play(mixer, sound, 1.0f, 0, true);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, CENTRE, CENTRE));
+
+    /* Destroyed: stale at once, and its voice stops at the next render -
+     * faded across it, not clicked. */
+    RBTAUDIO_PLAY_DESC again = play_desc(1.0f);
+    CHECK(rbtaudio_play(mixer, sound, &again, NULL) == RBT_RESULT_OK); /* queued before the destroy: never sounds */
+    rbtaudio_sound_destroy(mixer, sound);
+    rbtaudio_sound_destroy(mixer, sound); /* stale: nothing */
+    CHECK(rbtaudio_play(mixer, sound, &again, NULL) == RBT_RESULT_NOT_FOUND);
+
+    /* Its slot isn't reusable until a render has let go of it. */
+    RBTAUDIO_SOUND_DESC sound_desc;
+    memset(&sound_desc, 0, sizeof(sound_desc));
+    sound_desc.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+    sound_desc.samples = ones;
+    sound_desc.frame_count = 8;
+    sound_desc.channel_count = 1;
+    sound_desc.sample_rate = 48000;
+    sound_desc.virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+    RBTAUDIO_SOUND next = 99;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_sound_create(mixer, &sound_desc, &next, &error) == RBT_RESULT_LIMIT && next == 0);
+    render(mixer, 16);
+    CHECK(out[0] < CENTRE && out[0] > out[2] && close_to(out[2 * 15], 0.0f));
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    CHECK(rbtaudio_sound_create(mixer, &sound_desc, &next, &error) == RBT_RESULT_OK);
+    /* The old ID never plays the slot's new sound. */
+    CHECK(next != sound && rbtaudio_play(mixer, sound, &again, NULL) == RBT_RESULT_NOT_FOUND);
+    CHECK(rbtaudio_play(mixer, next, &again, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 7, CENTRE, CENTRE) && frames_are(8, 15, 0.0f, 0.0f));
+
+    /* An empty sound is a sound; it just ends at once. */
+    rbtaudio_sound_destroy(mixer, next);
+    render(mixer, 16);
+    sound_desc.samples = NULL;
+    sound_desc.frame_count = 0;
+    CHECK(rbtaudio_sound_create(mixer, &sound_desc, &next, &error) == RBT_RESULT_OK);
+    again.loop = true;
+    CHECK(rbtaudio_play(mixer, next, &again, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    rbtaudio_mixer_destroy(mixer); /* frees the sounds still alive */
+}
+
+static void test_prioritization(void)
+{
+    current_test = "prioritization";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_real_voices = 2;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND keeps = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_SOUND kills = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+
+    /* Two real slots: the third voice, of lower priority, starts virtual. */
+    play(mixer, keeps, 0.1f, 5, true);
+    RBTAUDIO_VOICE second = play(mixer, keeps, 0.2f, 5, true);
+    play(mixer, keeps, 0.4f, 1, true);
+    RBTAUDIO_VOICE killed = play(mixer, kills, 0.8f, 1, true); /* KILL: ends instead */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.3f * CENTRE, 0.3f * CENTRE));
+    /* A voice never loses its slot to a lower priority, however loud. */
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.3f * CENTRE, 0.3f * CENTRE));
+
+    /* A slot comes free: the virtual voice takes it at the next update - not
+     * before - and the killed one is gone for good. */
+    rbtaudio_voice_stop(mixer, second, 0);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.1f * CENTRE, 0.1f * CENTRE));
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.5f * CENTRE, 0.5f * CENTRE));
+    rbtaudio_voice_set_gain(mixer, killed, 1.0f); /* stale: nothing */
+
+    /* A new play of higher priority takes the lowest-ranked real voice's
+     * slot at once, without waiting for an update. */
+    RBTAUDIO_VOICE high = play(mixer, keeps, 0.3f, 9, true);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
+    /* Within a priority, the more audible voice wins at the update. */
+    rbtaudio_voice_stop(mixer, high, 0);
+    play(mixer, keeps, 0.05f, 5, true); /* takes the free slot */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.15f * CENTRE, 0.15f * CENTRE));
+    play(mixer, keeps, 0.6f, 5, true); /* louder, same priority */
+    render(mixer, 16);
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.7f * CENTRE, 0.7f * CENTRE)); /* 0.6 and 0.1, over 0.05 and 0.4 (priority 1) */
+    rbtaudio_mixer_destroy(mixer);
+
+    /* Below the threshold a voice is virtual even with slots free. */
+    desc.virtual_threshold = 0.01f;
+    mixer = make_mixer(&desc);
+    keeps = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_VOICE quiet = play(mixer, keeps, 0.001f, 0, true);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    rbtaudio_voice_set_gain(mixer, quiet, 1.0f);
+    render(mixer, 16);
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, CENTRE, CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+
+    /* Transitions fade: the voice pushed out fades in a fading slot while
+     * its replacement plays at once; coming back, it fades in. */
+    desc = valid_mixer_desc();
+    desc.max_real_voices = 1;
+    desc.max_fading_voices = 1;
+    desc.transition_fade_us = 1000; /* 48 frames */
+    mixer = make_mixer(&desc);
+    keeps = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_PAUSE);
+    play(mixer, keeps, 0.5f, 1, true);
+    render(mixer, 16);
+    RBTAUDIO_VOICE over = play(mixer, keeps, 0.25f, 2, true);
+    render(mixer, 64);
+    CHECK(close_to(out[0], (0.25f + 0.5f * 47.0f / 48.0f) * CENTRE));
+    CHECK(close_to(out[2 * 23], (0.25f + 0.5f * 24.0f / 48.0f) * CENTRE));
+    CHECK(frames_are(47, 63, 0.25f * CENTRE, 0.25f * CENTRE));
+    rbtaudio_voice_stop(mixer, over, 0);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 64);
+    CHECK(close_to(out[0], 0.5f / 48.0f * CENTRE) && close_to(out[2 * 23], 0.25f * CENTRE));
+    CHECK(frames_are(47, 63, 0.5f * CENTRE, 0.5f * CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+
+    /* max_voices is a limit too: a new play ends the weakest voice, or is
+     * dropped if every voice outranks it. */
+    desc = plain_mixer_desc();
+    desc.max_voices = 2;
+    desc.max_real_voices = 2;
+    mixer = make_mixer(&desc);
+    keeps = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_CONTINUE);
+    play(mixer, keeps, 0.1f, 5, true);
+    play(mixer, keeps, 0.2f, 5, true);
+    play(mixer, keeps, 0.4f, 1, true); /* dropped */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.3f * CENTRE, 0.3f * CENTRE));
+    play(mixer, keeps, 0.4f, 5, true); /* ends the quieter of the two */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.6f * CENTRE, 0.6f * CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static RBTAUDIO_CONCURRENCY make_group(rbtaudio_mixer mixer, uint32_t max_instances, RBTAUDIO_RESOLUTION resolution,
+                                      uint32_t retrigger_us, float older_gain)
+{
+    RBTAUDIO_CONCURRENCY_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_CONCURRENCY_DESC;
+    desc.max_instances = max_instances;
+    desc.resolution = resolution;
+    desc.retrigger_us = retrigger_us;
+    desc.older_instance_gain = older_gain;
+    RBTAUDIO_CONCURRENCY group = 0;
+    CHECK(rbtaudio_concurrency_create(mixer, &desc, &group, NULL) == RBT_RESULT_OK && group != 0);
+    return group;
+}
+
+static void test_concurrency(void)
+{
+    current_test = "concurrency";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_concurrency_groups = 2;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    make_ones(mixer, 1, RBTAUDIO_VIRTUAL_KILL); /* fills ones[] */
+
+    RBTAUDIO_CONCURRENCY_DESC bad;
+    memset(&bad, 0, sizeof(bad));
+    bad.base.type = RBT_STRUCT_TYPE_AUDIO_CONCURRENCY_DESC;
+    RBTAUDIO_CONCURRENCY none = 99;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_concurrency_create(mixer, &bad, &none, &error) == RBT_RESULT_INVALID_ARGUMENT && none == 0);
+
+    /* REJECT_NEW: the play over the limit is dropped. */
+    RBTAUDIO_CONCURRENCY group = make_group(mixer, 2, RBTAUDIO_RESOLUTION_REJECT_NEW, 0, 1.0f);
+    RBTAUDIO_SOUND sound = make_sound(mixer, ones, 4000, 1, 48000, RBTAUDIO_VIRTUAL_KILL, group, 0);
+    RBTAUDIO_VOICE voices[3];
+    for (int i = 0; i < 3; i++)
+        voices[i] = play(mixer, sound, 0.1f, 0, true);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.2f * CENTRE, 0.2f * CENTRE));
+    /* A destroyed group limits nothing; its voices carry on. */
+    rbtaudio_concurrency_destroy(mixer, group);
+    rbtaudio_concurrency_destroy(mixer, group);
+    play(mixer, sound, 0.1f, 0, true);
+    play(mixer, sound, 0.1f, 0, true);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+    (void)voices;
+
+    /* STOP_OLDEST, with each newer start turning the older voices down. */
+    mixer = make_mixer(&desc);
+    group = make_group(mixer, 2, RBTAUDIO_RESOLUTION_STOP_OLDEST, 0, 0.5f);
+    sound = make_sound(mixer, ones, 4000, 1, 48000, RBTAUDIO_VIRTUAL_KILL, group, 0);
+    play(mixer, sound, 0.8f, 0, true);
+    render(mixer, 16);
+    play(mixer, sound, 0.4f, 0, true);
+    render(mixer, 16);
+    CHECK(close_to(out[2 * 15], (0.4f + 0.4f) * CENTRE)); /* the first, halved */
+    play(mixer, sound, 0.2f, 0, true);
+    render(mixer, 16);
+    CHECK(close_to(out[2 * 15], (0.2f + 0.2f) * CENTRE)); /* the first stopped; the second, halved */
+
+    /* A play may name another group than its sound's. STOP_LOWEST_PRIORITY
+     * only stops a voice the new one is no lower than. */
+    RBTAUDIO_CONCURRENCY other = make_group(mixer, 1, RBTAUDIO_RESOLUTION_STOP_LOWEST_PRIORITY, 0, 1.0f);
+    CHECK(rbtaudio_concurrency_create(mixer, &bad, &none, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    RBTAUDIO_PLAY_DESC named = play_desc(0.05f);
+    named.concurrency = other;
+    named.priority = 5;
+    named.loop = true;
+    CHECK(rbtaudio_play(mixer, sound, &named, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.45f * CENTRE, 0.45f * CENTRE));
+    named.priority = 4; /* lower: dropped */
+    named.gain = 0.01f;
+    CHECK(rbtaudio_play(mixer, sound, &named, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.45f * CENTRE, 0.45f * CENTRE));
+    named.priority = 5; /* equal: replaces */
+    CHECK(rbtaudio_play(mixer, sound, &named, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.41f * CENTRE, 0.41f * CENTRE));
+    CHECK(rbtaudio_concurrency_create(mixer, &bad, &none, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    bad.max_instances = 1;
+    bad.resolution = RBTAUDIO_RESOLUTION_REJECT_NEW;
+    bad.older_instance_gain = 1.0f;
+    CHECK(rbtaudio_concurrency_create(mixer, &bad, &none, &error) == RBT_RESULT_LIMIT && none == 0);
+    rbtaudio_mixer_destroy(mixer);
+
+    /* retrigger_us: a play too soon after the group's last start is dropped. */
+    mixer = make_mixer(&desc);
+    group = make_group(mixer, 8, RBTAUDIO_RESOLUTION_REJECT_NEW, 1000, 1.0f); /* 48 frames */
+    sound = make_sound(mixer, ones, 4000, 1, 48000, RBTAUDIO_VIRTUAL_KILL, group, 0);
+    play(mixer, sound, 0.1f, 0, true);
+    play(mixer, sound, 0.1f, 0, true); /* same render: dropped */
+    render(mixer, 32);
+    play(mixer, sound, 0.1f, 0, true); /* 32 frames on: dropped */
+    render(mixer, 32);
+    CHECK(frames_are(0, 31, 0.1f * CENTRE, 0.1f * CENTRE));
+    play(mixer, sound, 0.1f, 0, true); /* 64 frames on */
+    render(mixer, 32);
+    CHECK(frames_are(0, 31, 0.2f * CENTRE, 0.2f * CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static RBTAUDIO_BUS make_bus(rbtaudio_mixer mixer, RBTAUDIO_BUS parent, float gain)
+{
+    RBTAUDIO_BUS_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_BUS_DESC;
+    desc.parent = parent;
+    desc.gain = gain;
+    desc.rate = 1.0f;
+    RBTAUDIO_BUS bus = 0;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_bus_create(mixer, &desc, &bus, &error) == RBT_RESULT_OK && bus != 0);
+    return bus;
+}
+
+static RBTAUDIO_VOICE play_on(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound, float gain, RBTAUDIO_BUS bus)
+{
+    RBTAUDIO_PLAY_DESC desc = play_desc(gain);
+    desc.bus = bus;
+    desc.loop = true;
+    RBTAUDIO_VOICE voice = 0;
+    CHECK(rbtaudio_play(mixer, sound, &desc, &voice) == RBT_RESULT_OK);
+    return voice;
+}
+
+static void test_buses(void)
+{
+    current_test = "buses";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_buses = 3;
+    desc.gain = 0.5f; /* the master's */
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_BUS master = rbtaudio_mixer_get_master_bus(mixer);
+
+    /* A voice's gain is its own times every bus's on the way to the master;
+     * a bus is usable the moment it's created. */
+    RBTAUDIO_BUS music = make_bus(mixer, 0, 0.5f);
+    RBTAUDIO_BUS strings = make_bus(mixer, music, 0.5f);
+    RBTAUDIO_SOUND sound = make_sound(mixer, ones, 4000, 1, 48000, RBTAUDIO_VIRTUAL_KILL, 0, music);
+    make_ones(mixer, 1, RBTAUDIO_VIRTUAL_KILL);
+    play_on(mixer, sound, 1.0f, 0);       /* the sound's bus: music */
+    play_on(mixer, sound, 1.0f, strings); /* named by the play */
+    play_on(mixer, sound, 1.0f, master);  /* the master, explicitly */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, (0.25f + 0.125f + 0.5f) * CENTRE, (0.25f + 0.125f + 0.5f) * CENTRE));
+
+    /* Changes ramp across the next render, or over their fade. */
+    CHECK(rbtaudio_bus_set_gain(mixer, music, 1.0f, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(out[0] > 0.875f * CENTRE && close_to(out[2 * 15], (0.5f + 0.25f + 0.5f) * CENTRE));
+    CHECK(rbtaudio_bus_set_gain(mixer, master, 1.0f, 1000) == RBT_RESULT_OK); /* 48 frames */
+    render(mixer, 24);
+    CHECK(close_to(out[2 * 23], 1.25f * 1.5f * CENTRE)); /* half way from 0.5 to 1 */
+    render(mixer, 24);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 2.5f * CENTRE, 2.5f * CENTRE));
+    CHECK(rbtaudio_bus_set_gain(mixer, music, -1.0f, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_rate(mixer, music, 0.0f, 0) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_gain(mixer, 0, 1.0f, 0) == RBT_RESULT_NOT_FOUND);
+
+    /* Muting a bus silences every voice under it and frees their slots;
+     * they keep their place - even KILL ones - and come back at the update
+     * after it's unmuted. */
+    CHECK(rbtaudio_bus_set_muted(mixer, music, true, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(close_to(out[2 * 15], CENTRE)); /* faded across the render: only the master's voice is left */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, CENTRE, CENTRE));
+    CHECK(rbtaudio_bus_set_muted(mixer, music, false, 0) == RBT_RESULT_OK);
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, CENTRE, CENTRE)); /* open, but not ranked yet */
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 2.5f * CENTRE, 2.5f * CENTRE));
+    /* Pausing works the same way, from the top of the tree down. */
+    CHECK(rbtaudio_bus_set_paused(mixer, master, true, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.0f, 0.0f));
+    CHECK(rbtaudio_bus_set_paused(mixer, master, false, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 2.5f * CENTRE, 2.5f * CENTRE));
+
+    /* A bus's rate is every voice's under it. */
+    CHECK(rbtaudio_bus_set_rate(mixer, master, 2.0f, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(rbtaudio_bus_set_rate(mixer, master, 1.0f, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+
+    /* The tree: no cycles, the master stays the root, stale IDs are turned
+     * away. */
+    CHECK(rbtaudio_bus_set_parent(mixer, music, strings) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_parent(mixer, music, music) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_bus_set_parent(mixer, master, music) == RBT_RESULT_INVALID_ARGUMENT);
+    RBTAUDIO_BUS effects = make_bus(mixer, 0, 0.1f);
+    CHECK(rbtaudio_bus_set_parent(mixer, strings, effects) == RBT_RESULT_OK);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, (1.0f + 0.05f + 1.0f) * CENTRE, (1.0f + 0.05f + 1.0f) * CENTRE));
+    RBTAUDIO_BUS_DESC bus_desc;
+    memset(&bus_desc, 0, sizeof(bus_desc));
+    bus_desc.base.type = RBT_STRUCT_TYPE_AUDIO_BUS_DESC;
+    bus_desc.gain = 1.0f;
+    bus_desc.rate = 1.0f;
+    RBTAUDIO_BUS extra = 99;
+    CHECK(rbtaudio_bus_create(mixer, &bus_desc, &extra, NULL) == RBT_RESULT_LIMIT && extra == 0);
+
+    /* Destroying a bus moves its voices and children to its parent. */
+    rbtaudio_bus_destroy(mixer, effects);
+    rbtaudio_bus_destroy(mixer, effects);
+    rbtaudio_bus_destroy(mixer, master); /* nothing */
+    CHECK(rbtaudio_bus_set_gain(mixer, effects, 1.0f, 0) == RBT_RESULT_NOT_FOUND);
+    CHECK(rbtaudio_bus_set_muted(mixer, effects, true, 0) == RBT_RESULT_NOT_FOUND);
+    CHECK(rbtaudio_bus_set_parent(mixer, effects, 0) == RBT_RESULT_NOT_FOUND);
+    CHECK(rbtaudio_bus_set_parent(mixer, music, effects) == RBT_RESULT_NOT_FOUND);
+    bus_desc.parent = effects;
+    CHECK(rbtaudio_bus_create(mixer, &bus_desc, &extra, NULL) == RBT_RESULT_NOT_FOUND);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, (1.0f + 0.5f + 1.0f) * CENTRE, (1.0f + 0.5f + 1.0f) * CENTRE));
+    rbtaudio_bus_destroy(mixer, strings);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 3.0f * CENTRE, 3.0f * CENTRE));
+    /* A stale bus on a play is the master. */
+    play_on(mixer, sound, 1.0f, strings);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 4.0f * CENTRE, 4.0f * CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_modifiers(void)
+{
+    current_test = "modifiers";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_buses = 2;
+    desc.max_modifiers = 2;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_BUS music = make_bus(mixer, 0, 1.0f);
+    RBTAUDIO_BUS dialogue = make_bus(mixer, 0, 1.0f);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+    play_on(mixer, sound, 0.4f, music);
+
+    /* A snapshot scales its buses while it's active, fading each way. */
+    RBTAUDIO_MODIFIER_TARGET target = {music, 0.5f, 1.0f};
+    RBTAUDIO_MODIFIER_DESC modifier_desc;
+    memset(&modifier_desc, 0, sizeof(modifier_desc));
+    modifier_desc.base.type = RBT_STRUCT_TYPE_AUDIO_MODIFIER_DESC;
+    modifier_desc.targets = &target;
+    modifier_desc.target_count = 1;
+    modifier_desc.fade_in_us = 1000; /* 48 frames */
+    RBTAUDIO_MODIFIER snapshot = 0;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_modifier_create(mixer, &modifier_desc, &snapshot, &error) == RBT_RESULT_OK && snapshot != 0);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE)); /* a new modifier is inactive */
+    CHECK(rbtaudio_modifier_set_active(mixer, snapshot, true) == RBT_RESULT_OK);
+    render(mixer, 24);
+    CHECK(close_to(out[2 * 23], 0.3f * CENTRE)); /* half way in */
+    render(mixer, 24);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.2f * CENTRE, 0.2f * CENTRE));
+    /* Modifiers multiply, so they never undo each other or the bus's own
+     * gain. */
+    CHECK(rbtaudio_bus_set_gain(mixer, music, 0.5f, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.1f * CENTRE, 0.1f * CENTRE));
+    CHECK(rbtaudio_modifier_set_active(mixer, snapshot, false) == RBT_RESULT_OK);
+    render(mixer, 16); /* fade_out_us is 0: across this render */
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.2f * CENTRE, 0.2f * CENTRE));
+    CHECK(rbtaudio_bus_set_gain(mixer, music, 1.0f, 0) == RBT_RESULT_OK);
+    render(mixer, 16);
+
+    /* Bad targets. */
+    RBTAUDIO_MODIFIER none = 99;
+    RBTAUDIO_MODIFIER_TARGET twice[2] = {{music, 0.5f, 1.0f}, {music, 0.5f, 1.0f}};
+    modifier_desc.targets = twice;
+    modifier_desc.target_count = 2;
+    CHECK(rbtaudio_modifier_create(mixer, &modifier_desc, &none, &error) == RBT_RESULT_INVALID_ARGUMENT && none == 0);
+    twice[1].bus = dialogue;
+    twice[1].rate = 0.0f;
+    CHECK(rbtaudio_modifier_create(mixer, &modifier_desc, &none, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    twice[1].rate = 1.0f;
+    twice[1].bus = 12345;
+    CHECK(rbtaudio_modifier_create(mixer, &modifier_desc, &none, &error) == RBT_RESULT_NOT_FOUND);
+
+    /* Ducking: a triggered modifier is active while its bus has audible
+     * voices, as of the last update. */
+    RBTAUDIO_MODIFIER_TARGET duck_target = {music, 0.25f, 1.0f};
+    modifier_desc.targets = &duck_target;
+    modifier_desc.target_count = 1;
+    modifier_desc.fade_in_us = 0;
+    modifier_desc.trigger = dialogue;
+    RBTAUDIO_MODIFIER duck = 0;
+    CHECK(rbtaudio_modifier_create(mixer, &modifier_desc, &duck, &error) == RBT_RESULT_OK);
+    CHECK(rbtaudio_modifier_create(mixer, &modifier_desc, &none, &error) == RBT_RESULT_LIMIT);
+    RBTAUDIO_VOICE line = play_on(mixer, sound, 0.5f, dialogue);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.9f * CENTRE, 0.9f * CENTRE));
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.6f * CENTRE, 0.6f * CENTRE)); /* 0.4 x 0.25, and the line */
+    rbtaudio_voice_stop(mixer, line, 0);
+    render(mixer, 16);
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
+
+    /* A destroyed modifier is stale at once, and its effect goes. */
+    CHECK(rbtaudio_modifier_set_active(mixer, snapshot, true) == RBT_RESULT_OK);
+    render(mixer, 48);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.2f * CENTRE, 0.2f * CENTRE));
+    rbtaudio_modifier_destroy(mixer, snapshot);
+    rbtaudio_modifier_destroy(mixer, snapshot);
+    CHECK(rbtaudio_modifier_set_active(mixer, snapshot, true) == RBT_RESULT_NOT_FOUND);
+    render(mixer, 16);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
+    /* Destroying a bus drops the targets and triggers naming it. */
+    rbtaudio_bus_destroy(mixer, music);
+    rbtaudio_bus_destroy(mixer, dialogue);
+    render(mixer, 16);
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 16);
+    CHECK(frames_are(0, 15, 0.4f * CENTRE, 0.4f * CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_start_time(void)
+{
+    current_test = "start_time";
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4000, RBTAUDIO_VIRTUAL_KILL);
+    CRAUDIO_CALLBACK_INFO info;
+    memset(&info, 0, sizeof(info));
+    info.flags = CRAUDIO_CALLBACK_FLAG_HOST_TIME_VALID;
+    info.host_time_ns = 5000000000ull;
+
+    /* A voice with a start time begins on the frame matching it. */
+    RBTAUDIO_PLAY_DESC timed = play_desc(1.0f);
+    timed.start_time_ns = info.host_time_ns + 208400; /* just past 10 frames */
+    RBTAUDIO_VOICE voice = 0;
+    CHECK(rbtaudio_play(mixer, sound, &timed, &voice) == RBT_RESULT_OK);
+    rbtaudio_mixer_render(mixer, out, 32, &info);
+    CHECK(frames_are(0, 9, 0.0f, 0.0f) && frames_are(10, 31, CENTRE, CENTRE));
+    rbtaudio_voice_stop(mixer, voice, 0);
+
+    /* Later than this render: it waits, and can be stopped while it does. */
+    timed.start_time_ns = info.host_time_ns + 1000000000ull;
+    CHECK(rbtaudio_play(mixer, sound, &timed, &voice) == RBT_RESULT_OK);
+    RBTAUDIO_VOICE never = 0;
+    CHECK(rbtaudio_play(mixer, sound, &timed, &never) == RBT_RESULT_OK);
+    rbtaudio_mixer_render(mixer, out, 32, &info);
+    CHECK(frames_are(0, 31, 0.0f, 0.0f));
+    rbtaudio_voice_stop(mixer, never, 0);
+    info.host_time_ns += 999900000ull;
+    rbtaudio_mixer_render(mixer, out, 32, &info);
+    CHECK(frames_are(0, 4, 0.0f, 0.0f) && frames_are(5, 31, CENTRE, CENTRE));
+    rbtaudio_voice_stop(mixer, voice, 0);
+
+    /* A time already past, or no host timing: as soon as possible. */
+    timed.start_time_ns = 1;
+    CHECK(rbtaudio_play(mixer, sound, &timed, &voice) == RBT_RESULT_OK);
+    rbtaudio_mixer_render(mixer, out, 32, &info);
+    CHECK(frames_are(0, 31, CENTRE, CENTRE));
+    rbtaudio_voice_stop(mixer, voice, 0);
+    timed.start_time_ns = info.host_time_ns + 1000000000ull;
+    CHECK(rbtaudio_play(mixer, sound, &timed, &voice) == RBT_RESULT_OK);
+    rbtaudio_mixer_stream_callback(NULL, out, 32, NULL, mixer);
+    CHECK(frames_are(0, 31, CENTRE, CENTRE));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* A bank kept in memory, for rbtaudio_cues_load_bank(): its manifest, and
+ * one WAV that the manifest calls "tick.wav". */
+typedef struct memory_bank
+{
+    const char *manifest;
+    const unsigned char *wav;
+    uint64_t wav_size;
+} memory_bank;
+
+static bool memory_bank_get_size(void *user, const char *name, uint64_t *out_size)
+{
+    const memory_bank *bank = (const memory_bank *)user;
+    if (strcmp(name, "manifest.json") == 0)
+    {
+        *out_size = strlen(bank->manifest);
+        return true;
+    }
+    if (strcmp(name, "tick.wav") == 0)
+    {
+        *out_size = bank->wav_size;
+        return true;
+    }
+    return false;
+}
+
+static bool memory_bank_read(void *user, const char *name, void *buffer, uint64_t size)
+{
+    const memory_bank *bank = (const memory_bank *)user;
+    if (strcmp(name, "manifest.json") == 0 && size == strlen(bank->manifest))
+    {
+        memcpy(buffer, bank->manifest, (size_t)size);
+        return true;
+    }
+    if (strcmp(name, "tick.wav") == 0 && size == bank->wav_size)
+    {
+        memcpy(buffer, bank->wav, (size_t)size);
+        return true;
+    }
+    return false;
+}
+
+static RBTAUDIO_CUE_INFO cue_info(rbtaudio_cues cues, RBTAUDIO_CUE cue)
+{
+    RBTAUDIO_CUE_INFO info;
+    memset(&info, 0, sizeof(info));
+    info.base.type = RBT_STRUCT_TYPE_AUDIO_CUE_INFO;
+    CHECK(rbtaudio_cues_get_info(cues, cue, &info) == RBT_RESULT_OK);
+    return info;
+}
+
+/* A ZIP archive in memory, for rbtaudio_cues_load_zip_bank(). */
+typedef struct memory_zip
+{
+    unsigned char bytes[4096];
+    uint64_t size;
+} memory_zip;
+
+static bool memory_zip_write(void *user, const void *data, uint64_t count)
+{
+    memory_zip *zip = (memory_zip *)user;
+    if (count > sizeof(zip->bytes) - zip->size)
+        return false;
+    memcpy(zip->bytes + zip->size, data, (size_t)count);
+    zip->size += count;
+    return true;
+}
+
+static bool memory_zip_read(void *user, uint64_t offset, void *buffer, uint64_t count)
+{
+    const memory_zip *zip = (const memory_zip *)user;
+    if (offset > zip->size || count > zip->size - offset)
+        return false;
+    memcpy(buffer, zip->bytes + offset, (size_t)count);
+    return true;
+}
+
+static bool any_sound(uint32_t frames)
+{
+    for (uint32_t i = 0; i < 2 * frames; i++)
+        if (out[i] != 0.0f)
+            return true;
+    return false;
+}
+
+/* Playing cues: one-shots heard, a cue switched off and a muted bus
+ * silent; sustained playings started, stopped, faded by an exclusive
+ * start, and limited to max_playings; the sample rate changed; a bank
+ * read from a ZIP archive. */
+static void test_cues_playing(void)
+{
+    current_test = "cues playing";
+    RBTAUDIO_MIXER_DESC mixer_desc = valid_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&mixer_desc);
+    RBTAUDIO_CUES_BUS buses[2];
+    memset(buses, 0, sizeof(buses));
+    buses[0].name = "feedback";
+    buses[0].bus = make_bus(mixer, 0, 1.0f);
+    buses[0].virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+    buses[1].name = "music";
+    buses[1].bus = make_bus(mixer, 0, 1.0f);
+    buses[1].virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+    RBTAUDIO_CUES_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_CUES_DESC;
+    desc.mixer = mixer;
+    desc.buses = buses;
+    desc.bus_count = 2;
+    desc.max_cues = 8;
+    desc.max_playings = 3;
+    desc.max_voices = mixer_desc.max_voices;
+    desc.sample_rate = 48000;
+    desc.max_bank_size = 1 << 20;
+    desc.duck_fade_in_us = 10000;
+    desc.duck_fade_out_us = 10000;
+    rbtaudio_cues cues = NULL;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_cues_create(&desc, &cues, &error) == RBT_RESULT_OK && cues != NULL);
+    if (!cues)
+    {
+        rbtaudio_mixer_destroy(mixer);
+        return;
+    }
+
+    /* 16-bit mono at half scale, 64 frames. */
+    static unsigned char pcm16[128];
+    for (int i = 0; i < 64; i++)
+    {
+        pcm16[2 * i] = 0x00;
+        pcm16[2 * i + 1] = 0x40;
+    }
+    unsigned char wav[512];
+    unsigned char fmt[40];
+    make_fmt(fmt, 1, 1, 48000, 16);
+    const uint64_t wav_size = make_wav(wav, fmt, 16, pcm16, sizeof(pcm16));
+    static const char manifest[] = "{\"version\": 1, \"cues\": {"
+                                   "\"ui.tick\": {\"sounds\": [\"tick.wav\"], \"bus\": \"feedback\"},"
+                                   "\"song.a\": {\"sounds\": [\"tick.wav\"], \"bus\": \"music\", \"loop\": true,"
+                                   " \"exclusive\": true, \"fade_out_ms\": 1},"
+                                   "\"song.b\": {\"sounds\": [\"tick.wav\"], \"bus\": \"music\", \"loop\": true,"
+                                   " \"exclusive\": true},"
+                                   "\"hum\": {\"sounds\": [\"tick.wav\"], \"bus\": \"feedback\", \"loop\": true}}}";
+
+    /* The bank as a ZIP archive. */
+    memory_zip zip;
+    zip.size = 0;
+    rbtarchive_codecs codecs = NULL;
+    CHECK(rbtarchive_codecs_create(&codecs) == RBT_RESULT_OK);
+    RBTARCHIVE_WRITER_DESC wd;
+    memset(&wd, 0, sizeof(wd));
+    wd.base.type = RBT_STRUCT_TYPE_ARCHIVE_WRITER_DESC;
+    wd.sink.user = &zip;
+    wd.sink.write = memory_zip_write;
+    wd.codecs = codecs;
+    rbtarchive_writer writer = NULL;
+    CHECK(rbtarchive_writer_create(&wd, &writer) == RBT_RESULT_OK);
+    RBTARCHIVE_ENTRY_DESC entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.base.type = RBT_STRUCT_TYPE_ARCHIVE_ENTRY_DESC;
+    entry.method = RBTARCHIVE_METHOD_STORED;
+    entry.dos_date = 0x0021;
+    entry.name = "manifest.json";
+    CHECK(rbtarchive_writer_add_entry(writer, &entry, manifest, strlen(manifest), NULL) == RBT_RESULT_OK);
+    entry.name = "tick.wav";
+    CHECK(rbtarchive_writer_add_entry(writer, &entry, wav, wav_size, NULL) == RBT_RESULT_OK);
+    CHECK(rbtarchive_writer_finish(writer, NULL) == RBT_RESULT_OK);
+    rbtarchive_writer_destroy(writer);
+    rbtarchive_codecs_destroy(codecs);
+    RBTARCHIVE_SOURCE source = {&zip, zip.size, memory_zip_read};
+    CHECK(rbtaudio_cues_load_zip_bank(cues, &source, &error) == RBT_RESULT_OK);
+    RBTARCHIVE_SOURCE not_zip = {&zip, 10, memory_zip_read};
+    CHECK(rbtaudio_cues_load_zip_bank(cues, &not_zip, &error) == RBT_RESULT_CORRUPT_DATA);
+    CHECK(rbtaudio_cues_load_zip_bank(cues, NULL, &error) == RBT_RESULT_INVALID_ARGUMENT);
+
+    RBTAUDIO_CUE tick = 0, a = 0, b = 0, hum = 0;
+    CHECK(rbtaudio_cues_find(cues, "ui.tick", &tick) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_find(cues, "song.a", &a) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_find(cues, "song.b", &b) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_find(cues, "hum", &hum) == RBT_RESULT_OK);
+
+    /* A one-shot: queued, heard, not a playing. */
+    RBTAUDIO_VOICE voice = 0;
+    CHECK(rbtaudio_cues_play(cues, tick, NULL, &voice) == RBT_RESULT_OK && voice != 0);
+    CHECK(!rbtaudio_cues_is_playing(cues, voice));
+    CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+    render(mixer, 32);
+    CHECK(any_sound(32));
+    render(mixer, 64); /* the rest of it */
+
+    /* Off, then muted: nothing is queued. */
+    CHECK(rbtaudio_cues_set_enabled(cues, tick, false) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_play(cues, tick, NULL, &voice) == RBT_RESULT_OK && voice == 0);
+    CHECK(rbtaudio_cues_set_enabled(cues, tick, true) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_set_bus_muted(cues, 0, true) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_play(cues, tick, NULL, &voice) == RBT_RESULT_OK && voice == 0);
+    CHECK(rbtaudio_cues_set_bus_muted(cues, 0, false) == RBT_RESULT_OK);
+    CHECK(rbtaudio_cues_set_bus_muted(cues, 2, true) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_cues_set_enabled(cues, 0, true) == RBT_RESULT_NOT_FOUND);
+
+    /* Sustained: started, live; an exclusive start on its bus ends the
+     * other; stopped at once, not live. */
+    RBTAUDIO_VOICE song_a = 0, song_b = 0;
+    CHECK(rbtaudio_cues_start(cues, a, NULL, &song_a) == RBT_RESULT_OK && song_a != 0);
+    CHECK(rbtaudio_cues_is_playing(cues, song_a));
+    rbtaudio_cues_update(cues);
+    CHECK(rbtaudio_cues_start(cues, b, NULL, &song_b) == RBT_RESULT_OK && song_b != 0);
+    CHECK(rbtaudio_cues_is_playing(cues, song_b));
+    CHECK(!rbtaudio_cues_is_playing(cues, song_a));
+    rbtaudio_cues_stop(cues, song_b, false);
+    CHECK(!rbtaudio_cues_is_playing(cues, song_b));
+    rbtaudio_cues_stop(cues, song_b, true); /* not live: nothing */
+    rbtaudio_cues_update(cues);
+
+    /* max_playings: three live, the fourth refused. */
+    RBTAUDIO_VOICE hums[4] = {0, 0, 0, 0};
+    for (int i = 0; i < 3; i++)
+        CHECK(rbtaudio_cues_start(cues, hum, NULL, &hums[i]) == RBT_RESULT_OK && hums[i] != 0);
+    CHECK(rbtaudio_cues_start(cues, hum, NULL, &hums[3]) == RBT_RESULT_LIMIT);
+    CHECK(rbtaudio_cues_start(cues, hum, NULL, NULL) == RBT_RESULT_INVALID_ARGUMENT);
+    for (int i = 0; i < 3; i++)
+        rbtaudio_cues_stop(cues, hums[i], true);
+    rbtaudio_cues_update(cues);
+
+    /* The device's rate changes: the table follows; a play still works. */
+    rbtaudio_cues_set_sample_rate(cues, 44100);
+    rbtaudio_cues_set_sample_rate(NULL, 44100);
+    rbtaudio_cues_update(NULL);
+    CHECK(rbtaudio_cues_play(cues, tick, NULL, &voice) == RBT_RESULT_OK && voice != 0);
+    CHECK(!rbtaudio_cues_is_playing(NULL, voice));
+
+    rbtaudio_cues_destroy(cues);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+
+/* rbtaudio_cues_clear_banks(): what banks defined goes - cues and ducking -
+ * while names, handles and the table itself stay good for the next bank. */
+static void test_cues_clear_banks(void)
+{
+    current_test = "cues clear banks";
+    RBTAUDIO_MIXER_DESC mixer_desc = valid_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&mixer_desc);
+    RBTAUDIO_CUES_BUS buses[2];
+    memset(buses, 0, sizeof(buses));
+    buses[0].name = "feedback";
+    buses[0].bus = make_bus(mixer, 0, 1.0f);
+    buses[0].virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+    buses[1].name = "alerts";
+    buses[1].bus = make_bus(mixer, 0, 1.0f);
+    buses[1].virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+
+    RBTAUDIO_CUES_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_CUES_DESC;
+    desc.mixer = mixer;
+    desc.buses = buses;
+    desc.bus_count = 2;
+    desc.max_cues = 8;
+    desc.max_playings = 4;
+    desc.max_voices = mixer_desc.max_voices;
+    desc.sample_rate = 48000;
+    desc.max_bank_size = 1 << 20;
+    desc.duck_fade_in_us = 10000;
+    desc.duck_fade_out_us = 10000;
+    rbtaudio_cues cues = NULL;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_cues_create(&desc, &cues, &error) == RBT_RESULT_OK && cues != NULL);
+
+    /* 16-bit mono, four frames. */
+    static const unsigned char pcm16[] = {0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0xC0};
+    unsigned char wav[256];
+    unsigned char fmt[40];
+    make_fmt(fmt, 1, 1, 48000, 16);
+    memory_bank bank;
+    bank.wav = wav;
+    bank.wav_size = make_wav(wav, fmt, 16, pcm16, sizeof(pcm16));
+    RBTAUDIO_BANK_SOURCE source = {&bank, memory_bank_get_size, memory_bank_read};
+
+    /* A bank that defines one cue, with a limit of its own so it has a
+     * concurrency group, and has one bus duck the other. */
+    static const char first[] = "{\"version\": 1,"
+                                " \"cues\": {\"ui.tick\": {\"sounds\": [\"tick.wav\"], \"bus\": \"feedback\","
+                                " \"max_instances\": 2}},"
+                                " \"buses\": {\"alerts\": {\"duck\": {\"feedback\": 0.3}}}}";
+    bank.manifest = first;
+    CHECK(rbtaudio_cues_load_bank(cues, &source, &error) == RBT_RESULT_OK);
+    RBTAUDIO_CUE tick = 0;
+    CHECK(rbtaudio_cues_find(cues, "ui.tick", &tick) == RBT_RESULT_OK && tick != 0);
+    CHECK(cue_info(cues, tick).defined && cue_info(cues, tick).sound_count == 1);
+    CHECK(rbtaudio_cues_get_bus_ducking(cues, 1) != 0);
+
+    /* Cleared: nothing is defined and nothing ducks. The name and its
+     * handle are as they were, and playing it plays nothing and succeeds. */
+    rbtaudio_cues_clear_banks(cues);
+    CHECK(!cue_info(cues, tick).defined && cue_info(cues, tick).sound_count == 0);
+    CHECK(cue_info(cues, tick).max_instances == 0);
+    CHECK(rbtaudio_cues_get_bus_ducking(cues, 1) == 0);
+    RBTAUDIO_CUE again = 0;
+    CHECK(rbtaudio_cues_find(cues, "ui.tick", &again) == RBT_RESULT_OK && again == tick);
+    RBTAUDIO_VOICE voice = 99;
+    CHECK(rbtaudio_cues_play(cues, tick, NULL, &voice) == RBT_RESULT_OK && voice == 0);
+
+    /* Clearing what's already clear, or no table at all, does nothing. */
+    rbtaudio_cues_clear_banks(cues);
+    rbtaudio_cues_clear_banks(NULL);
+    CHECK(!cue_info(cues, tick).defined);
+
+    /* The table takes banks as before: another one defines another cue,
+     * and the cleared one stays undefined until a bank defines it again. */
+    static const char second[] = "{\"version\": 1,"
+                                 " \"cues\": {\"ui.other\": {\"sounds\": [\"tick.wav\"], \"bus\": \"alerts\"}}}";
+    bank.manifest = second;
+    CHECK(rbtaudio_cues_load_bank(cues, &source, &error) == RBT_RESULT_OK);
+    RBTAUDIO_CUE other = 0;
+    CHECK(rbtaudio_cues_find(cues, "ui.other", &other) == RBT_RESULT_OK && other != tick);
+    CHECK(cue_info(cues, other).defined && cue_info(cues, other).bus_index == 1);
+    CHECK(!cue_info(cues, tick).defined);
+    CHECK(rbtaudio_cues_get_bus_ducking(cues, 1) == 0);
+    bank.manifest = first;
+    CHECK(rbtaudio_cues_load_bank(cues, &source, &error) == RBT_RESULT_OK);
+    CHECK(cue_info(cues, tick).defined && cue_info(cues, tick).max_instances == 2);
+    CHECK(cue_info(cues, other).defined);
+    CHECK(rbtaudio_cues_get_bus_ducking(cues, 1) != 0);
+
+    rbtaudio_cues_destroy(cues);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* ---- Dither, the limiter, collecting, folding (RBTAUDIO_TODO.md items 7-9) ---- */
+
+/* 16-bit output is dithered: silence becomes noise of a bit either side,
+ * and a level a quarter of a bit, which plain rounding would lose, comes
+ * out on average. */
+static void test_dither(void)
+{
+    current_test = "dither";
+    static float quarter[2 * 2048];
+    for (int i = 0; i < 2 * 2048; i++)
+        quarter[i] = 0.25f / 32768.0f;
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_S16;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    static int16_t s16[2 * 512];
+    rbtaudio_mixer_render(mixer, s16, 512, NULL);
+    int outside = 0, nonzero = 0;
+    for (int i = 0; i < 2 * 512; i++)
+    {
+        if (s16[i] < -1 || s16[i] > 1)
+            outside++;
+        if (s16[i] != 0)
+            nonzero++;
+    }
+    CHECK(outside == 0);
+    CHECK(nonzero > 0);
+
+    RBTAUDIO_SOUND sound = make_sound(mixer, quarter, 2048, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, sound, 1.0f, 0, true);
+    double sum = 0.0;
+    int count = 0;
+    for (int block = 0; block < 8; block++)
+    {
+        rbtaudio_mixer_render(mixer, s16, 512, NULL);
+        for (int i = 0; i < 2 * 512; i++, count++)
+            sum += s16[i];
+    }
+    double mean = sum / count;
+    CHECK(mean > 0.15 && mean < 0.35);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static RBTAUDIO_MIXER_DESC limited_desc(void)
+{
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.limiter = RBTAUDIO_LIMITER_ON;
+    desc.limiter_lookahead_us = 2000; /* 96 frames at 48 kHz */
+    desc.limiter_release_us = 50000;
+    desc.limiter_ceiling = 0.9f;
+    return desc;
+}
+
+/* The limiter: a mix of 2 comes out at the ceiling, never past it, a
+ * lookahead late; quiet sound goes through untouched; refusals. */
+static void test_limiter(void)
+{
+    current_test = "limiter";
+    static float loud[2 * 4096];
+    static float quiet[2 * 4096];
+    for (int i = 0; i < 2 * 4096; i++)
+    {
+        loud[i] = 2.0f;
+        quiet[i] = 0.5f;
+    }
+    RBTAUDIO_MIXER_DESC desc = limited_desc();
+    rbtaudio_mixer mixer = make_mixer(&desc);
+
+    /* Quiet: unchanged, but a lookahead (96 frames) late. */
+    RBTAUDIO_SOUND soft = make_sound(mixer, quiet, 4096, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    RBTAUDIO_VOICE voice = play(mixer, soft, 1.0f, 0, false);
+    render(mixer, 512);
+    CHECK(frames_are(0, 95, 0.0f, 0.0f));
+    CHECK(frames_are(96, 511, 0.5f, 0.5f));
+    rbtaudio_voice_stop(mixer, voice, 0);
+    render(mixer, 512);
+    render(mixer, 512);
+
+    /* Loud: never past the ceiling, and at it once the gain has come down. */
+    RBTAUDIO_SOUND hard = make_sound(mixer, loud, 4096, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, hard, 1.0f, 0, false);
+    float peak = 0.0f;
+    for (int block = 0; block < 4; block++)
+    {
+        render(mixer, 512);
+        for (int i = 0; i < 2 * 512; i++)
+            peak = fabsf(out[i]) > peak ? fabsf(out[i]) : peak;
+    }
+    CHECK(peak <= 0.9f);
+    CHECK(close_to(out[2 * 500], 0.9f));
+    rbtaudio_mixer_destroy(mixer);
+
+    /* Off, the same loud sound clips. */
+    desc = plain_mixer_desc();
+    desc.format.sample_format = CRAUDIO_SAMPLE_FORMAT_S16;
+    mixer = make_mixer(&desc);
+    hard = make_sound(mixer, loud, 4096, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    play(mixer, hard, 1.0f, 0, false);
+    int16_t s16[2 * 64];
+    rbtaudio_mixer_render(mixer, s16, 64, NULL);
+    CHECK(s16[0] == 32767);
+    rbtaudio_mixer_destroy(mixer);
+
+    /* Refusals: no choice, no lookahead or too much, no release, a ceiling
+     * outside (0, 1]. */
+    RBTAUDIO_ERROR error;
+    rbtaudio_mixer refused = NULL;
+    desc = plain_mixer_desc();
+    desc.limiter = RBTAUDIO_LIMITER_UNSPECIFIED;
+    CHECK(rbtaudio_mixer_create(&desc, &refused, &error) == RBT_RESULT_INVALID_ARGUMENT && strstr(error.message, "limiter"));
+    desc = limited_desc();
+    desc.limiter_lookahead_us = 0;
+    CHECK(rbtaudio_mixer_create(&desc, &refused, &error) == RBT_RESULT_INVALID_ARGUMENT && strstr(error.message, "lookahead"));
+    desc.limiter_lookahead_us = 100001;
+    CHECK(rbtaudio_mixer_create(&desc, &refused, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    desc = limited_desc();
+    desc.limiter_release_us = 0;
+    CHECK(rbtaudio_mixer_create(&desc, &refused, &error) == RBT_RESULT_INVALID_ARGUMENT && strstr(error.message, "release"));
+    desc = limited_desc();
+    desc.limiter_ceiling = 0.0f;
+    CHECK(rbtaudio_mixer_create(&desc, &refused, &error) == RBT_RESULT_INVALID_ARGUMENT && strstr(error.message, "ceiling"));
+    desc.limiter_ceiling = 1.5f;
+    CHECK(rbtaudio_mixer_create(&desc, &refused, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(refused == NULL);
+    /* Its settings aren't read with it off. */
+    desc = plain_mixer_desc();
+    desc.limiter_ceiling = -7.0f;
+    mixer = make_mixer(&desc);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* Destroyed sounds' memory is freed by rbtaudio_mixer_collect(), or by a
+ * create that finds every slot taken; ASan and leaks see the rest. */
+static void test_collect(void)
+{
+    current_test = "collect";
+    float samples[2 * 64] = {0};
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.max_sounds = 1;
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND sound = make_sound(mixer, samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    rbtaudio_sound_destroy(mixer, sound);
+    render(mixer, 64);
+    rbtaudio_mixer_collect(mixer);
+    rbtaudio_mixer_collect(NULL);
+    /* The slot is free again. */
+    sound = make_sound(mixer, samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    rbtaudio_sound_destroy(mixer, sound);
+    render(mixer, 64);
+    /* Not collected: the create finds the slot taken and collects. */
+    sound = make_sound(mixer, samples, 64, 2, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    CHECK(sound != 0);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* On stereo, a sound from behind is folded to the front, and the voice
+ * says so; one ahead, one with no direction, and one on a layout with rear
+ * speakers aren't. */
+static void test_folded(void)
+{
+    current_test = "folded";
+    static float mono[4096];
+    for (int i = 0; i < 4096; i++)
+        mono[i] = 0.25f;
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    rbtaudio_mixer mixer = make_mixer(&desc);
+    RBTAUDIO_SOUND sound = make_sound(mixer, mono, 4096, 1, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    RBTAUDIO_DIRECTION behind = {3.0, 0.0}, ahead = {0.5, 0.0};
+    RBTAUDIO_PLAY_DESC p = play_desc(1.0f);
+    p.direction = &behind;
+    RBTAUDIO_VOICE back = 0, front = 0, plain = 0;
+    CHECK(rbtaudio_play(mixer, sound, &p, &back) == RBT_RESULT_OK);
+    p.direction = &ahead;
+    CHECK(rbtaudio_play(mixer, sound, &p, &front) == RBT_RESULT_OK);
+    p.direction = NULL;
+    CHECK(rbtaudio_play(mixer, sound, &p, &plain) == RBT_RESULT_OK);
+    CHECK(!rbtaudio_voice_is_folded(mixer, back)); /* not yet rendered */
+    render(mixer, 64);
+    CHECK(rbtaudio_voice_is_folded(mixer, back));
+    CHECK(!rbtaudio_voice_is_folded(mixer, front));
+    CHECK(!rbtaudio_voice_is_folded(mixer, plain));
+    /* Turned to face it: no longer folded once the change is rendered. */
+    CHECK(rbtaudio_voice_set_direction(mixer, back, &ahead) == RBT_RESULT_OK);
+    render(mixer, 64);
+    CHECK(!rbtaudio_voice_is_folded(mixer, back));
+    CHECK(!rbtaudio_voice_is_folded(mixer, 0));
+    CHECK(!rbtaudio_voice_is_folded(NULL, back));
+    rbtaudio_mixer_destroy(mixer);
+
+    static const CRAUDIO_CHANNEL_POSITION surround[6] = {
+        CRAUDIO_CHANNEL_POSITION_FL, CRAUDIO_CHANNEL_POSITION_FR,  CRAUDIO_CHANNEL_POSITION_FC,
+        CRAUDIO_CHANNEL_POSITION_LFE, CRAUDIO_CHANNEL_POSITION_RL, CRAUDIO_CHANNEL_POSITION_RR};
+    desc.format.channel_count = 6;
+    desc.format.positions = surround;
+    mixer = make_mixer(&desc);
+    sound = make_sound(mixer, mono, 4096, 1, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+    p.direction = &behind;
+    CHECK(rbtaudio_play(mixer, sound, &p, &back) == RBT_RESULT_OK);
+    static float six[6 * 64];
+    rbtaudio_mixer_render(mixer, six, 64, NULL);
+    CHECK(!rbtaudio_voice_is_folded(mixer, back));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* ---- Decoders (RBTAUDIO_TODO.md item 15) ---- */
+
+static const char *data_dir = NULL;
+
+/* Reads tests/data/rbtaudio/[name] whole into [buffer]; its size, or 0. */
+static size_t read_data(const char *name, unsigned char *buffer, size_t capacity)
+{
+    if (!data_dir)
+        return 0;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", data_dir, name);
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return 0;
+    size_t size = fread(buffer, 1, capacity, file);
+    fclose(file);
+    return size;
+}
+
+/* The energy of channel [channel] of [pcm], per sample. */
+static double channel_power(const RBTAUDIO_PCM *pcm, uint32_t channel, uint64_t from)
+{
+    double sum = 0.0;
+    uint64_t n = 0;
+    for (uint64_t i = from; i < pcm->frame_count; i++, n++)
+    {
+        double v = pcm->samples[i * pcm->channel_count + channel];
+        sum += v * v;
+    }
+    return n ? sum / (double)n : 0.0;
+}
+
+/* tone.wav is two sines at half scale, 440 Hz left and 660 Hz right, 0.1 s
+ * at 48 kHz; tone.flac the same bits, losslessly; tone.ogg and tone.opus
+ * the same sound, lossily (made with ffmpeg 2026-10-30). */
+static void test_decoders(void)
+{
+    current_test = "decoders";
+    static unsigned char bytes[64 * 1024];
+    RBTAUDIO_PCM wav, pcm;
+    RBTAUDIO_ERROR error;
+    size_t size = read_data("tone.wav", bytes, sizeof(bytes));
+    CHECK(size > 0);
+    if (size == 0)
+    {
+        printf("FAIL %s: no test data (run with tests/data/rbtaudio)\n", current_test);
+        return;
+    }
+    CHECK(rbtaudio_wav_decode(bytes, size, &wav, &error) == RBT_RESULT_OK);
+    CHECK(wav.frame_count == 4800 && wav.channel_count == 2 && wav.sample_rate == 48000);
+
+    /* FLAC: every sample the WAV's. */
+    size = read_data("tone.flac", bytes, sizeof(bytes));
+    CHECK(rbtaudio_flac_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.frame_count == wav.frame_count && pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    if (pcm.samples && pcm.frame_count == wav.frame_count)
+    {
+        int differ = 0;
+        for (uint64_t i = 0; i < 2 * pcm.frame_count; i++)
+            if (fabsf(pcm.samples[i] - wav.samples[i]) > 1e-6f)
+                differ++;
+        CHECK(differ == 0);
+    }
+    rbtaudio_pcm_free(&pcm);
+    CHECK(pcm.samples == NULL);
+
+    /* Vorbis and Opus: the same length, rate and channels, and each
+     * channel's energy the WAV's within what a lossy codec changes (a
+     * tenth); Opus at 48 kHz always. */
+    const double left_power = channel_power(&wav, 0, 960), right_power = channel_power(&wav, 1, 960);
+    CHECK(left_power > 1e-4 && right_power > 1e-4);
+    size = read_data("tone.ogg", bytes, sizeof(bytes));
+    CHECK(rbtaudio_vorbis_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_OK);
+    CHECK(pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    CHECK(pcm.frame_count >= 4700 && pcm.frame_count <= 4900);
+    CHECK(fabs(channel_power(&pcm, 0, 960) / left_power - 1.0) < 0.1);
+    CHECK(fabs(channel_power(&pcm, 1, 960) / right_power - 1.0) < 0.1);
+    rbtaudio_pcm_free(&pcm);
+
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    CHECK(rbtaudio_opus_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_OK);
+    if (error.message[0])
+        printf("     %s\n", error.message);
+    CHECK(pcm.channel_count == 2 && pcm.sample_rate == 48000);
+    CHECK(pcm.frame_count == 4800);
+    CHECK(fabs(channel_power(&pcm, 0, 960) / left_power - 1.0) < 0.1);
+    CHECK(fabs(channel_power(&pcm, 1, 960) / right_power - 1.0) < 0.1);
+    rbtaudio_pcm_free(&pcm);
+
+    /* Each refuses the others' files, garbage, nothing, and NULLs. */
+    size = read_data("tone.wav", bytes, sizeof(bytes));
+    CHECK(rbtaudio_flac_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_CORRUPT_DATA && pcm.samples == NULL);
+    CHECK(rbtaudio_vorbis_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_CORRUPT_DATA && pcm.samples == NULL);
+    CHECK(rbtaudio_opus_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_CORRUPT_DATA && pcm.samples == NULL);
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    CHECK(rbtaudio_vorbis_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    size = read_data("tone.ogg", bytes, sizeof(bytes));
+    CHECK(rbtaudio_opus_decode(bytes, size, 1000000, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    CHECK(rbtaudio_flac_decode(bytes, 0, 1000000, &pcm, &error) == RBT_RESULT_CORRUPT_DATA);
+    CHECK(rbtaudio_flac_decode(NULL, 10, 1000000, &pcm, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_vorbis_decode(bytes, size, 1000000, NULL, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_opus_decode(NULL, 0, 1000000, &pcm, NULL) == RBT_RESULT_CORRUPT_DATA);
+    /* Truncated: what was there, or refused, never past the end. */
+    size = read_data("tone.flac", bytes, sizeof(bytes));
+    RBT_RESULT truncated = rbtaudio_flac_decode(bytes, size / 2, 1000000, &pcm, &error);
+    CHECK(truncated == RBT_RESULT_OK || truncated == RBT_RESULT_CORRUPT_DATA);
+    rbtaudio_pcm_free(&pcm);
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    truncated = rbtaudio_opus_decode(bytes, size / 2, 1000000, &pcm, &error);
+    CHECK(truncated == RBT_RESULT_OK || truncated == RBT_RESULT_CORRUPT_DATA);
+    rbtaudio_pcm_free(&pcm);
+    /* max_frames: 0 refused; fewer than the file holds, the limit. */
+    size = read_data("tone.flac", bytes, sizeof(bytes));
+    CHECK(rbtaudio_flac_decode(bytes, size, 0, &pcm, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_flac_decode(bytes, size, 4799, &pcm, &error) == RBT_RESULT_LIMIT && pcm.samples == NULL);
+    CHECK(rbtaudio_flac_decode(bytes, size, 4800, &pcm, &error) == RBT_RESULT_OK && pcm.frame_count == 4800);
+    rbtaudio_pcm_free(&pcm);
+    size = read_data("tone.ogg", bytes, sizeof(bytes));
+    CHECK(rbtaudio_vorbis_decode(bytes, size, 1000, &pcm, &error) == RBT_RESULT_LIMIT);
+    size = read_data("tone.opus", bytes, sizeof(bytes));
+    CHECK(rbtaudio_opus_decode(bytes, size, 1000, &pcm, &error) == RBT_RESULT_LIMIT);
+    rbtaudio_pcm_free(&wav);
+}
+
+/* ---- Streamed sounds (RBTAUDIO_TODO.md item 15) ----
+ *
+ * Written from rbtaudiostream_draft.h before the implementation, and not to
+ * be edited by it. A call that returns RBT_RESULT_NOT_IMPLEMENTED marks its
+ * test pending and ends it; anything else is checked (as
+ * tests/rbttext_tests.c does), so the implementation turns them on call by
+ * call. The files are tests/data/rbtaudio/stream*.{flac,ogg,opus}, made by
+ * make_stream_data.py there: 2 s of stereo at 48 kHz, 0.7 s of mono at
+ * 44.1 kHz (48 kHz for Opus) to loop, and stream.* corrupted at 60 %. */
+
+static bool test_pending = false;
+
+/* Marks the current test pending: a call it needs returned
+ * RBT_RESULT_NOT_IMPLEMENTED. */
+static void mark_pending(int line)
+{
+    if (!test_pending)
+        printf("PENDING %s (%s:%d): not implemented yet\n", current_test, __FILE__, line);
+    test_pending = true;
+}
+
+/* True if [result] is from a built call; marks the test pending if not. */
+static bool built(RBT_RESULT result, int line)
+{
+    if (result == RBT_RESULT_NOT_IMPLEMENTED)
+    {
+        mark_pending(line);
+        return false;
+    }
+    return true;
+}
+
+#define BUILT(result) built((result), __LINE__)
+
+/* A file's bytes, read through RBTAUDIO_SOURCE. The counters are written
+ * only by a read that should never have been made, so reads on many
+ * workers at once share nothing. */
+typedef struct file_source
+{
+    unsigned char *bytes;
+    uint64_t size;
+    /* A read reaching past this offset fails: size for none. */
+    uint64_t fail_from;
+    /* Set by a test once nothing may read the source any more. */
+    bool closed;
+    int reads_after_close;
+    int reads_past_size;
+} file_source;
+
+static bool file_source_read(void *user, uint64_t offset, void *buffer, uint64_t count)
+{
+    file_source *source = (file_source *)user;
+    if (source->closed)
+    {
+        source->reads_after_close++;
+        return false;
+    }
+    if (offset > source->size || count > source->size - offset)
+    {
+        source->reads_past_size++;
+        return false;
+    }
+    if (offset + count > source->fail_from)
+        return false;
+    memcpy(buffer, source->bytes + offset, (size_t)count);
+    return true;
+}
+
+/* Reads tests/data/rbtaudio/[name] whole; false, with nothing held, if it
+ * can't. */
+static bool file_source_load(file_source *source, const char *name)
+{
+    memset(source, 0, sizeof(*source));
+    if (!data_dir)
+        return false;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", data_dir, name);
+    FILE *file = fopen(path, "rb");
+    if (!file)
+    {
+        printf("FAIL %s: can't open %s\n", current_test, path);
+        failures++;
+        return false;
+    }
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    source->bytes = (unsigned char *)malloc(size > 0 ? (size_t)size : 1);
+    bool read = source->bytes && size > 0 && fread(source->bytes, 1, (size_t)size, file) == (size_t)size;
+    fclose(file);
+    if (!read)
+    {
+        free(source->bytes);
+        source->bytes = NULL;
+        printf("FAIL %s: can't read %s\n", current_test, path);
+        failures++;
+        return false;
+    }
+    source->size = (uint64_t)size;
+    source->fail_from = source->size;
+    return true;
+}
+
+static void file_source_free(file_source *source)
+{
+    CHECK(source->reads_past_size == 0);
+    free(source->bytes);
+    source->bytes = NULL;
+}
+
+static RBTAUDIO_SOURCE source_of(file_source *source)
+{
+    RBTAUDIO_SOURCE result;
+    result.user = source;
+    result.size = source->size;
+    result.read = file_source_read;
+    return result;
+}
+
+static const RBTAUDIO_STREAM_CODEC stream_codecs[3] = {RBTAUDIO_STREAM_CODEC_FLAC, RBTAUDIO_STREAM_CODEC_VORBIS,
+                                                      RBTAUDIO_STREAM_CODEC_OPUS};
+static const char *const stream_files[3] = {"stream.flac", "stream.ogg", "stream.opus"};
+static const char *const loop_files[3] = {"stream_loop.flac", "stream_loop.ogg", "stream_loop.opus"};
+static const char *const corrupt_files[3] = {"stream_corrupt.flac", "stream_corrupt.ogg", "stream_corrupt.opus"};
+static const char *const codec_names[3] = {"FLAC", "Vorbis", "Opus"};
+
+/* The whole-file decode of [source], as the codec's decode call reads it. */
+static RBT_RESULT whole_decode(RBTAUDIO_STREAM_CODEC codec, const file_source *source, RBTAUDIO_PCM *pcm)
+{
+    switch (codec)
+    {
+    case RBTAUDIO_STREAM_CODEC_FLAC:
+        return rbtaudio_flac_decode(source->bytes, source->size, 100000000, pcm, NULL);
+    case RBTAUDIO_STREAM_CODEC_VORBIS:
+        return rbtaudio_vorbis_decode(source->bytes, source->size, 100000000, pcm, NULL);
+    default:
+        return rbtaudio_opus_decode(source->bytes, source->size, 100000000, pcm, NULL);
+    }
+}
+
+/* Each test's ring: 0.1 s, past 8 renders of 480 frames at 48 kHz (80 ms). */
+#define STREAM_RING_US 100000
+
+/* A stereo 48 kHz mixer that renders at most 480 frames, with no
+ * transition fades, so what plays is exact samples. */
+static RBTAUDIO_MIXER_DESC stream_mixer_desc(uint32_t max_streams, const RBTJOBS_SCHEDULER *scheduler,
+                                            RBTAUDIO_RESAMPLER resampler)
+{
+    RBTAUDIO_MIXER_DESC desc = valid_mixer_desc();
+    desc.max_frames = 480;
+    desc.transition_fade_us = 0;
+    desc.max_fading_voices = 0;
+    desc.resampler = resampler;
+    desc.max_streams = max_streams;
+    desc.scheduler = scheduler;
+    return desc;
+}
+
+/* A streamed mixer, or NULL with the test pending or failed. */
+static rbtaudio_mixer make_stream_mixer(const RBTAUDIO_MIXER_DESC *desc)
+{
+    rbtaudio_mixer mixer = NULL;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_mixer_create(desc, &mixer, &error);
+    if (!BUILT(result))
+        return NULL;
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_mixer_create: %s\n", current_test, error.message);
+    CHECK(result == RBT_RESULT_OK && mixer != NULL);
+    return mixer;
+}
+
+static RBTAUDIO_SOUND_DESC stream_sound_desc(RBTAUDIO_STREAM_CODEC codec, file_source *source, uint32_t ring_us,
+                                            RBTAUDIO_VIRTUAL_BEHAVIOR behavior)
+{
+    RBTAUDIO_SOUND_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+    desc.virtual_behavior = behavior;
+    desc.stream_codec = codec;
+    desc.stream_source = source_of(source);
+    desc.stream_ring_us = ring_us;
+    return desc;
+}
+
+/* A streamed sound, or 0 with the test pending or failed. */
+static RBTAUDIO_SOUND make_streamed(rbtaudio_mixer mixer, RBTAUDIO_STREAM_CODEC codec, file_source *source, uint32_t ring_us,
+                                   RBTAUDIO_VIRTUAL_BEHAVIOR behavior)
+{
+    RBTAUDIO_SOUND_DESC desc = stream_sound_desc(codec, source, ring_us, behavior);
+    RBTAUDIO_SOUND sound = 0;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_sound_create(mixer, &desc, &sound, &error);
+    if (!BUILT(result))
+        return 0;
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_sound_create (%s): %s\n", current_test, codec_names[codec - 1], error.message);
+    CHECK(result == RBT_RESULT_OK && sound != 0);
+    return sound;
+}
+
+/* A play desc for these tests: [direction] NULL for none. */
+static RBTAUDIO_VOICE play_streamed(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound, float gain, float rate, uint8_t priority,
+                                   bool loop, const RBTAUDIO_DIRECTION *direction)
+{
+    RBTAUDIO_PLAY_DESC desc = play_desc(gain);
+    desc.rate = rate;
+    desc.priority = priority;
+    desc.loop = loop;
+    desc.direction = direction;
+    RBTAUDIO_VOICE voice = 0;
+    CHECK(rbtaudio_play(mixer, sound, &desc, &voice) == RBT_RESULT_OK);
+    return voice;
+}
+
+/* An update that must succeed; false with the test pending. */
+static bool update_ok(rbtaudio_mixer mixer)
+{
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_mixer_update(mixer, &error);
+    if (!BUILT(result))
+        return false;
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_mixer_update: %s\n", current_test, error.message);
+    CHECK(result == RBT_RESULT_OK);
+    return result == RBT_RESULT_OK;
+}
+
+/* Interleaved stereo output of a second mixer, to compare with out[]. */
+static float reference_out[2 * 2048];
+
+static void render_into(rbtaudio_mixer mixer, float *buffer, uint32_t frames)
+{
+    for (uint32_t i = 0; i < 2 * frames; i++)
+        buffer[i] = 99.0f;
+    rbtaudio_mixer_render(mixer, buffer, frames, NULL);
+}
+
+static const RBTAUDIO_DIRECTION hard_left = {-1.5707963267948966, 0.0};
+static const RBTAUDIO_DIRECTION hard_right = {1.5707963267948966, 0.0};
+
+/* A reference pool's scheduler: [threads] threads beside the waiting
+ * thread, so [threads] + 1 workers. */
+static rbtjobs_pool make_pool(uint32_t threads, RBTJOBS_SCHEDULER *scheduler)
+{
+    RBTJOBS_POOL_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_JOBS_POOL_DESC;
+    desc.thread_count = threads;
+    desc.max_tasks = 4;
+    desc.debug_name = "rbtaudio_tests";
+    rbtjobs_pool pool = NULL;
+    CHECK(rbtjobs_pool_create(&desc, &pool, NULL) == RBT_RESULT_OK);
+    memset(scheduler, 0, sizeof(*scheduler));
+    scheduler->base.type = RBT_STRUCT_TYPE_JOBS_SCHEDULER;
+    if (pool)
+        CHECK(rbtjobs_pool_get_scheduler(pool, scheduler) == RBT_RESULT_OK);
+    return pool;
+}
+
+/* The largest difference in a looped Opus voice's first frames (card A34). */
+static float opus_tail_worst = 0.0f;
+/* Measured 2026-10-31: 0.0042 for a loop's first frames; after a return
+ * mid-file 0.042-0.050 in the first 10 ms, under 0.003 by 90-100 ms. A
+ * voice one frame out of place stays about 0.02 out (a 440 Hz tone at 0.4
+ * moves that much a frame), so the last 10 ms tell the two apart. */
+#define OPUS_SEEK_TOLERANCE 0.1f
+#define OPUS_SEEK_SETTLED 0.005f
+
+/* One file played streamed and from its whole-file decode, on two mixers
+ * rendering alike: bit for bit the same, render after render, with an
+ * update between (the draft's "The same samples" and "At once"). True if it
+ * ran to its end (not pending). */
+static bool same_samples(const char *name, int codec_index, bool loop, float rate, uint32_t render_frames,
+                         const RBTJOBS_SCHEDULER *scheduler)
+{
+    RBTAUDIO_STREAM_CODEC codec = stream_codecs[codec_index];
+    file_source source;
+    if (!file_source_load(&source, name))
+        return false;
+    RBTAUDIO_PCM pcm;
+    CHECK(whole_decode(codec, &source, &pcm) == RBT_RESULT_OK);
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(2, scheduler, RBTAUDIO_RESAMPLER_SINC);
+    rbtaudio_mixer streamed = make_stream_mixer(&desc);
+    RBTAUDIO_MIXER_DESC reference_desc = stream_mixer_desc(0, NULL, RBTAUDIO_RESAMPLER_SINC);
+    rbtaudio_mixer reference = make_mixer(&reference_desc);
+    RBTAUDIO_SOUND sound = streamed ? make_streamed(streamed, codec, &source, STREAM_RING_US, RBTAUDIO_VIRTUAL_CONTINUE) : 0;
+    bool ran = false;
+    if (sound && reference && pcm.samples)
+    {
+        RBTAUDIO_SOUND whole = make_sound(reference, pcm.samples, pcm.frame_count, pcm.channel_count, pcm.sample_rate,
+                                         RBTAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        play_streamed(streamed, sound, 1.0f, rate, 128, loop, NULL);
+        play_streamed(reference, whole, 1.0f, rate, 128, loop, NULL);
+        /* Past the end (and round a loop), at most 2.5 s of output. */
+        double seconds = (double)pcm.frame_count / pcm.sample_rate / rate * (loop ? 1.6 : 1.0) + 0.05;
+        uint64_t total = (uint64_t)((seconds < 2.5 ? seconds : 2.5) * 48000.0);
+        uint64_t frame = 0;
+        bool same = true;
+        while (frame < total && same)
+        {
+            render_into(streamed, out, render_frames);
+            render_into(reference, reference_out, render_frames);
+            if (frame == 0)
+            {
+                /* At once: the prefetch is playing in the very first render. */
+                bool heard = false;
+                for (uint32_t i = 0; i < 2 * render_frames; i++)
+                    heard = heard || out[i] != 0.0f;
+                CHECK(heard);
+            }
+            /* A looped Opus voice's first frames read the file's last ones,
+             * found at create by a seek: within A34's tolerance (card A34,
+             * DECISIONS.md), and bit for bit from frame 64 on. */
+            uint32_t from = 0;
+            if (frame == 0 && loop && codec == RBTAUDIO_STREAM_CODEC_OPUS)
+            {
+                from = 2 * 64;
+                for (uint32_t i = 0; i < from; i++)
+                {
+                    float difference = fabsf(out[i] - reference_out[i]);
+                    opus_tail_worst = difference > opus_tail_worst ? difference : opus_tail_worst;
+                }
+            }
+            if (memcmp(out + from, reference_out + from, (2 * render_frames - from) * sizeof(float)) != 0)
+            {
+                uint32_t at = from;
+                while (at < 2 * render_frames && memcmp(&out[at], &reference_out[at], sizeof(float)) == 0)
+                    at++;
+                printf("FAIL %s: %s, loop %d, rate %g, renders of %u, %s scheduler: frame %llu is %.9g, not %.9g\n",
+                       current_test, name, (int)loop, (double)rate, render_frames,
+                       scheduler ? (scheduler->worker_count == 1 ? "a 1-worker" : "a 4-worker") : "no",
+                       (unsigned long long)(frame + at / 2), (double)out[at], (double)reference_out[at]);
+                failures++;
+                same = false;
+            }
+            frame += render_frames;
+            if (!update_ok(streamed))
+                break;
+            CHECK(rbtaudio_mixer_update(reference, NULL) == RBT_RESULT_OK);
+            rbtaudio_mixer_collect(streamed);
+        }
+        ran = !test_pending;
+        CHECK(rbtaudio_sound_get_underrun_frames(streamed, sound) == 0);
+    }
+    rbtaudio_mixer_destroy(streamed);
+    rbtaudio_mixer_destroy(reference);
+    rbtaudio_pcm_free(&pcm);
+    file_source_free(&source);
+    return ran;
+}
+
+/* The draft's "The same samples": each file, streamed and whole, at 64-
+ * and 480-frame renders, looped and not, at rates 1, 0.5 and 2, with no
+ * scheduler; and on Rabbittus Jobs' pool at 1 and 4 workers. Linear interpolation
+ * reads one frame ahead and windowed sinc up to 64 either side (this mixer
+ * resamples with sinc), so the joins from prefetch to ring, and each ring's
+ * wrap, are read across. */
+static void test_stream_same_samples(void)
+{
+    current_test = "stream_same_samples";
+    test_pending = false;
+    static const float rates[3] = {1.0f, 0.5f, 2.0f};
+    static const uint32_t sizes[2] = {64, 480};
+    for (int file = 0; file < 2; file++)
+        for (int c = 0; c < 3; c++)
+            for (int loop = 0; loop < 2; loop++)
+                for (int r = 0; r < 3; r++)
+                    for (int s = 0; s < 2; s++)
+                    {
+                        const char *name = file ? loop_files[c] : stream_files[c];
+                        if (!same_samples(name, c, loop != 0, rates[r], sizes[s], NULL))
+                            return;
+                    }
+    RBTJOBS_SCHEDULER one, four;
+    rbtjobs_pool pool_one = make_pool(0, &one);
+    rbtjobs_pool pool_four = make_pool(3, &four);
+    for (int file = 0; file < 2 && pool_one && pool_four; file++)
+        for (int c = 0; c < 3; c++)
+        {
+            const char *name = file ? loop_files[c] : stream_files[c];
+            if (!same_samples(name, c, true, 2.0f, 64, &one) || !same_samples(name, c, true, 2.0f, 64, &four) ||
+                !same_samples(name, c, false, 0.5f, 480, &one) || !same_samples(name, c, false, 0.5f, 480, &four))
+                break;
+        }
+    rbtjobs_pool_destroy(pool_one);
+    rbtjobs_pool_destroy(pool_four);
+    printf("     stream_same_samples: a looped Opus voice's first frames, at most %.9g from the whole file's "
+           "(card A34)\n",
+           (double)opus_tail_worst);
+    CHECK(opus_tail_worst <= OPUS_SEEK_TOLERANCE);
+}
+
+/* Renders with no update between, past the ring: silence, the sound's count
+ * exactly the frames short, another sound's untouched, and the voice back in
+ * time after the next update. A mono FLAC loop hard left, beside an Ogg
+ * Vorbis one hard right whose ring (1 s) outlasts the stretch. */
+static void test_stream_underrun(void)
+{
+    current_test = "stream_underrun";
+    test_pending = false;
+    file_source a_source, b_source;
+    if (!file_source_load(&a_source, "stream_loop.flac") || !file_source_load(&b_source, "stream_loop.ogg"))
+        return;
+    RBTAUDIO_PCM pcm;
+    CHECK(whole_decode(RBTAUDIO_STREAM_CODEC_FLAC, &a_source, &pcm) == RBT_RESULT_OK);
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(2, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer mixer = make_stream_mixer(&desc);
+    RBTAUDIO_MIXER_DESC reference_desc = stream_mixer_desc(0, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer reference = make_mixer(&reference_desc);
+    RBTAUDIO_SOUND a = mixer ? make_streamed(mixer, RBTAUDIO_STREAM_CODEC_FLAC, &a_source, STREAM_RING_US,
+                                            RBTAUDIO_VIRTUAL_CONTINUE)
+                            : 0;
+    RBTAUDIO_SOUND b = a ? make_streamed(mixer, RBTAUDIO_STREAM_CODEC_VORBIS, &b_source, 1000000, RBTAUDIO_VIRTUAL_CONTINUE)
+                        : 0;
+    if (a && b && reference && pcm.samples)
+    {
+        RBTAUDIO_SOUND whole = make_sound(reference, pcm.samples, pcm.frame_count, 1, pcm.sample_rate,
+                                         RBTAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        play_streamed(mixer, a, 1.0f, 1.0f, 128, true, &hard_left);
+        play_streamed(mixer, b, 1.0f, 1.0f, 128, true, &hard_right);
+        play_streamed(reference, whole, 1.0f, 1.0f, 128, true, &hard_left);
+        render_into(mixer, out, 480);
+        render_into(reference, reference_out, 480);
+        if (update_ok(mixer))
+        {
+            /* 0.4 s without an update: the 0.1 s prefetch and the 0.1 s
+             * ring run out, B's 1 s don't. */
+            uint64_t silent = 0, frame = 0;
+            int64_t first_silent = -1;
+            bool left_same_until_silent = true, silent_after = true;
+            for (int r = 0; r < 40; r++)
+            {
+                render_into(mixer, out, 480);
+                render_into(reference, reference_out, 480);
+                for (uint32_t i = 0; i < 480; i++, frame++)
+                {
+                    float left = out[2 * i], expected = reference_out[2 * i];
+                    if (first_silent < 0 && left == 0.0f && expected != 0.0f)
+                        first_silent = (int64_t)frame;
+                    if (first_silent < 0)
+                        left_same_until_silent = left_same_until_silent && left == expected;
+                    else
+                    {
+                        silent_after = silent_after && left == 0.0f;
+                        silent++;
+                    }
+                }
+            }
+            CHECK(first_silent > 0);
+            CHECK(left_same_until_silent);
+            CHECK(silent_after);
+            CHECK(rbtaudio_sound_get_underrun_frames(mixer, a) == silent);
+            CHECK(rbtaudio_sound_get_underrun_frames(mixer, b) == 0);
+            /* B played on through it all, from its own ring. */
+            bool b_heard = false;
+            for (uint32_t i = 0; i < 480; i++)
+                b_heard = b_heard || out[2 * i + 1] != 0.0f;
+            CHECK(b_heard);
+            /* An update, and the voice is where the clock says. */
+            CHECK(update_ok(mixer));
+            for (int r = 0; r < 20; r++)
+            {
+                render_into(mixer, out, 480);
+                render_into(reference, reference_out, 480);
+                bool same = true;
+                for (uint32_t i = 0; i < 480; i++)
+                    same = same && out[2 * i] == reference_out[2 * i];
+                CHECK(same);
+                if (!update_ok(mixer))
+                    break;
+                rbtaudio_mixer_collect(mixer);
+            }
+            CHECK(rbtaudio_sound_get_underrun_frames(mixer, a) == silent);
+        }
+    }
+    CHECK(rbtaudio_sound_get_underrun_frames(NULL, a) == 0);
+    CHECK(rbtaudio_sound_get_underrun_frames(mixer, 0) == 0);
+    rbtaudio_mixer_destroy(mixer);
+    rbtaudio_mixer_destroy(reference);
+    rbtaudio_pcm_free(&pcm);
+    file_source_free(&a_source);
+    file_source_free(&b_source);
+}
+
+/* Virtual and back, on a mixer of one real voice: a streamed voice playing
+ * past its prefetch is pushed out by a higher-priority one, which is then
+ * stopped. CONTINUE comes back where the clock says, RESTART from 0 in the
+ * first render after the update that ranks it real, PAUSE from where it
+ * stopped (both of those after the update that opens its stream); KILL
+ * ends. Opus after a seek is compared within [tolerance] (DECISIONS.md, card
+ * A34: its decoder's state after a seek's pre-roll isn't the continuous
+ * decode's bits); the rest bit for bit. */
+static void virtual_and_back(int codec_index, RBTAUDIO_VIRTUAL_BEHAVIOR behavior, float tolerance)
+{
+    RBTAUDIO_STREAM_CODEC codec = stream_codecs[codec_index];
+    file_source source;
+    if (!file_source_load(&source, stream_files[codec_index]))
+        return;
+    RBTAUDIO_PCM pcm;
+    CHECK(whole_decode(codec, &source, &pcm) == RBT_RESULT_OK);
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(1, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    desc.max_real_voices = 1;
+    rbtaudio_mixer mixer = make_stream_mixer(&desc);
+    RBTAUDIO_SOUND sound = mixer ? make_streamed(mixer, codec, &source, STREAM_RING_US, behavior) : 0;
+    static float zeros[480];
+    if (sound && pcm.samples)
+    {
+        RBTAUDIO_SOUND quiet = make_sound(mixer, zeros, 480, 1, 48000, RBTAUDIO_VIRTUAL_KILL, 0, 0);
+        RBTAUDIO_VOICE voice = play_streamed(mixer, sound, 1.0f, 1.0f, 10, false, NULL);
+        /* 20 renders: 9,600 frames, past the 4,800 of the prefetch. */
+        uint64_t clock = 0;
+        bool ok = true;
+        for (int r = 0; r < 20 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            clock += 480;
+            ok = update_ok(mixer);
+        }
+        uint64_t played = clock;
+        RBTAUDIO_VOICE pusher = play_streamed(mixer, quiet, 1.0f, 1.0f, 200, true, NULL);
+        for (int r = 0; r < 6 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            clock += 480;
+            for (uint32_t i = 0; i < 960; i++)
+                CHECK(out[i] == 0.0f);
+            ok = update_ok(mixer);
+            rbtaudio_mixer_collect(mixer);
+        }
+        if (behavior == RBTAUDIO_VIRTUAL_KILL)
+        {
+            CHECK(!rbtaudio_voice_is_live(mixer, voice));
+        }
+        else if (ok)
+        {
+            rbtaudio_voice_stop(mixer, pusher, 0);
+            render_into(mixer, out, 480);
+            clock += 480;
+            /* Back within a few updates; then every frame is the whole
+             * file's, from where the behavior says. */
+            int back = -1;
+            uint64_t start = 0;
+            for (int r = 0; r < 6 && back < 0 && ok; r++)
+            {
+                ok = update_ok(mixer);
+                rbtaudio_mixer_collect(mixer);
+                render_into(mixer, out, 480);
+                bool heard = false;
+                for (uint32_t i = 0; i < 960; i++)
+                    heard = heard || out[i] != 0.0f;
+                if (heard)
+                {
+                    back = r;
+                    start = behavior == RBTAUDIO_VIRTUAL_CONTINUE ? clock
+                            : behavior == RBTAUDIO_VIRTUAL_PAUSE  ? played
+                                                                 : 0;
+                }
+                clock += 480;
+            }
+            CHECK(back >= 0);
+            /* RESTART plays its prefetch at once; the others wait for the
+             * update after the one that ranks them real. */
+            if (behavior == RBTAUDIO_VIRTUAL_RESTART)
+                CHECK(back == 0);
+            /* The worst over 100 ms, and over its last 10 ms: a decoder
+             * converging after a seek gets close, one in the wrong place
+             * never does. */
+            float worst = 0.0f, last = 0.0f;
+            for (int r = 0; r < 10 && back >= 0 && ok; r++)
+            {
+                for (uint32_t i = 0; i < 960; i++)
+                {
+                    uint64_t at = 2 * start + i;
+                    float expected = at < 2 * pcm.frame_count ? pcm.samples[at] : 0.0f;
+                    float difference = fabsf(out[i] - expected);
+                    worst = difference > worst ? difference : worst;
+                    if (r == 9)
+                        last = difference > last ? difference : last;
+                }
+                start += 480;
+                ok = update_ok(mixer);
+                render_into(mixer, out, 480);
+            }
+            bool exact = behavior == RBTAUDIO_VIRTUAL_RESTART || tolerance == 0.0f;
+            if (worst > (exact ? 0.0f : tolerance) || last > (exact ? 0.0f : OPUS_SEEK_SETTLED))
+            {
+                printf("FAIL %s: %s, behavior %u: a frame %.9g from the whole file's, %.9g in its last 10 ms\n",
+                       current_test, codec_names[codec_index], behavior, (double)worst, (double)last);
+                failures++;
+            }
+            CHECK(rbtaudio_voice_is_live(mixer, voice));
+        }
+    }
+    rbtaudio_mixer_destroy(mixer);
+    rbtaudio_pcm_free(&pcm);
+    file_source_free(&source);
+}
+
+static void test_stream_virtual(void)
+{
+    current_test = "stream_virtual";
+    test_pending = false;
+    static const RBTAUDIO_VIRTUAL_BEHAVIOR behaviors[4] = {RBTAUDIO_VIRTUAL_CONTINUE, RBTAUDIO_VIRTUAL_RESTART,
+                                                          RBTAUDIO_VIRTUAL_PAUSE, RBTAUDIO_VIRTUAL_KILL};
+    for (int c = 0; c < 3 && !test_pending; c++)
+        for (int b = 0; b < 4 && !test_pending; b++)
+            virtual_and_back(c, behaviors[b], c == 2 ? OPUS_SEEK_TOLERANCE : 0.0f);
+}
+
+/* max_streams: three voices of one sound on a mixer of two streams. The
+ * two that rank highest each get a stream of their own and play exactly
+ * what one in-memory voice each would; the third is virtual; when the
+ * first ends, the third takes its stream and comes back where the clock
+ * says, exactly what an in-memory voice of it would play. */
+static void test_stream_max_streams(void)
+{
+    current_test = "stream_max_streams";
+    test_pending = false;
+    file_source source;
+    if (!file_source_load(&source, "stream_loop.flac"))
+        return;
+    RBTAUDIO_PCM pcm;
+    CHECK(whole_decode(RBTAUDIO_STREAM_CODEC_FLAC, &source, &pcm) == RBT_RESULT_OK);
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(2, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer mixer = make_stream_mixer(&desc);
+    RBTAUDIO_MIXER_DESC reference_desc = stream_mixer_desc(0, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer pair = make_mixer(&reference_desc);
+    rbtaudio_mixer third = make_mixer(&reference_desc);
+    RBTAUDIO_SOUND sound = mixer ? make_streamed(mixer, RBTAUDIO_STREAM_CODEC_FLAC, &source, STREAM_RING_US,
+                                                RBTAUDIO_VIRTUAL_CONTINUE)
+                                : 0;
+    static float third_out[2 * 480];
+    if (sound && pair && third && pcm.samples)
+    {
+        RBTAUDIO_SOUND pair_sound = make_sound(pair, pcm.samples, pcm.frame_count, 1, pcm.sample_rate,
+                                              RBTAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        RBTAUDIO_SOUND third_sound = make_sound(third, pcm.samples, pcm.frame_count, 1, pcm.sample_rate,
+                                               RBTAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        RBTAUDIO_VOICE first = play_streamed(mixer, sound, 1.0f, 1.0f, 30, true, &hard_left);
+        play_streamed(mixer, sound, 1.0f, 1.0f, 20, true, &hard_right);
+        play_streamed(mixer, sound, 0.5f, 1.0f, 10, true, &hard_left);
+        RBTAUDIO_VOICE pair_first = play_streamed(pair, pair_sound, 1.0f, 1.0f, 30, true, &hard_left);
+        play_streamed(pair, pair_sound, 1.0f, 1.0f, 20, true, &hard_right);
+        play_streamed(third, third_sound, 0.5f, 1.0f, 10, true, &hard_left);
+        render_into(mixer, out, 480);
+        render_into(pair, reference_out, 480);
+        render_into(third, third_out, 480);
+        bool ok = update_ok(mixer);
+        /* Two streams for one sound, the third voice virtual: 1.5 s, past
+         * two loops. */
+        for (int r = 0; r < 150 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            render_into(pair, reference_out, 480);
+            render_into(third, third_out, 480);
+            if (memcmp(out, reference_out, sizeof(float) * 960) != 0)
+            {
+                printf("FAIL %s: render %d isn't the two in-memory voices'\n", current_test, r);
+                failures++;
+                break;
+            }
+            ok = update_ok(mixer);
+            rbtaudio_mixer_collect(mixer);
+        }
+        /* The first ends; the third takes its stream. */
+        rbtaudio_voice_stop(mixer, first, 0);
+        rbtaudio_voice_stop(pair, pair_first, 0);
+        int back = -1;
+        for (int r = 0; r < 40 && ok; r++)
+        {
+            render_into(mixer, out, 480);
+            render_into(pair, reference_out, 480);
+            render_into(third, third_out, 480);
+            bool heard = false;
+            for (uint32_t i = 0; i < 480; i++)
+                heard = heard || out[2 * i] != 0.0f;
+            if (heard && back < 0)
+                back = r;
+            if (back >= 0)
+            {
+                bool same = true;
+                for (uint32_t i = 0; i < 480; i++)
+                    same = same && out[2 * i] == third_out[2 * i] && out[2 * i + 1] == reference_out[2 * i + 1];
+                CHECK(same);
+            }
+            ok = update_ok(mixer);
+            rbtaudio_mixer_collect(mixer);
+        }
+        CHECK(back >= 0 && back < 8);
+    }
+    rbtaudio_mixer_destroy(mixer);
+    rbtaudio_mixer_destroy(pair);
+    rbtaudio_mixer_destroy(third);
+    rbtaudio_pcm_free(&pcm);
+    file_source_free(&source);
+}
+
+/* A create that's refused: its code, a message, no sound. */
+static void refused(rbtaudio_mixer mixer, const RBTAUDIO_SOUND_DESC *desc, RBT_RESULT expected, const char *must_name)
+{
+    RBTAUDIO_SOUND sound = 99;
+    RBTAUDIO_ERROR error;
+    error.message[0] = '\0';
+    RBT_RESULT result = rbtaudio_sound_create(mixer, desc, &sound, &error);
+    if (!BUILT(result))
+        return;
+    if (result != expected)
+        printf("FAIL %s: rbtaudio_sound_create gave %d, not %d (%s)\n", current_test, (int)result, (int)expected,
+               error.message);
+    CHECK(result == expected);
+    CHECK(sound == 0);
+    CHECK(error.message[0] != '\0');
+    if (must_name && !strstr(error.message, must_name))
+    {
+        printf("FAIL %s: \"%s\" doesn't name %s\n", current_test, error.message, must_name);
+        failures++;
+    }
+}
+
+/* Every refusal at create, each with its code and a message naming the
+ * part; none leaves a sound or takes a slot. */
+static void test_stream_refusals(void)
+{
+    current_test = "stream_refusals";
+    test_pending = false;
+    file_source sources[3];
+    for (int c = 0; c < 3; c++)
+        if (!file_source_load(&sources[c], stream_files[c]))
+            return;
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(2, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    desc.max_sounds = 2;
+    rbtaudio_mixer mixer = make_stream_mixer(&desc);
+    RBTAUDIO_MIXER_DESC plain = stream_mixer_desc(0, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer no_streams = make_mixer(&plain);
+    if (mixer && no_streams)
+    {
+        /* A mixer made with no streams refuses every streamed sound. */
+        RBTAUDIO_SOUND_DESC d = stream_sound_desc(RBTAUDIO_STREAM_CODEC_FLAC, &sources[0], STREAM_RING_US,
+                                                 RBTAUDIO_VIRTUAL_KILL);
+        refused(no_streams, &d, RBT_RESULT_UNSUPPORTED, "max_streams");
+        /* Every argument. */
+        d.stream_codec = 4;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "stream_codec");
+        d = stream_sound_desc(RBTAUDIO_STREAM_CODEC_FLAC, &sources[0], STREAM_RING_US, RBTAUDIO_VIRTUAL_KILL);
+        d.samples = ones;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "samples");
+        d.samples = NULL;
+        d.frame_count = 10;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "frame_count");
+        d.frame_count = 0;
+        d.channel_count = 2;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "channel_count");
+        d.channel_count = 0;
+        d.sample_rate = 48000;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "sample_rate");
+        d.sample_rate = 0;
+        d.virtual_behavior = 0;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "virtual_behavior");
+        d.virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+        d.stream_source.read = NULL;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "read");
+        d.stream_source.read = file_source_read;
+        d.stream_ring_us = 0;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "stream_ring_us");
+        /* At least one render's take at the fastest rate: 8 x 480 frames at
+         * 48 kHz is 80 ms. */
+        d.stream_ring_us = 79999;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "stream_ring_us");
+        d.stream_ring_us = 10000001;
+        refused(mixer, &d, RBT_RESULT_INVALID_ARGUMENT, "stream_ring_us");
+        d.stream_ring_us = 80000;
+        RBTAUDIO_SOUND fits = 0;
+        RBT_RESULT result = rbtaudio_sound_create(mixer, &d, &fits, NULL);
+        if (BUILT(result))
+        {
+            CHECK(result == RBT_RESULT_OK);
+            rbtaudio_sound_destroy(mixer, fits);
+            /* Its slot is free once a render has let go of it. */
+            render_into(mixer, out, 480);
+            rbtaudio_mixer_collect(mixer);
+        }
+
+        for (int c = 0; c < 3 && !test_pending; c++)
+        {
+            file_source *source = &sources[c];
+            d = stream_sound_desc(stream_codecs[c], source, STREAM_RING_US, RBTAUDIO_VIRTUAL_KILL);
+            /* Empty. */
+            d.stream_source.size = 0;
+            refused(mixer, &d, RBT_RESULT_CORRUPT_DATA, codec_names[c]);
+            /* Truncated headers: its first 16 bytes. */
+            d.stream_source.size = 16;
+            refused(mixer, &d, RBT_RESULT_CORRUPT_DATA, codec_names[c]);
+            /* Another codec's file, and garbage. */
+            d = stream_sound_desc(stream_codecs[c], &sources[(c + 1) % 3], STREAM_RING_US, RBTAUDIO_VIRTUAL_KILL);
+            refused(mixer, &d, RBT_RESULT_CORRUPT_DATA, codec_names[c]);
+            file_source garbage = *source;
+            unsigned char noise[4096];
+            for (int i = 0; i < 4096; i++)
+                noise[i] = (unsigned char)(i * 131 + 7);
+            garbage.bytes = noise;
+            garbage.size = sizeof(noise);
+            garbage.fail_from = garbage.size;
+            d = stream_sound_desc(stream_codecs[c], &garbage, STREAM_RING_US, RBTAUDIO_VIRTUAL_KILL);
+            refused(mixer, &d, RBT_RESULT_CORRUPT_DATA, codec_names[c]);
+            /* A read failing: in the header, and in the prefetch. */
+            source->fail_from = 8;
+            d = stream_sound_desc(stream_codecs[c], source, STREAM_RING_US, RBTAUDIO_VIRTUAL_KILL);
+            refused(mixer, &d, RBT_RESULT_IO, "read");
+            source->fail_from = source->size / 40;
+            refused(mixer, &d, RBT_RESULT_IO, "read");
+            source->fail_from = source->size;
+        }
+        /* Nothing refused took a slot: both are still free. */
+        if (!test_pending)
+        {
+            d = stream_sound_desc(RBTAUDIO_STREAM_CODEC_OPUS, &sources[2], STREAM_RING_US, RBTAUDIO_VIRTUAL_KILL);
+            RBTAUDIO_SOUND first = 0, second = 0;
+            CHECK(rbtaudio_sound_create(mixer, &d, &first, NULL) == RBT_RESULT_OK);
+            CHECK(rbtaudio_sound_create(mixer, &d, &second, NULL) == RBT_RESULT_OK);
+            CHECK(first != 0 && second != 0);
+            CHECK(rbtaudio_sound_get_underrun_frames(mixer, first) == 0);
+        }
+        /* An in-memory sound's count is 0. */
+        float samples[64] = {0};
+        RBTAUDIO_SOUND memory = 0;
+        RBTAUDIO_SOUND_DESC m;
+        memset(&m, 0, sizeof(m));
+        m.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+        m.samples = samples;
+        m.frame_count = 64;
+        m.channel_count = 1;
+        m.sample_rate = 48000;
+        m.virtual_behavior = RBTAUDIO_VIRTUAL_KILL;
+        CHECK(rbtaudio_sound_create(no_streams, &m, &memory, NULL) == RBT_RESULT_OK);
+        CHECK(rbtaudio_sound_get_underrun_frames(no_streams, memory) == 0);
+    }
+    /* A mixer's streams: at most max_real_voices, and a scheduler checked. */
+    RBTAUDIO_MIXER_DESC bad = stream_mixer_desc(17, NULL, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer refused_mixer = (rbtaudio_mixer)(uintptr_t)1;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_mixer_create(&bad, &refused_mixer, &error);
+    if (BUILT(result))
+    {
+        CHECK(result == RBT_RESULT_INVALID_ARGUMENT && refused_mixer == NULL && strstr(error.message, "max_streams"));
+        RBTJOBS_SCHEDULER broken;
+        memset(&broken, 0, sizeof(broken));
+        broken.base.type = RBT_STRUCT_TYPE_JOBS_SCHEDULER;
+        bad = stream_mixer_desc(2, &broken, RBTAUDIO_RESAMPLER_LINEAR);
+        CHECK(rbtaudio_mixer_create(&bad, &refused_mixer, &error) == RBT_RESULT_INVALID_ARGUMENT);
+        CHECK(refused_mixer == NULL && strstr(error.message, "scheduler"));
+    }
+    rbtaudio_mixer_destroy(mixer);
+    rbtaudio_mixer_destroy(no_streams);
+    for (int c = 0; c < 3; c++)
+        file_source_free(&sources[c]);
+}
+
+/* Updates and renders until the update reports a failure or [limit] renders
+ * pass. Its result, with [error] its message. */
+static RBT_RESULT play_until_failure(rbtaudio_mixer mixer, int limit, RBTAUDIO_ERROR *error)
+{
+    for (int r = 0; r < limit; r++)
+    {
+        render_into(mixer, out, 480);
+        RBT_RESULT result = rbtaudio_mixer_update(mixer, error);
+        if (!BUILT(result))
+            return result;
+        if (result != RBT_RESULT_OK)
+            return result;
+        rbtaudio_mixer_collect(mixer);
+    }
+    return RBT_RESULT_OK;
+}
+
+/* A voice's ID in decimal, as the update's message names it. */
+static bool names_voice(const RBTAUDIO_ERROR *error, RBTAUDIO_VOICE voice)
+{
+    char id[32];
+    snprintf(id, sizeof(id), "%llu", (unsigned long long)voice);
+    return strstr(error->message, id) != NULL;
+}
+
+/* Mid-stream failures: a file corrupted past its prefetch, and a read that
+ * fails half way. The update after the decoding that met it reports it, the
+ * first as its result, naming the voice, the codec and the part, and how
+ * many more failed; the voice ends; another voice plays on. */
+static void stream_failures(const RBTJOBS_SCHEDULER *scheduler)
+{
+    file_source good, corrupt[3], failing;
+    if (!file_source_load(&good, "stream_loop.flac"))
+        return;
+    for (int c = 0; c < 3; c++)
+        if (!file_source_load(&corrupt[c], corrupt_files[c]))
+            return;
+    /* FLAC: its header states its length, where stb_vorbis and opusfile read
+     * the file's end to find it, so only FLAC's read can fail past its
+     * create. */
+    if (!file_source_load(&failing, "stream.flac"))
+        return;
+    failing.fail_from = failing.size / 2;
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(4, scheduler, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer mixer = make_stream_mixer(&desc);
+    RBTAUDIO_SOUND keeps = mixer ? make_streamed(mixer, RBTAUDIO_STREAM_CODEC_FLAC, &good, STREAM_RING_US,
+                                                RBTAUDIO_VIRTUAL_CONTINUE)
+                                : 0;
+    for (int c = 0; c < 3 && keeps && !test_pending; c++)
+    {
+        RBTAUDIO_SOUND broken = make_streamed(mixer, stream_codecs[c], &corrupt[c], STREAM_RING_US,
+                                             RBTAUDIO_VIRTUAL_CONTINUE);
+        RBTAUDIO_VOICE survivor = play_streamed(mixer, keeps, 1.0f, 1.0f, 128, true, &hard_right);
+        RBTAUDIO_VOICE victim = play_streamed(mixer, broken, 1.0f, 1.0f, 128, false, &hard_left);
+        RBTAUDIO_ERROR error;
+        RBT_RESULT result = play_until_failure(mixer, 250, &error);
+        if (test_pending)
+            break;
+        if (result != RBT_RESULT_CORRUPT_DATA)
+            printf("FAIL %s: %s: the corrupted stream's update gave %d (%s)\n", current_test, codec_names[c],
+                   (int)result, error.message);
+        CHECK(result == RBT_RESULT_CORRUPT_DATA);
+        CHECK(names_voice(&error, victim));
+        CHECK(strstr(error.message, codec_names[c]) != NULL);
+        render_into(mixer, out, 480);
+        render_into(mixer, out, 480);
+        CHECK(!rbtaudio_voice_is_live(mixer, victim));
+        CHECK(rbtaudio_voice_is_live(mixer, survivor));
+        bool heard = false;
+        for (uint32_t i = 0; i < 480; i++)
+            heard = heard || out[2 * i + 1] != 0.0f;
+        CHECK(heard);
+        rbtaudio_voice_stop(mixer, survivor, 0);
+        render_into(mixer, out, 480);
+        CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+        rbtaudio_mixer_collect(mixer);
+        rbtaudio_sound_destroy(mixer, broken);
+    }
+    /* Two voices of a source whose read fails half way: one result, naming
+     * the first, and one more. */
+    RBTAUDIO_SOUND unreadable = keeps && !test_pending
+                                   ? make_streamed(mixer, RBTAUDIO_STREAM_CODEC_FLAC, &failing, STREAM_RING_US,
+                                                   RBTAUDIO_VIRTUAL_CONTINUE)
+                                   : 0;
+    if (unreadable)
+    {
+        RBTAUDIO_VOICE one = play_streamed(mixer, unreadable, 1.0f, 1.0f, 128, false, NULL);
+        RBTAUDIO_VOICE two = play_streamed(mixer, unreadable, 1.0f, 1.0f, 128, false, NULL);
+        RBTAUDIO_ERROR error;
+        RBT_RESULT result = play_until_failure(mixer, 250, &error);
+        if (!test_pending)
+        {
+            if (result != RBT_RESULT_IO)
+                printf("FAIL %s: the failing read's update gave %d (%s)\n", current_test, (int)result,
+                       error.message);
+            CHECK(result == RBT_RESULT_IO);
+            CHECK(names_voice(&error, one) || names_voice(&error, two));
+            CHECK(strstr(error.message, "FLAC") != NULL);
+            CHECK(strstr(error.message, "read") != NULL);
+            CHECK(strstr(error.message, "1 more") != NULL);
+            render_into(mixer, out, 480);
+            render_into(mixer, out, 480);
+            CHECK(!rbtaudio_voice_is_live(mixer, one));
+            CHECK(!rbtaudio_voice_is_live(mixer, two));
+        }
+    }
+    rbtaudio_mixer_destroy(mixer);
+    file_source_free(&good);
+    for (int c = 0; c < 3; c++)
+        file_source_free(&corrupt[c]);
+    file_source_free(&failing);
+}
+
+static void test_stream_failures(void)
+{
+    current_test = "stream_failures";
+    test_pending = false;
+    stream_failures(NULL);
+    if (test_pending)
+        return;
+    RBTJOBS_SCHEDULER four;
+    rbtjobs_pool pool = make_pool(3, &four);
+    if (pool)
+        stream_failures(&four);
+    rbtjobs_pool_destroy(pool);
+}
+
+/* The render loop of the two-thread test, on a pool's own thread. */
+typedef struct render_loop
+{
+    rbtaudio_mixer mixer;
+    int renders;
+    float buffer[2 * 480];
+} render_loop;
+
+static void render_loop_task(uint32_t first, uint32_t end, uint32_t worker, void *data)
+{
+    (void)first;
+    (void)end;
+    (void)worker;
+    render_loop *loop = (render_loop *)data;
+    for (int r = 0; r < loop->renders; r++)
+        rbtaudio_mixer_render(loop->mixer, loop->buffer, 480, NULL);
+}
+
+/* Two threads: one renders in a loop (a one-thread pool's worker, so this
+ * C test starts no thread of its own) while this one plays, stops and
+ * destroys streamed voices and their sounds, updates and collects, decoding
+ * on a pool of four. No read of a freed ring (ASan sees one; TSan on a
+ * platform that has it), every stopped voice gone after the next update and
+ * collect. */
+static void test_stream_threads(void)
+{
+    current_test = "stream_threads";
+    test_pending = false;
+    file_source sources[3];
+    for (int c = 0; c < 3; c++)
+        if (!file_source_load(&sources[c], loop_files[c]))
+            return;
+    RBTJOBS_SCHEDULER decoding, rendering;
+    rbtjobs_pool decode_pool = make_pool(3, &decoding);
+    rbtjobs_pool render_pool = make_pool(1, &rendering);
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(4, &decoding, RBTAUDIO_RESAMPLER_SINC);
+    desc.transition_fade_us = 5000;
+    desc.max_fading_voices = 4;
+    desc.max_real_voices = 6;
+    desc.max_sounds = 8;
+    rbtaudio_mixer mixer = decode_pool && render_pool ? make_stream_mixer(&desc) : NULL;
+    RBTAUDIO_SOUND sounds[3] = {0, 0, 0};
+    for (int c = 0; c < 3 && mixer; c++)
+        sounds[c] = make_streamed(mixer, stream_codecs[c], &sources[c], STREAM_RING_US, RBTAUDIO_VIRTUAL_CONTINUE);
+    static render_loop loop;
+    if (mixer && sounds[0] && sounds[1] && sounds[2])
+    {
+        loop.mixer = mixer;
+        loop.renders = 3000;
+        void *task = rendering.enqueue(render_loop_task, 1, 1, &loop, rendering.user);
+        RBTAUDIO_VOICE stopped[64];
+        int stopped_count = 0;
+        RBTAUDIO_VOICE playing[8] = {0};
+        int failed_updates = 0;
+        int played = 0;
+        for (int i = 0; i < 400; i++)
+        {
+            int c = i % 3;
+            /* The render thread may be done, or behind: a full queue is a
+             * play's to refuse (RBT_RESULT_LIMIT). */
+            RBTAUDIO_PLAY_DESC desc = play_desc(0.2f);
+            desc.rate = 0.75f + 0.25f * (float)(i % 4);
+            desc.priority = (uint8_t)(i % 5);
+            desc.loop = i % 2 == 0;
+            RBTAUDIO_VOICE voice = 0;
+            RBT_RESULT played_result = rbtaudio_play(mixer, sounds[c], &desc, &voice);
+            CHECK(played_result == RBT_RESULT_OK || played_result == RBT_RESULT_LIMIT || sounds[c] == 0);
+            if (played_result != RBT_RESULT_OK)
+                continue;
+            played++;
+            if (playing[i % 8] && stopped_count < 64)
+            {
+                rbtaudio_voice_stop(mixer, playing[i % 8], i % 3 == 0 ? 0 : 240);
+                stopped[stopped_count++] = playing[i % 8];
+            }
+            playing[i % 8] = voice;
+            if (rbtaudio_mixer_update(mixer, NULL) != RBT_RESULT_OK)
+                failed_updates++;
+            rbtaudio_mixer_collect(mixer);
+            if (i % 97 == 96)
+            {
+                /* A sound destroyed under its playing voices, and made again. */
+                rbtaudio_sound_destroy(mixer, sounds[c]);
+                rbtaudio_mixer_collect(mixer);
+                sounds[c] = make_streamed(mixer, stream_codecs[c], &sources[c], STREAM_RING_US,
+                                          RBTAUDIO_VIRTUAL_CONTINUE);
+            }
+        }
+        if (task)
+            rendering.wait(task, rendering.user);
+        CHECK(played > 0);
+        CHECK(failed_updates == 0);
+        CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+        rbtaudio_mixer_render(mixer, out, 480, NULL);
+        rbtaudio_mixer_render(mixer, out, 480, NULL);
+        rbtaudio_mixer_collect(mixer);
+        for (int i = 0; i < stopped_count; i++)
+            CHECK(!rbtaudio_voice_is_live(mixer, stopped[i]));
+    }
+    rbtaudio_mixer_destroy(mixer);
+    rbtjobs_pool_destroy(render_pool);
+    rbtjobs_pool_destroy(decode_pool);
+    for (int c = 0; c < 3; c++)
+        file_source_free(&sources[c]);
+}
+
+/* A source's lifetime: a sound destroyed while its voice streams, then a
+ * collect; from then on no read of its source, with decoding on a pool and
+ * with none. */
+static void stream_lifetime(const RBTJOBS_SCHEDULER *scheduler)
+{
+    file_source source;
+    if (!file_source_load(&source, "stream.flac"))
+        return;
+    RBTAUDIO_MIXER_DESC desc = stream_mixer_desc(2, scheduler, RBTAUDIO_RESAMPLER_LINEAR);
+    rbtaudio_mixer mixer = make_stream_mixer(&desc);
+    RBTAUDIO_SOUND sound = mixer ? make_streamed(mixer, RBTAUDIO_STREAM_CODEC_FLAC, &source, STREAM_RING_US,
+                                                RBTAUDIO_VIRTUAL_CONTINUE)
+                                : 0;
+    if (sound)
+    {
+        RBTAUDIO_VOICE voice = play_streamed(mixer, sound, 1.0f, 1.0f, 128, true, NULL);
+        for (int r = 0; r < 30; r++)
+        {
+            render_into(mixer, out, 480);
+            CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+        }
+        /* A decoding is in flight (with a scheduler) as the sound goes. */
+        rbtaudio_sound_destroy(mixer, sound);
+        rbtaudio_mixer_collect(mixer);
+        source.closed = true;
+        for (int r = 0; r < 10; r++)
+        {
+            CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+            render_into(mixer, out, 480);
+            rbtaudio_mixer_collect(mixer);
+        }
+        CHECK(source.reads_after_close == 0);
+        CHECK(!rbtaudio_voice_is_live(mixer, voice));
+    }
+    rbtaudio_mixer_destroy(mixer);
+    file_source_free(&source);
+}
+
+static void test_stream_lifetime(void)
+{
+    current_test = "stream_lifetime";
+    test_pending = false;
+    stream_lifetime(NULL);
+    if (test_pending)
+        return;
+    RBTJOBS_SCHEDULER four;
+    rbtjobs_pool pool = make_pool(3, &four);
+    if (pool)
+        stream_lifetime(&four);
+    rbtjobs_pool_destroy(pool);
+}
+
+/* ---- Resampling and encoding (rbtaudio_encode_draft.h) ----
+ *
+ * Written from the approved draft before the implementation, and not to be
+ * edited by it: a call that returns RBT_RESULT_NOT_IMPLEMENTED marks its test
+ * pending and ends it. The SNR floors were measured once, on Windows 11
+ * (ThinkPad P1 Gen 5, MSVC), and set a few dB under what was measured. */
+
+/* [frames] frames of a sine of [hz] at [rate], [channels] alike. */
+static float *make_sine(uint64_t frames, uint32_t channels, uint32_t rate, double hz, double amplitude)
+{
+    float *samples = (float *)malloc((size_t)(frames ? frames : 1) * channels * sizeof(float));
+    for (uint64_t i = 0; i < frames; i++)
+        for (uint32_t c = 0; c < channels; c++)
+            samples[i * channels + c] = (float)(amplitude * sin(2.0 * 3.14159265358979323846 * hz * (double)i / rate));
+    return samples;
+}
+
+/* The SNR in dB of channel [channel] of [pcm] against a sine of [hz] and
+ * [amplitude] at its rate, over its frames from [skip] to [frames - skip]. */
+static double sine_snr(const RBTAUDIO_PCM *pcm, uint32_t channel, double hz, double amplitude, uint64_t skip)
+{
+    double signal = 0.0, noise = 0.0;
+    for (uint64_t i = skip; i + skip < pcm->frame_count; i++)
+    {
+        double want = amplitude * sin(2.0 * 3.14159265358979323846 * hz * (double)i / pcm->sample_rate);
+        double got = pcm->samples[i * pcm->channel_count + channel];
+        signal += want * want;
+        noise += (got - want) * (got - want);
+    }
+    if (noise == 0.0)
+        return 1000.0;
+    return 10.0 * log10(signal / noise);
+}
+
+static RBTAUDIO_PCM pcm_of(float *samples, uint64_t frames, uint32_t channels, uint32_t rate)
+{
+    RBTAUDIO_PCM pcm;
+    memset(&pcm, 0, sizeof(pcm));
+    pcm.samples = samples;
+    pcm.frame_count = frames;
+    pcm.channel_count = channels;
+    pcm.sample_rate = rate;
+    return pcm;
+}
+
+static bool pcm_is_zero(const RBTAUDIO_PCM *pcm)
+{
+    return pcm->samples == NULL && pcm->frame_count == 0 && pcm->channel_count == 0 && pcm->sample_rate == 0;
+}
+
+static void test_resample(void)
+{
+    current_test = "resample";
+    test_pending = false;
+    RBTAUDIO_ERROR error;
+    float *sine = make_sine(22050, 1, 44100, 1000.0, 0.5);
+    RBTAUDIO_PCM in = pcm_of(sine, 22050, 1, 44100);
+    RBTAUDIO_PCM out;
+    if (!BUILT(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_LINEAR, &out, &error)))
+    {
+        free(sine);
+        return;
+    }
+    /* The length rule: 22,050 frames at 44.1 kHz are 24,000 at 48 kHz. */
+    CHECK(out.frame_count == 24000 && out.channel_count == 1 && out.sample_rate == 48000);
+    double linear = sine_snr(&out, 0, 1000.0, 0.5, 64);
+    printf("resample 44.1 -> 48 kHz, 1 kHz sine: LINEAR SNR %.1f dB\n", linear);
+    CHECK(linear > 50.0); /* 54.6 dB measured */
+    rbtaudio_pcm_free(&out);
+    CHECK(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == 24000);
+    double sinc = sine_snr(&out, 0, 1000.0, 0.5, 64);
+    printf("resample 44.1 -> 48 kHz, 1 kHz sine: SINC SNR %.1f dB\n", sinc);
+    CHECK(sinc > 90.0); /* 97.4 dB measured */
+    rbtaudio_pcm_free(&out);
+
+    /* Down: 48 kHz to 44.1 kHz, the length rule rounding to nearest. */
+    float *high = make_sine(1001, 1, 48000, 440.0, 0.5);
+    RBTAUDIO_PCM down_in = pcm_of(high, 1001, 1, 48000);
+    CHECK(rbtaudio_pcm_resample(&down_in, 44100, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == 920); /* 1001 * 44100 / 48000 = 919.67 */
+    rbtaudio_pcm_free(&out);
+    free(high);
+
+    /* Stereo, each channel its own. */
+    float *pair = (float *)malloc(4410 * 2 * sizeof(float));
+    for (int i = 0; i < 4410; i++)
+    {
+        pair[i * 2] = (float)(0.5 * sin(2.0 * 3.14159265358979323846 * 440.0 * i / 44100.0));
+        pair[i * 2 + 1] = (float)(0.25 * sin(2.0 * 3.14159265358979323846 * 660.0 * i / 44100.0));
+    }
+    RBTAUDIO_PCM stereo_in = pcm_of(pair, 4410, 2, 44100);
+    CHECK(rbtaudio_pcm_resample(&stereo_in, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == 4800 && out.channel_count == 2);
+    CHECK(sine_snr(&out, 0, 440.0, 0.5, 64) > 85.0);
+    CHECK(sine_snr(&out, 1, 660.0, 0.25, 64) > 85.0);
+    rbtaudio_pcm_free(&out);
+    free(pair);
+
+    /* The same rate in and out: the same samples, by either resampler. */
+    CHECK(rbtaudio_pcm_resample(&in, 44100, RBTAUDIO_RESAMPLER_LINEAR, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == in.frame_count && memcmp(out.samples, in.samples, 22050 * sizeof(float)) == 0);
+    rbtaudio_pcm_free(&out);
+    CHECK(rbtaudio_pcm_resample(&in, 44100, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == in.frame_count && memcmp(out.samples, in.samples, 22050 * sizeof(float)) == 0);
+    rbtaudio_pcm_free(&out);
+
+    /* One frame: still one. */
+    RBTAUDIO_PCM one = pcm_of(sine + 100, 1, 1, 44100);
+    CHECK(rbtaudio_pcm_resample(&one, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == 1);
+    rbtaudio_pcm_free(&out);
+    CHECK(rbtaudio_pcm_resample(&one, 8000, RBTAUDIO_RESAMPLER_LINEAR, &out, &error) == RBT_RESULT_OK);
+    CHECK(out.frame_count == 1);
+    rbtaudio_pcm_free(&out);
+
+    /* Refusals, each with out_pcm zeroed and nothing allocated. */
+    memset(&out, 0xAB, sizeof(out));
+    CHECK(rbtaudio_pcm_resample(NULL, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(pcm_is_zero(&out));
+    RBTAUDIO_PCM bad = in;
+    bad.channel_count = 0;
+    memset(&out, 0xAB, sizeof(out));
+    CHECK(rbtaudio_pcm_resample(&bad, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(pcm_is_zero(&out) && strstr(error.message, "channel") != NULL);
+    bad = in;
+    bad.sample_rate = 7999;
+    CHECK(rbtaudio_pcm_resample(&bad, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    bad.sample_rate = 192001;
+    CHECK(rbtaudio_pcm_resample(&bad, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.frame_count = 0;
+    CHECK(rbtaudio_pcm_resample(&bad, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.samples = NULL;
+    CHECK(rbtaudio_pcm_resample(&bad, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    float saved = sine[300];
+    sine[300] = NAN;
+    CHECK(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(pcm_is_zero(&out) && strstr(error.message, "finite") != NULL);
+    sine[300] = INFINITY;
+    CHECK(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    sine[300] = saved;
+    CHECK(rbtaudio_pcm_resample(&in, 7999, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_pcm_resample(&in, 192001, RBTAUDIO_RESAMPLER_SINC, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_UNSPECIFIED, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "resampler") != NULL);
+    CHECK(rbtaudio_pcm_resample(&in, 48000, 99, &out, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_SINC, NULL, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_pcm_resample(&in, 48000, RBTAUDIO_RESAMPLER_SINC, &out, NULL) == RBT_RESULT_OK);
+    rbtaudio_pcm_free(&out);
+    free(sine);
+}
+
+static RBTAUDIO_OPUS_ENCODE_DESC valid_opus_desc(void)
+{
+    RBTAUDIO_OPUS_ENCODE_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_OPUS_ENCODE_DESC;
+    desc.bitrate = 96000;
+    desc.complexity = 10;
+    desc.application = RBTAUDIO_OPUS_APPLICATION_AUDIO;
+    desc.original_sample_rate = 48000;
+    desc.ogg_serial = 0x4C54524E;
+    desc.vbr = true;
+    return desc;
+}
+
+static bool encoded_is_zero(const RBTAUDIO_ENCODED *encoded)
+{
+    return encoded->data == NULL && encoded->size == 0;
+}
+
+/* Encodes [frames] frames of a 440 Hz sine (and 660 Hz on a second
+ * channel) at [rate], decodes it, and checks the decoded length and, for a
+ * long enough sound, its SNR against [floor]. */
+static void encode_round_trip(uint64_t frames, uint32_t channels, uint32_t rate, double floor)
+{
+    float *samples = (float *)malloc((size_t)frames * channels * sizeof(float));
+    for (uint64_t i = 0; i < frames; i++)
+    {
+        samples[i * channels] = (float)(0.5 * sin(2.0 * 3.14159265358979323846 * 440.0 * (double)i / rate));
+        if (channels == 2)
+            samples[i * channels + 1] = (float)(0.25 * sin(2.0 * 3.14159265358979323846 * 660.0 * (double)i / rate));
+    }
+    RBTAUDIO_PCM in = pcm_of(samples, frames, channels, rate);
+    RBTAUDIO_OPUS_ENCODE_DESC desc = valid_opus_desc();
+    desc.original_sample_rate = rate;
+    RBTAUDIO_ENCODED encoded;
+    RBTAUDIO_ERROR error;
+    CHECK(rbtaudio_opus_encode(&in, &desc, &encoded, &error) == RBT_RESULT_OK);
+    CHECK(encoded.size > 47 && memcmp(encoded.data, "OggS", 4) == 0 && memcmp((char *)encoded.data + 28, "OpusHead", 8) == 0);
+    RBTAUDIO_PCM decoded;
+    CHECK(rbtaudio_opus_decode(encoded.data, encoded.size, 100000000, &decoded, &error) == RBT_RESULT_OK);
+    CHECK(decoded.frame_count == frames * (48000 / rate));
+    CHECK(decoded.channel_count == channels);
+    if (floor > 0.0 && rate == 48000)
+    {
+        double snr = sine_snr(&decoded, 0, 440.0, 0.5, 960);
+        printf("opus %u ch at %u Hz, 96 kb/s VBR: SNR %.1f dB\n", channels, rate, snr);
+        CHECK(snr > floor);
+        if (channels == 2)
+            CHECK(sine_snr(&decoded, 1, 660.0, 0.25, 960) > floor - 6.0);
+    }
+    rbtaudio_pcm_free(&decoded);
+    rbtaudio_encoded_free(&encoded);
+    free(samples);
+}
+
+static void test_opus_encode(void)
+{
+    current_test = "opus_encode";
+    test_pending = false;
+    RBTAUDIO_ERROR error;
+    float *sine = make_sine(48000, 1, 48000, 440.0, 0.5);
+    RBTAUDIO_PCM in = pcm_of(sine, 48000, 1, 48000);
+    RBTAUDIO_OPUS_ENCODE_DESC desc = valid_opus_desc();
+    RBTAUDIO_ENCODED encoded;
+    if (!BUILT(rbtaudio_opus_encode(&in, &desc, &encoded, &error)))
+    {
+        free(sine);
+        return;
+    }
+    /* The same input and desc: the same bytes. */
+    RBTAUDIO_ENCODED again;
+    CHECK(rbtaudio_opus_encode(&in, &desc, &again, &error) == RBT_RESULT_OK);
+    CHECK(again.size == encoded.size && memcmp(again.data, encoded.data, (size_t)encoded.size) == 0);
+    rbtaudio_encoded_free(&again);
+    rbtaudio_encoded_free(&encoded);
+    CHECK(encoded_is_zero(&encoded));
+    rbtaudio_encoded_free(NULL);
+
+    encode_round_trip(48000, 1, 48000, 38.0); /* 44.3 dB measured */
+    encode_round_trip(48000, 2, 48000, 35.0); /* 40.0 dB measured */
+    encode_round_trip(24000, 1, 24000, 0.0);
+    encode_round_trip(8000, 1, 8000, 0.0);
+    encode_round_trip(1, 1, 48000, 0.0);
+    encode_round_trip(959, 1, 48000, 0.0);
+    encode_round_trip(9600, 2, 48000, 0.0);
+    encode_round_trip(12345, 1, 16000, 0.0);
+    encode_round_trip(5000, 2, 12000, 0.0);
+
+    /* Silence. */
+    float *silence = (float *)calloc(4800, sizeof(float));
+    RBTAUDIO_PCM quiet = pcm_of(silence, 4800, 1, 48000);
+    CHECK(rbtaudio_opus_encode(&quiet, &desc, &encoded, &error) == RBT_RESULT_OK);
+    RBTAUDIO_PCM decoded;
+    CHECK(rbtaudio_opus_decode(encoded.data, encoded.size, 100000000, &decoded, &error) == RBT_RESULT_OK);
+    CHECK(decoded.frame_count == 4800);
+    rbtaudio_pcm_free(&decoded);
+    rbtaudio_encoded_free(&encoded);
+    free(silence);
+
+    /* Speech and low delay, and a constant bit rate. */
+    desc.application = RBTAUDIO_OPUS_APPLICATION_VOIP;
+    desc.vbr = false;
+    CHECK(rbtaudio_opus_encode(&in, &desc, &encoded, &error) == RBT_RESULT_OK);
+    rbtaudio_encoded_free(&encoded);
+    desc.application = RBTAUDIO_OPUS_APPLICATION_RESTRICTED_LOWDELAY;
+    CHECK(rbtaudio_opus_encode(&in, &desc, &encoded, &error) == RBT_RESULT_OK);
+    rbtaudio_encoded_free(&encoded);
+
+    /* Refusals, each with out_encoded zeroed. */
+    desc = valid_opus_desc();
+    memset(&encoded, 0xAB, sizeof(encoded));
+    CHECK(rbtaudio_opus_encode(NULL, &desc, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(encoded_is_zero(&encoded));
+    RBTAUDIO_PCM bad = in;
+    bad.channel_count = 0;
+    CHECK(rbtaudio_opus_encode(&bad, &desc, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.sample_rate = 44100;
+    memset(&encoded, 0xAB, sizeof(encoded));
+    CHECK(rbtaudio_opus_encode(&bad, &desc, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(encoded_is_zero(&encoded) && strstr(error.message, "rbtaudio_pcm_resample") != NULL);
+    bad = in;
+    bad.frame_count = 0;
+    CHECK(rbtaudio_opus_encode(&bad, &desc, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    bad = in;
+    bad.samples = NULL;
+    CHECK(rbtaudio_opus_encode(&bad, &desc, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    sine[10] = NAN;
+    CHECK(rbtaudio_opus_encode(&in, &desc, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "finite") != NULL);
+    sine[10] = 0.0f;
+    float three[9] = {0};
+    RBTAUDIO_PCM wide = pcm_of(three, 3, 3, 48000);
+    CHECK(rbtaudio_opus_encode(&wide, &desc, &encoded, &error) == RBT_RESULT_UNSUPPORTED);
+    CHECK(rbtaudio_opus_encode(&in, NULL, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    RBTAUDIO_OPUS_ENCODE_DESC wrong = desc;
+    wrong.base.type = RBT_STRUCT_TYPE_AUDIO_SOUND_DESC;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) != RBT_RESULT_OK);
+    CHECK(encoded_is_zero(&encoded));
+    wrong = desc;
+    wrong.bitrate = 5999;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "bitrate") != NULL);
+    wrong.bitrate = 510001;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    wrong = desc;
+    wrong.complexity = 11;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "complexity") != NULL);
+    wrong = desc;
+    wrong.application = RBTAUDIO_OPUS_APPLICATION_UNSPECIFIED;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "application") != NULL);
+    wrong.application = 4;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    wrong = desc;
+    wrong.original_sample_rate = 0;
+    CHECK(rbtaudio_opus_encode(&in, &wrong, &encoded, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(strstr(error.message, "original_sample_rate") != NULL);
+    CHECK(rbtaudio_opus_encode(&in, &desc, NULL, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    free(sine);
+}
+
+/* ---- Spatial audio (RBTAUDIO_TODO.md item 16) ----
+ *
+ * Written from rbtaudio_spatial_draft.h before the implementation, and not
+ * to be edited by it: a call that returns RBT_RESULT_NOT_IMPLEMENTED marks
+ * its test pending and ends it. Every listener here faces -Z with +Y up,
+ * so in a right-handed world +X is on its right: on stereo, a source there
+ * plays on FR alone, one straight ahead on both at 0.7071. Gains are
+ * rendered, from a sound of ones, not read back. */
+
+#define SQRT_HALF 0.70710678f
+
+static RBTAUDIO_SPATIAL_DESC spatial_desc(RBTAUDIO_HANDEDNESS handedness, uint32_t listeners)
+{
+    RBTAUDIO_SPATIAL_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_SPATIAL_DESC;
+    desc.handedness = handedness;
+    desc.max_listeners = listeners;
+    desc.max_attenuations = 4;
+    desc.speed_of_sound = 343.0f;
+    return desc;
+}
+
+/* A mixer from [desc] with [spatial] chained on, or NULL with the test
+ * pending. */
+static rbtaudio_mixer make_spatial_mixer(RBTAUDIO_MIXER_DESC *desc, RBTAUDIO_SPATIAL_DESC *spatial)
+{
+    desc->base.next = &spatial->base;
+    rbtaudio_mixer mixer = NULL;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_mixer_create(desc, &mixer, &error);
+    if (!BUILT(result))
+        return NULL;
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_mixer_create: %s\n", current_test, error.message);
+    CHECK(result == RBT_RESULT_OK && mixer != NULL);
+    return mixer;
+}
+
+static RBTAUDIO_LISTENER listener_at(double x, double y, double z)
+{
+    RBTAUDIO_LISTENER listener;
+    memset(&listener, 0, sizeof(listener));
+    listener.position.x = x;
+    listener.position.y = y;
+    listener.position.z = z;
+    listener.forward.z = -1.0f;
+    listener.up.y = 1.0f;
+    return listener;
+}
+
+static RBTAUDIO_EMITTER emitter_at(double x, double y, double z)
+{
+    RBTAUDIO_EMITTER emitter;
+    memset(&emitter, 0, sizeof(emitter));
+    emitter.position.x = x;
+    emitter.position.y = y;
+    emitter.position.z = z;
+    return emitter;
+}
+
+/* min 1, max 10, no cone, no doppler, no offset. */
+static RBTAUDIO_ATTENUATION_DESC attenuation_desc(RBTAUDIO_ROLLOFF rolloff, float factor)
+{
+    RBTAUDIO_ATTENUATION_DESC desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.base.type = RBT_STRUCT_TYPE_AUDIO_ATTENUATION_DESC;
+    desc.rolloff = rolloff;
+    desc.min_distance = 1.0f;
+    desc.max_distance = 10.0f;
+    desc.rolloff_factor = factor;
+    desc.cone_inner_angle = 6.28318531f;
+    desc.cone_outer_angle = 6.28318531f;
+    desc.cone_outer_gain = 1.0f;
+    return desc;
+}
+
+/* An attenuation, or 0 with the test pending or failed. */
+static RBTAUDIO_ATTENUATION make_attenuation(rbtaudio_mixer mixer, const RBTAUDIO_ATTENUATION_DESC *desc)
+{
+    RBTAUDIO_ATTENUATION attenuation = 0;
+    RBTAUDIO_ERROR error;
+    RBT_RESULT result = rbtaudio_attenuation_create(mixer, desc, &attenuation, &error);
+    if (!BUILT(result))
+        return 0;
+    if (result != RBT_RESULT_OK)
+        printf("FAIL %s: rbtaudio_attenuation_create: %s\n", current_test, error.message);
+    CHECK(result == RBT_RESULT_OK && attenuation != 0);
+    return attenuation;
+}
+
+static RBTAUDIO_PLAY_DESC world_play_desc(const RBTAUDIO_EMITTER *emitter, RBTAUDIO_ATTENUATION attenuation)
+{
+    RBTAUDIO_PLAY_DESC desc = play_desc(1.0f);
+    desc.placement = RBTAUDIO_PLACEMENT_WORLD;
+    desc.emitter = emitter;
+    desc.attenuation = attenuation;
+    desc.loop = true;
+    desc.virtual_behavior = RBTAUDIO_VIRTUAL_CONTINUE;
+    return desc;
+}
+
+/* A looping voice of [sound] at [emitter], or 0 with the test pending. */
+static RBTAUDIO_VOICE play_world(rbtaudio_mixer mixer, RBTAUDIO_SOUND sound, RBTAUDIO_EMITTER emitter,
+                                RBTAUDIO_ATTENUATION attenuation, uint8_t priority)
+{
+    RBTAUDIO_PLAY_DESC desc = world_play_desc(&emitter, attenuation);
+    desc.priority = priority;
+    RBTAUDIO_VOICE voice = 0;
+    RBT_RESULT result = rbtaudio_play(mixer, sound, &desc, &voice);
+    if (!BUILT(result))
+        return 0;
+    CHECK(result == RBT_RESULT_OK && voice != 0);
+    return voice;
+}
+
+static bool set_one_listener(rbtaudio_mixer mixer, RBTAUDIO_LISTENER listener)
+{
+    return BUILT(rbtaudio_mixer_set_listeners(mixer, &listener, 1, NULL));
+}
+
+/* An update, then a render of [frames]: what a world voice needs to sound. */
+static bool update_render(rbtaudio_mixer mixer, uint32_t frames)
+{
+    if (!BUILT(rbtaudio_mixer_update(mixer, NULL)))
+        return false;
+    render(mixer, frames);
+    return true;
+}
+
+/* The gain a source of ones at (x, 0, z) plays with on FR, rendered; the
+ * listener at the origin. -1 if pending. */
+static float rendered_gain(RBTAUDIO_ROLLOFF rolloff, float factor, const RBTAUDIO_ATTENUATION_POINT *points,
+                           uint32_t point_count, double x, double z)
+{
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return -1.0f;
+    float gain = -1.0f;
+    RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(rolloff, factor);
+    ad.points = points;
+    ad.point_count = point_count;
+    RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)) &&
+        play_world(mixer, sound, emitter_at(x, 0, z), attenuation, 0) && update_render(mixer, 64))
+        gain = out[2 * 63 + 1];
+    rbtaudio_mixer_destroy(mixer);
+    return gain;
+}
+
+static void test_spatial_rolloff(void)
+{
+    current_test = "spatial_rolloff";
+    test_pending = false;
+    float g = rendered_gain(RBTAUDIO_ROLLOFF_INVERSE, 1.0f, NULL, 0, 4.0, 0.0);
+    if (test_pending)
+        return;
+    CHECK(close_to(g, 0.25f));          /* 1 / (1 + 3) */
+    CHECK(close_to(out[2 * 63], 0.0f)); /* on the right: FR alone */
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_INVERSE, 1.0f, NULL, 0, 0.5, 0.0), 1.0f));  /* inside min */
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_INVERSE, 1.0f, NULL, 0, 30.0, 0.0), 0.1f)); /* held past max */
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_INVERSE, 2.0f, NULL, 0, 4.0, 0.0), 1.0f / 7.0f));
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_LINEAR, 1.0f, NULL, 0, 4.0, 0.0), 1.0f - 3.0f / 9.0f));
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_LINEAR, 2.0f, NULL, 0, 8.0, 0.0), 0.0f)); /* not below 0 */
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_EXPONENT, 2.0f, NULL, 0, 4.0, 0.0), 1.0f / 16.0f));
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_NONE, 1.0f, NULL, 0, 9.0, 0.0), 1.0f));
+    static const RBTAUDIO_ATTENUATION_POINT table[3] = {{0.0f, 1.0f}, {0.5f, 0.2f}, {1.0f, 0.1f}};
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_TABLE, 1.0f, table, 3, 5.5, 0.0), 0.2f));
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_TABLE, 1.0f, table, 3, 3.25, 0.0), 0.6f));
+    CHECK(close_to(rendered_gain(RBTAUDIO_ROLLOFF_TABLE, 1.0f, table, 3, 50.0, 0.0), 0.1f));
+    /* Straight ahead at distance 1: both front speakers. */
+    g = rendered_gain(RBTAUDIO_ROLLOFF_NONE, 1.0f, NULL, 0, 0.0, -1.0);
+    CHECK(close_to(g, SQRT_HALF) && close_to(out[2 * 63], SQRT_HALF));
+}
+
+/* A sound of ones at (x, 0, z) facing [forward], through a cone of [inner]
+ * and [outer] degrees with an outer gain of 0.2, on FR. -1 if pending. */
+static float cone_gain(double x, double z, RbtVec3 forward, float inner, float outer)
+{
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return -1.0f;
+    float gain = -1.0f;
+    RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_NONE, 1.0f);
+    ad.cone_inner_angle = inner * 3.14159265f / 180.0f;
+    ad.cone_outer_angle = outer * 3.14159265f / 180.0f;
+    ad.cone_outer_gain = 0.2f;
+    RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_EMITTER emitter = emitter_at(x, 0, z);
+    emitter.forward = forward;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)) &&
+        play_world(mixer, sound, emitter, attenuation, 0) && update_render(mixer, 64))
+        gain = out[2 * 63 + 1];
+    rbtaudio_mixer_destroy(mixer);
+    return gain;
+}
+
+static void test_spatial_cone(void)
+{
+    current_test = "spatial_cone";
+    test_pending = false;
+    /* A source on the right, 4 away, facing the listener (-X), away (+X),
+     * and across (-Z), 90 degrees off its axis. */
+    RbtVec3 toward = {-1.0f, 0.0f, 0.0f}, away = {1.0f, 0.0f, 0.0f}, across = {0.0f, 0.0f, -1.0f};
+    RbtVec3 none = {0.0f, 0.0f, 0.0f};
+    float g = cone_gain(4.0, 0.0, toward, 90.0f, 180.0f);
+    if (test_pending)
+        return;
+    CHECK(close_to(g, 1.0f));
+    CHECK(close_to(cone_gain(4.0, 0.0, away, 90.0f, 180.0f), 0.2f));
+    /* 90 degrees off: halfway between the half-angles 45 and 135. */
+    CHECK(close_to(cone_gain(4.0, 0.0, across, 90.0f, 270.0f), 0.6f));
+    CHECK(close_to(cone_gain(4.0, 0.0, across, 90.0f, 180.0f), 0.2f));
+    /* No forward: no cone. */
+    CHECK(close_to(cone_gain(4.0, 0.0, none, 90.0f, 180.0f), 1.0f));
+}
+
+static void test_spatial_listeners(void)
+{
+    current_test = "spatial_listeners";
+    test_pending = false;
+    /* Left-handed: right is up x forward, so +X is on the left. */
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_LEFT, 2);
+    rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+    RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+    RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_VOICE voice = 0;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)))
+        voice = play_world(mixer, sound, emitter_at(4, 0, 0), attenuation, 0);
+    if (voice && update_render(mixer, 64))
+        CHECK(close_to(out[2 * 63], 0.25f) && close_to(out[2 * 63 + 1], 0.0f));
+    rbtaudio_mixer_destroy(mixer);
+    if (test_pending)
+        return;
+
+    /* Two listeners, right-handed: the voice is heard from the nearest. */
+    desc = plain_mixer_desc();
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 2);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    attenuation = make_attenuation(mixer, &ad);
+    sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_LISTENER two[2] = {listener_at(0, 0, 0), listener_at(100, 0, 0)};
+    CHECK(rbtaudio_mixer_set_listeners(mixer, two, 2, NULL) == RBT_RESULT_OK);
+    voice = play_world(mixer, sound, emitter_at(98, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64));
+    /* 2 to the second listener's left: 1 / (1 + 1). */
+    CHECK(close_to(out[2 * 63], 0.5f) && close_to(out[2 * 63 + 1], 0.0f));
+    /* Moved next to the first, on its right. */
+    RBTAUDIO_EMITTER moved = emitter_at(2, 0, 0);
+    CHECK(rbtaudio_mixer_set_emitters(mixer, &voice, &moved, 1, NULL) == RBT_RESULT_OK);
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63], 0.0f) && close_to(out[2 * 63 + 1], 0.5f));
+    /* No listener: nobody hears it, and it lives on. The gain ramps to 0
+     * across the first render, as every gain change does. */
+    CHECK(rbtaudio_mixer_set_listeners(mixer, NULL, 0, NULL) == RBT_RESULT_OK);
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63 + 1], 0.0f));
+    CHECK(update_render(mixer, 64));
+    CHECK(frames_are(0, 63, 0.0f, 0.0f));
+    CHECK(rbtaudio_voice_is_live(mixer, voice));
+    /* Its attenuation destroyed: heard with none, placed all the same. */
+    CHECK(rbtaudio_mixer_set_listeners(mixer, two, 1, NULL) == RBT_RESULT_OK);
+    rbtaudio_attenuation_destroy(mixer, attenuation);
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63], 0.0f) && close_to(out[2 * 63 + 1], 1.0f));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* A ramp, so a rendered frame says where in the sound it was read: the
+ * slope between frames is the voice's rate over the ramp's length. */
+static float ramp[48000];
+
+static void test_spatial_doppler(void)
+{
+    current_test = "spatial_doppler";
+    test_pending = false;
+    for (int i = 0; i < 48000; i++)
+        ramp[i] = (float)i / 48000.0f;
+    /* A source on the right at 0.5 (inside min: gain 1), moving at a tenth
+     * of the speed of sound: toward the listener, away, and toward with a
+     * factor of 0. */
+    static const float speeds[3] = {-34.3f, 34.3f, -34.3f};
+    static const float factors[3] = {1.0f, 1.0f, 0.0f};
+    static const float rates[3] = {343.0f / (343.0f - 34.3f), 343.0f / (343.0f + 34.3f), 1.0f};
+    for (int c = 0; c < 3; c++)
+    {
+        RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+        RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+        rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+        if (!mixer)
+            return;
+        RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+        ad.doppler_factor = factors[c];
+        RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+        RBTAUDIO_SOUND sound = make_sound(mixer, ramp, 48000, 1, 48000, RBTAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        RBTAUDIO_EMITTER emitter = emitter_at(0.5, 0, 0);
+        emitter.velocity.x = speeds[c];
+        if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)) &&
+            play_world(mixer, sound, emitter, attenuation, 0) && update_render(mixer, 256))
+        {
+            float slope = (out[2 * 200 + 1] - out[2 * 100 + 1]) / 100.0f * 48000.0f;
+            if (fabsf(slope - rates[c]) > 1e-3f)
+                printf("     case %d: rate %g, not %g\n", c, slope, rates[c]);
+            CHECK(fabsf(slope - rates[c]) <= 1e-3f);
+        }
+        rbtaudio_mixer_destroy(mixer);
+        if (test_pending)
+            return;
+    }
+}
+
+static void test_spatial_moving(void)
+{
+    current_test = "spatial_moving";
+    test_pending = false;
+    /* A source of ones circling the listener at 2 (gain 0.5), a degree a
+     * render of 64 frames: no frame steps far from the one before. */
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+    RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+    RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_VOICE voice = 0;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)))
+        voice = play_world(mixer, sound, emitter_at(2, 0, 0), attenuation, 0);
+    if (!voice || !update_render(mixer, 64))
+    {
+        rbtaudio_mixer_destroy(mixer);
+        return;
+    }
+    float last[2] = {out[2 * 63], out[2 * 63 + 1]};
+    float worst = 0.0f;
+    for (int step = 1; step <= 720; step++)
+    {
+        double angle = step * 3.14159265358979323846 / 180.0;
+        RBTAUDIO_EMITTER e = emitter_at(2.0 * cos(angle), 0.0, -2.0 * sin(angle));
+        CHECK(rbtaudio_mixer_set_emitters(mixer, &voice, &e, 1, NULL) == RBT_RESULT_OK);
+        CHECK(update_render(mixer, 64));
+        for (int i = 0; i < 64; i++)
+            for (int ch = 0; ch < 2; ch++)
+            {
+                float jump = fabsf(out[2 * i + ch] - last[ch]);
+                if (jump > worst)
+                    worst = jump;
+                last[ch] = out[2 * i + ch];
+            }
+    }
+    /* A degree moves a speaker's gain by under 0.01 at 0.5, ramped across
+     * the render: a frame's step stays far below 0.001. */
+    if (worst >= 0.001f)
+        printf("     largest step %g\n", worst);
+    CHECK(worst < 0.001f);
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_spatial_ranking(void)
+{
+    current_test = "spatial_ranking";
+    test_pending = false;
+    /* A far voice goes virtual under the threshold, and comes back near. */
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    desc.virtual_threshold = 0.01f;
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+    RBTAUDIO_ATTENUATION_DESC linear = attenuation_desc(RBTAUDIO_ROLLOFF_LINEAR, 1.0f);
+    RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &linear);
+    RBTAUDIO_SOUND sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_VOICE far_voice = 0;
+    if (attenuation && set_one_listener(mixer, listener_at(0, 0, 0)))
+        far_voice = play_world(mixer, sound, emitter_at(20, 0, 0), attenuation, 0);
+    if (!far_voice || !update_render(mixer, 64))
+    {
+        rbtaudio_mixer_destroy(mixer);
+        return;
+    }
+    CHECK(update_render(mixer, 64));
+    CHECK(frames_are(0, 63, 0.0f, 0.0f));
+    CHECK(rbtaudio_voice_is_live(mixer, far_voice)); /* virtual, CONTINUE */
+    RBTAUDIO_EMITTER near_place = emitter_at(1, 0, 0);
+    CHECK(rbtaudio_mixer_set_emitters(mixer, &far_voice, &near_place, 1, NULL) == RBT_RESULT_OK);
+    CHECK(update_render(mixer, 64));
+    CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63 + 1], 1.0f));
+    rbtaudio_mixer_destroy(mixer);
+
+    /* The priority offset: one real slot; A has priority 100 but is far
+     * enough for -100, B is near with 50. B plays. */
+    desc = plain_mixer_desc();
+    desc.max_real_voices = 1;
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    RBTAUDIO_ATTENUATION_DESC offset = attenuation_desc(RBTAUDIO_ROLLOFF_NONE, 1.0f);
+    offset.priority_offset = -100;
+    attenuation = make_attenuation(mixer, &offset);
+    sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+    CHECK(set_one_listener(mixer, listener_at(0, 0, 0)));
+    RBTAUDIO_VOICE a = play_world(mixer, sound, emitter_at(-10, 0, 0), attenuation, 100);
+    RBTAUDIO_VOICE b = play_world(mixer, sound, emitter_at(1, 0, 0), attenuation, 50);
+    CHECK(a && b);
+    for (int i = 0; i < 3; i++)
+        CHECK(update_render(mixer, 64));
+    CHECK(close_to(out[2 * 63], 0.0f) && close_to(out[2 * 63 + 1], 1.0f));
+    rbtaudio_mixer_destroy(mixer);
+
+    /* STOP_FARTHEST, one at a time: a nearer play stops the farther voice;
+     * a farther one is dropped. */
+    desc = plain_mixer_desc();
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    RBTAUDIO_CONCURRENCY_DESC gd;
+    memset(&gd, 0, sizeof(gd));
+    gd.base.type = RBT_STRUCT_TYPE_AUDIO_CONCURRENCY_DESC;
+    gd.max_instances = 1;
+    gd.resolution = RBTAUDIO_RESOLUTION_STOP_FARTHEST;
+    gd.older_instance_gain = 1.0f;
+    RBTAUDIO_CONCURRENCY group = 0;
+    CHECK(rbtaudio_concurrency_create(mixer, &gd, &group, NULL) == RBT_RESULT_OK);
+    attenuation = make_attenuation(mixer, &linear);
+    sound = make_sound(mixer, ones, 4096, 1, 48000, RBTAUDIO_VIRTUAL_CONTINUE, group, 0);
+    CHECK(set_one_listener(mixer, listener_at(0, 0, 0)));
+    a = play_world(mixer, sound, emitter_at(5, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64) && update_render(mixer, 64));
+    b = play_world(mixer, sound, emitter_at(-2, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64) && update_render(mixer, 64) && update_render(mixer, 64));
+    CHECK(!rbtaudio_voice_is_live(mixer, a) && rbtaudio_voice_is_live(mixer, b));
+    CHECK(out[2 * 63] > 0.5f && close_to(out[2 * 63 + 1], 0.0f));
+    RBTAUDIO_VOICE c = play_world(mixer, sound, emitter_at(8, 0, 0), attenuation, 0);
+    CHECK(update_render(mixer, 64) && update_render(mixer, 64) && update_render(mixer, 64));
+    CHECK(!rbtaudio_voice_is_live(mixer, c) && rbtaudio_voice_is_live(mixer, b));
+    rbtaudio_mixer_destroy(mixer);
+}
+
+static void test_spatial_refusals(void)
+{
+    current_test = "spatial_refusals";
+    test_pending = false;
+    RBTAUDIO_ERROR error;
+    /* No spatial desc: every spatial call is unsupported. */
+    RBTAUDIO_MIXER_DESC desc = plain_mixer_desc();
+    rbtaudio_mixer plain = make_mixer(&desc);
+    RBTAUDIO_LISTENER listener = listener_at(0, 0, 0);
+    RBT_RESULT r = rbtaudio_mixer_set_listeners(plain, &listener, 1, &error);
+    if (!BUILT(r))
+    {
+        rbtaudio_mixer_destroy(plain);
+        return;
+    }
+    CHECK(r == RBT_RESULT_UNSUPPORTED);
+    RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+    RBTAUDIO_ATTENUATION attenuation = 7;
+    CHECK(rbtaudio_attenuation_create(plain, &ad, &attenuation, &error) == RBT_RESULT_UNSUPPORTED && attenuation == 0);
+    RBTAUDIO_VOICE nobody = 0;
+    RBTAUDIO_EMITTER emitter = emitter_at(1, 0, 0);
+    CHECK(rbtaudio_mixer_set_emitters(plain, &nobody, &emitter, 1, &error) == RBT_RESULT_UNSUPPORTED);
+    RBTAUDIO_SOUND plain_sound = make_ones(plain, 64, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_PLAY_DESC world = world_play_desc(&emitter, 1);
+    RBTAUDIO_VOICE voice = 9;
+    CHECK(rbtaudio_play(plain, plain_sound, &world, &voice) == RBT_RESULT_UNSUPPORTED && voice == 0);
+    RBTAUDIO_PLAY_DESC unplaced = play_desc(1.0f);
+    unplaced.placement = RBTAUDIO_PLACEMENT_UNSPECIFIED;
+    CHECK(rbtaudio_play(plain, plain_sound, &unplaced, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    unplaced.placement = 3;
+    CHECK(rbtaudio_play(plain, plain_sound, &unplaced, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    rbtaudio_mixer_destroy(plain);
+
+    /* The spatial desc's fields, and its chain. */
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    rbtaudio_mixer mixer = NULL;
+    desc.base.next = &spatial.base;
+    spatial.handedness = RBTAUDIO_HANDEDNESS_UNSPECIFIED;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "handedness"));
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 0);
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "max_listeners"));
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    spatial.max_attenuations = 0;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "max_attenuations"));
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    spatial.speed_of_sound = 0.0f;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "speed_of_sound"));
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    RBTAUDIO_SPATIAL_DESC twice = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    spatial.base.next = &twice.base;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_STRUCT_DUPLICATE_IN_CHAIN);
+    RBT_STRUCT_BASE stranger = {RBT_STRUCT_TYPE_AUDIO_BUS_DESC, NULL};
+    spatial.base.next = &stranger;
+    CHECK(rbtaudio_mixer_create(&desc, &mixer, &error) == RBT_RESULT_STRUCT_UNKNOWN_IN_CHAIN);
+    CHECK(mixer == NULL);
+
+    spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 1);
+    mixer = make_spatial_mixer(&desc, &spatial);
+    if (!mixer)
+        return;
+
+    /* Listeners. */
+    RBTAUDIO_LISTENER two[2] = {listener_at(0, 0, 0), listener_at(1, 0, 0)};
+    CHECK(rbtaudio_mixer_set_listeners(mixer, two, 2, &error) == RBT_RESULT_LIMIT);
+    CHECK(rbtaudio_mixer_set_listeners(mixer, NULL, 1, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_mixer_set_listeners(NULL, two, 1, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    RBTAUDIO_LISTENER bad = listener_at(0, 0, 0);
+    bad.position.x = NAN;
+    CHECK(rbtaudio_mixer_set_listeners(mixer, &bad, 1, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "position"));
+    bad = listener_at(0, 0, 0);
+    bad.velocity.y = INFINITY;
+    CHECK(rbtaudio_mixer_set_listeners(mixer, &bad, 1, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "velocity"));
+    bad = listener_at(0, 0, 0);
+    bad.forward.z = 0.0f;
+    CHECK(rbtaudio_mixer_set_listeners(mixer, &bad, 1, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "forward"));
+    bad = listener_at(0, 0, 0);
+    bad.up.y = 0.0f;
+    CHECK(rbtaudio_mixer_set_listeners(mixer, &bad, 1, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "up"));
+    bad = listener_at(0, 0, 0);
+    bad.up.y = 0.0f;
+    bad.up.z = 2.0f; /* parallel to forward */
+    CHECK(rbtaudio_mixer_set_listeners(mixer, &bad, 1, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "parallel"));
+    CHECK(rbtaudio_mixer_set_listeners(mixer, &listener, 1, &error) == RBT_RESULT_OK);
+
+    /* Attenuation descs, field by field. */
+    static const char *names[11] = {"rolloff",          "min_distance",     "max_distance",    "rolloff_factor",
+                                    "points",           "point_count",      "cone_inner_angle", "cone_outer_angle",
+                                    "cone_outer_gain",  "doppler_factor",   "priority_offset"};
+    static const RBTAUDIO_ATTENUATION_POINT one_point[1] = {{0.0f, 1.0f}};
+    RBTAUDIO_ATTENUATION_DESC wrong;
+    for (int f = 0; f < 11; f++)
+    {
+        wrong = attenuation_desc(f == 4 || f == 5 ? RBTAUDIO_ROLLOFF_TABLE : RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+        switch (f)
+        {
+        case 0:
+            wrong.rolloff = RBTAUDIO_ROLLOFF_UNSPECIFIED;
+            break;
+        case 1:
+            wrong.min_distance = 0.0f;
+            break;
+        case 2:
+            wrong.max_distance = 1.0f;
+            break;
+        case 3:
+            wrong.rolloff_factor = 0.0f;
+            break;
+        case 4:
+            wrong.points = NULL;
+            wrong.point_count = 2;
+            break;
+        case 5:
+            wrong.points = one_point;
+            wrong.point_count = 1;
+            break;
+        case 6:
+            wrong.cone_inner_angle = 0.0f;
+            break;
+        case 7:
+            wrong.cone_inner_angle = 1.0f;
+            wrong.cone_outer_angle = 0.5f;
+            break;
+        case 8:
+            wrong.cone_outer_gain = 1.5f;
+            break;
+        case 9:
+            wrong.doppler_factor = -1.0f;
+            break;
+        default:
+            wrong.priority_offset = 256;
+            break;
+        }
+        attenuation = 7;
+        r = rbtaudio_attenuation_create(mixer, &wrong, &attenuation, &error);
+        if (r != RBT_RESULT_INVALID_ARGUMENT || !strstr(error.message, names[f]))
+            printf("     field %s: %d, \"%s\"\n", names[f], (int)r, error.message);
+        CHECK(r == RBT_RESULT_INVALID_ARGUMENT && strstr(error.message, names[f]) && attenuation == 0);
+    }
+    static const RBTAUDIO_ATTENUATION_POINT unsorted[3] = {{0.0f, 1.0f}, {0.6f, 0.5f}, {0.5f, 0.2f}};
+    wrong = attenuation_desc(RBTAUDIO_ROLLOFF_TABLE, 1.0f);
+    wrong.points = unsorted;
+    wrong.point_count = 3;
+    CHECK(rbtaudio_attenuation_create(mixer, &wrong, &attenuation, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    wrong = attenuation_desc(RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+    wrong.base.type = RBT_STRUCT_TYPE_AUDIO_BUS_DESC;
+    CHECK(rbtaudio_attenuation_create(mixer, &wrong, &attenuation, &error) == RBT_RESULT_STRUCT_WRONG_TYPE);
+    /* The slots: four, then LIMIT. */
+    RBTAUDIO_ATTENUATION slots[4];
+    for (int i = 0; i < 4; i++)
+        slots[i] = make_attenuation(mixer, &ad);
+    CHECK(rbtaudio_attenuation_create(mixer, &ad, &attenuation, &error) == RBT_RESULT_LIMIT && attenuation == 0);
+    for (int i = 1; i < 4; i++)
+        rbtaudio_attenuation_destroy(mixer, slots[i]);
+    rbtaudio_attenuation_destroy(mixer, 0);
+    rbtaudio_attenuation_destroy(mixer, slots[1]); /* stale: nothing */
+
+    /* Plays. */
+    RBTAUDIO_SOUND sound = make_ones(mixer, 64, RBTAUDIO_VIRTUAL_CONTINUE);
+    RBTAUDIO_DIRECTION ahead = {0.0, 0.0};
+    RBTAUDIO_PLAY_DESC p = world_play_desc(&emitter, slots[0]);
+    p.direction = &ahead;
+    CHECK(rbtaudio_play(mixer, sound, &p, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    p = world_play_desc(NULL, slots[0]);
+    CHECK(rbtaudio_play(mixer, sound, &p, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    p = world_play_desc(&emitter, 0);
+    CHECK(rbtaudio_play(mixer, sound, &p, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    p = world_play_desc(&emitter, slots[1]); /* destroyed */
+    CHECK(rbtaudio_play(mixer, sound, &p, &voice) == RBT_RESULT_NOT_FOUND);
+    RBTAUDIO_EMITTER nan_emitter = emitter_at(NAN, 0, 0);
+    p = world_play_desc(&nan_emitter, slots[0]);
+    CHECK(rbtaudio_play(mixer, sound, &p, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    RBTAUDIO_PLAY_DESC angles = play_desc(1.0f);
+    angles.emitter = &emitter;
+    CHECK(rbtaudio_play(mixer, sound, &angles, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+    angles = play_desc(1.0f);
+    angles.attenuation = slots[0];
+    CHECK(rbtaudio_play(mixer, sound, &angles, &voice) == RBT_RESULT_INVALID_ARGUMENT);
+
+    /* set_direction on a world voice; set_emitters with an angles voice. */
+    RBTAUDIO_VOICE placed = play_world(mixer, sound, emitter, slots[0], 0);
+    RBTAUDIO_VOICE angled = play(mixer, sound, 1.0f, 0, true);
+    CHECK(rbtaudio_voice_set_direction(mixer, placed, &ahead) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_voice_set_direction(mixer, angled, &ahead) == RBT_RESULT_OK);
+    RBTAUDIO_VOICE both[2] = {placed, angled};
+    RBTAUDIO_EMITTER places[2] = {emitter, emitter};
+    CHECK(rbtaudio_mixer_set_emitters(mixer, both, places, 2, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "voices[1]"));
+    places[0].velocity.z = NAN;
+    CHECK(rbtaudio_mixer_set_emitters(mixer, both, places, 1, &error) == RBT_RESULT_INVALID_ARGUMENT &&
+          strstr(error.message, "emitters[0]"));
+    CHECK(rbtaudio_mixer_set_emitters(mixer, NULL, places, 1, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_mixer_set_emitters(mixer, both, NULL, 1, &error) == RBT_RESULT_INVALID_ARGUMENT);
+    CHECK(rbtaudio_mixer_set_emitters(mixer, NULL, NULL, 0, &error) == RBT_RESULT_OK);
+    RBTAUDIO_VOICE gone[1] = {12345};
+    CHECK(rbtaudio_mixer_set_emitters(mixer, gone, &emitter, 1, &error) == RBT_RESULT_OK); /* unknown: skipped */
+    rbtaudio_mixer_destroy(mixer);
+}
+
+/* The same moving world rendered on three mixers - no scheduler, one
+ * worker, four - is the same bits. */
+static void test_spatial_determinism(void)
+{
+    current_test = "spatial_determinism";
+    test_pending = false;
+    RBTJOBS_SCHEDULER one, four;
+    rbtjobs_pool pool_one = make_pool(0, &one);
+    rbtjobs_pool pool_four = make_pool(3, &four);
+    const RBTJOBS_SCHEDULER *schedulers[3] = {NULL, &one, &four};
+    static float results[3][2 * 128 * 50];
+    for (int i = 0; i < 48000; i++)
+        ramp[i] = (float)sin(i * 0.05);
+    for (int s = 0; s < 3 && !test_pending; s++)
+    {
+        RBTAUDIO_MIXER_DESC desc = valid_mixer_desc();
+        desc.max_frames = 128;
+        desc.max_streams = 1;
+        desc.scheduler = schedulers[s];
+        RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 2);
+        rbtaudio_mixer mixer = make_spatial_mixer(&desc, &spatial);
+        if (!mixer)
+            break;
+        RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_EXPONENT, 1.0f);
+        ad.doppler_factor = 1.0f;
+        ad.cone_inner_angle = 1.0f;
+        ad.cone_outer_angle = 4.0f;
+        ad.cone_outer_gain = 0.3f;
+        RBTAUDIO_ATTENUATION attenuation = make_attenuation(mixer, &ad);
+        RBTAUDIO_SOUND sound = make_sound(mixer, ramp, 48000, 1, 48000, RBTAUDIO_VIRTUAL_CONTINUE, 0, 0);
+        RBTAUDIO_LISTENER listeners[2] = {listener_at(0, 0, 0), listener_at(30, 0, 0)};
+        CHECK(rbtaudio_mixer_set_listeners(mixer, listeners, 2, NULL) == RBT_RESULT_OK);
+        RBTAUDIO_VOICE voices[8];
+        RBTAUDIO_EMITTER places[8];
+        for (int v = 0; v < 8; v++)
+        {
+            places[v] = emitter_at(4.0 * v, 0.0, -3.0);
+            places[v].forward.x = 1.0f;
+            voices[v] = play_world(mixer, sound, places[v], attenuation, (uint8_t)v);
+        }
+        for (int step = 0; step < 50; step++)
+        {
+            for (int v = 0; v < 8; v++)
+            {
+                places[v].position.z = -3.0 + sin(step * 0.1 + v);
+                places[v].velocity.z = (float)(cos(step * 0.1 + v) * 10.0);
+            }
+            CHECK(rbtaudio_mixer_set_emitters(mixer, voices, places, 8, NULL) == RBT_RESULT_OK);
+            CHECK(update_render(mixer, 128));
+            memcpy(results[s] + step * 256, out, 256 * sizeof(float));
+        }
+        rbtaudio_mixer_destroy(mixer);
+    }
+    if (!test_pending)
+    {
+        CHECK(memcmp(results[0], results[1], sizeof(results[0])) == 0);
+        CHECK(memcmp(results[0], results[2], sizeof(results[0])) == 0);
+    }
+    rbtjobs_pool_destroy(pool_one);
+    rbtjobs_pool_destroy(pool_four);
+}
+
+/* Two threads: one renders in a loop (a one-thread pool's worker) while
+ * this one sets listeners, moves emitters, plays, stops, updates, and
+ * creates and destroys attenuations. For ASan and -tsan. */
+static void test_spatial_threads(void)
+{
+    current_test = "spatial_threads";
+    test_pending = false;
+    RBTJOBS_SCHEDULER rendering;
+    rbtjobs_pool render_pool = make_pool(1, &rendering);
+    RBTAUDIO_MIXER_DESC desc = valid_mixer_desc();
+    RBTAUDIO_SPATIAL_DESC spatial = spatial_desc(RBTAUDIO_HANDEDNESS_RIGHT, 2);
+    rbtaudio_mixer mixer = render_pool ? make_spatial_mixer(&desc, &spatial) : NULL;
+    RBTAUDIO_ATTENUATION_DESC ad = attenuation_desc(RBTAUDIO_ROLLOFF_INVERSE, 1.0f);
+    ad.doppler_factor = 1.0f;
+    RBTAUDIO_ATTENUATION attenuation = mixer ? make_attenuation(mixer, &ad) : 0;
+    if (mixer && attenuation)
+    {
+        RBTAUDIO_SOUND sound = make_ones(mixer, 4096, RBTAUDIO_VIRTUAL_CONTINUE);
+        static render_loop loop;
+        loop.mixer = mixer;
+        loop.renders = 3000;
+        void *task = rendering.enqueue(render_loop_task, 1, 1, &loop, rendering.user);
+        RBTAUDIO_VOICE voices[16] = {0};
+        RBTAUDIO_EMITTER places[16];
+        for (int v = 0; v < 16; v++)
+            places[v] = emitter_at(v, 0, -2);
+        for (int i = 0; i < 400; i++)
+        {
+            RBTAUDIO_LISTENER listeners[2] = {listener_at(sin(i * 0.1), 0, 0), listener_at(20, 0, cos(i * 0.1))};
+            CHECK(rbtaudio_mixer_set_listeners(mixer, listeners, (uint32_t)(1 + i % 2), NULL) == RBT_RESULT_OK);
+            int slot = i % 16;
+            if (voices[slot])
+                rbtaudio_voice_stop(mixer, voices[slot], 64);
+            places[slot] = emitter_at(slot, 0, -2);
+            /* The render loop may have ended first (it counts renders, not
+             * steps): then the queue fills, and a play is refused. */
+            RBTAUDIO_PLAY_DESC pd = world_play_desc(&places[slot], attenuation);
+            pd.priority = (uint8_t)slot;
+            voices[slot] = 0;
+            RBT_RESULT played = rbtaudio_play(mixer, sound, &pd, &voices[slot]);
+            CHECK(played == RBT_RESULT_OK || played == RBT_RESULT_LIMIT);
+            for (int v = 0; v < 16; v++)
+                places[v].position.x += 0.01;
+            CHECK(rbtaudio_mixer_set_emitters(mixer, voices, places, 16, NULL) == RBT_RESULT_OK);
+            if (i % 50 == 49)
+            {
+                rbtaudio_attenuation_destroy(mixer, attenuation);
+                attenuation = make_attenuation(mixer, &ad);
+            }
+            CHECK(rbtaudio_mixer_update(mixer, NULL) == RBT_RESULT_OK);
+            rbtaudio_mixer_collect(mixer);
+        }
+        rendering.wait(task, rendering.user);
+    }
+    rbtaudio_mixer_destroy(mixer);
+    rbtjobs_pool_destroy(render_pool);
+}
+
+int main(int argc, char **argv)
+{
+    test_format_from_craudio();
+    test_null_arguments();
+    test_pcm_free();
+    test_wav();
+    test_mixer_create();
+    test_play();
+    test_stereo_and_direction();
+    test_resampling();
+    test_formats();
+    test_sounds();
+    test_prioritization();
+    test_concurrency();
+    test_buses();
+    test_modifiers();
+    test_start_time();
+    test_cues_clear_banks();
+    test_cues_playing();
+    test_dither();
+    test_limiter();
+    test_collect();
+    test_folded();
+    data_dir = argc > 1 ? argv[1] : NULL;
+    test_decoders();
+    test_stream_same_samples();
+    test_stream_underrun();
+    test_stream_virtual();
+    test_stream_max_streams();
+    test_stream_refusals();
+    test_stream_failures();
+    test_stream_threads();
+    test_stream_lifetime();
+    test_resample();
+    test_opus_encode();
+    test_spatial_rolloff();
+    test_spatial_cone();
+    test_spatial_listeners();
+    test_spatial_doppler();
+    test_spatial_moving();
+    test_spatial_ranking();
+    test_spatial_refusals();
+    test_spatial_determinism();
+    test_spatial_threads();
+    if (failures)
+    {
+        printf("%d check(s) failed\n", failures);
+        return 1;
+    }
+    printf("All rbtaudio tests passed\n");
+    return 0;
+}

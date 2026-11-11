@@ -1,5 +1,5 @@
-PROJECT_NAME           = "ApricotFields"
-PROJECT_BRIEF          = "General-purpose engine layer: Aprend, ApricotMath, ApAudio, ApSync, ApArchive"
+PROJECT_NAME           = "Rabbittus"
+PROJECT_BRIEF          = "General-purpose engine layer: Rend, Rabbittus Math, Rabbittus Audio, Rabbittus Sync, Rabbittus Archive"
 INPUT                  = include
 FILE_PATTERNS          = *.h
 RECURSIVE              = YES
@@ -13,7 +13,7 @@ EXTRACT_ALL            = YES
 QUIET                  = YES
 
 # Paths in the output are relative to include/, the way the headers are
-# included ("render/aprendcontext.h").
+# included ("render/rbtrendcontext.h").
 FULL_PATH_NAMES        = YES
 STRIP_FROM_PATH        = include
 STRIP_FROM_INC_PATH    = include

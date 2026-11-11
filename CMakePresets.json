@@ -2,8 +2,8 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "apricotfields-windows-d3d12",
-      "displayName": "ApricotFields Windows D3D12",
+      "name": "rabbittus-windows-d3d12",
+      "displayName": "rabbittus Windows D3D12",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build-windows-d3d12",
@@ -14,8 +14,8 @@
       }
     },
     {
-      "name": "apricotfields-windows-vulkan",
-      "displayName": "ApricotFields Windows Vulkan",
+      "name": "rabbittus-windows-vulkan",
+      "displayName": "rabbittus Windows Vulkan",
       "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build-windows-vulkan",
@@ -26,8 +26,8 @@
       }
     },
     {
-      "name": "apricotfields-linux-vulkan",
-      "displayName": "ApricotFields Linux Vulkan",
+      "name": "rabbittus-linux-vulkan",
+      "displayName": "rabbittus Linux Vulkan",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-linux-vulkan",
       "cacheVariables": {
@@ -37,8 +37,8 @@
       }
     },
     {
-      "name": "apricotfields-macos-metal",
-      "displayName": "ApricotFields macOS Metal",
+      "name": "rabbittus-macos-metal",
+      "displayName": "rabbittus macOS Metal",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-macos-metal",
       "cacheVariables": {
@@ -49,7 +49,7 @@
       }
     },
     {
-      "name": "apricotfields-sanitize-asan",
+      "name": "rabbittus-sanitize-asan",
       "hidden": true,
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug",
@@ -63,7 +63,7 @@
       }
     },
     {
-      "name": "apricotfields-sanitize-tsan",
+      "name": "rabbittus-sanitize-tsan",
       "hidden": true,
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug",
@@ -77,37 +77,37 @@
       }
     },
     {
-      "name": "apricotfields-macos-metal-asan",
-      "displayName": "ApricotFields macOS ASan+UBSan",
-      "inherits": ["apricotfields-sanitize-asan", "apricotfields-macos-metal"],
+      "name": "rabbittus-macos-metal-asan",
+      "displayName": "rabbittus macOS ASan+UBSan",
+      "inherits": ["rabbittus-sanitize-asan", "rabbittus-macos-metal"],
       "binaryDir": "${sourceDir}/build-macos-metal-asan"
     },
     {
-      "name": "apricotfields-macos-metal-tsan",
-      "displayName": "ApricotFields macOS TSan",
-      "inherits": ["apricotfields-sanitize-tsan", "apricotfields-macos-metal"],
+      "name": "rabbittus-macos-metal-tsan",
+      "displayName": "rabbittus macOS TSan",
+      "inherits": ["rabbittus-sanitize-tsan", "rabbittus-macos-metal"],
       "binaryDir": "${sourceDir}/build-macos-metal-tsan"
     },
     {
-      "name": "apricotfields-linux-vulkan-asan",
-      "displayName": "ApricotFields Linux ASan+UBSan",
-      "inherits": ["apricotfields-sanitize-asan", "apricotfields-linux-vulkan"],
+      "name": "rabbittus-linux-vulkan-asan",
+      "displayName": "rabbittus Linux ASan+UBSan",
+      "inherits": ["rabbittus-sanitize-asan", "rabbittus-linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-vulkan-asan"
     },
     {
-      "name": "apricotfields-linux-vulkan-tsan",
-      "displayName": "ApricotFields Linux TSan",
-      "inherits": ["apricotfields-sanitize-tsan", "apricotfields-linux-vulkan"],
+      "name": "rabbittus-linux-vulkan-tsan",
+      "displayName": "rabbittus Linux TSan",
+      "inherits": ["rabbittus-sanitize-tsan", "rabbittus-linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-vulkan-tsan"
     },
     {
-      "name": "apricotfields-sanitize-fuzz",
+      "name": "rabbittus-sanitize-fuzz",
       "hidden": true,
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug",
-        "APRICOTFIELDS_BUILD_TESTS": "OFF",
-        "APRICOTFIELDS_BUILD_FUZZERS": "ON",
-        "SPUDLIB_BUILD_TESTS": "OFF",
+        "RABBITTUS_BUILD_TESTS": "OFF",
+        "RABBITTUS_BUILD_FUZZERS": "ON",
+        "CARROTTUS_BUILD_TESTS": "OFF",
         "CMAKE_C_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
         "CMAKE_CXX_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
         "CMAKE_OBJC_FLAGS": "-O1 -fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
@@ -118,9 +118,9 @@
       }
     },
     {
-      "name": "apricotfields-macos-metal-fuzz",
-      "displayName": "ApricotFields macOS libFuzzer (Homebrew LLVM)",
-      "inherits": ["apricotfields-sanitize-fuzz", "apricotfields-macos-metal"],
+      "name": "rabbittus-macos-metal-fuzz",
+      "displayName": "rabbittus macOS libFuzzer (Homebrew LLVM)",
+      "inherits": ["rabbittus-sanitize-fuzz", "rabbittus-macos-metal"],
       "binaryDir": "${sourceDir}/build-macos-fuzz",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "/opt/homebrew/opt/llvm/bin/clang",
@@ -130,9 +130,9 @@
       }
     },
     {
-      "name": "apricotfields-linux-vulkan-fuzz",
-      "displayName": "ApricotFields Linux libFuzzer (Clang)",
-      "inherits": ["apricotfields-sanitize-fuzz", "apricotfields-linux-vulkan"],
+      "name": "rabbittus-linux-vulkan-fuzz",
+      "displayName": "rabbittus Linux libFuzzer (Clang)",
+      "inherits": ["rabbittus-sanitize-fuzz", "rabbittus-linux-vulkan"],
       "binaryDir": "${sourceDir}/build-linux-fuzz",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
@@ -140,7 +140,7 @@
       }
     },
     {
-      "name": "apricotfields-windows-sanitize-asan",
+      "name": "rabbittus-windows-sanitize-asan",
       "hidden": true,
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Debug",
@@ -152,32 +152,32 @@
       }
     },
     {
-      "name": "apricotfields-windows-d3d12-asan",
-      "displayName": "ApricotFields Windows D3D12 ASan",
+      "name": "rabbittus-windows-d3d12-asan",
+      "displayName": "rabbittus Windows D3D12 ASan",
       "inherits": [
-        "apricotfields-windows-sanitize-asan",
-        "apricotfields-windows-d3d12"
+        "rabbittus-windows-sanitize-asan",
+        "rabbittus-windows-d3d12"
       ],
       "binaryDir": "${sourceDir}/build-windows-d3d12-asan"
     },
     {
-      "name": "apricotfields-windows-vulkan-asan",
-      "displayName": "ApricotFields Windows Vulkan ASan",
+      "name": "rabbittus-windows-vulkan-asan",
+      "displayName": "rabbittus Windows Vulkan ASan",
       "inherits": [
-        "apricotfields-windows-sanitize-asan",
-        "apricotfields-windows-vulkan"
+        "rabbittus-windows-sanitize-asan",
+        "rabbittus-windows-vulkan"
       ],
       "binaryDir": "${sourceDir}/build-windows-vulkan-asan"
     },
     {
-      "name": "apricotfields-windows-d3d12-fuzz",
-      "displayName": "ApricotFields Windows libFuzzer (clang)",
+      "name": "rabbittus-windows-d3d12-fuzz",
+      "displayName": "rabbittus Windows libFuzzer (clang)",
       "generator": "Ninja Multi-Config",
       "binaryDir": "${sourceDir}/build-windows-fuzz",
       "cacheVariables": {
-        "APRICOTFIELDS_BUILD_TESTS": "OFF",
-        "APRICOTFIELDS_BUILD_FUZZERS": "ON",
-        "SPUDLIB_BUILD_TESTS": "OFF",
+        "RABBITTUS_BUILD_TESTS": "OFF",
+        "RABBITTUS_BUILD_FUZZERS": "ON",
+        "CARROTTUS_BUILD_TESTS": "OFF",
         "CMAKE_C_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fno-sanitize-coverage=indirect-calls,trace-cmp",
         "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -fno-sanitize-coverage=indirect-calls,trace-cmp -D_DISABLE_STRING_ANNOTATION -D_DISABLE_VECTOR_ANNOTATION",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
@@ -196,136 +196,136 @@
   ],
   "buildPresets": [
     {
-      "name": "apricotfields-windows-d3d12-debug",
-      "displayName": "ApricotFields Windows D3D12 (Debug)",
-      "configurePreset": "apricotfields-windows-d3d12",
+      "name": "rabbittus-windows-d3d12-debug",
+      "displayName": "rabbittus Windows D3D12 (Debug)",
+      "configurePreset": "rabbittus-windows-d3d12",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-windows-d3d12-release",
-      "displayName": "ApricotFields Windows D3D12 (Release)",
-      "configurePreset": "apricotfields-windows-d3d12",
+      "name": "rabbittus-windows-d3d12-release",
+      "displayName": "rabbittus Windows D3D12 (Release)",
+      "configurePreset": "rabbittus-windows-d3d12",
       "configuration": "Release"
     },
     {
-      "name": "apricotfields-windows-d3d12-relwithdebinfo",
-      "displayName": "ApricotFields Windows D3D12 (RelWithDebInfo)",
-      "configurePreset": "apricotfields-windows-d3d12",
+      "name": "rabbittus-windows-d3d12-relwithdebinfo",
+      "displayName": "rabbittus Windows D3D12 (RelWithDebInfo)",
+      "configurePreset": "rabbittus-windows-d3d12",
       "configuration": "RelWithDebInfo"
     },
     {
-      "name": "apricotfields-windows-vulkan-debug",
-      "displayName": "ApricotFields Windows Vulkan (Debug)",
-      "configurePreset": "apricotfields-windows-vulkan",
+      "name": "rabbittus-windows-vulkan-debug",
+      "displayName": "rabbittus Windows Vulkan (Debug)",
+      "configurePreset": "rabbittus-windows-vulkan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-windows-vulkan-release",
-      "displayName": "ApricotFields Windows Vulkan (Release)",
-      "configurePreset": "apricotfields-windows-vulkan",
+      "name": "rabbittus-windows-vulkan-release",
+      "displayName": "rabbittus Windows Vulkan (Release)",
+      "configurePreset": "rabbittus-windows-vulkan",
       "configuration": "Release"
     },
     {
-      "name": "apricotfields-windows-vulkan-relwithdebinfo",
-      "displayName": "ApricotFields Windows Vulkan (RelWithDebInfo)",
-      "configurePreset": "apricotfields-windows-vulkan",
+      "name": "rabbittus-windows-vulkan-relwithdebinfo",
+      "displayName": "rabbittus Windows Vulkan (RelWithDebInfo)",
+      "configurePreset": "rabbittus-windows-vulkan",
       "configuration": "RelWithDebInfo"
     },
     {
-      "name": "apricotfields-linux-vulkan-debug",
-      "displayName": "ApricotFields Linux Vulkan (Debug)",
-      "configurePreset": "apricotfields-linux-vulkan",
+      "name": "rabbittus-linux-vulkan-debug",
+      "displayName": "rabbittus Linux Vulkan (Debug)",
+      "configurePreset": "rabbittus-linux-vulkan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-linux-vulkan-release",
-      "displayName": "ApricotFields Linux Vulkan (Release)",
-      "configurePreset": "apricotfields-linux-vulkan",
+      "name": "rabbittus-linux-vulkan-release",
+      "displayName": "rabbittus Linux Vulkan (Release)",
+      "configurePreset": "rabbittus-linux-vulkan",
       "configuration": "Release"
     },
     {
-      "name": "apricotfields-linux-vulkan-relwithdebinfo",
-      "displayName": "ApricotFields Linux Vulkan (RelWithDebInfo)",
-      "configurePreset": "apricotfields-linux-vulkan",
+      "name": "rabbittus-linux-vulkan-relwithdebinfo",
+      "displayName": "rabbittus Linux Vulkan (RelWithDebInfo)",
+      "configurePreset": "rabbittus-linux-vulkan",
       "configuration": "RelWithDebInfo"
     },
     {
-      "name": "apricotfields-macos-metal-debug",
-      "displayName": "ApricotFields macOS Metal (Debug)",
-      "configurePreset": "apricotfields-macos-metal",
+      "name": "rabbittus-macos-metal-debug",
+      "displayName": "rabbittus macOS Metal (Debug)",
+      "configurePreset": "rabbittus-macos-metal",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-macos-metal-release",
-      "displayName": "ApricotFields macOS Metal (Release)",
-      "configurePreset": "apricotfields-macos-metal",
+      "name": "rabbittus-macos-metal-release",
+      "displayName": "rabbittus macOS Metal (Release)",
+      "configurePreset": "rabbittus-macos-metal",
       "configuration": "Release"
     },
     {
-      "name": "apricotfields-macos-metal-relwithdebinfo",
-      "displayName": "ApricotFields macOS Metal (RelWithDebInfo)",
-      "configurePreset": "apricotfields-macos-metal",
+      "name": "rabbittus-macos-metal-relwithdebinfo",
+      "displayName": "rabbittus macOS Metal (RelWithDebInfo)",
+      "configurePreset": "rabbittus-macos-metal",
       "configuration": "RelWithDebInfo"
     },
     {
-      "name": "apricotfields-macos-metal-asan-debug",
-      "displayName": "ApricotFields macOS ASan+UBSan (Debug)",
-      "configurePreset": "apricotfields-macos-metal-asan",
+      "name": "rabbittus-macos-metal-asan-debug",
+      "displayName": "rabbittus macOS ASan+UBSan (Debug)",
+      "configurePreset": "rabbittus-macos-metal-asan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-macos-metal-tsan-debug",
-      "displayName": "ApricotFields macOS TSan (Debug)",
-      "configurePreset": "apricotfields-macos-metal-tsan",
+      "name": "rabbittus-macos-metal-tsan-debug",
+      "displayName": "rabbittus macOS TSan (Debug)",
+      "configurePreset": "rabbittus-macos-metal-tsan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-linux-vulkan-asan-debug",
-      "displayName": "ApricotFields Linux ASan+UBSan (Debug)",
-      "configurePreset": "apricotfields-linux-vulkan-asan",
+      "name": "rabbittus-linux-vulkan-asan-debug",
+      "displayName": "rabbittus Linux ASan+UBSan (Debug)",
+      "configurePreset": "rabbittus-linux-vulkan-asan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-linux-vulkan-tsan-debug",
-      "displayName": "ApricotFields Linux TSan (Debug)",
-      "configurePreset": "apricotfields-linux-vulkan-tsan",
+      "name": "rabbittus-linux-vulkan-tsan-debug",
+      "displayName": "rabbittus Linux TSan (Debug)",
+      "configurePreset": "rabbittus-linux-vulkan-tsan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-macos-metal-fuzz-debug",
-      "displayName": "ApricotFields macOS libFuzzer (Debug)",
-      "configurePreset": "apricotfields-macos-metal-fuzz",
+      "name": "rabbittus-macos-metal-fuzz-debug",
+      "displayName": "rabbittus macOS libFuzzer (Debug)",
+      "configurePreset": "rabbittus-macos-metal-fuzz",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-linux-vulkan-fuzz-debug",
-      "displayName": "ApricotFields Linux libFuzzer (Debug)",
-      "configurePreset": "apricotfields-linux-vulkan-fuzz",
+      "name": "rabbittus-linux-vulkan-fuzz-debug",
+      "displayName": "rabbittus Linux libFuzzer (Debug)",
+      "configurePreset": "rabbittus-linux-vulkan-fuzz",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-windows-d3d12-asan-debug",
-      "displayName": "ApricotFields Windows D3D12 ASan (Debug)",
-      "configurePreset": "apricotfields-windows-d3d12-asan",
+      "name": "rabbittus-windows-d3d12-asan-debug",
+      "displayName": "rabbittus Windows D3D12 ASan (Debug)",
+      "configurePreset": "rabbittus-windows-d3d12-asan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-windows-vulkan-asan-debug",
-      "displayName": "ApricotFields Windows Vulkan ASan (Debug)",
-      "configurePreset": "apricotfields-windows-vulkan-asan",
+      "name": "rabbittus-windows-vulkan-asan-debug",
+      "displayName": "rabbittus Windows Vulkan ASan (Debug)",
+      "configurePreset": "rabbittus-windows-vulkan-asan",
       "configuration": "Debug"
     },
     {
-      "name": "apricotfields-windows-d3d12-fuzz-relwithdebinfo",
-      "displayName": "ApricotFields Windows libFuzzer (RelWithDebInfo)",
-      "configurePreset": "apricotfields-windows-d3d12-fuzz",
+      "name": "rabbittus-windows-d3d12-fuzz-relwithdebinfo",
+      "displayName": "rabbittus Windows libFuzzer (RelWithDebInfo)",
+      "configurePreset": "rabbittus-windows-d3d12-fuzz",
       "configuration": "RelWithDebInfo"
     }
   ],
   "testPresets": [
     {
-      "name": "apricotfields-macos-metal-asan",
-      "configurePreset": "apricotfields-macos-metal-asan",
+      "name": "rabbittus-macos-metal-asan",
+      "configurePreset": "rabbittus-macos-metal-asan",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
@@ -336,8 +336,8 @@
       }
     },
     {
-      "name": "apricotfields-macos-metal-tsan",
-      "configurePreset": "apricotfields-macos-metal-tsan",
+      "name": "rabbittus-macos-metal-tsan",
+      "configurePreset": "rabbittus-macos-metal-tsan",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
@@ -347,8 +347,8 @@
       }
     },
     {
-      "name": "apricotfields-linux-vulkan-asan",
-      "configurePreset": "apricotfields-linux-vulkan-asan",
+      "name": "rabbittus-linux-vulkan-asan",
+      "configurePreset": "rabbittus-linux-vulkan-asan",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
@@ -359,8 +359,8 @@
       }
     },
     {
-      "name": "apricotfields-linux-vulkan-tsan",
-      "configurePreset": "apricotfields-linux-vulkan-tsan",
+      "name": "rabbittus-linux-vulkan-tsan",
+      "configurePreset": "rabbittus-linux-vulkan-tsan",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
@@ -370,8 +370,8 @@
       }
     },
     {
-      "name": "apricotfields-windows-d3d12-asan",
-      "configurePreset": "apricotfields-windows-d3d12-asan",
+      "name": "rabbittus-windows-d3d12-asan",
+      "configurePreset": "rabbittus-windows-d3d12-asan",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
@@ -382,8 +382,8 @@
       }
     },
     {
-      "name": "apricotfields-windows-vulkan-asan",
-      "configurePreset": "apricotfields-windows-vulkan-asan",
+      "name": "rabbittus-windows-vulkan-asan",
+      "configurePreset": "rabbittus-windows-vulkan-asan",
       "configuration": "Debug",
       "output": {
         "outputOnFailure": true
