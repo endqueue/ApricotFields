@@ -352,6 +352,15 @@ foreach (_var BUILD_SHARED_LIBS BUILD_TESTING)
     endif ()
 endforeach ()
 set_target_properties(zlib-ng PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# GCC's -Wtsan: zlib-ng's functable.c ends its CPU-dispatch setup with a
+# sequentially consistent fence, which ThreadSanitizer doesn't model. Every
+# store before it is already a sequentially consistent atomic store, which
+# it does, so the fence hides nothing from it; the file is zlib-ng's, not
+# edited. GCC only (Clang has no such warning), and only under the
+# sanitizer.
+if (CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CMAKE_C_FLAGS MATCHES "-fsanitize=thread")
+    target_compile_options(zlib-ng PRIVATE -Wno-tsan)
+endif ()
 target_link_libraries(rabbittus PRIVATE zlib-ng)
 
 # glaze - JSON, for RbtAudio's sound bank manifests (src/audio/rbtaudiocues.cpp).

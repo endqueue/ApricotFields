@@ -3760,11 +3760,15 @@ static void spatial_pass(Mixer *m, SpatialResult *results)
             continue;
         if (v.placement.load(std::memory_order_relaxed) != RBTAUDIO_PLACEMENT_WORLD)
             continue;
+        // Each word acquired: one a play reusing the record wrote (a release
+        // store, after the record's live_id went to 0 and through the free
+        // list) makes that change visible to the read again below, which
+        // then can't still see [id]. Acquire loads, not relaxed loads and a
+        // fence: the same order, and one ThreadSanitizer can check.
         uint64_t words[PLAY_PLACE_WORDS];
         for (uint32_t w = 0; w < PLAY_PLACE_WORDS; w++)
-            words[w] = m->play_places[i].words[w].load(std::memory_order_relaxed);
+            words[w] = m->play_places[i].words[w].load(std::memory_order_acquire);
         // Read again: a play reusing the record meanwhile would have changed it.
-        std::atomic_thread_fence(std::memory_order_acquire);
         if (v.live_id.load(std::memory_order_relaxed) != id)
             continue;
         uint32_t generation = (uint32_t)(id >> 32);
@@ -5046,18 +5050,21 @@ extern "C"
         v.placement.store((uint8_t)d.placement, std::memory_order_relaxed);
         if (world)
         {
-            // Its first place, for the update, which reads it as words.
+            // Its first place, for the update, which reads it as words. Each a
+            // release store, which the update's acquire load pairs with
+            // (spatial_pass): a word of this play read there shows the
+            // record's live_id no longer the old play's.
             std::atomic<uint64_t> *words = m->play_places[index].words;
             const RBTAUDIO_EMITTER &e = *d.emitter;
-            words[PLAY_PLACE_POSITION + 0].store(double_word(e.position.x), std::memory_order_relaxed);
-            words[PLAY_PLACE_POSITION + 1].store(double_word(e.position.y), std::memory_order_relaxed);
-            words[PLAY_PLACE_POSITION + 2].store(double_word(e.position.z), std::memory_order_relaxed);
-            words[PLAY_PLACE_VELOCITY_XY].store(float_pair(e.velocity.x, e.velocity.y), std::memory_order_relaxed);
+            words[PLAY_PLACE_POSITION + 0].store(double_word(e.position.x), std::memory_order_release);
+            words[PLAY_PLACE_POSITION + 1].store(double_word(e.position.y), std::memory_order_release);
+            words[PLAY_PLACE_POSITION + 2].store(double_word(e.position.z), std::memory_order_release);
+            words[PLAY_PLACE_VELOCITY_XY].store(float_pair(e.velocity.x, e.velocity.y), std::memory_order_release);
             words[PLAY_PLACE_VELOCITY_Z_FORWARD_X].store(float_pair(e.velocity.z, e.forward.x),
-                                                         std::memory_order_relaxed);
-            words[PLAY_PLACE_FORWARD_YZ].store(float_pair(e.forward.y, e.forward.z), std::memory_order_relaxed);
-            words[PLAY_PLACE_ATTENUATION].store(d.attenuation, std::memory_order_relaxed);
-            words[PLAY_PLACE_PRIORITY].store(d.priority, std::memory_order_relaxed);
+                                                         std::memory_order_release);
+            words[PLAY_PLACE_FORWARD_YZ].store(float_pair(e.forward.y, e.forward.z), std::memory_order_release);
+            words[PLAY_PLACE_ATTENUATION].store(d.attenuation, std::memory_order_release);
+            words[PLAY_PLACE_PRIORITY].store(d.priority, std::memory_order_release);
         }
         v.live_id.store(v.id, std::memory_order_release);
         if (out_voice)

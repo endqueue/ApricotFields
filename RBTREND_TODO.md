@@ -3715,8 +3715,8 @@ Left:
       `std::pow` and `std::tan` is left, and the matrices are no saved or
       synced data. On Linux (Fedora 44, GCC 16, x86-64) one value of each
       framing lay 1 ULP off; Rabbittus' 39 ctests then passed in Debug,
-      Release, `-asan` and `-tsan`, and the copies in trellislib's and
-      Latran's suites. Not yet run on Windows or the Mac (whose bits move
+      Release, `-asan` and `-tsan`, and the workspace's callers' copies of
+      the test with them. Not yet run on Windows or the Mac (whose bits move
       once contraction is off: the capture was made with FMA).
       **Waiting on Metal's bindless (card A15, decided, not built),
       recorded 2026-10-31 with the user** (`rbtrend_raytracing_draft.h`, T3

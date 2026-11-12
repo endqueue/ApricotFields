@@ -565,6 +565,15 @@ the next work; binaural later.
     distance or outside the cone (item 12's filter), per-voice readback of
     gain or distance, changing an attenuation in place, a listener cone,
     spread, world-placed cues.
+  - **2026-11-12, Linux** (Fedora 44, GCC 16.2.1): the update's read of a
+    play's first place (`spatial_pass`) loaded its words relaxed and
+    ordered them with an acquire fence, which ThreadSanitizer doesn't model
+    (GCC's `-Wtsan`) and which had no release on the play's side to pair
+    with. The words are now release stores at the play and acquire loads in
+    the update, the fence gone: a word of a play reusing the record shows
+    the record's `live_id` changed, through the free list. Rabbittus' 39
+    ctests in Debug, Release, `-asan` and `-tsan`, `rbtaudio` ten times
+    under `-tsan`, no report and no warning. Windows and the Mac not run.
 - **Binaural (HRTF) rendering:** elevation can't be heard on ordinary stereo, and most
   users listen on headphones or laptop speakers.
 - **Ambisonics,** for many simultaneous sources.
