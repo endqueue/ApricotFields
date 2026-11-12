@@ -643,7 +643,10 @@ static void test_buffers(void)
 // The bits rbtrend_lit_fit_sun_cascades() gave for three framings before card
 // A35 renamed it (captured 2026-11-01 from the Debug and Release builds of
 // Rabbittus a2bbbee's lit code, which gave the same bits): each row a
-// cascade's matrix, column after column, then its split.
+// cascade's matrix, column after column, then its split. Captured on the Mac
+// (Apple clang, arm64, multiply-adds contracted then): another platform's
+// libm rounds std::pow and std::tan differently, so a value may lie a few
+// ULPs off and is compared within FIT_ULPS (card A49).
 static const uint32_t s_fit_perspective_4[][17] = {
     {0x3d829439u, 0xbdbcf5a5u, 0x3bfe40dbu, 0x00000000u, 0x00000000u, 0xbd5237afu, 0xbc9ee888u, 0x00000000u, 0x3dd0ed28u, 0x3d6c330fu, 0xbb9ee888u, 0x00000000u, 0xbe640000u, 0x3e8d0000u, 0x3f53f576u, 0x3f800000u, 0x40feb9c1u},
     {0x3d002b77u, 0xbd397923u, 0x3bb9970au, 0x00000000u, 0x00000000u, 0xbcce56c6u, 0xbc67fccbu, 0x00000000u, 0x3d4d1258u, 0x3ce7d76du, 0xbb67fccdu, 0x00000000u, 0xbf138000u, 0xbca00000u, 0x3f3b4a48u, 0x3f800000u, 0x418ce276u},
@@ -685,8 +688,29 @@ static RBTREND_LIT_CASCADE_FIT fit_of(int orthographic, uint32_t cascades, int r
     return fit;
 }
 
+// How far each value of a fit may lie from the captured bits, in ULPs (card
+// A49, option b): std::pow and std::tan aren't correctly rounded, and their
+// last bit differs between Apple's libm, glibc and the UCRT. GCC on x86-64
+// lay 1 ULP off in one value of each framing (2026-11-12); a change to the
+// fit itself moves values by far more. The matrices are no saved or synced
+// data, so they need no bit-equality across platforms.
+#define FIT_ULPS 8
+
+// The distance between two floats in ULPs, across zero too: each mapped onto
+// a line where adjacent floats are adjacent integers.
+static int64_t ulps_apart(uint32_t a_bits, uint32_t b_bits)
+{
+    int64_t a = (int32_t)a_bits;
+    int64_t b = (int32_t)b_bits;
+    if (a < 0)
+        a = (int64_t)INT32_MIN - a;
+    if (b < 0)
+        b = (int64_t)INT32_MIN - b;
+    return a > b ? a - b : b - a;
+}
+
 // The fit of [fit] into maps whose own fields hold markers: the framing is
-// [expected]'s bits, the views and splits past the count are 0, and the
+// [expected]'s bits within FIT_ULPS, the views and splits past the count are 0, and the
 // rectangles, biases and softness are the markers still.
 static void check_fit(const RBTREND_LIT_CASCADE_FIT *fit, const uint32_t (*expected)[17])
 {
@@ -707,7 +731,8 @@ static void check_fit(const RBTREND_LIT_CASCADE_FIT *fit, const uint32_t (*expec
         uint32_t bits[17];
         memcpy(bits, maps._view_projection[c], sizeof(float) * 16);
         memcpy(&bits[16], &maps._split_depths[c], sizeof(float));
-        CHECK(memcmp(bits, expected[c], sizeof(bits)) == 0);
+        for (int k = 0; k < 17; ++k)
+            CHECK(ulps_apart(bits[k], expected[c][k]) <= FIT_ULPS);
     }
     for (uint32_t c = fit->cascade_count; c < 6; ++c)
         for (int i = 0; i < 16; ++i)
@@ -720,9 +745,9 @@ static void check_fit(const RBTREND_LIT_CASCADE_FIT *fit, const uint32_t (*expec
     CHECK(maps._softness == 1.5f);
 }
 
-// rbtrend_lit_fit_cascades() frames the same bits as
-// rbtrend_lit_fit_sun_cascades() did, into RBTREND_LIT_SHADOW_MAPS, and
-// refuses what it did.
+// rbtrend_lit_fit_cascades() frames what rbtrend_lit_fit_sun_cascades() did,
+// within FIT_ULPS of its bits, into RBTREND_LIT_SHADOW_MAPS, and refuses what
+// it did.
 static void test_lit_fit_cascades(void)
 {
     current_test = "lit_fit_cascades";

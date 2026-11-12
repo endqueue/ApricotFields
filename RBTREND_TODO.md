@@ -3706,6 +3706,18 @@ Left:
       portable (or the test's bits replaced by a tolerance, with the
       reason, as `CONVENTIONS.md`'s "Floating point" allows). rabbittustests
       not run here.
+      **Decided 2026-11-12 with you (card A49, b):** a tolerance, the
+      functions kept. `rbtrendlit.cpp` is built with contraction off
+      (`-ffp-contract=off` on Clang and GCC; MSVC doesn't contract), so the
+      fit's arithmetic is the same on every compiler, and
+      `lit_fit_cascades` compares each value within 8 ULPs of the captured
+      bits (`FIT_ULPS`, its reason beside it): only libm's rounding of
+      `std::pow` and `std::tan` is left, and the matrices are no saved or
+      synced data. On Linux (Fedora 44, GCC 16, x86-64) one value of each
+      framing lay 1 ULP off; Rabbittus' 39 ctests then passed in Debug,
+      Release, `-asan` and `-tsan`, and the copies in trellislib's and
+      Latran's suites. Not yet run on Windows or the Mac (whose bits move
+      once contraction is off: the capture was made with FMA).
       **Waiting on Metal's bindless (card A15, decided, not built),
       recorded 2026-10-31 with the user** (`rbtrend_raytracing_draft.h`, T3
       and T7): alpha-tested geometry in ray queries (a cut-out material's

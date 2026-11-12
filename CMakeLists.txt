@@ -738,6 +738,10 @@ if (NOT MSVC)
     endforeach ()
     set_source_files_properties(src/text/rbttext.cpp src/text/rbttext_layout.cpp src/text/rbttext_atlas.cpp
             PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+    # The same for Rend's lit code on the CPU (card A49): a cascade fit's
+    # arithmetic is the same on every compiler, leaving only libm's rounding
+    # of std::pow and std::tan, which rbtrend_contract_tests allows for.
+    set_source_files_properties(src/render/rbtrendlit.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 else ()
     # RbtText's dependencies are third-party code: their warnings are theirs.
     # HarfBuzz's one-file amalgamation has more sections than an object file
