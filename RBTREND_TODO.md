@@ -44,7 +44,13 @@ before the freeze.**
 | 40, compositor scaling | a chained struct on the swap chain desc | free if the desc has a struct base |
 | 12, a second queue and per-thread command memory | submit names a queue; ownership moves between queues | **at risk**: layout tracking and submit assume one queue |
 | 21, storage-buffer instances, a pipeline per draw | new per-draw data in the draw list | **at risk** if the per-draw record freezes without room |
-| 36, a temporal history handle | a history handle, a jittered projection, motion vectors | **at risk**: camera and projection data may need fields |
+| 36, a temporal history handle | a history handle, a jittered projection, motion vectors | **at risk**: camera and projection data may need fields. Card A39 (decided 2026-11-12, b): built, in a draft of its own, with the first caller that shows a traced shadow's noise (Linxer's Step 6 or Latran's ray-traced shadows), the shadow mask accumulating over frames as its first use; the jitter field designed before 1.0 regardless |
+| video (card A28, decided 2026-11-12): a target's and the swap chain's colour space named by the caller, never assumed sRGB; tone mapping in `rbtrendpost` taking the output's colour space and peak brightness | a field or chained struct on the target, swap chain and tone-map descs (Carrottus' half, card S11 (c)) | **at risk** if any frozen desc or pass assumes sRGB: checked struct by struct |
+| video (A28): offscreen rendering with no swap chain at any size and rate, frames read back asynchronously for an encoder | item 6's readback; a target with no swap chain | free if nothing assumes a swap chain or a blocking readback |
+| video (A28): a texture made from an imported image (S11 (e)), sampled with YUV conversion (S7) | a texture create from an imported image, a sampler's conversion as a chained struct | free if the texture and sampler descs have struct bases |
+| traced shadows for point and spot lights (card A38, decided 2026-11-12, b): deferred until a caller asks | `RBTREND_COMMAND_LIT_SHADOW_MASK` naming any light, `RBTREND_LIT_SCENE_LIGHT::_radius` allowed above 0 for them, a mask and a filter per light | free: `_radius` is already in the light (A35's rewrite), 0 for point and spot lights until then |
+| video (A28): 10- and 16-bit targets wherever 8-bit ones are taken | formats only | **at risk** where a call names an 8-bit format rather than taking one |
+| a caller's allocator (card X15; Linxer took one 2026-11-12) | a chained struct on each root desc (instance, and every module's top object), everything the object makes allocating through it | free if each root desc has a struct base; the cost is rerouting the internals, which grows with the code |
 
 **For the three at risk, their shapes are designed before 1.0, not built:**
 submit takes a queue (one exists), the draw list's per-draw record can be
@@ -3153,6 +3159,18 @@ glyphs, and go through the line batch; Rabbittus Text gives their strokes as
 polylines (`RBTTEXT_TODO.md`). Exact curve rendering with no atlas (Slug) is
 the quality ceiling and is commercial; MTSDF is the choice until something
 shows it isn't enough.
+
+#### Open: the glyph-only vertex output (card A50, decided 2026-11-12 with you)
+
+Every batch pipeline but the glyphs' draws `rbtrend_batch_vert`'s location
+9, `extra` (a glyph's outline width), which only the glyph fragment shader
+reads, so Vulkan reports `WARNING-Shader-OutputNotConsumed` 20 times a run
+on every adapter. Performance warnings count as findings in the
+validation runs since card X19 (2026-11-12), so: **a second batch vertex
+entry point without `extra`** for the quad, circle and line kinds, the
+pipeline chosen by kind as now; the glyphs keep the one that writes it.
+Done when rabbittustests' batch tests run under performance warnings
+with no message, on Vulkan, D3D12 and Metal.
 
 ### 24. Lighting: what is left
 

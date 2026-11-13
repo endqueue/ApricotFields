@@ -391,7 +391,11 @@ place; a voice starting at 0 plays the sound's prefetch at once;
 for a stream that failed, naming its voice, codec and part, and how many
 more. D5, a streamed voice is ranked by its gain alone (loudness 1); a
 loudness the caller measured when it cooked a file, for either kind of
-sound, is card A33 (`../DECISIONS.md`). D6, the caller's bytes through
+sound, is card A33 (`../DECISIONS.md`; decided 2026-11-12 with you, a: a
+chained struct on `RBTAUDIO_SOUND_DESC` carrying a linear, RMS-equivalent
+loudness for either kind, 0 keeping today's meaning, measured or 1; built
+with the first cook that fills it, Latran's asset cook, a draft first by
+card X21; not built). D6, the caller's bytes through
 `RBTAUDIO_SOURCE`, random access, read on the scheduler's workers. D7,
 underruns counted per sound (`rbtaudio_sound_get_underrun_frames()`). The
 draft stays at the repo root as the record.

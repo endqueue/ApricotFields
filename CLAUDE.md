@@ -147,7 +147,8 @@ New containers and strings in `src/` come from `eqstd` (`../eqstd`, its
 `TODO.md`; linked PRIVATE since 2026-10-29, used by Rabbittus Text): `eq::array`
 for plain data, `eq::vector` and `eq::string` for the rest, never in a
 public header. Old code converts as it is changed. Whether every desc takes
-a caller's allocator is paused (card X15); until then they use the system
+a caller's allocator waits for the 1.0 room check (card X15, decided
+2026-11-12 for Linxer only; here, a chained struct then); until then they use the system
 heap.
 
 ## Code conventions
