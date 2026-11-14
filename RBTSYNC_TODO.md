@@ -74,6 +74,13 @@ caller with its own online service may use it as that service's local
 mode. Its transport and trust (items 1 and 5, card A23) wait until that
 caller's design is settled.
 
+**Decided 2026-11-13 with the user (card A23):** items 1 and 5 come to
+one addition, built after the threading conversion (card X3: no threads,
+an update call): joining carries an opaque caller token in HELLO, checked
+by the caller, Rabbittus Sync defining no credentials. No WebSocket relay
+transport: a caller with its own service relays through it. The link is
+split into its operations only if X3's conversion wants it.
+
 ## Not built
 
 The rule for adding any of it is Rabbittus Archive's: a new function, or a new field at
